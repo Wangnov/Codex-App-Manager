@@ -6,7 +6,7 @@ use crate::app::mac_update::{
     MacInstallStatus, MacPerformReport, MacStageReport, MacUninstallReport, MacUpdateReport,
     PerformExpectation,
 };
-use crate::app::settings_store::AppSettings;
+use crate::app::settings_store::AppSettings as PersistedAppSettings;
 use crate::app::snapshot::ManagerSnapshot;
 use crate::app::update_check::PayloadUpdateCheck;
 use crate::app::win_update::{
@@ -20,6 +20,47 @@ use crate::domain::operations::{OperationKind, OperationPlan};
 use crate::domain::target::OperatingSystem;
 use crate::errors::{AppError, CommandError};
 use crate::state::ManagerState;
+
+fn normalize_windows_source_base(raw: &str) -> Option<String> {
+    let mut base = raw.trim().trim_end_matches('/').to_string();
+    if base.is_empty() {
+        return None;
+    }
+    for suffix in [
+        "/latest/manifest",
+        "/latest/checksums",
+        "/latest/win-unpacked",
+        "/latest/win",
+        "/latest",
+    ] {
+        if let Some(stripped) = base.strip_suffix(suffix) {
+            base = stripped.trim_end_matches('/').to_string();
+            break;
+        }
+    }
+    (!base.is_empty()).then_some(base)
+}
+
+fn windows_endpoints_for_settings(
+    state: &ManagerState,
+) -> Result<crate::domain::manifest::MirrorEndpoints, AppError> {
+    let saved = PersistedAppSettings::load();
+    match saved.source.as_str() {
+        "custom" => {
+            let base = normalize_windows_source_base(&saved.custom_url)
+                .unwrap_or_else(|| state.settings.mirror_base_url.clone());
+            Ok(crate::domain::manifest::MirrorEndpoints::from_base_url(&base))
+        }
+        "official" => Err(AppError::Engine(
+            "Windows official update source is not available yet; choose mirror, auto, or a custom source that serves latest/manifest, latest/checksums, and latest/win.".to_string(),
+        )),
+        // Windows currently depends on the mirror-style manifest/checksum/MSIX
+        // endpoints. `auto` therefore resolves to the known-good mirror until an
+        // official source exposes the same contract.
+        "auto" | "mirror" => Ok(state.endpoints.clone()),
+        _ => Ok(state.endpoints.clone()),
+    }
+}
 
 #[tauri::command]
 pub fn get_app_snapshot(state: State<'_, ManagerState>) -> Result<ManagerSnapshot, CommandError> {
@@ -185,7 +226,8 @@ pub fn win_plan_update(state: State<'_, ManagerState>) -> Result<WinUpdateReport
     if !matches!(state.target.os, OperatingSystem::Windows) {
         return Err(AppError::UnsupportedPlatform.into());
     }
-    plan_windows_update(&state.endpoints, &state.settings).map_err(Into::into)
+    let endpoints = windows_endpoints_for_settings(&state)?;
+    plan_windows_update(&endpoints, &state.settings).map_err(Into::into)
 }
 
 /// Windows-only: plan + download + size/SHA256/AuthentiCode/AppxManifest gates
@@ -197,7 +239,7 @@ pub async fn win_stage_update(
     if !matches!(state.target.os, OperatingSystem::Windows) {
         return Err(AppError::UnsupportedPlatform.into());
     }
-    let endpoints = state.endpoints.clone();
+    let endpoints = windows_endpoints_for_settings(&state)?;
     let settings = state.settings.clone();
     tauri::async_runtime::spawn_blocking(move || stage_windows_update(&endpoints, &settings))
         .await
@@ -207,13 +249,13 @@ pub async fn win_stage_update(
 
 /// Read persisted app settings (update source + general).
 #[tauri::command]
-pub fn get_settings() -> Result<AppSettings, CommandError> {
-    Ok(AppSettings::load())
+pub fn get_settings() -> Result<PersistedAppSettings, CommandError> {
+    Ok(PersistedAppSettings::load())
 }
 
 /// Persist app settings. `signed_only` is forced on regardless of input.
 #[tauri::command]
-pub fn set_settings(settings: AppSettings) -> Result<AppSettings, CommandError> {
+pub fn set_settings(settings: PersistedAppSettings) -> Result<PersistedAppSettings, CommandError> {
     let mut s = settings;
     s.signed_only = true;
     s.save()?;
@@ -251,7 +293,7 @@ pub async fn win_auto_stage_update(
     if !matches!(state.target.os, OperatingSystem::Windows) {
         return Err(AppError::UnsupportedPlatform.into());
     }
-    let endpoints = state.endpoints.clone();
+    let endpoints = windows_endpoints_for_settings(&state)?;
     let settings = state.settings.clone();
     tauri::async_runtime::spawn_blocking(move || {
         auto_stage_windows_update(&endpoints, &settings, enabled, allow_metered)
@@ -300,7 +342,7 @@ pub async fn win_perform_update(
     if !matches!(state.target.os, OperatingSystem::Windows) {
         return Err(AppError::UnsupportedPlatform.into());
     }
-    let endpoints = state.endpoints.clone();
+    let endpoints = windows_endpoints_for_settings(&state)?;
     let settings = state.settings.clone();
     tauri::async_runtime::spawn_blocking(move || {
         perform_windows_update(&endpoints, &settings, confirm)
@@ -328,4 +370,26 @@ pub async fn win_uninstall(
     .await
     .map_err(|e| AppError::Internal(format!("join: {e}")))?
     .map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_windows_source_base;
+
+    #[test]
+    fn normalizes_windows_source_base_urls() {
+        assert_eq!(
+            normalize_windows_source_base("https://example.test/latest/manifest").as_deref(),
+            Some("https://example.test")
+        );
+        assert_eq!(
+            normalize_windows_source_base("https://example.test/latest/win/").as_deref(),
+            Some("https://example.test")
+        );
+        assert_eq!(
+            normalize_windows_source_base("https://example.test/custom").as_deref(),
+            Some("https://example.test/custom")
+        );
+        assert!(normalize_windows_source_base("   ").is_none());
+    }
 }
