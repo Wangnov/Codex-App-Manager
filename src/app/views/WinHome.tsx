@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { managerApi } from "../../services/managerApi";
 import type {
   AppSettings,
+  CapabilityCheck,
+  WinAutoStageReport,
   WinInstallStatus,
   WinPerformReport,
   WinUpdateReport,
@@ -10,10 +12,40 @@ import type {
 import { DEFAULT_SETTINGS } from "../../shared/types";
 import { Icon } from "../icons";
 import { useI18n, type TKey } from "../i18n";
-import { Ring, TopBar } from "../components";
+import { Ring, Toggle, TopBar } from "../components";
+
+const AUTO_DOWNLOAD_KEY = "codex-manager.win.autoDownload";
+const AUTO_ALLOW_METERED_KEY = "codex-manager.win.autoAllowMetered";
 
 function mib(bytes: number): string {
   return `${(bytes / 1_048_576).toFixed(1)} MB`;
+}
+
+function readStoredBool(key: string, fallback: boolean): boolean {
+  try {
+    const value = localStorage.getItem(key);
+    return value === null ? fallback : value === "true";
+  } catch {
+    return fallback;
+  }
+}
+
+function writeStoredBool(key: string, value: boolean): void {
+  try {
+    localStorage.setItem(key, String(value));
+  } catch {
+    // ignore storage failures; the session state still updates
+  }
+}
+
+function capabilityLabel(check: CapabilityCheck, t: (key: TKey) => string): string {
+  const state =
+    check.state === "available"
+      ? t("win.capability.available")
+      : check.state === "unavailable"
+        ? t("win.capability.blocked")
+        : t("win.capability.unknown");
+  return `${state} · ${check.detail}`;
 }
 
 type Kind = "loading" | "error" | "none" | "idle" | "update" | "external" | "uptodate";
@@ -23,10 +55,19 @@ type Kind = "loading" | "error" | "none" | "idle" | "update" | "external" | "upt
 export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const { t } = useI18n();
   const [report, setReport] = useState<WinUpdateReport | null>(null);
+  const [autoStage, setAutoStage] = useState<WinAutoStageReport | null>(null);
   const [status, setStatus] = useState<WinInstallStatus | null>(null);
   const [perform, setPerform] = useState<WinPerformReport | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [busy, setBusy] = useState<"plan" | "perform" | "adopt" | "install" | null>(null);
+  const [autoBusy, setAutoBusy] = useState(false);
+  const [autoDownloadEnabled, setAutoDownloadEnabled] = useState(() =>
+    readStoredBool(AUTO_DOWNLOAD_KEY, true),
+  );
+  const [autoAllowMetered, setAutoAllowMetered] = useState(() =>
+    readStoredBool(AUTO_ALLOW_METERED_KEY, false),
+  );
+  const [lastAutoStageKey, setLastAutoStageKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [statusLoaded, setStatusLoaded] = useState(false);
@@ -35,6 +76,8 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const check = useCallback(async () => {
     setBusy("plan");
     setError(null);
+    setAutoStage(null);
+    setLastAutoStageKey(null);
     try {
       setReport(await managerApi.winPlanUpdate());
     } catch (cause) {
@@ -44,6 +87,14 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       setBusy(null);
     }
   }, []);
+
+  useEffect(() => {
+    writeStoredBool(AUTO_DOWNLOAD_KEY, autoDownloadEnabled);
+  }, [autoDownloadEnabled]);
+
+  useEffect(() => {
+    writeStoredBool(AUTO_ALLOW_METERED_KEY, autoAllowMetered);
+  }, [autoAllowMetered]);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -122,6 +173,64 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     if (updateAvailable) return "update";
     return "uptodate";
   }, [busy, report, error, installed, updateAvailable, status, statusLoaded, statusFailed]);
+
+  useEffect(() => {
+    if (!plan || plan.upToDate || !autoDownloadEnabled || autoBusy) {
+      return;
+    }
+    const autoKey = `${plan.packageMoniker}:${autoDownloadEnabled}:${autoAllowMetered}`;
+    if (lastAutoStageKey === autoKey) {
+      return;
+    }
+    setLastAutoStageKey(autoKey);
+    setAutoBusy(true);
+    void managerApi
+      .winAutoStageUpdate(autoDownloadEnabled, autoAllowMetered)
+      .then(setAutoStage)
+      .catch((cause) => {
+        setAutoStage({
+          enabled: autoDownloadEnabled,
+          allowMetered: autoAllowMetered,
+          attempted: true,
+          skipped: false,
+          reason: "error",
+          stage: null,
+          capabilities: report?.capabilities ?? null,
+          notes: [cause instanceof Error ? cause.message : String(cause)],
+        });
+      })
+      .finally(() => setAutoBusy(false));
+  }, [
+    autoAllowMetered,
+    autoBusy,
+    autoDownloadEnabled,
+    lastAutoStageKey,
+    plan,
+    report?.capabilities,
+  ]);
+
+  const cancelDownload = useCallback(async () => {
+    setError(null);
+    try {
+      const cancelled = await managerApi.winCancelDownload();
+      setAutoStage((current) => ({
+        enabled: autoDownloadEnabled,
+        allowMetered: autoAllowMetered,
+        attempted: current?.attempted ?? true,
+        skipped: true,
+        reason: cancelled ? "cancel-requested" : "no-active-download",
+        stage: current?.stage ?? null,
+        capabilities: current?.capabilities ?? report?.capabilities ?? null,
+        notes: [
+          cancelled
+            ? "Download cancellation was requested; partial bytes remain for resume."
+            : "No active Windows package download was running.",
+        ],
+      }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, [autoAllowMetered, autoDownloadEnabled, report?.capabilities]);
 
   const version = installed?.version || plan?.latestVersion || "";
   const sourceLabel = t(`source.${settings.source}` as TKey);
@@ -284,6 +393,119 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             </button>
           ) : null}
         </div>
+
+        <div className="group">
+          <div className="group-h">{t("win.advanced.header")}</div>
+          <div className="list">
+            <div className="row">
+              <Icon name="download" className="ricon" />
+              <span className="rtext">
+                <span className="rtitle">{t("win.autoStage.title")}</span>
+                <span className="rsub">{t("win.autoStage.sub")}</span>
+              </span>
+              <Toggle
+                checked={autoDownloadEnabled}
+                onChange={(v) => {
+                  setAutoDownloadEnabled(v);
+                  setLastAutoStageKey(null);
+                  if (!v) void managerApi.winCancelDownload();
+                }}
+              />
+            </div>
+            <div className="row">
+              <Icon name="info" className="ricon" />
+              <span className="rtext">
+                <span className="rtitle">{t("win.metered.title")}</span>
+                <span className="rsub">{t("win.metered.sub")}</span>
+              </span>
+              <Toggle
+                checked={autoAllowMetered}
+                disabled={!autoDownloadEnabled}
+                onChange={(v) => {
+                  setAutoAllowMetered(v);
+                  setLastAutoStageKey(null);
+                }}
+              />
+            </div>
+            <div className="row">
+              <Icon name={autoBusy ? "loader" : "shield"} className="ricon" />
+              <span className="rtext">
+                <span className="rtitle">
+                  {autoBusy
+                    ? t("win.autoStage.running")
+                    : autoStage?.stage?.installReady
+                      ? t("win.autoStage.ready")
+                      : autoStage?.skipped
+                        ? t("win.autoStage.skipped")
+                        : t("win.autoStage.idle")}
+                </span>
+                <span className="rsub">
+                  {autoStage
+                    ? `${autoStage.reason}${autoStage.notes.length ? ` · ${autoStage.notes.join(" ")}` : ""}`
+                    : t("win.autoStage.waiting")}
+                </span>
+              </span>
+              <button className="btn ghost" onClick={cancelDownload} disabled={!autoBusy}>
+                {t("win.autoStage.cancel")}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {report ? (
+          <div className="group">
+            <div className="group-h">{t("win.capabilities.header")}</div>
+            <div className="list">
+              <div className="row">
+                <span className="rtext">
+                  <span className="rtitle">Add-AppxPackage</span>
+                  <span className="rsub">
+                    {capabilityLabel(report.capabilities.addAppxPackage, t)}
+                  </span>
+                </span>
+              </div>
+              <div className="row">
+                <span className="rtext">
+                  <span className="rtitle">AppXSvc</span>
+                  <span className="rsub">
+                    {capabilityLabel(report.capabilities.appxService, t)}
+                  </span>
+                </span>
+              </div>
+              <div className="row">
+                <span className="rtext">
+                  <span className="rtitle">{t("win.capabilities.sideload")}</span>
+                  <span className="rsub">
+                    {capabilityLabel(report.capabilities.sideloadPolicy, t)}
+                  </span>
+                </span>
+              </div>
+              <div className="row">
+                <span className="rtext">
+                  <span className="rtitle">App Installer</span>
+                  <span className="rsub">
+                    {capabilityLabel(report.capabilities.appInstaller, t)}
+                  </span>
+                </span>
+              </div>
+              <div className="row">
+                <span className="rtext">
+                  <span className="rtitle">{t("win.capabilities.metered")}</span>
+                  <span className="rsub">
+                    {capabilityLabel(report.capabilities.meteredNetwork, t)}
+                  </span>
+                </span>
+              </div>
+              <div className="row">
+                <Icon name="shield" className="ricon" />
+                <span className="rtext">
+                  <span className="rtitle">{t("win.capabilities.recommendation")}</span>
+                  <span className="rsub">{routeNote}</span>
+                </span>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         {installed ? (
           <div className="foot">

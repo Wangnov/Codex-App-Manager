@@ -473,9 +473,11 @@ button.row:hover {
   min-width: 0;
 }
 .row .rtitle {
+  display: block;
   font-weight: 600;
 }
 .row .rsub {
+  display: block;
   font-size: 12px;
   color: var(--text-faint);
   margin-top: 1px;
