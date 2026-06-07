@@ -1,5 +1,6 @@
 use crate::adapters::host;
 use crate::app::planner::InstallPlanner;
+use crate::app::settings_store::AppSettings as PersistedAppSettings;
 use crate::app::snapshot::ManagerSnapshot;
 use crate::domain::installation::ManagedInstallation;
 use crate::domain::manifest::MirrorEndpoints;
@@ -17,7 +18,12 @@ impl ManagerState {
     pub fn new() -> Self {
         let target = Target::current();
         let mirror_base_url = "https://codexapp.agentsmirror.com".to_string();
-        let install_root = host::default_install_root(&target);
+        let saved = PersistedAppSettings::load();
+        let install_root = if saved.install_root.trim().is_empty() {
+            host::default_install_root(&target)
+        } else {
+            saved.install_root
+        };
         let settings = AppSettings::new(mirror_base_url.clone(), install_root);
         let endpoints = MirrorEndpoints::from_base_url(&mirror_base_url);
 

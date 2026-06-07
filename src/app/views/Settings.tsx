@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { managerApi } from "../../services/managerApi";
+import { errorMessage, managerApi } from "../../services/managerApi";
 import type { AppSettings, UpdateSourceKind, WindowsInstallMode } from "../../shared/types";
 import { DEFAULT_SETTINGS } from "../../shared/types";
 import { Icon } from "../icons";
@@ -25,9 +25,15 @@ const WINDOWS_INSTALL_MODES: { kind: WindowsInstallMode; label: TKey; desc: TKey
   {
     kind: "portable",
     label: "settings.windows.portable",
-    desc: "settings.windows.portableDesc",
+    desc: "settings.windows.portableDescDefault",
   },
 ];
+
+function samePath(a: string, b: string): boolean {
+  const norm = (value: string) =>
+    value.trim().replace(/[\\/]+$/, "").replace(/\//g, "\\").toLowerCase();
+  return norm(a) === norm(b);
+}
 
 export function Settings({
   onBack,
@@ -44,16 +50,45 @@ export function Settings({
   const { mode, setMode } = useTheme();
   const win = isWindows();
   const [s, setS] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [defaultInstallRoot, setDefaultInstallRoot] = useState(DEFAULT_SETTINGS.installRoot);
   const [autostart, setAutostart] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     void managerApi.getSettings().then(setS).catch(() => undefined);
     void managerApi.getAutostart().then(setAutostart).catch(() => undefined);
-  }, []);
+    if (win) {
+      void managerApi.winDefaultInstallRoot().then(setDefaultInstallRoot).catch(() => undefined);
+    }
+  }, [win]);
 
   const save = (next: AppSettings) => {
+    setError(null);
     setS(next);
-    void managerApi.setSettings(next).then(setS).catch(() => undefined);
+    void managerApi
+      .setSettings(next)
+      .then(setS)
+      .catch((cause) => setError(errorMessage(cause)));
+  };
+
+  const pickInstallRoot = async () => {
+    setError(null);
+    try {
+      const path = await managerApi.winPickInstallDir();
+      if (!path) return;
+      setS(await managerApi.winSetInstallRoot(path));
+    } catch (cause) {
+      setError(errorMessage(cause));
+    }
+  };
+
+  const resetInstallRoot = async () => {
+    setError(null);
+    try {
+      setS(await managerApi.winResetInstallRoot());
+    } catch (cause) {
+      setError(errorMessage(cause));
+    }
   };
 
   const toggleAutostart = (v: boolean) => {
@@ -67,10 +102,22 @@ export function Settings({
     { v: "light", k: "settings.appearance.light" },
     { v: "dark", k: "settings.appearance.dark" },
   ];
+  const installRootIsDefault = samePath(s.installRoot, defaultInstallRoot);
+  const portableDescKey: TKey = installRootIsDefault
+    ? "settings.windows.portableDescDefault"
+    : "settings.windows.portableDescCustom";
+
   return (
     <div className="pop">
       <NavBar title={t("settings.title")} onBack={onBack} />
       <div className="scroll view">
+        {error ? (
+          <div className="banner err">
+            <Icon name="alert" />
+            <span>{error}</span>
+          </div>
+        ) : null}
+
         {/* 更新源 */}
         <div className="group">
           <div className="group-h">{t("settings.source.header")}</div>
@@ -131,10 +178,44 @@ export function Settings({
                         </span>
                       ) : null}
                     </span>
-                    <span className="rsub">{t(mode.desc)}</span>
+                    <span className="rsub">{t(mode.kind === "portable" ? portableDescKey : mode.desc)}</span>
                   </span>
                 </button>
               ))}
+              {s.windowsInstallMode === "portable" ? (
+                <div className="install-root-row">
+                  <div className="install-root-copy">
+                    <Icon name="download" className="ricon" />
+                    <span className="rtext">
+                      <span className="rtitle">
+                        {t("settings.windows.installRoot")}
+                        <span className="tag" style={{ marginInlineStart: 8 }}>
+                          {t(
+                            installRootIsDefault
+                              ? "settings.windows.installRootDefault"
+                              : "settings.windows.installRootCustom",
+                          )}
+                        </span>
+                      </span>
+                      <span className="rsub">{t("settings.windows.installRootDesc")}</span>
+                    </span>
+                  </div>
+                  <button className="install-root-path" onClick={pickInstallRoot}>
+                    <span className="install-root-value mono">{s.installRoot}</span>
+                    <Icon name="chevron" className="chev" />
+                  </button>
+                  <div className="install-root-actions">
+                    <button
+                      className="mini-action"
+                      onClick={resetInstallRoot}
+                      disabled={installRootIsDefault}
+                    >
+                      <Icon name="refresh" />
+                      {t("settings.windows.installRootReset")}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
         ) : null}

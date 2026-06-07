@@ -40,6 +40,30 @@ function hasTauriRuntime(): boolean {
   return typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__);
 }
 
+export function errorMessage(cause: unknown): string {
+  if (cause instanceof Error) {
+    return cause.message;
+  }
+  if (typeof cause === "string") {
+    return cause;
+  }
+  if (cause && typeof cause === "object") {
+    const maybe = cause as { message?: unknown; code?: unknown };
+    if (typeof maybe.message === "string" && maybe.message.trim()) {
+      return maybe.message;
+    }
+    if (typeof maybe.code === "string" && maybe.code.trim()) {
+      return maybe.code;
+    }
+    try {
+      return JSON.stringify(cause);
+    } catch {
+      // fall through
+    }
+  }
+  return String(cause);
+}
+
 // Browser-dev fallbacks (no Tauri runtime) — a simulated "one version behind"
 // so the UI renders meaningfully outside the desktop shell.
 const FALLBACK_PLAN: MacUpdateReport = {
@@ -335,6 +359,38 @@ export const managerApi = {
     localStorage.setItem(SETTINGS_LS, JSON.stringify(saved));
     return saved;
   },
+  winPickInstallDir(): Promise<string | null> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve(localSettings().installRoot);
+    }
+    return invoke<string | null>("win_pick_install_dir");
+  },
+  winDefaultInstallRoot(): Promise<string> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve(DEFAULT_SETTINGS.installRoot);
+    }
+    return invoke<string>("win_default_install_root");
+  },
+  async winSetInstallRoot(path: string): Promise<AppSettings> {
+    if (!hasTauriRuntime()) {
+      const saved = { ...localSettings(), installRoot: path };
+      localStorage.setItem(SETTINGS_LS, JSON.stringify(saved));
+      return saved;
+    }
+    const saved = await invoke<AppSettings>("win_set_install_root", { path });
+    localStorage.setItem(SETTINGS_LS, JSON.stringify(saved));
+    return saved;
+  },
+  async winResetInstallRoot(): Promise<AppSettings> {
+    if (!hasTauriRuntime()) {
+      const saved = { ...localSettings(), installRoot: DEFAULT_SETTINGS.installRoot };
+      localStorage.setItem(SETTINGS_LS, JSON.stringify(saved));
+      return saved;
+    }
+    const saved = await invoke<AppSettings>("win_reset_install_root");
+    localStorage.setItem(SETTINGS_LS, JSON.stringify(saved));
+    return saved;
+  },
 
   // Launch-at-login (off by default). Backed by tauri-plugin-autostart.
   getAutostart(): Promise<boolean> {
@@ -398,13 +454,16 @@ export const managerApi = {
     }
     return invoke<boolean>("win_cancel_download");
   },
-  winPerformUpdate(confirm: boolean): Promise<WinPerformReport> {
+  winPerformUpdate(confirm: boolean, installRoot?: string): Promise<WinPerformReport> {
     if (!hasTauriRuntime()) {
       return confirm
         ? Promise.resolve(WIN_FALLBACK_PERFORM)
         : Promise.reject(new Error("explicit confirmation is required"));
     }
-    return invoke<WinPerformReport>("win_perform_update", { confirm });
+    return invoke<WinPerformReport>("win_perform_update", {
+      confirm,
+      installRoot: installRoot ?? null,
+    });
   },
   winUninstall(confirm: boolean, purgeUserData: boolean): Promise<WinUninstallReport> {
     if (!hasTauriRuntime()) {

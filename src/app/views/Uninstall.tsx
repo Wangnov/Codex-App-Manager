@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { managerApi } from "../../services/managerApi";
+import { errorMessage, managerApi } from "../../services/managerApi";
 import { Icon } from "../icons";
 import { useI18n } from "../i18n";
 import { NavBar, Ring, Toggle } from "../components";
@@ -38,7 +38,7 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
         : await managerApi.macUninstall(keepData);
       setDone(r.message);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorMessage(cause));
     } finally {
       setBusy(false);
     }

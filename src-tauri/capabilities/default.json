@@ -7,8 +7,8 @@
     "core:default",
     "core:window:allow-start-dragging",
     "core:window:allow-close",
+    "dialog:allow-open",
     "updater:default",
     "process:default"
   ]
 }
-

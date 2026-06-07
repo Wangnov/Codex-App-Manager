@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 
-import { managerApi } from "../../services/managerApi";
+import { errorMessage, managerApi } from "../../services/managerApi";
 import { Icon, CodexMark } from "../icons";
 import { useI18n } from "../i18n";
 import { NavBar } from "../components";
@@ -19,7 +19,7 @@ export function About({ onBack }: { onBack: () => void }) {
     try {
       setMgrMsg(await managerApi.checkManagerUpdate());
     } catch (cause) {
-      setMgrMsg(cause instanceof Error ? cause.message : String(cause));
+      setMgrMsg(errorMessage(cause));
     } finally {
       setMgrBusy(false);
     }

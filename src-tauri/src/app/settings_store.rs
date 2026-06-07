@@ -4,7 +4,10 @@
 //! Codex bundle), mirroring `provenance::ProvenanceStore`.
 
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
+use crate::adapters::host;
+use crate::domain::target::Target;
 use crate::errors::AppError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,6 +28,10 @@ pub struct AppSettings {
     /// still fall back to portable when the machine blocks sideloading.
     #[serde(default = "default_windows_install_mode")]
     pub windows_install_mode: String,
+    /// Portable Windows install root. Kept across uninstall so the next fresh
+    /// portable install can default to the user's last chosen location.
+    #[serde(default = "default_install_root")]
+    pub install_root: String,
 }
 
 fn default_true() -> bool {
@@ -33,6 +40,10 @@ fn default_true() -> bool {
 
 fn default_windows_install_mode() -> String {
     "msix".to_string()
+}
+
+pub fn default_install_root() -> String {
+    host::default_install_root(&Target::current())
 }
 
 impl Default for AppSettings {
@@ -45,6 +56,7 @@ impl Default for AppSettings {
             signed_only: true,
             confirm_close: true,
             windows_install_mode: default_windows_install_mode(),
+            install_root: default_install_root(),
         }
     }
 }
@@ -55,6 +67,20 @@ fn store_path() -> Option<std::path::PathBuf> {
 }
 
 impl AppSettings {
+    pub fn normalize(&mut self) {
+        self.signed_only = true; // enforce regardless of what is on disk
+        if !matches!(self.windows_install_mode.as_str(), "msix" | "portable") {
+            self.windows_install_mode = default_windows_install_mode();
+        }
+        if self.install_root.trim().is_empty()
+            || !PathBuf::from(self.install_root.trim()).is_absolute()
+        {
+            self.install_root = default_install_root();
+        } else {
+            self.install_root = self.install_root.trim().to_string();
+        }
+    }
+
     pub fn load() -> Self {
         let Some(path) = store_path() else {
             return Self::default();
@@ -63,10 +89,7 @@ impl AppSettings {
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
-        s.signed_only = true; // enforce regardless of what is on disk
-        if !matches!(s.windows_install_mode.as_str(), "msix" | "portable") {
-            s.windows_install_mode = default_windows_install_mode();
-        }
+        s.normalize();
         s
     }
 

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
-import { managerApi } from "../../services/managerApi";
+import { errorMessage, managerApi } from "../../services/managerApi";
 import type {
   AppSettings,
   DownloadProgress,
@@ -19,6 +19,12 @@ function mib(bytes: number): string {
   return `${(bytes / 1_048_576).toFixed(1)} MB`;
 }
 
+function samePath(a: string, b: string): boolean {
+  const norm = (value: string) =>
+    value.trim().replace(/[\\/]+$/, "").replace(/\//g, "\\").toLowerCase();
+  return norm(a) === norm(b);
+}
+
 type Kind = "loading" | "error" | "none" | "idle" | "update" | "external" | "uptodate";
 
 // Windows counterpart of MacHome — same design system + state machine, driven by
@@ -29,9 +35,12 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [status, setStatus] = useState<WinInstallStatus | null>(null);
   const [perform, setPerform] = useState<WinPerformReport | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [defaultInstallRoot, setDefaultInstallRoot] = useState(DEFAULT_SETTINGS.installRoot);
   const [busy, setBusy] = useState<"plan" | "perform" | "adopt" | "install" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [installDirOpen, setInstallDirOpen] = useState(false);
+  const [installDirBusy, setInstallDirBusy] = useState(false);
   const [statusLoaded, setStatusLoaded] = useState(false);
   const [statusFailed, setStatusFailed] = useState(false);
   const [dl, setDl] = useState<DownloadProgress | null>(null);
@@ -74,7 +83,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       setReport(await managerApi.winPlanUpdate());
     } catch (cause) {
       setReport(null);
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorMessage(cause));
     } finally {
       setBusy(null);
     }
@@ -95,6 +104,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     void (async () => {
       const s = await managerApi.getSettings().catch(() => DEFAULT_SETTINGS);
       setSettings(s);
+      void managerApi.winDefaultInstallRoot().then(setDefaultInstallRoot).catch(() => undefined);
       void refreshStatus();
       if (s.autoCheck) {
         void check();
@@ -108,7 +118,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     try {
       setStatus(await managerApi.winAdopt());
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorMessage(cause));
     } finally {
       setBusy(null);
     }
@@ -117,19 +127,21 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   // Windows install + update both go through win_perform_update (the route —
   // MSIX sideload or portable fallback — is decided by the backend plan).
   const runPerform = useCallback(
-    async (mode: "perform" | "install") => {
+    async (mode: "perform" | "install", installRoot?: string) => {
       setBusy(mode);
       setError(null);
       const unlisten = await startDlListen();
       try {
-        const result = await managerApi.winPerformUpdate(true);
+        const result = await managerApi.winPerformUpdate(true, installRoot);
         setPerform(result);
         setConfirmOpen(false);
+        setInstallDirOpen(false);
         await refreshStatus();
         await check();
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : String(cause));
+        setError(errorMessage(cause));
         setConfirmOpen(false);
+        setInstallDirOpen(false);
       } finally {
         unlisten();
         setBusy(null);
@@ -138,6 +150,64 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     },
     [refreshStatus, check, startDlListen],
   );
+
+  const freshInstallNeedsLocation = useCallback(async () => {
+    if (settings.windowsInstallMode === "portable" || report?.plan?.route === "portable-fallback") {
+      return true;
+    }
+    if (report?.plan?.route === "msix-sideload") {
+      return false;
+    }
+    setBusy("plan");
+    setError(null);
+    try {
+      const next = await managerApi.winPlanUpdate();
+      setReport(next);
+      return next.plan?.route === "portable-fallback";
+    } catch (cause) {
+      setError(errorMessage(cause));
+      return null;
+    } finally {
+      setBusy(null);
+    }
+  }, [report?.plan?.route, settings.windowsInstallMode]);
+
+  const requestInstall = useCallback(async () => {
+    const needsLocation = await freshInstallNeedsLocation();
+    if (needsLocation === null) {
+      return;
+    }
+    if (needsLocation) {
+      setInstallDirOpen(true);
+      return;
+    }
+    await runPerform("install");
+  }, [freshInstallNeedsLocation, runPerform]);
+
+  const installToCurrentRoot = useCallback(async () => {
+    await runPerform("install", settings.installRoot);
+  }, [runPerform, settings.installRoot]);
+
+  const browseInstallRoot = useCallback(async () => {
+    setInstallDirBusy(true);
+    setError(null);
+    try {
+      const path = await managerApi.winPickInstallDir();
+      if (!path) return;
+      // One-shot: hand the chosen location straight to the install. The backend
+      // only persists it as the new default after the install succeeds, so a
+      // cancelled or failed attempt leaves the saved location untouched. Refresh
+      // settings afterwards to reflect whatever was (or wasn't) persisted.
+      await runPerform("install", path);
+      const refreshed = await managerApi.getSettings().catch(() => null);
+      if (refreshed) setSettings(refreshed);
+    } catch (cause) {
+      setError(errorMessage(cause));
+      setInstallDirOpen(false);
+    } finally {
+      setInstallDirBusy(false);
+    }
+  }, [runPerform]);
 
   const plan = report?.plan ?? null;
   const installed = status?.installed ?? report?.installed ?? null;
@@ -163,6 +233,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   const version = installed?.version || plan?.latestVersion || "";
   const sourceLabel = t(`source.${settings.source}` as TKey);
+  const installRootIsDefault = samePath(settings.installRoot, defaultInstallRoot);
 
   if (busy === "perform" || busy === "install") {
     const known = Boolean(dl && dl.total > 0);
@@ -324,7 +395,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           {kind === "none" ? (
             <button
               className="btn primary big"
-              onClick={() => runPerform("install")}
+              onClick={requestInstall}
               disabled={busy !== null}
             >
               <Icon name="download" />
@@ -366,6 +437,37 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
               </button>
               <button className="btn primary" onClick={() => runPerform("perform")}>
                 {t("confirm.ok")}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {installDirOpen ? (
+        <div className="scrim" onClick={() => (installDirBusy ? undefined : setInstallDirOpen(false))}>
+          <div className="sheet" onClick={(e) => e.stopPropagation()}>
+            <Ring icon="download" />
+            <h3>{t("win.installDir.title")}</h3>
+            <p>{t("win.installDir.body")}</p>
+            <div className="sheet-path">{settings.installRoot}</div>
+            <div className="row2">
+              <button
+                className="btn ghost"
+                onClick={installToCurrentRoot}
+                disabled={installDirBusy}
+              >
+                {t(
+                  installRootIsDefault
+                    ? "win.installDir.useDefault"
+                    : "win.installDir.useCurrent",
+                )}
+              </button>
+              <button
+                className="btn primary"
+                onClick={browseInstallRoot}
+                disabled={installDirBusy}
+              >
+                {t("win.installDir.browse")}
               </button>
             </div>
           </div>

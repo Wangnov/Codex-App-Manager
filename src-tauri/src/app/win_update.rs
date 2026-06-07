@@ -179,6 +179,13 @@ fn detect_managed_codex(
             return Some(portable);
         }
     }
+    for record in &store.managed {
+        if let Some(portable) = detect_portable_install(PathBuf::from(&record.path).as_path()) {
+            if store.is_managed(&portable.path) {
+                return Some(portable);
+            }
+        }
+    }
     detect_installed_codex(root.as_path())
 }
 
@@ -426,7 +433,8 @@ pub fn auto_stage_windows_update_with_install_mode(
         }
     }
 
-    let stage = stage_windows_update_with_install_mode(endpoints, settings, install_mode, &no_progress)?;
+    let stage =
+        stage_windows_update_with_install_mode(endpoints, settings, install_mode, &no_progress)?;
     let notes = if stage.install_ready {
         vec!["Windows package is staged and ready for user-confirmed installation.".to_string()]
     } else {
@@ -470,9 +478,11 @@ pub fn perform_windows_update_with_install_mode(
         ));
     }
 
-    let previous_installed =
-        detect_installed_codex(PathBuf::from(&settings.install_root).as_path());
-    let stage = stage_windows_update_with_install_mode(endpoints, settings, install_mode, progress)?;
+    let store = ProvenanceStore::load();
+    let previous_installed = detect_managed_codex(settings, &store)
+        .or_else(|| detect_installed_codex(PathBuf::from(&settings.install_root).as_path()));
+    let stage =
+        stage_windows_update_with_install_mode(endpoints, settings, install_mode, progress)?;
     if stage.up_to_date {
         return Ok(WinPerformReport {
             success: true,
@@ -500,6 +510,16 @@ pub fn perform_windows_update_with_install_mode(
     {
         if installed.source == "msix" {
             close_codex_gracefully_for_root(30, PathBuf::from(&installed.path).as_path())
+                .map_err(engine_err)?;
+        }
+    }
+    // A managed portable build (possibly under a previous install root) is not
+    // stopped by the MSIX sideload below, so close it first — otherwise it keeps
+    // running after we switch the user over to the MSIX package. `previous_installed`
+    // comes from the provenance-aware detect_managed_codex above.
+    if let Some(previous) = &previous_installed {
+        if previous.source == "portable" {
+            close_codex_gracefully_for_root(30, PathBuf::from(&previous.path).as_path())
                 .map_err(engine_err)?;
         }
     }
@@ -551,9 +571,14 @@ fn install_portable_after_stage(
         .staged_path
         .as_ref()
         .ok_or_else(|| AppError::Engine("staged MSIX path missing".to_string()))?;
+    let install_root = previous_installed
+        .as_ref()
+        .filter(|installed| installed.source == "portable")
+        .map(|installed| installed.path.clone())
+        .unwrap_or_else(|| settings.install_root.clone());
     let portable = install_portable_from_msix(
         PathBuf::from(staged_path).as_path(),
-        PathBuf::from(&settings.install_root).as_path(),
+        PathBuf::from(&install_root).as_path(),
         true,
     )
     .map_err(engine_err)?;
@@ -562,7 +587,7 @@ fn install_portable_after_stage(
     // which prefers MSIX and would return a still-present older MSIX package
     // (e.g. when sideload was blocked by policy), recording the wrong target so
     // the user keeps seeing the same update and the portable build goes unmanaged.
-    let installed = detect_portable_install(PathBuf::from(&settings.install_root).as_path());
+    let installed = detect_portable_install(PathBuf::from(&install_root).as_path());
     if let Some(installed) = &installed {
         let mut store = ProvenanceStore::load();
         if let Some(previous) = &previous_installed {
@@ -608,7 +633,10 @@ pub fn win_install_status(settings: &AppSettings) -> WinInstallStatus {
     let installed = detect_managed_codex(settings, &store);
     let status = match &installed {
         None => "none",
-        Some(codex) if store.is_managed(&codex.path) => "managed",
+        // Build-aware (matching the macOS path): a self-updated or path-reused
+        // install no longer matches its record and reads as "external" so the
+        // user is prompted to re-adopt rather than silently treated as managed.
+        Some(codex) if store.is_managed_build(&codex.path, version_key(&codex.version)) => "managed",
         Some(_) => "external",
     }
     .to_string();
@@ -654,7 +682,11 @@ pub fn uninstall_windows_codex(
     };
 
     let mut store = ProvenanceStore::load();
-    if !store.is_managed(&installed_before.path) {
+    // Boundary (matching the macOS uninstall): refuse to delete anything that
+    // isn't an install we manage at this exact build. Path-only matching could
+    // delete a path-reused external install or one left by a stale record —
+    // more likely now that the install root is user-configurable.
+    if !store.is_managed_build(&installed_before.path, version_key(&installed_before.version)) {
         return Ok(WinUninstallReport {
             success: false,
             action: "external-not-managed".to_string(),
@@ -702,7 +734,7 @@ pub fn uninstall_windows_codex(
     }
 
     let portable = uninstall_portable(
-        PathBuf::from(&settings.install_root).as_path(),
+        PathBuf::from(&installed_before.path).as_path(),
         purge_user_data,
     )
     .map_err(engine_err)?;

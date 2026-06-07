@@ -14,6 +14,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         // Launch-at-login support. Off by default — the user opts in from
         // Settings; we only register the plugin so the toggle can flip it.
         .plugin(tauri_plugin_autostart::init(
@@ -37,6 +38,10 @@ pub fn run() {
             commands::mac_uninstall,
             commands::get_settings,
             commands::set_settings,
+            commands::win_default_install_root,
+            commands::win_pick_install_dir,
+            commands::win_set_install_root,
+            commands::win_reset_install_root,
             commands::get_autostart,
             commands::set_autostart,
             commands::open_url,

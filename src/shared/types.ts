@@ -86,6 +86,8 @@ export interface AppSettings {
   confirmClose: boolean;
   /** Windows payload install preference. MSIX still falls back safely if blocked. */
   windowsInstallMode: WindowsInstallMode;
+  /** Remembered portable install root for Windows. */
+  installRoot: string;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -96,6 +98,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   signedOnly: true,
   confirmClose: true,
   windowsInstallMode: "msix",
+  installRoot: "%LOCALAPPDATA%\\Programs\\Codex",
 };
 
 export interface MacUninstallReport {

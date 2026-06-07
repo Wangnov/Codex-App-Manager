@@ -125,6 +125,13 @@ button {
   font-family: inherit;
   cursor: pointer;
 }
+button:focus {
+  outline: none;
+}
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 input {
   font-family: inherit;
 }
@@ -605,6 +612,98 @@ button.row:hover {
   color: var(--danger);
 }
 
+.install-root-row {
+  display: block;
+  padding: 12px 13px 13px;
+  border-top: 1px solid var(--line);
+  font-size: 14px;
+}
+.install-root-copy {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+}
+.install-root-copy .ricon {
+  width: 18px;
+  height: 18px;
+  color: var(--text-soft);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.install-root-copy .rtext {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.install-root-copy .rtitle {
+  font-weight: 600;
+}
+.install-root-copy .rsub {
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1.4;
+  margin-top: 3px;
+}
+.install-root-path {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  color: var(--text-soft);
+  text-align: left;
+  transition: background 0.12s var(--ease), border-color 0.12s var(--ease);
+}
+.install-root-path:hover {
+  background: var(--surface-3);
+  border-color: var(--line-2);
+}
+.install-root-value {
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.install-root-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+.mini-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 600;
+  transition: background 0.12s var(--ease), color 0.12s var(--ease);
+}
+.mini-action:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.mini-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.mini-action svg {
+  width: 14px;
+  height: 14px;
+}
+
 .tag {
   font-size: 10.5px;
   font-weight: 700;
@@ -884,6 +983,19 @@ button.row:hover {
   color: var(--text-soft);
   font-size: 13px;
   line-height: 1.5;
+}
+.sheet-path {
+  margin-top: 12px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  color: var(--text-soft);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.35;
+  word-break: break-all;
+  text-align: left;
 }
 .sheet .row2 {
   display: flex;

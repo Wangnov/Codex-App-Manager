@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
-import { managerApi } from "../../services/managerApi";
+import { errorMessage, managerApi } from "../../services/managerApi";
 import type {
   AppSettings,
   DownloadProgress,
@@ -90,7 +90,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       // Drop any stale plan so a failed re-check can't keep driving "立即更新"
       // off an outdated currentBuild/latestBuild.
       setReport(null);
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorMessage(cause));
     } finally {
       setBusy(null);
     }
@@ -126,7 +126,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     try {
       setStatus(await managerApi.macAdopt());
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorMessage(cause));
     } finally {
       setBusy(null);
     }
@@ -141,7 +141,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       setJustInstalled(true);
       await check();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorMessage(cause));
     } finally {
       un();
       setBusy(null);
@@ -167,7 +167,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       await refreshStatus();
       await check();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorMessage(cause));
       setConfirmOpen(false);
     } finally {
       un();
