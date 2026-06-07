@@ -93,6 +93,33 @@ jobs:
           export AC_API_KEY="$RUNNER_TEMP/AuthKey.p8"
           bash scripts/finalize-macos.sh "${{ matrix.target }}"
 
+      # ── Windows: sign the NSIS installer for the updater ──────────────────
+      #    The build is intentionally unsigned (mirroring macOS), so Tauri emits
+      #    no `.sig`. In Tauri 2 the Windows updater ships the `-setup.exe`
+      #    itself, so signing it here with the updater key — exactly what
+      #    finalize-macos.sh does for the .app.tar.gz — is equivalent to
+      #    `createUpdaterArtifacts` and is what gets windows-x86_64 into
+      #    latest.json. Without it the manifest has macOS platforms only and
+      #    Windows in-app self-update never sees new versions.
+      - name: Sign Windows updater artifact
+        if: matrix.os == 'windows'
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          B="src-tauri/target/${{ matrix.target }}/release/bundle"
+          shopt -s nullglob
+          signed=0
+          for exe in "$B"/nsis/*-setup.exe; do
+            npx tauri signer sign "$exe"
+            signed=$((signed + 1))
+          done
+          if [ "$signed" -eq 0 ]; then
+            echo "::error::no NSIS -setup.exe found to sign under $B/nsis" >&2
+            exit 1
+          fi
+
       # ── Collect artifacts (rename macOS updater tarball with its arch so the
       #    two macOS jobs don't collide when merged) ──────────────────────────
       - name: Collect artifacts
@@ -139,6 +166,11 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           draft: false
+          # Tags carrying a pre-release identifier (e.g. v0.1.2-rc1) publish as a
+          # prerelease, so GitHub's `releases/latest` — and the updater endpoint
+          # pointing at it — keep resolving to the last stable build instead of
+          # serving a release-candidate to real users.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             dist/*
             latest.json
