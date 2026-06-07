@@ -1691,8 +1691,8 @@ const LS_KEY = "cam.lang";
 const SUPPORTED = new Set<Lang>(LANGS.map((l) => l.code));
 
 // Map any BCP-47 tag (e.g. "pt-BR", "zh-Hant-HK", "de-AT") to the closest
-// supported language, or null if none fits.
-function matchTag(tag: string): Lang | null {
+// supported language, or null if none fits. Exported for unit tests.
+export function matchTag(tag: string): Lang | null {
   const t = tag.toLowerCase();
   if (!t) return null;
   if (t.startsWith("zh")) {
@@ -1704,20 +1704,26 @@ function matchTag(tag: string): Lang | null {
   return hit ? hit.code : null;
 }
 
-// Auto-detect: saved choice wins, else walk the user's preferred languages and
-// take the first we support, else fall back to English.
-function detectLang(): Lang {
-  const saved = localStorage.getItem(LS_KEY);
+// Pure selection logic behind detectLang, kept free of globals so it can be
+// unit-tested: saved choice wins, else walk the preferred tags and take the
+// first we support, else fall back to English.
+export function pickLang(saved: string | null, prefs: readonly string[]): Lang {
   if (saved && SUPPORTED.has(saved as Lang)) return saved as Lang;
-  const prefs =
-    navigator.languages && navigator.languages.length > 0
-      ? navigator.languages
-      : [navigator.language ?? ""];
   for (const tag of prefs) {
     const m = matchTag(tag);
     if (m) return m;
   }
   return "en";
+}
+
+// Auto-detect from the live browser environment, delegating the choice to the
+// testable, side-effect-free pickLang.
+function detectLang(): Lang {
+  const prefs =
+    navigator.languages && navigator.languages.length > 0
+      ? Array.from(navigator.languages)
+      : [navigator.language ?? ""];
+  return pickLang(localStorage.getItem(LS_KEY), prefs);
 }
 
 export function I18nProvider({ children }: { children: ReactNode }) {
