@@ -285,7 +285,8 @@ input {
   color: var(--text-soft);
   font-size: 13.5px;
   font-weight: 600;
-  padding: 4px 6px 4px 2px;
+  padding: 4px;
+  padding-inline: 2px 6px;
   border-radius: 8px;
 }
 .navback:hover:not(:disabled) {
@@ -550,7 +551,7 @@ input {
   border-right: none;
   border-bottom: none;
   color: var(--text);
-  text-align: left;
+  text-align: start;
 }
 .row:first-child {
   border-top: none;
@@ -590,7 +591,8 @@ button.row:hover {
   font-family: var(--mono);
   font-size: 11.5px;
   word-break: break-all;
-  text-align: right;
+  text-align: end;
+  direction: ltr;
 }
 .row .chev {
   color: var(--text-faint);
@@ -1052,4 +1054,56 @@ button.row:hover {
   ::view-transition-new(root) {
     animation: none;
   }
+}
+
+/* ── Language picker ─────────────────────────────────────────────────────────
+   A 2-column grid — the segmented control can't fit 11 languages in one row. */
+.langgrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 3px;
+}
+.langgrid button {
+  border: none;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 8px;
+  border-radius: 8px;
+  text-align: center;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease);
+}
+.langgrid button:hover:not([aria-selected="true"]) {
+  background: var(--surface);
+  color: var(--text);
+}
+.langgrid button[aria-selected="true"] {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--sh-md);
+}
+
+/* ── RTL (Arabic) ────────────────────────────────────────────────────────────
+   Most layout mirrors automatically via flexbox + logical properties. These
+   are the few physical bits that need an explicit flip. */
+[dir="rtl"] .navback svg,
+[dir="rtl"] .row .chev {
+  transform: scaleX(-1);
+}
+[dir="rtl"] .toggle::after {
+  left: auto;
+  right: 2px;
+}
+[dir="rtl"] .toggle[aria-checked="true"]::after {
+  transform: translateX(-16px);
+}
+/* Latin/numeric runs (version strings, URLs, the % readout) stay LTR. */
+[dir="rtl"] .input.mono,
+[dir="rtl"] .pctbig {
+  direction: ltr;
 }
