@@ -1,0 +1,65 @@
+name: CI
+
+# Fast pull-request gate: type-check, unit tests and a cross-platform Rust
+# clippy/test pass. The heavy signed/notarized bundle build stays in
+# release.yml (tags only) — this never builds or signs the .app.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Newer pushes to the same ref supersede in-flight runs.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Type-check
+        run: npm run check
+      - name: Unit tests
+        run: npm run test --if-present
+      - name: Build frontend
+        run: npm run build
+
+  rust:
+    name: Rust
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - run: npm ci
+      # tauri-build (frontendDist: ../dist) reads the built frontend at compile
+      # time, so produce dist before touching cargo. We deliberately do NOT run
+      # `tauri build` here — no bundling, no signing, no notarization.
+      - name: Build frontend (for tauri-build)
+        run: npm run build
+      - name: Clippy (deny warnings)
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --manifest-path src-tauri/Cargo.toml --workspace
