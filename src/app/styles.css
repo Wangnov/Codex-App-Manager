@@ -1102,8 +1102,23 @@ button.row:hover {
 [dir="rtl"] .toggle[aria-checked="true"]::after {
   transform: translateX(-16px);
 }
-/* Latin/numeric runs (version strings, URLs, the % readout) stay LTR. */
-[dir="rtl"] .input.mono,
-[dir="rtl"] .pctbig {
+/* Technical content must read left-to-right even inside RTL copy, so digits,
+   dots, slashes and arrows don't reorder. Pure-LTR spans (versions, sizes, the
+   % readout, URL inputs) get an isolated LTR direction; mixed strings that
+   embed those values in translated prose use plaintext, so the bidi algorithm
+   picks a direction per run (Arabic stays RTL, an embedded URL stays LTR). */
+[dir="rtl"] .ver,
+[dir="rtl"] .dlmeta,
+[dir="rtl"] .pct,
+[dir="rtl"] .pctbig,
+[dir="rtl"] .input.mono {
   direction: ltr;
+  unicode-bidi: isolate;
+}
+[dir="rtl"] .sub,
+[dir="rtl"] .flow,
+[dir="rtl"] .foot,
+[dir="rtl"] .rsub,
+[dir="rtl"] .banner span {
+  unicode-bidi: plaintext;
 }
