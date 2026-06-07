@@ -4,7 +4,7 @@ import { managerApi } from "../../services/managerApi";
 import type { AppSettings, UpdateSourceKind, WindowsInstallMode } from "../../shared/types";
 import { DEFAULT_SETTINGS } from "../../shared/types";
 import { Icon } from "../icons";
-import { useI18n, type Lang, type TKey } from "../i18n";
+import { useI18n, LANGS, type TKey } from "../i18n";
 import { useTheme, type ThemeMode } from "../theme";
 import { NavBar, Toggle } from "../components";
 import { isWindows } from "../platform";
@@ -67,11 +67,6 @@ export function Settings({
     { v: "light", k: "settings.appearance.light" },
     { v: "dark", k: "settings.appearance.dark" },
   ];
-  const langs: { v: Lang; label: string }[] = [
-    { v: "zh-CN", label: "简体中文" },
-    { v: "en", label: "English" },
-  ];
-
   return (
     <div className="pop">
       <NavBar title={t("settings.title")} onBack={onBack} />
@@ -92,7 +87,7 @@ export function Settings({
                   <span className="rtitle">
                     {t(src.label)}
                     {src.kind === "auto" ? (
-                      <span className="tag" style={{ marginLeft: 8 }}>
+                      <span className="tag" style={{ marginInlineStart: 8 }}>
                         {t("settings.source.recommended")}
                       </span>
                     ) : null}
@@ -131,7 +126,7 @@ export function Settings({
                     <span className="rtitle">
                       {t(mode.label)}
                       {mode.kind === "msix" ? (
-                        <span className="tag" style={{ marginLeft: 8 }}>
+                        <span className="tag" style={{ marginInlineStart: 8 }}>
                           {t("settings.source.recommended")}
                         </span>
                       ) : null}
@@ -203,14 +198,15 @@ export function Settings({
               <div className="rtitle" style={{ marginBottom: 8 }}>
                 {t("settings.appearance.language")}
               </div>
-              <div className="seg">
-                {langs.map((l) => (
+              <div className="langgrid">
+                {LANGS.map((l) => (
                   <button
-                    key={l.v}
-                    aria-selected={lang === l.v}
-                    onClick={() => setLang(l.v)}
+                    key={l.code}
+                    lang={l.code}
+                    aria-selected={lang === l.code}
+                    onClick={() => setLang(l.code)}
                   >
-                    {l.label}
+                    {l.native}
                   </button>
                 ))}
               </div>
