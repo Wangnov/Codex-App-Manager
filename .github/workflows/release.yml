@@ -134,10 +134,16 @@ jobs:
             for f in "$B"/macos/*.app.tar.gz.sig;  do cp "$f" "$DST/CodexAppManager_${ARCH}.app.tar.gz.sig"; done
             for f in "$B"/dmg/*.dmg;               do cp "$f" "$DST/CodexAppManager_${ARCH}.dmg"; done
           else
-            for f in "$B"/nsis/*-setup.exe;        do cp "$f" "$DST/"; done
-            for f in "$B"/nsis/*-setup.exe.sig;    do cp "$f" "$DST/"; done
-            for f in "$B"/nsis/*.nsis.zip;         do cp "$f" "$DST/"; done
-            for f in "$B"/nsis/*.nsis.zip.sig;     do cp "$f" "$DST/"; done
+            # Strip spaces from the NSIS filenames (productName is "Codex App
+            # Manager"). GitHub rewrites spaces to dots in uploaded asset names,
+            # but gen-updater-manifest.mjs builds the URL from the pre-upload
+            # filename — so a spaced name yields a %20 URL that 404s against the
+            # dotted asset. Renaming space-free here keeps asset name == manifest
+            # URL (the macOS branch already renames for the same reason).
+            for f in "$B"/nsis/*-setup.exe "$B"/nsis/*-setup.exe.sig \
+                     "$B"/nsis/*.nsis.zip "$B"/nsis/*.nsis.zip.sig; do
+              n="$(basename "$f")"; cp "$f" "$DST/${n// /}"
+            done
           fi
           ls -la "$DST"
 
