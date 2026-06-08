@@ -59,7 +59,6 @@ upload_all() { # endpoint bucket region access_key secret_key [prefix]
     AWS_ACCESS_KEY_ID="$ak" \
     AWS_SECRET_ACCESS_KEY="$sk" \
     AWS_DEFAULT_REGION="$region" \
-    AWS_S3_ADDRESSING_STYLE="path" \
       aws s3 cp "$f" "s3://$bucket/$key" \
         --endpoint-url "$endpoint" \
         --content-type "$(content_type "$name")" \
@@ -67,6 +66,14 @@ upload_all() { # endpoint bucket region access_key secret_key [prefix]
     echo "  ↑ $key"
   done
 }
+
+# Force path-style addressing via a temp config — the AWS CLI ignores an
+# AWS_S3_ADDRESSING_STYLE env var, and both R2 and IHEP need path-style here.
+export AWS_EC2_METADATA_DISABLED=true
+AWS_CONFIG_FILE="$(mktemp)"
+export AWS_CONFIG_FILE
+printf '[default]\nregion = auto\ns3 =\n    addressing_style = path\n' > "$AWS_CONFIG_FILE"
+trap 'rm -f "$AWS_CONFIG_FILE"' EXIT
 
 if [ -n "${MANAGER_R2_S3_ENDPOINT:-}" ] && [ -n "${MANAGER_R2_ACCESS_KEY_ID:-}" ]; then
   echo "→ R2 (${MANAGER_R2_BUCKET:-codex-app-manager})"
