@@ -1544,3 +1544,45 @@ button.row.danger:hover {
 [dir="rtl"] .banner span {
   unicode-bidi: plaintext;
 }
+
+/* ── Windows — tame the heavier system fonts ─────────────────────────────────
+   macOS renders with SF Pro Rounded + PingFang (light, refined) plus grayscale
+   antialiasing that thins type. Windows has no rounded UI face: Latin falls to
+   Segoe UI and CJK to Microsoft YaHei — both heavier — and Chromium ignores
+   `-webkit-font-smoothing` there, so ClearType makes light-on-dark text bloom.
+   Net result: the same weights look clunky ("粗笨") on Windows.
+
+   Fix without bundling a font: prefer the lighter UI optical variants, and pull
+   the explicit high weights down to ≤500 so CJK resolves to YaHei *Regular*
+   (YaHei has no semibold, so anything >500 snaps to the heavy Bold) while Segoe
+   Variable still renders a clean medium. Hierarchy then rides on size + colour.
+   Mono / number-only runs (version string, the big %) keep their weights since
+   they don't hit the YaHei problem. macOS rules above are left untouched. */
+[data-platform="windows"] {
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui,
+    "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+}
+[data-platform="windows"] .wordmark,
+[data-platform="windows"] .navtitle,
+[data-platform="windows"] .navback,
+[data-platform="windows"] .btn,
+[data-platform="windows"] .row .rtitle,
+[data-platform="windows"] .install-root-copy .rtitle,
+[data-platform="windows"] .prov,
+[data-platform="windows"] .flow .new,
+[data-platform="windows"] .seg button,
+[data-platform="windows"] .langgrid button,
+[data-platform="windows"] .foot .gobtn,
+[data-platform="windows"] .group-h,
+[data-platform="windows"] .tag,
+[data-platform="windows"] .banner,
+[data-platform="windows"] .sheet h3 {
+  font-weight: 500;
+}
+[data-platform="windows"] .headline {
+  font-weight: 500;
+  letter-spacing: -0.012em;
+}
+[data-platform="windows"] .microcue {
+  font-weight: 450;
+}
