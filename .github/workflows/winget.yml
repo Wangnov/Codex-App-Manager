@@ -28,7 +28,22 @@ jobs:
   winget:
     runs-on: ubuntu-latest
     steps:
+      # No-op cleanly (warn, don't fail) until WINGET_TOKEN is configured, so
+      # releases don't show a red X before the token + first bootstrap are done.
+      - name: Check for WINGET_TOKEN
+        id: gate
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if [ -n "$WINGET_TOKEN" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::WINGET_TOKEN not set — skipping winget submission"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Submit to winget-pkgs
+        if: steps.gate.outputs.ok == 'true'
         uses: vedantmgoyal9/winget-releaser@v2
         with:
           identifier: Wangnov.CodexAppManager
