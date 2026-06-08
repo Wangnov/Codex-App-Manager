@@ -47,7 +47,7 @@
     "resources": ["resources/*"],
     "windows": {
       "nsis": {
-        "displayLanguageSelector": false,
+        "displayLanguageSelector": true,
         "installMode": "currentUser",
         "template": "installer/installer.nsi",
         "installerIcon": "icons/icon.ico",
