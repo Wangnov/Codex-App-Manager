@@ -241,7 +241,11 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const rechecking = busy === "plan" && Boolean(installed);
   // Windows has no Sparkle feed, so the date is the on-disk install time.
   const installedDate = fmtDateTime(installed?.installedAt ?? null, lang);
-  const onLaunch = () => void managerApi.winLaunch();
+  const onLaunch = () => {
+    // Surface a failed open (PowerShell/AUMID or portable-exe error) via the
+    // error banner like every other action, not an unhandled rejection.
+    void managerApi.winLaunch().catch((cause) => setError(errorMessage(cause)));
+  };
 
   if (busy === "perform" || busy === "install") {
     const known = Boolean(dl && dl.total > 0);

@@ -221,7 +221,11 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   // bundle's on-disk timestamp so a time is shown even when the feed omits one.
   const releaseDate = fmtDateTime(report?.installedPubDate ?? null, lang);
   const installedDate = releaseDate ? null : fmtDateTime(installed?.installedAt ?? null, lang);
-  const onLaunch = () => void managerApi.macLaunch();
+  const onLaunch = () => {
+    // Surface a failed open (stale path / backend error) via the error banner
+    // like every other action, instead of an unhandled rejection with no feedback.
+    void managerApi.macLaunch().catch((cause) => setError(errorMessage(cause)));
+  };
 
   // ── progress (performing / installing) takes over the whole screen ─────────
   if (busy === "perform" || busy === "install") {
@@ -277,7 +281,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             </div>
           </section>
           <div className="actions">
-            <button className="btn primary big" onClick={() => void managerApi.macLaunch()}>
+            <button className="btn primary big" onClick={onLaunch}>
               <CodexGlyph />
               {t("install.done.open")}
             </button>
