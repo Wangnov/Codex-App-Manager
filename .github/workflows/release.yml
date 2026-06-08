@@ -73,10 +73,22 @@ jobs:
 
       # ── Build WITHOUT a tauri signingIdentity; we sign inside-out after ────
       - name: Build (Tauri, unsigned)
+        shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npm run tauri build -- --target ${{ matrix.target }}
+        # Bundling downloads toolchains on the fly (e.g. the NSIS archive from
+        # GitHub) which occasionally 504s and fails the whole release. Retry a
+        # few times so a transient download hiccup doesn't sink the run — cargo
+        # output is cached, so a retry mostly just re-runs the bundling step.
+        run: |
+          for attempt in 1 2 3; do
+            npm run tauri build -- --target ${{ matrix.target }} && exit 0
+            echo "::warning::tauri build attempt ${attempt} failed (often a transient NSIS/toolchain download, e.g. HTTP 504) — retrying in 20s"
+            sleep 20
+          done
+          echo "::error::tauri build failed after 3 attempts"
+          exit 1
 
       # ── macOS: adaptive icon → sign → notarize → staple → repackage ───────
       - name: Finalize macOS bundle
