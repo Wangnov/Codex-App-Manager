@@ -1,0 +1,59 @@
+name: Windows installer check
+
+# Builds the NSIS installer (the only place the custom template + branding +
+# languages are exercised — the PR `ci.yml` matrix runs clippy/tests but never
+# bundles). Runs when the installer template, brand images, or bundle config
+# change, and uploads the -setup.exe so it can be inspected on a real Windows box.
+
+on:
+  pull_request:
+    paths:
+      - "src-tauri/installer/**"
+      - "src-tauri/tauri.conf.json"
+      - ".github/workflows/win-installer-check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: win-installer-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nsis:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - run: npm ci
+
+      # Same build as the release pipeline, NSIS only. Signing the updater
+      # artifact is a release-time concern; here we only need the bundle to
+      # compile the template, resolve the brand images, and link all languages.
+      - name: Build NSIS installer
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri build -- --bundles nsis --target x86_64-pc-windows-msvc
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: nsis-installer
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error

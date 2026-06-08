@@ -48,7 +48,24 @@
     "windows": {
       "nsis": {
         "displayLanguageSelector": false,
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "template": "installer/installer.nsi",
+        "installerIcon": "icons/icon.ico",
+        "headerImage": "installer/header.bmp",
+        "sidebarImage": "installer/sidebar.bmp",
+        "languages": [
+          "English",
+          "SimpChinese",
+          "TradChinese",
+          "Japanese",
+          "Korean",
+          "French",
+          "German",
+          "Spanish",
+          "PortugueseBR",
+          "Russian",
+          "Arabic"
+        ]
       }
     }
   },
