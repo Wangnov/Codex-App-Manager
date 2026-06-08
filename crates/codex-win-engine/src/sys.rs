@@ -267,20 +267,59 @@ $statusStr = [string]$pkg.Status
 $statusOk = ([string]::IsNullOrEmpty($statusStr) -or $statusStr -eq 'Ok')
 $aumidResolved = $false
 $missing = @()
+function Convert-ToVersion($value) {{
+  try {{
+    $text = [string]$value
+    if ([string]::IsNullOrWhiteSpace($text)) {{ return $null }}
+    return [version]$text
+  }} catch {{
+    return $null
+  }}
+}}
+function Same-Publisher($package, [string]$publisher) {{
+  if ([string]::IsNullOrWhiteSpace($publisher)) {{ return $true }}
+  return [string]$package.Publisher -eq $publisher
+}}
+function Same-Architecture($package, [string]$required) {{
+  if ([string]::IsNullOrWhiteSpace($required) -or $required -eq 'neutral') {{ return $true }}
+  $arch = [string]$package.Architecture
+  return [string]::IsNullOrWhiteSpace($arch) -or $arch -eq 'Neutral' -or $arch -eq $required
+}}
 try {{
   $manifest = Get-AppxPackageManifest $pkg -ErrorAction Stop
   $app = $manifest.Package.Applications.Application
   if ($app -is [array]) {{ $app = $app[0] }}
   $appId = [string]$app.Id
   if (-not [string]::IsNullOrEmpty($appId)) {{ $aumidResolved = $true }}
+  $mainArch = [string]$pkg.Architecture
   $deps = $manifest.Package.Dependencies.PackageDependency
   foreach ($d in @($deps)) {{
     if ($null -ne $d) {{
       $dn = [string]$d.Name
       if (-not [string]::IsNullOrEmpty($dn)) {{
-        $depPkg = Get-AppxPackage -Name $dn -ErrorAction SilentlyContinue |
+        $depPublisher = [string]$d.Publisher
+        $depMinText = [string]$d.MinVersion
+        $depMin = Convert-ToVersion $depMinText
+        $depArch = [string]$d.ProcessorArchitecture
+        if ([string]::IsNullOrWhiteSpace($depArch)) {{ $depArch = $mainArch }}
+        $candidates = @(Get-AppxPackage -Name $dn -ErrorAction SilentlyContinue |
+          Where-Object {{ Same-Publisher $_ $depPublisher }})
+        $archCandidates = @($candidates | Where-Object {{ Same-Architecture $_ $depArch }})
+        if ($candidates.Count -gt 0 -and $archCandidates.Count -eq 0) {{
+          $missing += "$dn architecture $depArch not installed"
+          continue
+        }}
+        $depPkg = $archCandidates |
+          Sort-Object -Property @{{ Expression = {{ Convert-ToVersion $_.Version }}; Descending = $true }} |
           Select-Object -First 1
-        if ($null -eq $depPkg) {{ $missing += $dn }}
+        if ($null -eq $depPkg) {{
+          $missing += "$dn not installed"
+        }} else {{
+          $installedVersion = Convert-ToVersion $depPkg.Version
+          if ($null -ne $depMin -and $null -ne $installedVersion -and $installedVersion -lt $depMin) {{
+            $missing += "$dn >= $depMinText required (installed $($depPkg.Version))"
+          }}
+        }}
       }}
     }}
   }}

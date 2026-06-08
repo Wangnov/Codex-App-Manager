@@ -533,17 +533,37 @@ pub fn perform_windows_update_with_install_mode(
         // Add-AppxPackage returning success only means the cmdlet didn't throw.
         // Verify the package is actually runnable before committing to it — on a
         // stripped Windows it can register yet fail to launch. If it's unhealthy,
-        // remove it and fall back to portable so the user gets a build that runs.
+        // first install the portable fallback so the user is never left without
+        // a runnable build, then clean up the bad MSIX best-effort.
         let health = verify_msix_health();
         if !health.healthy {
-            let _ = remove_msix_package();
-            return install_portable_after_stage(
+            let mut report = install_portable_after_stage(
                 settings,
                 stage,
                 Some(sideload),
                 Some(health),
                 previous_installed,
-            );
+            )?;
+            match remove_msix_package() {
+                Ok(remove) if remove.success => {
+                    report.notes.push(
+                        "Unhealthy MSIX package was removed after portable fallback succeeded."
+                            .to_string(),
+                    );
+                }
+                Ok(remove) => {
+                    report.notes.push(format!(
+                        "Portable fallback succeeded, but removing the unhealthy MSIX package failed: {}",
+                        remove.message
+                    ));
+                }
+                Err(err) => {
+                    report.notes.push(format!(
+                        "Portable fallback succeeded, but removing the unhealthy MSIX package could not run: {err}"
+                    ));
+                }
+            }
+            return Ok(report);
         }
 
         let installed = sideload

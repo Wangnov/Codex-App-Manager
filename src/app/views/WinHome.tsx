@@ -235,7 +235,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   // detected — a stripped Windows where the package may install but not run.
   const msixRisky =
     plan?.route === "msix-sideload" &&
-    report?.capabilities?.appInstaller?.state !== "available";
+    report?.capabilities?.appInstaller?.state === "unavailable";
 
   const kind: Kind = useMemo(() => {
     if (!installed) {
