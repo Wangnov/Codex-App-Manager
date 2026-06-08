@@ -500,11 +500,19 @@ Function .onInit
   ${EndIf}
 
   !if "${DISPLAYLANGUAGESELECTOR}" == "true"
-    ; [codex-app-manager] skip the language picker during passive/unattended self-update
-    ; (the updater launches the installer with /P /UPDATE, not silent /S) so updates stay hands-free
     ${If} $PassiveMode = 1
     ${OrIf} $UpdateMode = 1
+      ; [codex-app-manager] passive/unattended self-update (updater runs /P /UPDATE,
+      ; not silent /S): don't prompt, but restore the saved language so MUI's write-back
+      ; on page leave doesn't reset a non-default language to the system default
+      Push $0
+      ReadRegStr $0 ${MUI_LANGDLL_REGISTRY_ROOT} "${MUI_LANGDLL_REGISTRY_KEY}" "${MUI_LANGDLL_REGISTRY_VALUENAME}"
+      ${If} $0 != ""
+        StrCpy $LANGUAGE $0
+      ${EndIf}
+      Pop $0
     ${Else}
+      ; interactive install: offer the language picker
       !insertmacro MUI_LANGDLL_DISPLAY
     ${EndIf}
   !endif

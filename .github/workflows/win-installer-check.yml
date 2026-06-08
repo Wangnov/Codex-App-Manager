@@ -41,14 +41,14 @@ jobs:
 
       - run: npm ci
 
-      # Same build as the release pipeline, NSIS only. Signing the updater
-      # artifact is a release-time concern; here we only need the bundle to
-      # compile the template, resolve the brand images, and link all languages.
+      # NSIS only — just needs to compile the template, resolve the brand images,
+      # and link all languages. NO signing secrets here on purpose: this is a
+      # pull_request trigger running PR-authored code (config/template/hooks), so
+      # exposing TAURI_SIGNING_PRIVATE_KEY would let a PR exfiltrate the updater
+      # signing key. The build doesn't need it (createUpdaterArtifacts is off);
+      # signing the updater artifact is a release-time concern (release.yml).
       - name: Build NSIS installer
         shell: bash
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build -- --bundles nsis --target x86_64-pc-windows-msvc
 
       - name: Upload installer
