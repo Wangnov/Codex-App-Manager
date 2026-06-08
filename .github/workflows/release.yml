@@ -37,9 +37,9 @@ jobs:
           - { platform: windows-latest, target: x86_64-pc-windows-msvc, os: windows }
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: npm
@@ -147,7 +147,7 @@ jobs:
           fi
           ls -la "$DST"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bundle-${{ matrix.target }}
           path: dist-artifacts/*
@@ -157,9 +157,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -168,7 +168,7 @@ jobs:
         run: node scripts/gen-updater-manifest.mjs "${{ github.ref_name }}" dist
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           draft: false
