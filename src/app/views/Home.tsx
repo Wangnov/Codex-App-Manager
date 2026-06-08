@@ -273,6 +273,12 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       <div className="pop">
         <TopBar />
         <div className="scroll view">
+          {error ? (
+            <div className="banner err">
+              <Icon name="alert" />
+              <span>{error}</span>
+            </div>
+          ) : null}
           <section className="hero" style={{ marginTop: 16 }}>
             <Ring icon="check" variant="success" className="pop" />
             <div className="headline">{t("install.done.title")}</div>
