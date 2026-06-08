@@ -34,7 +34,11 @@ export default {
     // ── Mainland China: presign the IHEP S3 object and redirect ──────────────
     if (secondaryCountryCodes.has(country.toUpperCase()) && hasSecondaryS3Config(env)) {
       const objectKey = objectKeyForKey(key, env.SECONDARY_S3_PREFIX || "");
-      const signedUrl = await presignS3GetUrl({
+      const signedUrl = await presignS3Url({
+        // Sign for the actual method: the redirect preserves it, and an
+        // S3 URL presigned for GET is rejected when followed with HEAD — the
+        // R2 branch below answers HEAD directly, so keep CN symmetric.
+        method: request.method === "HEAD" ? "HEAD" : "GET",
         endpoint: env.SECONDARY_S3_ENDPOINT,
         bucket: env.SECONDARY_S3_BUCKET,
         key: objectKey,
@@ -97,8 +101,8 @@ function objectKeyForKey(key, prefix) {
   return cleanPrefix ? `${cleanPrefix}/${key}` : key;
 }
 
-// ── AWS SigV4 presigner (GET), identical scheme to codex-app-mirror ──────────
-async function presignS3GetUrl(options) {
+// ── AWS SigV4 presigner (GET/HEAD), identical scheme to codex-app-mirror ─────
+async function presignS3Url(options) {
   const endpointUrl = new URL(options.endpoint);
   const now = new Date();
   const amzDate = formatAmzDate(now);
@@ -118,7 +122,7 @@ async function presignS3GetUrl(options) {
   const canonicalQuery = canonicalQueryString(queryParams);
   const canonicalHeaders = `host:${endpointUrl.host}\n`;
   const canonicalRequest = [
-    "GET",
+    options.method || "GET",
     canonicalUri,
     canonicalQuery,
     canonicalHeaders,
