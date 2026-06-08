@@ -7,6 +7,9 @@ export interface InstalledCodex {
   /** Human-facing version (CFBundleShortVersionString, e.g. 26.602.40724). */
   shortVersion: string;
   arch: string;
+  /** Bundle file mtime as a Unix timestamp (seconds) — when this build landed
+   *  on disk (install or in-place update). Reliable fallback for a date. */
+  installedAt?: number | null;
 }
 
 export interface UpdateStrategy {
@@ -39,6 +42,9 @@ export interface MacUpdateReport {
   installed: InstalledCodex | null;
   simulatedBuild: number | null;
   plan: UpdatePlan | null;
+  /** Sparkle <pubDate> of the appcast item matching the INSTALLED build (the
+   *  true release date of the running version), when the feed publishes it. */
+  installedPubDate?: string | null;
 }
 
 export interface MacStageReport {

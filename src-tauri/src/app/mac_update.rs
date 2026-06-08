@@ -34,6 +34,9 @@ pub struct InstalledCodex {
     pub short_version: String,
     /// `arm64` / `x86_64` of the installed bundle (drives appcast selection).
     pub arch: String,
+    /// Bundle file mtime as Unix seconds — when this build landed on disk
+    /// (install or in-place update). A reliable date when the feed lacks one.
+    pub installed_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -43,6 +46,9 @@ pub struct MacUpdateReport {
     pub installed: Option<InstalledCodex>,
     pub simulated_build: Option<u64>,
     pub plan: Option<UpdatePlan>,
+    /// `<pubDate>` of the appcast item matching the INSTALLED build — the true
+    /// release date of the running version, when the feed publishes it.
+    pub installed_pub_date: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -202,11 +208,18 @@ fn detect_installed() -> Option<InstalledCodex> {
     sys::installed_codex_build().map(|(path, build)| {
         let arch = sys::app_arch(&path).unwrap_or_else(|| std::env::consts::ARCH.to_string());
         let short_version = sys::read_bundle_short_version(&path).unwrap_or_default();
+        // Bundle mtime → when this build landed on disk (install / in-place swap).
+        let installed_at = std::fs::metadata(Path::new(&path))
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs());
         InstalledCodex {
             path,
             build,
             short_version,
             arch,
+            installed_at,
         }
     })
 }
@@ -221,11 +234,23 @@ pub fn plan_macos_update(simulated_build: Option<u64>) -> Result<MacUpdateReport
         require_os_supported(latest.minimum_system_version.as_deref())?;
     }
 
+    // Release date of the *installed* build (its own appcast item), so it stays
+    // correct even when a newer version is available. None when the feed omits
+    // pubDate or the installed build has aged out of the feed.
+    let installed_pub_date = installed.as_ref().and_then(|inst| {
+        appcast
+            .items
+            .iter()
+            .find(|it| it.build == inst.build)
+            .and_then(|it| it.pub_date.clone())
+    });
+
     Ok(MacUpdateReport {
         appcast_url,
         installed,
         simulated_build,
         plan,
+        installed_pub_date,
     })
 }
 

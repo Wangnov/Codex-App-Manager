@@ -33,6 +33,9 @@ pub struct AppcastItem {
     /// `sparkle:shortVersionString` — marketing version (e.g. "26.602.30954").
     pub short_version: String,
     pub minimum_system_version: Option<String>,
+    /// RSS `<pubDate>` (RFC-822) — when this build was published, if the feed
+    /// carries it. The UI formats it as the version's release date.
+    pub pub_date: Option<String>,
     /// The full update archive (`.zip`).
     pub full: Enclosure,
     /// Binary deltas from recent prior builds.
@@ -62,6 +65,7 @@ pub fn parse_appcast(xml: &str) -> Result<Appcast, EngineError> {
         let mut build: Option<u64> = None;
         let mut short_version: Option<String> = None;
         let mut minimum_system_version: Option<String> = None;
+        let mut pub_date: Option<String> = None;
         let mut full: Option<Enclosure> = None;
         let mut deltas: Vec<Delta> = Vec::new();
 
@@ -75,6 +79,7 @@ pub fn parse_appcast(xml: &str) -> Result<Appcast, EngineError> {
                 "minimumSystemVersion" => {
                     minimum_system_version = child.text().map(|t| t.trim().to_string())
                 }
+                "pubDate" => pub_date = child.text().map(|t| t.trim().to_string()),
                 // A direct <enclosure> child of <item> is the full archive.
                 "enclosure" => {
                     enclosure_build =
@@ -105,6 +110,7 @@ pub fn parse_appcast(xml: &str) -> Result<Appcast, EngineError> {
                 build,
                 short_version: short_version.unwrap_or_default(),
                 minimum_system_version,
+                pub_date,
                 full,
                 deltas,
             });

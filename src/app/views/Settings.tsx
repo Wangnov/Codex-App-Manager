@@ -53,6 +53,7 @@ export function Settings({
   const [defaultInstallRoot, setDefaultInstallRoot] = useState(DEFAULT_SETTINGS.installRoot);
   const [autostart, setAutostart] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [langSheet, setLangSheet] = useState(false);
 
   useEffect(() => {
     void managerApi.getSettings().then(setS).catch(() => undefined);
@@ -275,23 +276,13 @@ export function Settings({
                 ))}
               </div>
             </div>
-            <div className="row" style={{ display: "block" }}>
-              <div className="rtitle" style={{ marginBottom: 8 }}>
-                {t("settings.appearance.language")}
-              </div>
-              <div className="langgrid">
-                {LANGS.map((l) => (
-                  <button
-                    key={l.code}
-                    lang={l.code}
-                    aria-selected={lang === l.code}
-                    onClick={() => setLang(l.code)}
-                  >
-                    {l.native}
-                  </button>
-                ))}
-              </div>
-            </div>
+            <button className="row" onClick={() => setLangSheet(true)}>
+              <span className="rtext">
+                <span className="rtitle">{t("settings.appearance.language")}</span>
+              </span>
+              <span className="rval">{LANGS.find((l) => l.code === lang)?.native ?? lang}</span>
+              <Icon name="chevron" className="chev" />
+            </button>
           </div>
         </div>
 
@@ -324,6 +315,29 @@ export function Settings({
           </div>
         </div>
       </div>
+
+      {langSheet ? (
+        <div className="scrim" onClick={() => setLangSheet(false)}>
+          <div className="sheet" onClick={(e) => e.stopPropagation()}>
+            <h3>{t("settings.appearance.language")}</h3>
+            <div className="langgrid" style={{ marginTop: 14 }}>
+              {LANGS.map((l) => (
+                <button
+                  key={l.code}
+                  lang={l.code}
+                  aria-selected={lang === l.code}
+                  onClick={() => {
+                    setLangSheet(false);
+                    setLang(l.code);
+                  }}
+                >
+                  {l.native}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
