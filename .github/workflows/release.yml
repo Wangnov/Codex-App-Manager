@@ -180,3 +180,23 @@ jobs:
           files: |
             dist/*
             latest.json
+
+      # Mirror the release to the CDN so in-app self-update works without GitHub
+      # (slow/blocked for the CN audience). Skips pre-releases so a -rc tag never
+      # overwrites the mirror's single latest.json. No-ops cleanly until the
+      # MANAGER_R2_* (and optionally MANAGER_IHEP_S3_*) secrets are configured.
+      - name: Sync to CDN mirror (R2 + IHEP S3)
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          MANAGER_R2_S3_ENDPOINT: ${{ secrets.MANAGER_R2_S3_ENDPOINT }}
+          MANAGER_R2_ACCESS_KEY_ID: ${{ secrets.MANAGER_R2_ACCESS_KEY_ID }}
+          MANAGER_R2_SECRET_ACCESS_KEY: ${{ secrets.MANAGER_R2_SECRET_ACCESS_KEY }}
+          MANAGER_IHEP_S3_ENDPOINT: ${{ secrets.MANAGER_IHEP_S3_ENDPOINT }}
+          MANAGER_IHEP_S3_BUCKET: ${{ secrets.MANAGER_IHEP_S3_BUCKET }}
+          MANAGER_IHEP_S3_REGION: ${{ secrets.MANAGER_IHEP_S3_REGION }}
+          MANAGER_IHEP_S3_PREFIX: ${{ secrets.MANAGER_IHEP_S3_PREFIX }}
+          MANAGER_IHEP_S3_ACCESS_KEY_ID: ${{ secrets.MANAGER_IHEP_S3_ACCESS_KEY_ID }}
+          MANAGER_IHEP_S3_SECRET_ACCESS_KEY: ${{ secrets.MANAGER_IHEP_S3_SECRET_ACCESS_KEY }}
+        run: |
+          [ -f dist/latest.json ] || cp latest.json dist/latest.json
+          bash scripts/sync-mirror.sh dist
