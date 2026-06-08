@@ -355,7 +355,7 @@ dependencies = [
 
 [[package]]
 name = "codex-app-manager"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "codex-mac-engine",
  "codex-win-engine",
