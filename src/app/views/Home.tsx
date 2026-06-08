@@ -10,7 +10,7 @@ import type {
   MacUpdateReport,
 } from "../../shared/types";
 import { DEFAULT_SETTINGS } from "../../shared/types";
-import { Icon } from "../icons";
+import { Icon, CodexGlyph } from "../icons";
 import { useI18n, type TKey } from "../i18n";
 import { Ring, TopBar } from "../components";
 import { currentPlatform } from "../platform";
@@ -278,7 +278,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           </section>
           <div className="actions">
             <button className="btn primary big" onClick={() => void managerApi.macLaunch()}>
-              <Icon name="external" />
+              <CodexGlyph />
               {t("install.done.open")}
             </button>
             <button className="btn ghost" onClick={() => setJustInstalled(false)}>
@@ -434,7 +434,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           {rechecking ? (
             <>
               <button className="btn primary big" onClick={onLaunch} disabled>
-                <Icon name="external" />
+                <CodexGlyph />
                 {t("home.launch")}
               </button>
               <button className="btn ghost" disabled>
@@ -454,7 +454,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
                 {t("home.update.cta")}
               </button>
               <button className="btn ghost" onClick={onLaunch} disabled={busy !== null}>
-                <Icon name="external" />
+                <CodexGlyph />
                 {t("home.launch")}
               </button>
             </>
@@ -462,7 +462,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           {!rechecking && kind === "idle" ? (
             <>
               <button className="btn primary big" onClick={onLaunch} disabled={busy !== null}>
-                <Icon name="external" />
+                <CodexGlyph />
                 {t("home.launch")}
               </button>
               <button className="btn ghost" onClick={check} disabled={busy !== null}>
@@ -478,7 +478,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
                 {t("home.external.cta")}
               </button>
               <button className="btn ghost" onClick={onLaunch} disabled={busy !== null}>
-                <Icon name="external" />
+                <CodexGlyph />
                 {t("home.launch")}
               </button>
             </>
@@ -492,7 +492,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           {!rechecking && kind === "uptodate" ? (
             <>
               <button className="btn primary big" onClick={onLaunch} disabled={busy !== null}>
-                <Icon name="external" />
+                <CodexGlyph />
                 {t("home.launch")}
               </button>
               <button className="btn ghost" onClick={check} disabled={busy !== null}>
