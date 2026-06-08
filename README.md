@@ -67,6 +67,14 @@
 
 ## 下载与安装
 
+### macOS —— Homebrew(推荐)
+
+```bash
+brew install --cask wangnov/tap/codex-app-manager
+```
+
+### 手动下载
+
 打开 [最新 GitHub Release](https://github.com/Wangnov/Codex-App-Manager/releases/latest),下载对应平台文件:
 
 - **Apple Silicon Mac**:`CodexAppManager_aarch64.dmg`
@@ -173,6 +181,14 @@ npm run tauri:build    # 本地构建(未签名)
 | 🍎 **Signed & notarized** | macOS Developer ID signing + Apple notarization; the Windows updater artifact is signed with the updater key |
 
 ## Download & install
+
+### macOS — Homebrew (recommended)
+
+```bash
+brew install --cask wangnov/tap/codex-app-manager
+```
+
+### Manual download
 
 Open the [latest GitHub Release](https://github.com/Wangnov/Codex-App-Manager/releases/latest) and grab your platform's file:
 
