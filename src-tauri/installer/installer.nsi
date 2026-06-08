@@ -279,11 +279,12 @@ Function PageReinstall
     ${NSD_CreateLabel} 0 0 100% 24u $R1
     Pop $R1
 
-    ${NSD_CreateRadioButton} 30u 50u -30u 8u $R2
+    ; [codex-app-manager] 12u (was 8u) so CJK radio labels aren't bottom-clipped
+    ${NSD_CreateRadioButton} 30u 50u -30u 12u $R2
     Pop $R2
     ${NSD_OnClick} $R2 PageReinstallUpdateSelection
 
-    ${NSD_CreateRadioButton} 30u 70u -30u 8u $R3
+    ${NSD_CreateRadioButton} 30u 70u -30u 12u $R3
     Pop $R3
     ; Disable this radio button if downgrading and downgrades are disabled
     !if "${ALLOWDOWNGRADES}" == "false"
