@@ -18,7 +18,16 @@ The updater (`src-tauri/tauri.conf.json`) already checks
 ## Why a separate latest.json on the mirror
 `latest.json`'s embedded signatures sign the artifact **bytes**, not the URL, so
 re-hosting the same files keeps them valid — we only rewrite the download URLs to
-`…/manager/<file>`. `scripts/sync-mirror.sh` does this on every (non-pre-)release.
+`…/manager/<version>/<file>`. `scripts/sync-mirror.sh` does this on every
+(non-pre-)release.
+
+Installers are uploaded under a **per-version** key (`<version>/<file>`) and
+`latest.json` stays at the fixed root the updater polls. macOS updater tarballs
+are renamed upstream to versionless arch-only names, so without the version
+segment every release would reuse one URL and the worker's long installer cache
+could serve a previous version's bytes against the new signature. (The seeded
+v0.1.8 predates this and lives at flat `…/manager/<file>` keys — still
+self-consistent; v0.1.9+ use the versioned layout.)
 
 > ⚠️ The mirror's `latest.json` MUST be refreshed on every stable release, or the
 > first endpoint serves a stale version and **blocks** updates. That's why the

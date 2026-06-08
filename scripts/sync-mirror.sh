@@ -23,17 +23,32 @@ if [ ! -f "$dist/latest.json" ]; then
   exit 1
 fi
 
+# Installers live under a per-version path on the mirror (see below), so read the
+# version once and reuse it for both the rewritten URLs and the upload keys.
+version="$(node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).version||""))' "$dist/latest.json")"
+if [ -z "$version" ]; then
+  echo "::error::latest.json has no version" >&2
+  exit 1
+fi
+
 # 1) Mirror variant of latest.json: same signatures, URLs pointed at the mirror.
+#    Each installer URL gets a /<version>/ segment so every release is an
+#    immutable, uniquely-addressed object. The macOS updater tarballs are renamed
+#    to versionless arch-only names upstream (CodexAppManager_<arch>.app.tar.gz),
+#    so without this each release would reuse one URL — and the worker's long
+#    installer cache could then serve a previous version's bytes against the new
+#    latest.json signature, breaking self-update. latest.json itself stays at the
+#    fixed root path the updater polls.
 node -e '
   const fs = require("fs");
-  const [dir, base] = [process.argv[1], process.argv[2]];
+  const [dir, base, ver] = [process.argv[1], process.argv[2], process.argv[3]];
   const j = JSON.parse(fs.readFileSync(dir + "/latest.json", "utf8"));
   for (const k of Object.keys(j.platforms || {})) {
     const name = j.platforms[k].url.split("/").pop();
-    j.platforms[k].url = `${base}/${name}`;
+    j.platforms[k].url = `${base}/${ver}/${name}`;
   }
   fs.writeFileSync(dir + "/latest.mirror.json", JSON.stringify(j, null, 2) + "\n");
-' "$dist" "$mirror_base"
+' "$dist" "$mirror_base" "$version"
 
 content_type() {
   case "$1" in
@@ -53,8 +68,11 @@ upload_all() { # endpoint bucket region access_key secret_key [prefix]
   for f in "$dist"/*; do
     name="$(basename "$f")"
     [ "$name" = "latest.json" ] && continue          # GitHub variant — skip
-    key="$name"
-    [ "$name" = "latest.mirror.json" ] && key="latest.json"
+    if [ "$name" = "latest.mirror.json" ]; then
+      key="latest.json"                              # updater polls this fixed path
+    else
+      key="$version/$name"                           # immutable, per-version object
+    fi
     [ -n "$prefix" ] && key="${prefix%/}/$key"
     AWS_ACCESS_KEY_ID="$ak" \
     AWS_SECRET_ACCESS_KEY="$sk" \
@@ -75,7 +93,7 @@ export AWS_CONFIG_FILE
 printf '[default]\nregion = auto\ns3 =\n    addressing_style = path\n' > "$AWS_CONFIG_FILE"
 trap 'rm -f "$AWS_CONFIG_FILE"' EXIT
 
-if [ -n "${MANAGER_R2_S3_ENDPOINT:-}" ] && [ -n "${MANAGER_R2_ACCESS_KEY_ID:-}" ]; then
+if [ -n "${MANAGER_R2_S3_ENDPOINT:-}" ] && [ -n "${MANAGER_R2_ACCESS_KEY_ID:-}" ] && [ -n "${MANAGER_R2_SECRET_ACCESS_KEY:-}" ]; then
   echo "→ R2 (${MANAGER_R2_BUCKET:-codex-app-manager})"
   upload_all "$MANAGER_R2_S3_ENDPOINT" "${MANAGER_R2_BUCKET:-codex-app-manager}" "auto" \
     "$MANAGER_R2_ACCESS_KEY_ID" "$MANAGER_R2_SECRET_ACCESS_KEY"
@@ -83,7 +101,7 @@ else
   echo "::warning::MANAGER_R2_* not set — skipped R2 mirror sync (self-update mirror endpoint will go stale)"
 fi
 
-if [ -n "${MANAGER_IHEP_S3_ENDPOINT:-}" ] && [ -n "${MANAGER_IHEP_S3_ACCESS_KEY_ID:-}" ]; then
+if [ -n "${MANAGER_IHEP_S3_ENDPOINT:-}" ] && [ -n "${MANAGER_IHEP_S3_BUCKET:-}" ] && [ -n "${MANAGER_IHEP_S3_ACCESS_KEY_ID:-}" ] && [ -n "${MANAGER_IHEP_S3_SECRET_ACCESS_KEY:-}" ]; then
   echo "→ IHEP S3 (${MANAGER_IHEP_S3_BUCKET})"
   upload_all "$MANAGER_IHEP_S3_ENDPOINT" "$MANAGER_IHEP_S3_BUCKET" "${MANAGER_IHEP_S3_REGION:-auto}" \
     "$MANAGER_IHEP_S3_ACCESS_KEY_ID" "$MANAGER_IHEP_S3_SECRET_ACCESS_KEY" "${MANAGER_IHEP_S3_PREFIX:-}"
