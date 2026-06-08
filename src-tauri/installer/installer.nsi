@@ -500,7 +500,13 @@ Function .onInit
   ${EndIf}
 
   !if "${DISPLAYLANGUAGESELECTOR}" == "true"
-    !insertmacro MUI_LANGDLL_DISPLAY
+    ; [codex-app-manager] skip the language picker during passive/unattended self-update
+    ; (the updater launches the installer with /P /UPDATE, not silent /S) so updates stay hands-free
+    ${If} $PassiveMode = 1
+    ${OrIf} $UpdateMode = 1
+    ${Else}
+      !insertmacro MUI_LANGDLL_DISPLAY
+    ${EndIf}
   !endif
 
   !insertmacro SetContext
