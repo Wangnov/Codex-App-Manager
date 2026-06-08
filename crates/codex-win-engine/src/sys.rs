@@ -20,6 +20,19 @@ pub struct InstalledWindowsCodex {
     /// "msix" | "portable"
     pub source: String,
     pub package_family_name: Option<String>,
+    /// Install-dir / executable mtime as Unix seconds — when this build landed
+    /// on disk. Surfaced as the "installed" date (Windows has no Sparkle feed).
+    #[serde(default)]
+    pub installed_at: Option<u64>,
+}
+
+/// Filesystem mtime of `path` as Unix seconds, best-effort (None if unreadable).
+fn path_mtime_secs(path: &str) -> Option<u64> {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -231,7 +244,9 @@ if ($null -ne $p) {{
     if json.trim().is_empty() {
         return None;
     }
-    serde_json::from_str(&json).ok()
+    let mut codex: InstalledWindowsCodex = serde_json::from_str(&json).ok()?;
+    codex.installed_at = path_mtime_secs(&codex.path);
+    Some(codex)
 }
 
 #[cfg(not(windows))]
@@ -257,7 +272,50 @@ pub fn detect_portable_install(portable_root: &Path) -> Option<InstalledWindowsC
         arch: identity.as_ref().map(|i| i.processor_architecture.clone()),
         source: "portable".to_string(),
         package_family_name: None,
+        installed_at: path_mtime_secs(&exe.to_string_lossy()),
     })
+}
+
+/// Open the installed Codex: run the portable `Codex.exe`, or hand the MSIX
+/// app's resolved AUMID to the Windows shell.
+pub fn launch_codex(installed: &InstalledWindowsCodex) -> Result<(), EngineError> {
+    if installed.source == "portable" {
+        let exe = Path::new(&installed.path).join("Codex.exe");
+        // CREATE_NO_WINDOW only suppresses a console flash; the GUI still shows.
+        hidden_command(exe)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| EngineError::Io(format!("launch Codex: {e}")))
+    } else {
+        launch_msix_app()
+    }
+}
+
+#[cfg(windows)]
+fn launch_msix_app() -> Result<(), EngineError> {
+    // Resolve the real AUMID (PackageFamilyName!AppId) from the manifest so the
+    // shell can activate the package; fall back to the conventional "App" id.
+    let script = format!(
+        r#"
+$ErrorActionPreference = 'Stop'
+$pkg = Get-AppxPackage -Name {name} | Sort-Object -Property Version -Descending | Select-Object -First 1
+if ($null -eq $pkg) {{ throw 'Codex is not installed' }}
+$app = (Get-AppxPackageManifest $pkg).Package.Applications.Application
+if ($app -is [array]) {{ $app = $app[0] }}
+$id = $app.Id
+if (-not $id) {{ $id = 'App' }}
+Start-Process ("shell:AppsFolder\" + $pkg.PackageFamilyName + "!" + $id)
+"#,
+        name = ps_quote(crate::OPENAI_PACKAGE_IDENTITY)
+    );
+    run_powershell_json(&script).map(|_| ())
+}
+
+#[cfg(not(windows))]
+fn launch_msix_app() -> Result<(), EngineError> {
+    Err(EngineError::Io(
+        "MSIX launch is only available on Windows".to_string(),
+    ))
 }
 
 #[cfg(windows)]

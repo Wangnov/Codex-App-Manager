@@ -51,6 +51,7 @@ pub fn run() {
             commands::win_cancel_download,
             commands::win_status,
             commands::win_adopt,
+            commands::win_launch_codex,
             commands::win_perform_update,
             commands::win_uninstall,
         ])

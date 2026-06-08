@@ -498,6 +498,13 @@ export const managerApi = {
     }
     return invoke<WinInstallStatus>("win_adopt");
   },
+  // Open the installed Codex — explicit user action (mirrors macLaunch).
+  winLaunch(): Promise<void> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve();
+    }
+    return invoke<void>("win_launch_codex");
+  },
 };
 
 function managerUpdateAvailable(update: Update): ManagerUpdateAvailable {

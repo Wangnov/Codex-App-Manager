@@ -693,6 +693,16 @@ pub fn win_adopt(state: State<'_, ManagerState>) -> Result<WinInstallStatus, Com
     adopt_windows_install(&settings).map_err(Into::into)
 }
 
+/// Windows-only: open the installed Codex.
+#[tauri::command]
+pub fn win_launch_codex(state: State<'_, ManagerState>) -> Result<(), CommandError> {
+    if !matches!(state.target.os, OperatingSystem::Windows) {
+        return Err(AppError::UnsupportedPlatform.into());
+    }
+    let settings = windows_domain_settings_for_persisted(&state);
+    crate::app::win_update::launch_codex(&settings).map_err(Into::into)
+}
+
 /// Windows-only: guarded execution. Requires explicit confirmation, stages and
 /// verifies the MSIX first, then attempts Add-AppxPackage without elevation or
 /// policy changes. Reports portable fallback need transparently.

@@ -43,8 +43,8 @@ pub use portable::{
     purge_codex_user_data, uninstall_portable, PortableInstallReport, PortableUninstallReport,
 };
 pub use sys::{
-    detect_installed_codex, detect_portable_install, fetch_text, probe_capabilities,
-    remove_msix_package, InstalledWindowsCodex, MsixRemoveReport,
+    detect_installed_codex, detect_portable_install, fetch_text, launch_codex,
+    probe_capabilities, remove_msix_package, InstalledWindowsCodex, MsixRemoveReport,
 };
 pub use sys::{install_msix_sideload, MsixSideloadReport};
 pub use version::{compare_versions, version_key};

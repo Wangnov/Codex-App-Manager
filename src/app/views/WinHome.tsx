@@ -14,10 +14,7 @@ import { Icon } from "../icons";
 import { useI18n, type TKey } from "../i18n";
 import { Ring, TopBar } from "../components";
 import { useCountUp } from "../useCountUp";
-
-function mib(bytes: number): string {
-  return `${(bytes / 1_048_576).toFixed(1)} MB`;
-}
+import { mib, fmtDateTime } from "../format";
 
 function samePath(a: string, b: string): boolean {
   const norm = (value: string) =>
@@ -30,8 +27,11 @@ type Kind = "loading" | "error" | "none" | "idle" | "update" | "external" | "upt
 // Windows counterpart of MacHome — same design system + state machine, driven by
 // the win_* backend (codex-win-engine): MSIX sideload or portable fallback.
 export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [report, setReport] = useState<WinUpdateReport | null>(null);
+  // Bumped after each successful check so the success medallion re-mounts and
+  // replays its pop + checkmark-draw — the visible "re-confirmed" feedback.
+  const [recheckPulse, setRecheckPulse] = useState(0);
   const [status, setStatus] = useState<WinInstallStatus | null>(null);
   const [perform, setPerform] = useState<WinPerformReport | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
@@ -81,6 +81,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     setError(null);
     try {
       setReport(await managerApi.winPlanUpdate());
+      setRecheckPulse((p) => p + 1);
     } catch (cause) {
       setReport(null);
       setError(errorMessage(cause));
@@ -235,6 +236,13 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const sourceLabel = t(`source.${settings.source}` as TKey);
   const installRootIsDefault = samePath(settings.installRoot, defaultInstallRoot);
 
+  // A re-check (or the first auto-check) while an app is already known: the hero
+  // morphs to the checking state so the status visibly reacts, then settles back.
+  const rechecking = busy === "plan" && Boolean(installed);
+  // Windows has no Sparkle feed, so the date is the on-disk install time.
+  const installedDate = fmtDateTime(installed?.installedAt ?? null, lang);
+  const onLaunch = () => void managerApi.winLaunch();
+
   if (busy === "perform" || busy === "install") {
     const known = Boolean(dl && dl.total > 0);
     const pct = known ? Math.round(dlPct) : null;
@@ -297,7 +305,21 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         ) : null}
 
         <section className="hero">
-          {kind === "loading" ? (
+          {rechecking ? (
+            // Mirror the settled hero's line count (ring + headline + sub +
+            // status line) so nothing below shifts while the check runs.
+            <>
+              <Ring icon="loader" spin className="glow" />
+              <div className="headline shimmer">{t("home.checking")}</div>
+              <div className="sub">
+                {version ? t("home.uptodate.sub", { version }) : " "}
+              </div>
+              <div className="microcue" style={{ visibility: "hidden" }} aria-hidden="true">
+                <Icon name="shield" />
+                {t("home.official")}
+              </div>
+            </>
+          ) : kind === "loading" ? (
             <>
               <Ring icon="loader" spin className="glow" />
               <div className="headline shimmer">{t("home.checking")}</div>
@@ -358,7 +380,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             </>
           ) : (
             <>
-              <Ring icon="check" variant="success" />
+              <Ring icon="check" variant="success" className="pop" key={`ok-${recheckPulse}`} />
               <div className="headline">{t("home.uptodate.title")}</div>
               <div className="sub">{t("home.uptodate.sub", { version })}</div>
               <div className="microcue">
@@ -369,44 +391,100 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           )}
         </section>
 
+        {/* Installed-version details — on-disk install time + where it lives. */}
+        {installed && (rechecking || kind !== "loading") ? (
+          <div className="list meta">
+            {installedDate ? (
+              <div className="row">
+                <span className="rtext">
+                  <span className="rtitle">{t("home.installedDate")}</span>
+                </span>
+                <span className="rval">{installedDate}</span>
+              </div>
+            ) : null}
+            <div className="row">
+              <span className="rtext">
+                <span className="rtitle">{t("home.installLocation")}</span>
+              </span>
+              <span className="rval path" title={installed.path}>
+                {installed.path}
+              </span>
+            </div>
+          </div>
+        ) : null}
+
         <div className="actions">
-          {kind === "update" ? (
-            <button
-              className="btn primary big"
-              onClick={() => (settings.askBefore ? setConfirmOpen(true) : void runPerform("perform"))}
-              disabled={busy !== null}
-            >
-              <Icon name="download" />
-              {t("home.update.cta")}
-            </button>
+          {/* While a check runs we keep a STABLE pair of buttons so nothing
+              reflows under the hero. */}
+          {rechecking ? (
+            <>
+              <button className="btn primary big" onClick={onLaunch} disabled>
+                <Icon name="external" />
+                {t("home.launch")}
+              </button>
+              <button className="btn ghost" disabled>
+                <Icon name="loader" className="spinicon" />
+                {t("home.checking")}
+              </button>
+            </>
           ) : null}
-          {kind === "idle" ? (
-            <button className="btn primary big" onClick={check} disabled={busy !== null}>
-              <Icon name="refresh" />
-              {t("home.recheck")}
-            </button>
+          {!rechecking && kind === "update" ? (
+            <>
+              <button
+                className="btn primary big"
+                onClick={() => (settings.askBefore ? setConfirmOpen(true) : void runPerform("perform"))}
+                disabled={busy !== null}
+              >
+                <Icon name="download" />
+                {t("home.update.cta")}
+              </button>
+              <button className="btn ghost" onClick={onLaunch} disabled={busy !== null}>
+                <Icon name="external" />
+                {t("home.launch")}
+              </button>
+            </>
           ) : null}
-          {kind === "external" ? (
-            <button className="btn primary big" onClick={adopt} disabled={busy !== null}>
-              <Icon name="shield" />
-              {t("home.external.cta")}
-            </button>
+          {!rechecking && kind === "idle" ? (
+            <>
+              <button className="btn primary big" onClick={onLaunch} disabled={busy !== null}>
+                <Icon name="external" />
+                {t("home.launch")}
+              </button>
+              <button className="btn ghost" onClick={check} disabled={busy !== null}>
+                <Icon name="refresh" />
+                {t("home.recheck")}
+              </button>
+            </>
           ) : null}
-          {kind === "none" ? (
-            <button
-              className="btn primary big"
-              onClick={requestInstall}
-              disabled={busy !== null}
-            >
+          {!rechecking && kind === "external" ? (
+            <>
+              <button className="btn primary big" onClick={adopt} disabled={busy !== null}>
+                <Icon name="shield" />
+                {t("home.external.cta")}
+              </button>
+              <button className="btn ghost" onClick={onLaunch} disabled={busy !== null}>
+                <Icon name="external" />
+                {t("home.launch")}
+              </button>
+            </>
+          ) : null}
+          {!rechecking && kind === "none" ? (
+            <button className="btn primary big" onClick={requestInstall} disabled={busy !== null}>
               <Icon name="download" />
               {t("home.none.cta")}
             </button>
           ) : null}
-          {kind === "uptodate" ? (
-            <button className="btn ghost big" onClick={check} disabled={busy !== null}>
-              <Icon name="refresh" />
-              {t("home.recheck")}
-            </button>
+          {!rechecking && kind === "uptodate" ? (
+            <>
+              <button className="btn primary big" onClick={onLaunch} disabled={busy !== null}>
+                <Icon name="external" />
+                {t("home.launch")}
+              </button>
+              <button className="btn ghost" onClick={check} disabled={busy !== null}>
+                <Icon name="refresh" />
+                {t("home.recheck")}
+              </button>
+            </>
           ) : null}
         </div>
 

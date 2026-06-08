@@ -98,6 +98,7 @@ mod tests {
             arch: Some("x64".to_string()),
             source: "msix".to_string(),
             package_family_name: Some("OpenAI.Codex_2p2nqsd0c76g0".to_string()),
+            installed_at: None,
         });
         let plan = plan_update(
             &release(),

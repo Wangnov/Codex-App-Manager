@@ -119,6 +119,8 @@ export interface InstalledWindowsCodex {
   arch: string | null;
   source: "msix" | "portable" | string;
   packageFamilyName: string | null;
+  /** Install-dir / executable mtime as a Unix timestamp (seconds). */
+  installedAt?: number | null;
 }
 
 export interface WindowsRelease {
