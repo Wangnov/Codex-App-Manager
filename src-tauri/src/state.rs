@@ -1,3 +1,5 @@
+use std::sync::atomic::AtomicBool;
+
 use crate::adapters::host;
 use crate::app::planner::InstallPlanner;
 use crate::app::settings_store::AppSettings as PersistedAppSettings;
@@ -12,6 +14,9 @@ pub struct ManagerState {
     pub settings: AppSettings,
     pub endpoints: MirrorEndpoints,
     pub planner: InstallPlanner,
+    /// Set once the user confirms quitting (or has the guard off) so the close /
+    /// exit handlers stop intercepting and let the process go.
+    pub force_quit: AtomicBool,
 }
 
 impl ManagerState {
@@ -32,6 +37,7 @@ impl ManagerState {
             settings,
             endpoints,
             planner: InstallPlanner,
+            force_quit: AtomicBool::new(false),
         }
     }
 

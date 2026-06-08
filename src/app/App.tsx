@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { I18nProvider } from "./i18n";
 import { ThemeProvider } from "./theme";
+import { QuitConfirm } from "./components";
 import { Home } from "./views/Home";
 import { Settings } from "./views/Settings";
 import { About } from "./views/About";
@@ -32,6 +33,7 @@ function Shell() {
       {view === "about" ? <About onBack={() => setView("settings")} /> : null}
       {view === "uninstall" ? <Uninstall onBack={() => setView("settings")} /> : null}
       {view === "config" ? <CodexConfig onBack={() => setView("settings")} /> : null}
+      <QuitConfirm />
     </>
   );
 }

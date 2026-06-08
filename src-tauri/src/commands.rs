@@ -499,6 +499,16 @@ pub fn set_settings(settings: PersistedAppSettings) -> Result<PersistedAppSettin
     Ok(s)
 }
 
+/// The user confirmed quitting from the close dialog — flag it and exit so the
+/// CloseRequested / ExitRequested guards stop intercepting and let it go.
+#[tauri::command]
+pub fn confirm_quit(app: tauri::AppHandle, state: State<'_, ManagerState>) {
+    state
+        .force_quit
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    app.exit(0);
+}
+
 /// Windows-only: return the current user's default portable install root.
 #[tauri::command]
 pub fn win_default_install_root(state: State<'_, ManagerState>) -> Result<String, CommandError> {

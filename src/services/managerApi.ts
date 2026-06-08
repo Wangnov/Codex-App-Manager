@@ -372,6 +372,14 @@ export const managerApi = {
     localStorage.setItem(SETTINGS_LS, JSON.stringify(saved));
     return saved;
   },
+  // The user confirmed the close dialog — tell the backend to actually exit
+  // (the window/exit guards otherwise hold the close to ask first).
+  confirmQuit(): Promise<void> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve();
+    }
+    return invoke<void>("confirm_quit");
+  },
   winPickInstallDir(): Promise<string | null> {
     if (!hasTauriRuntime()) {
       return Promise.resolve(localSettings().installRoot);

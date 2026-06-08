@@ -7,7 +7,15 @@ pub mod ports;
 
 mod state;
 
-use tauri::{Manager, WindowEvent};
+use std::sync::atomic::Ordering;
+
+use tauri::{Emitter, Manager, RunEvent, WindowEvent};
+
+/// The "ask before closing" setting, read fresh from disk so a toggle in
+/// Settings takes effect immediately (no restart).
+fn confirm_close_enabled() -> bool {
+    crate::app::settings_store::AppSettings::load().confirm_close
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -38,6 +46,7 @@ pub fn run() {
             commands::mac_uninstall,
             commands::get_settings,
             commands::set_settings,
+            commands::confirm_quit,
             commands::win_default_install_root,
             commands::win_pick_install_dir,
             commands::win_set_install_root,
@@ -59,11 +68,41 @@ pub fn run() {
         // Closing the window quits the process so nothing lingers in the
         // background; the Dock icon is the only entry point, and login launch is
         // an explicit, off-by-default opt-in (see Settings).
+        //
+        // The window has no system chrome, so every window-close path — the
+        // in-app ✕, Alt+F4, the macOS window close — arrives here. Unless the
+        // user already confirmed (or turned the guard off) we hold the close and
+        // ask the UI to raise the confirm dialog instead of quitting.
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { .. } = event {
-                window.app_handle().exit(0);
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                let app = window.app_handle();
+                let confirmed = app
+                    .state::<state::ManagerState>()
+                    .force_quit
+                    .load(Ordering::SeqCst);
+                if confirmed || !confirm_close_enabled() {
+                    app.exit(0);
+                } else {
+                    api.prevent_close();
+                    let _ = window.emit("app://confirm-quit", ());
+                }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("failed to run Codex App Manager");
+        .build(tauri::generate_context!())
+        .expect("failed to build Codex App Manager")
+        // Cmd+Q (and any other app-level quit) lands as ExitRequested rather than
+        // a window CloseRequested — gate it the same way so the close-confirm
+        // setting is honored there too.
+        .run(|app, event| {
+            if let RunEvent::ExitRequested { api, .. } = event {
+                let confirmed = app
+                    .state::<state::ManagerState>()
+                    .force_quit
+                    .load(Ordering::SeqCst);
+                if !confirmed && confirm_close_enabled() {
+                    api.prevent_exit();
+                    let _ = app.emit("app://confirm-quit", ());
+                }
+            }
+        });
 }

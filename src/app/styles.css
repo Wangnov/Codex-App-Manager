@@ -1224,6 +1224,23 @@ button.row.danger:hover {
   z-index: 50;
   animation: fade 0.18s var(--ease);
 }
+/* Global quit-confirm overlay — raised by the backend close/exit guard so the
+   ✕, Alt+F4 and Cmd+Q share one dialog. It lives at the app root (outside any
+   .pop), so it's `fixed` and inset to the window panel (the 14px gutter) with
+   the same radius, so the blur clips to the rounded window — not the gutter. */
+.quit-scrim {
+  position: fixed;
+  inset: 14px;
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  background: color-mix(in oklch, var(--bg) 55%, transparent);
+  backdrop-filter: blur(7px) saturate(1.1);
+  -webkit-backdrop-filter: blur(7px) saturate(1.1);
+  display: flex;
+  align-items: flex-end;
+  z-index: 100;
+  animation: fade 0.18s var(--ease);
+}
 @keyframes fade {
   from {
     opacity: 0;

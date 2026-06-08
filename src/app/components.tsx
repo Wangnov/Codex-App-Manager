@@ -1,61 +1,88 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 
 import { managerApi } from "../services/managerApi";
 import { Icon, type IconName, CodexMark } from "./icons";
 import { useI18n } from "./i18n";
 
-function closeWindow() {
-  try {
+function isTauri(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)
+  );
+}
+
+/** Ask to close the window. In the desktop app this hits the CloseRequested
+ *  guard in lib.rs, which raises the confirm dialog (app://confirm-quit) when
+ *  关闭前确认 is on, or exits when it's off — the same path Alt+F4 / Cmd+Q take.
+ *  In the browser there's no backend, so emulate the guard locally. */
+function requestQuit() {
+  if (isTauri()) {
     void getCurrentWindow().close();
-  } catch {
-    /* non-Tauri preview: no window to close */
+  } else {
+    void managerApi.getSettings().then((s) => {
+      if (s.confirmClose) window.dispatchEvent(new Event("cam:confirm-quit"));
+    });
   }
 }
 
-/** This is a normal window with no system title bar, so it draws its own close
- *  control. Closing quits the app (CloseRequested → exit in lib.rs). By default
- *  it asks first (so you don't lose an in-progress op by mis-clicking); the
- *  "关闭前确认" setting turns that off. */
+/** Self-drawn close control (the window is frameless). It only *requests* a
+ *  close; whether to confirm first is decided by the backend guard, so the ✕,
+ *  Alt+F4 and Cmd+Q all behave identically. */
 function CloseButton() {
   const { t } = useI18n();
-  const [confirm, setConfirm] = useState(false);
-  const [ask, setAsk] = useState(true);
+  return (
+    <button className="winclose" title={t("nav.close")} onClick={requestQuit}>
+      <Icon name="close" />
+    </button>
+  );
+}
+
+/** The one close-confirm dialog. Raised by the backend close/exit guard (which
+ *  covers the ✕, Alt+F4 and Cmd+Q alike) via app://confirm-quit, or by the
+ *  browser-preview fallback. Mounted once at the app root so it overlays
+ *  whichever view is showing; confirming asks the backend to actually exit. */
+export function QuitConfirm() {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
 
   useEffect(() => {
-    void managerApi
-      .getSettings()
-      .then((s) => setAsk(s.confirmClose))
+    let un = () => {};
+    void listen("app://confirm-quit", () => setOpen(true))
+      .then((f) => (un = f))
       .catch(() => undefined);
+    const onWeb = () => setOpen(true);
+    window.addEventListener("cam:confirm-quit", onWeb);
+    return () => {
+      un();
+      window.removeEventListener("cam:confirm-quit", onWeb);
+    };
   }, []);
 
+  if (!open) return null;
   return (
-    <>
-      <button
-        className="winclose"
-        title={t("nav.close")}
-        onClick={() => (ask ? setConfirm(true) : closeWindow())}
-      >
-        <Icon name="close" />
-      </button>
-      {confirm ? (
-        <div className="scrim" onClick={() => setConfirm(false)}>
-          <div className="sheet" onClick={(e) => e.stopPropagation()}>
-            <Ring icon="info" variant="amber" />
-            <h3>{t("close.confirm.title")}</h3>
-            <p>{t("close.confirm.body")}</p>
-            <div className="row2">
-              <button className="btn ghost" onClick={() => setConfirm(false)}>
-                {t("confirm.cancel")}
-              </button>
-              <button className="btn primary" onClick={closeWindow}>
-                {t("close.confirm.ok")}
-              </button>
-            </div>
-          </div>
+    <div className="quit-scrim" onClick={() => setOpen(false)}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <Ring icon="info" variant="amber" />
+        <h3>{t("close.confirm.title")}</h3>
+        <p>{t("close.confirm.body")}</p>
+        <div className="row2">
+          <button className="btn ghost" onClick={() => setOpen(false)}>
+            {t("confirm.cancel")}
+          </button>
+          <button
+            className="btn primary"
+            onClick={() => {
+              setOpen(false);
+              void managerApi.confirmQuit();
+            }}
+          >
+            {t("close.confirm.ok")}
+          </button>
         </div>
-      ) : null}
-    </>
+      </div>
+    </div>
   );
 }
 
