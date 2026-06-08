@@ -1,0 +1,37 @@
+name: Publish to winget
+
+# Submits each stable release to the Windows Package Manager community repo
+# (microsoft/winget-pkgs) so users can `winget install Wangnov.CodexAppManager`.
+#
+# Prerequisites (one-time):
+#   1. Secret WINGET_TOKEN — a *classic* Personal Access Token with the
+#      `public_repo` scope (the action forks winget-pkgs and opens a PR under
+#      your account). Fine-grained tokens do not work.
+#   2. First submission: winget-releaser updates an existing package; the very
+#      first version of a brand-new package usually has to be bootstrapped once
+#      (e.g. `wingetcreate new` on Windows, or a hand-authored winget-pkgs PR).
+#      After that initial PR is merged, this workflow auto-submits every release.
+#
+# The installer is an unsigned NSIS setup.exe — winget accepts it, but a new
+# publisher's first PR may get extra manual review on the winget-pkgs side.
+
+on:
+  release:
+    types: [released] # stable only — prereleases (tags with a hyphen) don't fire this
+  workflow_dispatch:
+    inputs:
+      release-tag:
+        description: "Release tag to publish (e.g. v0.1.10)"
+        required: true
+
+jobs:
+  winget:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Submit to winget-pkgs
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: Wangnov.CodexAppManager
+          installers-regex: '_x64-setup\.exe$'
+          release-tag: ${{ inputs.release-tag || github.event.release.tag_name }}
+          token: ${{ secrets.WINGET_TOKEN }}
