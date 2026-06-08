@@ -138,8 +138,6 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 ; Installer sidebar image
 !if "${SIDEBARIMAGE}" != ""
   !define MUI_WELCOMEFINISHPAGE_BITMAP "${SIDEBARIMAGE}"
-  ; [codex-app-manager] sidebar art is authored at the exact 164x314 MUI size — render 1:1, no stretch
-  !define MUI_WELCOMEFINISHPAGE_BITMAP_NOSTRETCH
 !endif
 
 ; Enable header images for installer and uninstaller pages when either image is configured.
@@ -152,8 +150,6 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 ; Installer header image
 !if "${HEADERIMAGE}" != ""
   !define MUI_HEADERIMAGE_BITMAP "${HEADERIMAGE}"
-  ; [codex-app-manager] header art is authored at the exact 150x57 MUI size — render 1:1, no stretch
-  !define MUI_HEADERIMAGE_BITMAP_NOSTRETCH
 !endif
 
 ; Uninstaller header image
@@ -173,6 +169,8 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 
 ; Installer pages, must be ordered as they appear
 ; 1. Welcome Page
+; [codex-app-manager] give the welcome/finish title 3 lines so CJK titles aren't bottom-clipped
+!define MUI_WELCOMEFINISHPAGE_TITLE_3LINES
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
 !insertmacro MUI_PAGE_WELCOME
 
