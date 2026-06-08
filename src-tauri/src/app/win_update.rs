@@ -656,10 +656,14 @@ pub fn win_adopt(settings: &AppSettings) -> Result<WinInstallStatus, AppError> {
     Ok(win_install_status(settings))
 }
 
-/// Open the installed Codex (MSIX or portable). Fully-qualified engine call to
-/// avoid shadowing this function's name.
+/// Open the installed Codex (MSIX or portable). Uses the SAME managed-aware
+/// detection as status/planning (`detect_managed_codex`) — not raw MSIX-first
+/// `detect_installed_codex` — so we launch exactly the build the UI is showing,
+/// never a stale MSIX that lingers behind a managed portable install.
+/// Fully-qualified engine call to avoid shadowing this function's name.
 pub fn launch_codex(settings: &AppSettings) -> Result<(), AppError> {
-    let installed = detect_installed_codex(PathBuf::from(&settings.install_root).as_path())
+    let store = ProvenanceStore::load();
+    let installed = detect_managed_codex(settings, &store)
         .ok_or_else(|| AppError::Engine("没有可打开的 Codex".to_string()))?;
     codex_win_engine::launch_codex(&installed).map_err(|e| AppError::Engine(e.to_string()))
 }
