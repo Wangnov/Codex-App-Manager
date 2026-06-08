@@ -11,12 +11,13 @@ import type {
 } from "../../shared/types";
 import { DEFAULT_SETTINGS } from "../../shared/types";
 import { Icon, CodexGlyph } from "../icons";
-import { useI18n, type TKey } from "../i18n";
+import { useI18n, dirOf, type TKey } from "../i18n";
 import { Ring, TopBar } from "../components";
 import { currentPlatform } from "../platform";
 import { WinHome } from "./WinHome";
 import { useCountUp } from "../useCountUp";
 import { mib, fmtDateTime } from "../format";
+import { useHomeMotion } from "../motion";
 
 type Kind = "loading" | "error" | "none" | "idle" | "update" | "external" | "uptodate";
 
@@ -28,9 +29,6 @@ export function Home(props: { onOpenSettings: () => void }) {
 function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const { t, lang } = useI18n();
   const [report, setReport] = useState<MacUpdateReport | null>(null);
-  // Bumped after each successful check so the success medallion re-mounts and
-  // replays its pop + checkmark-draw — the visible "re-confirmed" feedback.
-  const [recheckPulse, setRecheckPulse] = useState(0);
   const [status, setStatus] = useState<MacInstallStatus | null>(null);
   const [perform, setPerform] = useState<MacPerformReport | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
@@ -50,6 +48,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [dl, setDl] = useState<DownloadProgress | null>(null);
   const [speed, setSpeed] = useState(0);
   const dlSample = useRef<{ t: number; bytes: number } | null>(null);
+  const scopeRef = useRef<HTMLDivElement>(null);
   // Smoothly roll the live download figures instead of snapping per event.
   const dlPctTarget = dl && dl.total > 0 ? Math.min(100, (dl.downloaded / dl.total) * 100) : 0;
   const dlPct = useCountUp(dlPctTarget);
@@ -86,7 +85,6 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     setError(null);
     try {
       setReport(await managerApi.macPlanUpdate());
-      setRecheckPulse((p) => p + 1);
     } catch (cause) {
       // Drop any stale plan so a failed re-check can't keep driving "立即更新"
       // off an outdated currentBuild/latestBuild.
@@ -227,6 +225,26 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     void managerApi.macLaunch().catch((cause) => setError(errorMessage(cause)));
   };
 
+  // One string identifying the visible "scene"; when it changes the hero
+  // remounts and GSAP replays the choreographed entrance (see useHomeMotion).
+  // `lang` is part of the key so a language switch (Home stays mounted) remounts
+  // the headline and re-splits it — otherwise SplitText's aria-label would keep
+  // the old language's text for screen readers.
+  const progressing = busy === "perform" || busy === "install";
+  const isShimmer = progressing || rechecking || kind === "loading";
+  const scene = `${lang}/${
+    progressing
+      ? `progress-${busy}`
+      : justInstalled
+        ? "done"
+        : `${kind}${rechecking ? "-checking" : ""}`
+  }`;
+  const success = justInstalled || (!rechecking && kind === "uptodate");
+  // Char-split only LTR scripts — splitting a cursive RTL script (Arabic) into
+  // per-char elements breaks its contextual letter joining.
+  const splitHeadline = !isShimmer && dirOf(lang) === "ltr";
+  useHomeMotion(scopeRef, scene, { splitHeadline, success });
+
   // ── progress (performing / installing) takes over the whole screen ─────────
   if (busy === "perform" || busy === "install") {
     const known = Boolean(dl && dl.total > 0);
@@ -234,8 +252,8 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     return (
       <div className="pop">
         <TopBar />
-        <div className="scroll view">
-          <div className="hero" style={{ marginTop: 24 }}>
+        <div className="scroll" ref={scopeRef}>
+          <div className="hero" style={{ marginTop: 24 }} key={scene}>
             <Ring icon="loader" spin className="glow" />
             <div className="headline shimmer">
               {busy === "install" ? t("progress.installing") : t("progress.title")}
@@ -272,15 +290,15 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     return (
       <div className="pop">
         <TopBar />
-        <div className="scroll view">
+        <div className="scroll" ref={scopeRef}>
           {error ? (
             <div className="banner err">
               <Icon name="alert" />
               <span>{error}</span>
             </div>
           ) : null}
-          <section className="hero" style={{ marginTop: 16 }}>
-            <Ring icon="check" variant="success" className="pop" />
+          <section className="hero" style={{ marginTop: 16 }} key={scene}>
+            <Ring icon="check" variant="success" />
             <div className="headline">{t("install.done.title")}</div>
             <div className="sub">
               {installedVersion ? t("home.uptodate.sub", { version: installedVersion }) : ""}
@@ -308,7 +326,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         </button>
       </TopBar>
 
-      <div className="scroll view">
+      <div className="scroll" ref={scopeRef}>
         {perform ? (
           <div className={`banner ${perform.rolledBack ? "err" : "ok"}`}>
             <Icon name={perform.rolledBack ? "alert" : "check"} />
@@ -324,7 +342,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           </div>
         ) : null}
 
-        <section className="hero">
+        <section className="hero" key={scene}>
           {rechecking ? (
             // Mirror the settled hero's line count (ring + headline + sub +
             // status line) so nothing below shifts while the check runs.
@@ -397,7 +415,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             </>
           ) : (
             <>
-              <Ring icon="check" variant="success" className="pop" key={`ok-${recheckPulse}`} />
+              <Ring icon="check" variant="success" />
               <div className="headline">{t("home.uptodate.title")}</div>
               <div className="sub">{t("home.uptodate.sub", { version: installedVersion })}</div>
               <div className="microcue">

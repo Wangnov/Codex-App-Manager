@@ -11,10 +11,11 @@ import type {
 } from "../../shared/types";
 import { DEFAULT_SETTINGS } from "../../shared/types";
 import { Icon, CodexGlyph } from "../icons";
-import { useI18n, type TKey } from "../i18n";
+import { useI18n, dirOf, type TKey } from "../i18n";
 import { Ring, TopBar } from "../components";
 import { useCountUp } from "../useCountUp";
 import { mib, fmtDateTime } from "../format";
+import { useHomeMotion } from "../motion";
 
 function samePath(a: string, b: string): boolean {
   const norm = (value: string) =>
@@ -29,9 +30,6 @@ type Kind = "loading" | "error" | "none" | "idle" | "update" | "external" | "upt
 export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const { t, lang } = useI18n();
   const [report, setReport] = useState<WinUpdateReport | null>(null);
-  // Bumped after each successful check so the success medallion re-mounts and
-  // replays its pop + checkmark-draw — the visible "re-confirmed" feedback.
-  const [recheckPulse, setRecheckPulse] = useState(0);
   const [status, setStatus] = useState<WinInstallStatus | null>(null);
   const [perform, setPerform] = useState<WinPerformReport | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
@@ -46,6 +44,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [dl, setDl] = useState<DownloadProgress | null>(null);
   const [speed, setSpeed] = useState(0);
   const dlSample = useRef<{ t: number; bytes: number } | null>(null);
+  const scopeRef = useRef<HTMLDivElement>(null);
   // Smoothly roll the live download figures instead of snapping per event.
   const dlPctTarget = dl && dl.total > 0 ? Math.min(100, (dl.downloaded / dl.total) * 100) : 0;
   const dlPct = useCountUp(dlPctTarget);
@@ -81,7 +80,6 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     setError(null);
     try {
       setReport(await managerApi.winPlanUpdate());
-      setRecheckPulse((p) => p + 1);
     } catch (cause) {
       setReport(null);
       setError(errorMessage(cause));
@@ -247,14 +245,25 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     void managerApi.winLaunch().catch((cause) => setError(errorMessage(cause)));
   };
 
-  if (busy === "perform" || busy === "install") {
+  // Scene id; on change the hero remounts and GSAP replays the entrance. `lang`
+  // is part of the key so a language switch re-splits the headline (otherwise
+  // SplitText's aria-label keeps the old language's text for screen readers).
+  const progressing = busy === "perform" || busy === "install";
+  const isShimmer = progressing || rechecking || kind === "loading";
+  const scene = `${lang}/${progressing ? `progress-${busy}` : `${kind}${rechecking ? "-checking" : ""}`}`;
+  const success = !rechecking && kind === "uptodate";
+  // Char-split only LTR scripts — splitting cursive RTL (Arabic) breaks joining.
+  const splitHeadline = !isShimmer && dirOf(lang) === "ltr";
+  useHomeMotion(scopeRef, scene, { splitHeadline, success });
+
+  if (progressing) {
     const known = Boolean(dl && dl.total > 0);
     const pct = known ? Math.round(dlPct) : null;
     return (
       <div className="pop">
         <TopBar />
-        <div className="scroll view">
-          <div className="hero" style={{ marginTop: 24 }}>
+        <div className="scroll" ref={scopeRef}>
+          <div className="hero" style={{ marginTop: 24 }} key={scene}>
             <Ring icon="loader" spin className="glow" />
             <div className="headline shimmer">
               {busy === "install" ? t("progress.installing") : t("progress.title")}
@@ -294,7 +303,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         </button>
       </TopBar>
 
-      <div className="scroll view">
+      <div className="scroll" ref={scopeRef}>
         {perform ? (
           <div className={`banner ${perform.success ? "ok" : "err"}`}>
             <Icon name={perform.success ? "check" : "alert"} />
@@ -308,7 +317,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           </div>
         ) : null}
 
-        <section className="hero">
+        <section className="hero" key={scene}>
           {rechecking ? (
             // Mirror the settled hero's line count (ring + headline + sub +
             // status line) so nothing below shifts while the check runs.
@@ -384,7 +393,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             </>
           ) : (
             <>
-              <Ring icon="check" variant="success" className="pop" key={`ok-${recheckPulse}`} />
+              <Ring icon="check" variant="success" />
               <div className="headline">{t("home.uptodate.title")}</div>
               <div className="sub">{t("home.uptodate.sub", { version })}</div>
               <div className="microcue">
