@@ -166,6 +166,9 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 !define MUI_LANGDLL_REGISTRY_ROOT "HKCU"
 !define MUI_LANGDLL_REGISTRY_KEY "${MANUPRODUCTKEY}"
 !define MUI_LANGDLL_REGISTRY_VALUENAME "Installer Language"
+; [codex-app-manager] always show the language picker instead of silently reusing
+; the stored choice, so every run is a chance to pick or switch the language
+!define MUI_LANGDLL_ALWAYSSHOW
 
 ; Installer pages, must be ordered as they appear
 ; 1. Welcome Page
