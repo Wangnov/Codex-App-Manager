@@ -23,6 +23,7 @@ on:
 
 permissions:
   contents: write
+  actions: write # dispatch winget.yml after publishing (release events from GITHUB_TOKEN don't cascade)
 
 jobs:
   build:
@@ -212,3 +213,14 @@ jobs:
         run: |
           [ -f dist/latest.json ] || cp latest.json dist/latest.json
           bash scripts/sync-mirror.sh dist
+
+      # The release above is created with GITHUB_TOKEN, which by design does not
+      # trigger other workflows — so winget.yml's `on: release` never fires.
+      # Dispatch it explicitly (stable releases only). winget.yml no-ops cleanly
+      # without WINGET_TOKEN, and winget-releaser skips versions already present,
+      # so a re-run is harmless.
+      - name: Trigger winget submission
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run winget.yml -f release-tag="${{ github.ref_name }}" --repo "${{ github.repository }}" || echo "::warning::winget dispatch failed"
