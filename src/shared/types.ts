@@ -229,6 +229,19 @@ export interface MsixSideloadReport {
   rawError: string | null;
 }
 
+export interface MsixHealthReport {
+  healthy: boolean;
+  packageRegistered: boolean;
+  /** Raw Get-AppxPackage Status string (e.g. "Ok", "Modified"). */
+  status: string;
+  statusOk: boolean;
+  aumidResolved: boolean;
+  /** Declared framework dependencies missing on this machine. */
+  missingDependencies: string[];
+  /** Human-facing reason when unhealthy; empty when healthy. */
+  reason: string;
+}
+
 export interface WinPerformReport {
   success: boolean;
   action: string;
@@ -236,6 +249,7 @@ export interface WinPerformReport {
   stage: WinStageReport;
   sideload: MsixSideloadReport | null;
   portable: PortableInstallReport | null;
+  msixHealth: MsixHealthReport | null;
   installed: InstalledWindowsCodex | null;
   fallbackAvailable: boolean;
   fallbackAttempted: boolean;

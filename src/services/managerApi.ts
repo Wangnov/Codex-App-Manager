@@ -208,6 +208,7 @@ const WIN_FALLBACK_PERFORM: WinPerformReport = {
     rawError: null,
   },
   portable: null,
+  msixHealth: { healthy: true, packageRegistered: true, status: "Ok", statusOk: true, aumidResolved: true, missingDependencies: [], reason: "" },
   installed: {
     path: "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.602.3474.0_x64__2p2nqsd0c76g0",
     version: "26.602.3474.0",

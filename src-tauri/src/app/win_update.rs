@@ -15,10 +15,11 @@ use codex_win_engine::{
     detect_portable_install, download_to_with_progress, fetch_text, find_msix_sha256,
     install_msix_sideload, install_portable_from_msix, parse_manifest, plan_update,
     probe_capabilities, purge_codex_user_data, read_msix_identity, remove_msix_package,
-    sha256_file, uninstall_portable, validate_codex_identity, verify_openai_authenticode,
-    version_key, AuthenticodeReport, CapabilityState, InstalledWindowsCodex, MsixIdentity,
-    MsixRemoveReport, MsixSideloadReport, PortableInstallReport, PortableUninstallReport,
-    WinCapabilityReport, WinInstallRoute, WindowsRelease, WindowsUpdatePlan,
+    sha256_file, uninstall_portable, validate_codex_identity, verify_msix_health,
+    verify_openai_authenticode, version_key, AuthenticodeReport, CapabilityState,
+    InstalledWindowsCodex, MsixHealthReport, MsixIdentity, MsixRemoveReport, MsixSideloadReport,
+    PortableInstallReport, PortableUninstallReport, WinCapabilityReport, WinInstallRoute,
+    WindowsRelease, WindowsUpdatePlan,
 };
 
 use crate::app::provenance::ProvenanceStore;
@@ -79,6 +80,7 @@ pub struct WinPerformReport {
     pub stage: WinStageReport,
     pub sideload: Option<MsixSideloadReport>,
     pub portable: Option<PortableInstallReport>,
+    pub msix_health: Option<MsixHealthReport>,
     pub installed: Option<InstalledWindowsCodex>,
     pub fallback_available: bool,
     pub fallback_attempted: bool,
@@ -491,6 +493,7 @@ pub fn perform_windows_update_with_install_mode(
             installed: win_install_status(settings).installed,
             sideload: None,
             portable: None,
+            msix_health: None,
             fallback_available: stage.portable_fallback_ready,
             fallback_attempted: false,
             notes: stage.notes.clone(),
@@ -499,7 +502,7 @@ pub fn perform_windows_update_with_install_mode(
     }
 
     if stage.route == "portable-fallback" {
-        return install_portable_after_stage(settings, stage, None, previous_installed);
+        return install_portable_after_stage(settings, stage, None, None, previous_installed);
     }
 
     let staged_path = stage
@@ -527,6 +530,22 @@ pub fn perform_windows_update_with_install_mode(
         install_msix_sideload(PathBuf::from(staged_path).as_path()).map_err(engine_err)?;
 
     if sideload.success {
+        // Add-AppxPackage returning success only means the cmdlet didn't throw.
+        // Verify the package is actually runnable before committing to it — on a
+        // stripped Windows it can register yet fail to launch. If it's unhealthy,
+        // remove it and fall back to portable so the user gets a build that runs.
+        let health = verify_msix_health();
+        if !health.healthy {
+            let _ = remove_msix_package();
+            return install_portable_after_stage(
+                settings,
+                stage,
+                Some(sideload),
+                Some(health),
+                previous_installed,
+            );
+        }
+
         let installed = sideload
             .installed
             .clone()
@@ -551,6 +570,7 @@ pub fn perform_windows_update_with_install_mode(
             installed,
             sideload: Some(sideload),
             portable: None,
+            msix_health: Some(health),
             fallback_available: stage.portable_fallback_ready,
             fallback_attempted: false,
             notes: stage.notes.clone(),
@@ -558,13 +578,14 @@ pub fn perform_windows_update_with_install_mode(
         });
     }
 
-    install_portable_after_stage(settings, stage, Some(sideload), previous_installed)
+    install_portable_after_stage(settings, stage, Some(sideload), None, previous_installed)
 }
 
 fn install_portable_after_stage(
     settings: &AppSettings,
     stage: WinStageReport,
     sideload: Option<MsixSideloadReport>,
+    health: Option<MsixHealthReport>,
     previous_installed: Option<InstalledWindowsCodex>,
 ) -> Result<WinPerformReport, AppError> {
     let staged_path = stage
@@ -602,7 +623,15 @@ fn install_portable_after_stage(
     }
 
     let mut notes = stage.notes.clone();
-    if let Some(sideload) = &sideload {
+    let msix_unhealthy = health.as_ref().is_some_and(|h| !h.healthy);
+    if let Some(health) = &health {
+        if !health.healthy {
+            notes.push(format!(
+                "MSIX installed but failed its post-install health check ({}); switched to the portable build.",
+                health.reason
+            ));
+        }
+    } else if let Some(sideload) = &sideload {
         notes.push(format!(
             "MSIX sideload failed without elevation or policy changes: {}",
             sideload.message
@@ -610,17 +639,23 @@ fn install_portable_after_stage(
     }
     notes.extend(portable.notes.clone());
 
+    let action = if msix_unhealthy {
+        "portable-fallback-after-msix-unhealthy"
+    } else if sideload.is_some() {
+        "portable-fallback-after-msix-failure"
+    } else {
+        "portable-fallback"
+    }
+    .to_string();
+
     Ok(WinPerformReport {
         success: true,
-        action: if sideload.is_some() {
-            "portable-fallback-after-msix-failure".to_string()
-        } else {
-            "portable-fallback".to_string()
-        },
+        action,
         message: portable.message.clone(),
         installed,
         sideload,
         portable: Some(portable),
+        msix_health: health,
         fallback_available: true,
         fallback_attempted: true,
         notes,

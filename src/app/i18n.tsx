@@ -170,6 +170,8 @@ const ZH = {
   "win.confirm.body": "安装时会关闭 Codex,完成后可重新打开,大约一分钟。",
   "win.route.msix": "标准安装（MSIX）",
   "win.route.portable": "免安装版（EXE）",
+  "win.msixRisk.body": "这台电脑似乎缺少应用商店 / App Installer 组件,标准安装（MSIX）即使装上也可能无法启动。建议改用免安装版。",
+  "win.msixRisk.switch": "改用免安装版",
   "win.installDir.title": "选择安装位置",
   "win.installDir.body": "免安装版会安装到下面的文件夹。选择普通文件夹时,会使用其下的 Codex 子文件夹;系统目录会被拒绝。",
   "win.installDir.useDefault": "安装到默认位置",
@@ -329,6 +331,8 @@ const EN: Record<Key, string> = {
   "win.confirm.body": "Codex will close during install and can reopen after — about a minute.",
   "win.route.msix": "Standard install (MSIX)",
   "win.route.portable": "Portable install (EXE)",
+  "win.msixRisk.body": "This PC appears to be missing the Microsoft Store / App Installer components, so the standard MSIX install may not launch even after it installs. Switching to the portable build is recommended.",
+  "win.msixRisk.switch": "Switch to portable",
   "win.installDir.title": "Choose install location",
   "win.installDir.body": "The portable app will install in the folder below. Picking an ordinary folder uses a Codex subfolder; system folders are rejected.",
   "win.installDir.useDefault": "Install to default",
@@ -485,6 +489,8 @@ const FR: Record<Key, string> = {
   "win.confirm.body": "Codex va se fermer pendant l'installation et pourra rouvrir ensuite — environ une minute.",
   "win.route.msix": "Installation standard (MSIX)",
   "win.route.portable": "Installation portable (EXE)",
+  "win.msixRisk.body": "Ce PC semble dépourvu des composants Microsoft Store / App Installer ; l'installation standard (MSIX) pourrait ne pas démarrer même une fois installée. Il est recommandé de passer à la version portable.",
+  "win.msixRisk.switch": "Passer à la version portable",
   "win.installDir.title": "Choisir l'emplacement d'installation",
   "win.installDir.body": "La version portable sera installée dans le dossier ci-dessous. Si vous choisissez un dossier ordinaire, un sous-dossier Codex sera utilisé; les dossiers système sont refusés.",
   "win.installDir.useDefault": "Installer à l'emplacement par défaut",
@@ -652,6 +658,8 @@ const ZH_TW: Record<Key, string> = {
   "win.confirm.body": "安裝時 Codex 會關閉，完成後可重新開啟，約需一分鐘。",
   "win.route.msix": "標準安裝（MSIX）",
   "win.route.portable": "免安裝版（EXE）",
+  "win.msixRisk.body": "這台電腦似乎缺少應用程式商店 / App Installer 元件,標準安裝（MSIX）即使裝上也可能無法啟動。建議改用免安裝版。",
+  "win.msixRisk.switch": "改用免安裝版",
   "win.installDir.title": "選擇安裝位置",
   "win.installDir.body":
     "免安裝版會安裝到下面的資料夾。選擇一般資料夾時，會使用其下的 Codex 子資料夾；系統目錄會被拒絕。",
@@ -821,6 +829,8 @@ const DE: Record<Key, string> = {
     "Codex wird während der Installation geschlossen und kann danach wieder geöffnet werden — dauert etwa eine Minute.",
   "win.route.msix": "Standardinstallation (MSIX)",
   "win.route.portable": "Portable-Version (EXE)",
+  "win.msixRisk.body": "Auf diesem PC fehlen anscheinend die Microsoft Store / App Installer-Komponenten; die Standardinstallation (MSIX) startet möglicherweise selbst nach der Installation nicht. Es wird empfohlen, zur Portable-Version zu wechseln.",
+  "win.msixRisk.switch": "Zur Portable-Version wechseln",
   "win.installDir.title": "Installationsort auswählen",
   "win.installDir.body":
     "Die portable Version wird im unten stehenden Ordner installiert. Bei einem normalen Ordner wird ein Codex-Unterordner verwendet; Systemordner werden abgelehnt.",
@@ -989,6 +999,8 @@ const KO: Record<Key, string> = {
   "win.confirm.body": "설치 중 Codex가 종료되며, 완료 후 다시 열 수 있습니다 — 약 1분 소요.",
   "win.route.msix": "표준 설치 (MSIX)",
   "win.route.portable": "포터블 설치 (EXE)",
+  "win.msixRisk.body": "이 PC에는 Microsoft Store / App Installer 구성 요소가 없는 것 같습니다. 표준 설치(MSIX)는 설치되더라도 실행되지 않을 수 있습니다. 포터블 버전으로 전환하는 것을 권장합니다.",
+  "win.msixRisk.switch": "포터블로 전환",
   "win.installDir.title": "설치 위치 선택",
   "win.installDir.body":
     "포터블 버전은 아래 폴더에 설치됩니다. 일반 폴더를 선택하면 그 안의 Codex 하위 폴더를 사용하며, 시스템 폴더는 거부됩니다.",
@@ -1137,6 +1149,8 @@ const JA: Record<Key, string> = {
   "win.confirm.body": "インストール中は Codex が閉じ、完了後に再起動できます — 約 1 分かかります。",
   "win.route.msix": "標準インストール（MSIX）",
   "win.route.portable": "ポータブルインストール（EXE）",
+  "win.msixRisk.body": "この PC には Microsoft Store / App Installer コンポーネントが見当たりません。標準インストール（MSIX）はインストールできても起動しない場合があります。ポータブル版への切り替えをおすすめします。",
+  "win.msixRisk.switch": "ポータブル版に切り替え",
   "win.installDir.title": "インストール先を選択",
   "win.installDir.body":
     "ポータブル版は下のフォルダーにインストールされます。通常のフォルダーを選ぶと、その中の Codex サブフォルダーを使用します。システムフォルダーは拒否されます。",
@@ -1284,6 +1298,8 @@ const RU: Record<Key, string> = {
   "win.confirm.body": "Codex закроется во время установки и может быть открыт после — около минуты.",
   "win.route.msix": "Стандартная установка (MSIX)",
   "win.route.portable": "Портативная версия (EXE)",
+  "win.msixRisk.body": "На этом компьютере, похоже, отсутствуют компоненты Microsoft Store / App Installer; стандартная установка (MSIX) может не запуститься даже после установки. Рекомендуется перейти на портативную версию.",
+  "win.msixRisk.switch": "Перейти на портативную версию",
   "win.installDir.title": "Выбрать место установки",
   "win.installDir.body":
     "Портативная версия будет установлена в папку ниже. При выборе обычной папки будет использована подпапка Codex; системные папки отклоняются.",
@@ -1431,6 +1447,8 @@ const AR: Record<Key, string> = {
   "win.confirm.body": "سيُغلق Codex أثناء التثبيت ويمكن إعادة فتحه بعده — دقيقة تقريباً.",
   "win.route.msix": "تثبيت قياسي (MSIX)",
   "win.route.portable": "تثبيت محمول (EXE)",
+  "win.msixRisk.body": "يبدو أن هذا الجهاز يفتقر إلى مكوّنات متجر Microsoft / App Installer، لذا قد لا يبدأ التثبيت القياسي (MSIX) حتى بعد تثبيته. يُنصح بالتبديل إلى النسخة المحمولة.",
+  "win.msixRisk.switch": "التبديل إلى النسخة المحمولة",
   "win.installDir.title": "اختيار موقع التثبيت",
   "win.installDir.body":
     "سيُثبَّت الإصدار المحمول في المجلد أدناه. عند اختيار مجلد عادي، سيُستخدم مجلد Codex فرعي داخله؛ وسيتم رفض مجلدات النظام.",
@@ -1578,6 +1596,8 @@ const ES: Record<Key, string> = {
   "win.confirm.body": "Codex se cerrará durante la instalación y podrá reabrirse después — tarda alrededor de un minuto.",
   "win.route.msix": "Instalación estándar (MSIX)",
   "win.route.portable": "Instalación portátil (EXE)",
+  "win.msixRisk.body": "Parece que a este equipo le faltan los componentes de Microsoft Store / App Installer; la instalación estándar (MSIX) podría no abrirse aunque se instale. Se recomienda cambiar a la versión portátil.",
+  "win.msixRisk.switch": "Cambiar a portátil",
   "win.installDir.title": "Elegir ubicación de instalación",
   "win.installDir.body":
     "La versión portátil se instalará en la carpeta de abajo. Si eliges una carpeta normal, se usará una subcarpeta Codex; las carpetas del sistema se rechazan.",
@@ -1725,6 +1745,8 @@ const PT_BR: Record<Key, string> = {
   "win.confirm.body": "O Codex vai fechar durante a instalação e pode reabrir depois — cerca de um minuto.",
   "win.route.msix": "Instalação padrão (MSIX)",
   "win.route.portable": "Instalação portátil (EXE)",
+  "win.msixRisk.body": "Este PC parece não ter os componentes da Microsoft Store / App Installer; a instalação padrão (MSIX) pode não abrir mesmo depois de instalada. Recomendamos mudar para a versão portátil.",
+  "win.msixRisk.switch": "Mudar para portátil",
   "win.installDir.title": "Escolher local de instalação",
   "win.installDir.body":
     "A versão portátil será instalada na pasta abaixo. Ao escolher uma pasta comum, será usada uma subpasta Codex; pastas do sistema são recusadas.",

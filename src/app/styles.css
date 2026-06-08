@@ -1176,6 +1176,33 @@ button.row.danger:hover {
   border-color: var(--line);
   box-shadow: var(--elev-1);
 }
+.banner.warn {
+  background: var(--amber-tint);
+  color: var(--amber-deep);
+  border-color: color-mix(in oklch, var(--amber) 24%, transparent);
+}
+/* Inline "switch to portable" action inside the MSIX-risk warning banner. */
+.banner .linkbtn {
+  margin-inline-start: auto;
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  padding: 2px 5px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.16s var(--ease);
+}
+.banner .linkbtn:hover {
+  background: color-mix(in oklch, var(--amber) 18%, transparent);
+}
+.banner .linkbtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 .note {
   font-size: var(--fs-label);
   color: var(--text-faint);

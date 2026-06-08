@@ -123,6 +123,23 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     }
   }, []);
 
+  // The probe recommended MSIX, but this PC looks like it's missing the Store /
+  // App Installer components — the MSIX can install yet fail to launch (the very
+  // issue users hit). Let them switch to the portable build in one tap: persist
+  // the preference, then re-plan so the route flips to portable and this notice
+  // clears.
+  const switchToPortable = useCallback(async () => {
+    setError(null);
+    try {
+      const next: AppSettings = { ...settings, windowsInstallMode: "portable" };
+      setSettings(await managerApi.setSettings(next));
+    } catch (cause) {
+      setError(errorMessage(cause));
+      return;
+    }
+    await check();
+  }, [settings, check]);
+
   // Windows install + update both go through win_perform_update (the route —
   // MSIX sideload or portable fallback — is decided by the backend plan).
   const runPerform = useCallback(
@@ -214,6 +231,11 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const updateAvailable = Boolean(plan) && !plan?.upToDate;
   const routeNote =
     plan?.route === "portable-fallback" ? t("win.route.portable") : t("win.route.msix");
+  // MSIX is the planned route, yet the App Installer / Store components weren't
+  // detected — a stripped Windows where the package may install but not run.
+  const msixRisky =
+    plan?.route === "msix-sideload" &&
+    report?.capabilities?.appInstaller?.state !== "available";
 
   const kind: Kind = useMemo(() => {
     if (!installed) {
@@ -423,6 +445,16 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
                 {installed.path}
               </span>
             </div>
+          </div>
+        ) : null}
+
+        {!rechecking && msixRisky && (kind === "none" || kind === "update") ? (
+          <div className="banner warn">
+            <Icon name="alert" />
+            <span>{t("win.msixRisk.body")}</span>
+            <button className="linkbtn" onClick={switchToPortable} disabled={busy !== null}>
+              {t("win.msixRisk.switch")}
+            </button>
           </div>
         ) : null}
 
