@@ -4,15 +4,12 @@ use tauri::{Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_dialog::DialogExt;
 
-use crate::app::health_service::HealthService;
 use crate::app::mac_update::{
     install_macos, perform_macos_update, plan_macos_update, stage_macos_update, uninstall_macos,
     MacInstallStatus, MacPerformReport, MacStageReport, MacUninstallReport, MacUpdateReport,
     PerformExpectation,
 };
 use crate::app::settings_store::AppSettings as PersistedAppSettings;
-use crate::app::snapshot::ManagerSnapshot;
-use crate::app::update_check::PayloadUpdateCheck;
 use crate::app::win_update::{
     auto_stage_windows_update_with_install_mode, cancel_windows_download,
     perform_windows_update_with_install_mode, plan_windows_update_with_install_mode,
@@ -21,8 +18,6 @@ use crate::app::win_update::{
     DownloadProgress as WinDownloadProgress, WinAutoStageReport, WinInstallStatus,
     WinPerformReport, WinStageReport, WinUninstallReport, WinUpdateReport,
 };
-use crate::domain::health::HealthReport;
-use crate::domain::operations::{OperationKind, OperationPlan};
 use crate::domain::settings::AppSettings as DomainAppSettings;
 use crate::domain::target::OperatingSystem;
 use crate::errors::{AppError, CommandError};
@@ -267,47 +262,6 @@ fn install_root_from_picked_dir(raw: &str) -> Result<String, AppError> {
         return validate_install_root_path(&selected.join("Codex").to_string_lossy());
     }
     validate_install_root_path(trimmed)
-}
-
-#[tauri::command]
-pub fn get_app_snapshot(state: State<'_, ManagerState>) -> Result<ManagerSnapshot, CommandError> {
-    Ok(state.snapshot())
-}
-
-#[tauri::command]
-pub fn plan_install(state: State<'_, ManagerState>) -> Result<OperationPlan, CommandError> {
-    Ok(state.planner.plan(
-        OperationKind::Install,
-        &state.target,
-        &state.settings,
-        &state.endpoints,
-    ))
-}
-
-#[tauri::command]
-pub fn plan_uninstall(state: State<'_, ManagerState>) -> Result<OperationPlan, CommandError> {
-    Ok(state.planner.plan(
-        OperationKind::Uninstall,
-        &state.target,
-        &state.settings,
-        &state.endpoints,
-    ))
-}
-
-#[tauri::command]
-pub fn check_payload_updates(
-    state: State<'_, ManagerState>,
-) -> Result<PayloadUpdateCheck, CommandError> {
-    Ok(PayloadUpdateCheck::pending(&state.endpoints))
-}
-
-#[tauri::command]
-pub fn run_health_check(state: State<'_, ManagerState>) -> Result<HealthReport, CommandError> {
-    Ok(HealthService::run(
-        &state.target,
-        &state.settings,
-        &state.endpoints,
-    ))
 }
 
 /// macOS-only: detect the installed Codex build, read the Sparkle appcast, and

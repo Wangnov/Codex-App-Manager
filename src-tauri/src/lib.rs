@@ -3,7 +3,6 @@ pub mod app;
 pub mod commands;
 pub mod domain;
 pub mod errors;
-pub mod ports;
 
 mod state;
 
@@ -74,11 +73,6 @@ pub fn run() {
         ))
         .manage(state::ManagerState::new())
         .invoke_handler(tauri::generate_handler![
-            commands::check_payload_updates,
-            commands::get_app_snapshot,
-            commands::plan_install,
-            commands::plan_uninstall,
-            commands::run_health_check,
             commands::mac_plan_update,
             commands::mac_stage_update,
             commands::mac_perform_update,
