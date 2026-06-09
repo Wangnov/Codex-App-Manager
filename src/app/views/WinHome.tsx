@@ -244,11 +244,13 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const updateAvailable = Boolean(plan) && !plan?.upToDate;
   const routeNote =
     plan?.route === "portable-fallback" ? t("win.route.portable") : t("win.route.msix");
-  // MSIX is the planned route, yet the App Installer / Store components weren't
-  // detected — a stripped Windows where the package may install but not run.
+  // MSIX is the planned route, yet the Desktop App Installer wasn't detected —
+  // a stripped Windows where the package may install but not launch. The probe
+  // only ever reports appInstaller as "available" or "unknown" (never
+  // "unavailable"), so "unknown" is the not-detected signal we gate on.
   const msixRisky =
     plan?.route === "msix-sideload" &&
-    report?.capabilities?.appInstaller?.state === "unavailable";
+    report?.capabilities?.appInstaller?.state === "unknown";
 
   const kind: Kind = useMemo(() => {
     if (!installed) {
