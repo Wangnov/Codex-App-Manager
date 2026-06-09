@@ -64,6 +64,12 @@ pub struct MsixRemoveReport {
 #[serde(rename_all = "camelCase")]
 pub struct MsixHealthReport {
     pub healthy: bool,
+    /// Whether the health probe actually ran and the `healthy` verdict reflects
+    /// real checks. `false` means the probe could not run and `healthy` is a
+    /// conservative "keep the MSIX" default, not a clean bill of health that was
+    /// observed. Callers/UI/notes use this to tell "verified healthy" apart from
+    /// "kept because unverifiable".
+    pub verified: bool,
     pub package_registered: bool,
     /// Raw `Get-AppxPackage` Status string (e.g. "Ok", "Modified").
     pub status: String,
@@ -342,8 +348,12 @@ try {{
     let Some(value) = parsed else {
         // The health probe itself could not run. Don't overturn a successful
         // Add-AppxPackage on an unverifiable signal — keep the MSIX install.
+        // The keep-MSIX decision (healthy = true) is intentional, but mark the
+        // report unverified so callers don't mistake it for an observed clean
+        // bill of health.
         return MsixHealthReport {
             healthy: true,
+            verified: false,
             package_registered: true,
             status: "probe-failed".to_string(),
             status_ok: true,
@@ -399,6 +409,8 @@ try {{
 
     MsixHealthReport {
         healthy,
+        // The probe ran and produced a real verdict.
+        verified: true,
         package_registered,
         status,
         status_ok,
@@ -411,9 +423,11 @@ try {{
 #[cfg(not(windows))]
 pub fn verify_msix_health() -> MsixHealthReport {
     // Non-Windows builds never sideload, so there is nothing to verify; report
-    // healthy so this can never be the thing that blocks a (non-existent) path.
+    // healthy so this can never be the thing that blocks a (non-existent) path,
+    // but leave verified = false since no real check was performed.
     MsixHealthReport {
         healthy: true,
+        verified: false,
         package_registered: false,
         status: "not-windows".to_string(),
         status_ok: true,

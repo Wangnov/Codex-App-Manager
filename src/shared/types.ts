@@ -242,6 +242,13 @@ export interface MsixSideloadReport {
 
 export interface MsixHealthReport {
   healthy: boolean;
+  /**
+   * Whether the health probe actually ran. When false, `healthy` is a
+   * conservative "keep the MSIX" default (the probe could not run), not an
+   * observed clean bill of health. Use this to tell "verified healthy" apart
+   * from "kept because unverifiable".
+   */
+  verified: boolean;
   packageRegistered: boolean;
   /** Raw Get-AppxPackage Status string (e.g. "Ok", "Modified"). */
   status: string;
