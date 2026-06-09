@@ -14,12 +14,12 @@ use codex_win_engine::{
     cancel_active_download, close_codex_gracefully_for_root, detect_installed_codex,
     detect_portable_install, download_to_with_progress, fetch_text, find_msix_sha256,
     install_msix_sideload, install_portable_from_msix, parse_manifest, plan_update,
-    probe_capabilities, purge_codex_user_data, read_msix_identity, remove_msix_package,
-    sha256_file, uninstall_portable, validate_codex_identity, verify_msix_health,
-    verify_openai_authenticode, version_key, AuthenticodeReport, CapabilityState,
-    InstalledWindowsCodex, MsixHealthReport, MsixIdentity, MsixRemoveReport, MsixSideloadReport,
-    PortableInstallReport, PortableUninstallReport, WinCapabilityReport, WinInstallRoute,
-    WindowsRelease, WindowsUpdatePlan,
+    precheck_msix_dependencies, probe_capabilities, purge_codex_user_data, read_msix_identity,
+    remove_msix_package, sha256_file, uninstall_portable, validate_codex_identity,
+    verify_msix_health, verify_openai_authenticode, version_key, AuthenticodeReport,
+    CapabilityState, InstalledWindowsCodex, MsixHealthReport, MsixIdentity, MsixRemoveReport,
+    MsixSideloadReport, PortableInstallReport, PortableUninstallReport, WinCapabilityReport,
+    WinInstallRoute, WindowsRelease, WindowsUpdatePlan,
 };
 
 use crate::app::provenance::ProvenanceStore;
@@ -508,7 +508,41 @@ pub fn perform_windows_update_with_install_mode(
     let staged_path = stage
         .staged_path
         .as_ref()
-        .ok_or_else(|| AppError::Engine("staged MSIX path missing".to_string()))?;
+        .ok_or_else(|| AppError::Engine("staged MSIX path missing".to_string()))?
+        .clone();
+
+    // PRE-check the staged MSIX's declared framework dependencies BEFORE touching
+    // the running install or attempting the sideload. On a stripped / China /
+    // Store-disabled Windows, `Add-AppxPackage` cannot auto-acquire a missing
+    // framework (VCLibs / WindowsAppRuntime / UI.Xaml / NET.Native), so the
+    // sideload is doomed — it either errors or registers a package that won't
+    // launch. When a required framework is positively missing we route straight
+    // to the portable build instead of burning a failed attempt. The probe is
+    // conservative: if the manifest can't be read or the check can't run it
+    // returns `checked = false` and we proceed to the sideload as before, where
+    // the post-install health check + transparent fallback remain the backstop.
+    let precheck = precheck_msix_dependencies(PathBuf::from(&staged_path).as_path());
+    if precheck.should_route_portable() {
+        // We're going to portable, but `install_portable_after_stage` overwrites
+        // the portable install in place and does not stop a running build, so a
+        // managed portable instance must be closed first (same as the MSIX path).
+        if let Some(previous) = &previous_installed {
+            if previous.source == "portable" {
+                close_codex_gracefully_for_root(30, PathBuf::from(&previous.path).as_path())
+                    .map_err(engine_err)?;
+            }
+        }
+        let mut stage = stage;
+        stage.notes.push(format!(
+            "Skipped MSIX sideload before attempting it: {}. Routed to the portable build, which carries its own runtime and does not need these framework packages.",
+            precheck.reason
+        ));
+        let mut report =
+            install_portable_after_stage(settings, stage, None, None, previous_installed)?;
+        report.action = "portable-fallback-missing-framework".to_string();
+        return Ok(report);
+    }
+
     if let Some(installed) = detect_installed_codex(PathBuf::from(&settings.install_root).as_path())
     {
         if installed.source == "msix" {
@@ -527,7 +561,7 @@ pub fn perform_windows_update_with_install_mode(
         }
     }
     let sideload =
-        install_msix_sideload(PathBuf::from(staged_path).as_path()).map_err(engine_err)?;
+        install_msix_sideload(PathBuf::from(&staged_path).as_path()).map_err(engine_err)?;
 
     if sideload.success {
         // Add-AppxPackage returning success only means the cmdlet didn't throw.

@@ -83,6 +83,37 @@ pub struct MsixHealthReport {
     pub reason: String,
 }
 
+/// Result of the framework-dependency PRE-check run BEFORE attempting an MSIX
+/// sideload. On a stripped / China / Store-disabled Windows, `Add-AppxPackage`
+/// cannot auto-acquire missing framework packages (VCLibs, WindowsAppRuntime,
+/// UI.Xaml, NET.Native), so a sideload that needs an absent framework is doomed:
+/// it either errors outright or registers a package that won't launch. When a
+/// required framework is missing we proactively route to the portable build
+/// instead of burning a failed install attempt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MsixDependencyPrecheck {
+    /// Whether the pre-check could actually evaluate framework presence. False
+    /// when the manifest could not be read or the `Get-AppxPackage` probe could
+    /// not run — in that case we do NOT block the sideload on an unknown signal.
+    pub checked: bool,
+    /// True when every required framework dependency is present (or none are
+    /// declared). When false, `missing_frameworks` lists what is absent.
+    pub frameworks_ok: bool,
+    /// Framework packages the manifest requires that are NOT installed.
+    pub missing_frameworks: Vec<String>,
+    /// Human-facing reason; empty when `frameworks_ok` and there is nothing to say.
+    pub reason: String,
+}
+
+impl MsixDependencyPrecheck {
+    /// The pre-check has positively determined a required framework is missing,
+    /// so the sideload should be skipped in favor of the portable build.
+    pub fn should_route_portable(&self) -> bool {
+        self.checked && !self.frameworks_ok && !self.missing_frameworks.is_empty()
+    }
+}
+
 pub fn fetch_text(url: &str) -> Result<String, EngineError> {
     let output = hidden_command("curl")
         .args(["-fsSL", "--connect-timeout", "20", url])
@@ -201,6 +232,122 @@ pub fn install_msix_sideload(_path: &Path) -> Result<MsixSideloadReport, EngineE
         fallback_recommended: true,
         raw_error: None,
     })
+}
+
+/// PRE-check, before sideloading, that every redistributable framework the
+/// staged MSIX declares as a `PackageDependency` is already installed. Reads the
+/// staged manifest's `PackageDependency` entries (same source the post-install
+/// `verify_msix_health` inspects), filters to the framework packages, and asks
+/// `Get-AppxPackage` whether each is present. A missing framework means the
+/// sideload cannot succeed on this machine (no Store / App Installer to acquire
+/// it), so the caller routes straight to the portable build.
+///
+/// This is intentionally conservative: if the manifest cannot be read or the
+/// PowerShell probe cannot run, it returns `checked = false` and does NOT block
+/// the sideload — the existing post-install health check + portable fallback
+/// remain the backstop.
+#[cfg(windows)]
+pub fn precheck_msix_dependencies(path: &Path) -> MsixDependencyPrecheck {
+    let frameworks = match crate::msix::read_msix_dependencies(path) {
+        Ok(deps) => crate::msix::framework_dependencies(&deps),
+        Err(err) => {
+            return MsixDependencyPrecheck {
+                checked: false,
+                frameworks_ok: true,
+                missing_frameworks: vec![],
+                reason: format!("could not read staged MSIX dependencies: {err}"),
+            };
+        }
+    };
+
+    if frameworks.is_empty() {
+        return MsixDependencyPrecheck {
+            checked: true,
+            frameworks_ok: true,
+            missing_frameworks: vec![],
+            reason: String::new(),
+        };
+    }
+
+    let names: Vec<String> = frameworks.iter().map(|d| d.name.clone()).collect();
+    let names_literal = names
+        .iter()
+        .map(|n| ps_quote(n))
+        .collect::<Vec<_>>()
+        .join(", ");
+    // For each declared framework name, report whether ANY package with that
+    // name is registered. We deliberately check presence (not version) here: an
+    // outright-missing framework is the doomed case; version-floor mismatches
+    // are still caught by the post-install `verify_msix_health` check.
+    let script = format!(
+        r#"
+$ErrorActionPreference = 'SilentlyContinue'
+$names = @({names})
+$missing = @()
+foreach ($n in $names) {{
+  $present = @(Get-AppxPackage -Name $n -ErrorAction SilentlyContinue)
+  if ($present.Count -eq 0) {{ $missing += $n }}
+}}
+[pscustomobject]@{{
+  missing = ($missing -join ', ')
+}} | ConvertTo-Json -Compress
+"#,
+        names = names_literal
+    );
+
+    let parsed = run_powershell_json(&script)
+        .ok()
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok());
+
+    let Some(value) = parsed else {
+        // Probe could not run — don't overturn the sideload on an unknown signal.
+        return MsixDependencyPrecheck {
+            checked: false,
+            frameworks_ok: true,
+            missing_frameworks: vec![],
+            reason: "framework dependency probe could not run; proceeding with sideload"
+                .to_string(),
+        };
+    };
+
+    let missing_frameworks: Vec<String> = value
+        .get("missing")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let frameworks_ok = missing_frameworks.is_empty();
+    let reason = if frameworks_ok {
+        String::new()
+    } else {
+        format!(
+            "required framework packages are not installed: {}",
+            missing_frameworks.join(", ")
+        )
+    };
+
+    MsixDependencyPrecheck {
+        checked: true,
+        frameworks_ok,
+        missing_frameworks,
+        reason,
+    }
+}
+
+#[cfg(not(windows))]
+pub fn precheck_msix_dependencies(_path: &Path) -> MsixDependencyPrecheck {
+    // Non-Windows builds never sideload, so there is nothing to pre-check. Report
+    // checked = false / frameworks_ok = true so this can never block a path that
+    // does not exist off Windows.
+    MsixDependencyPrecheck {
+        checked: false,
+        frameworks_ok: true,
+        missing_frameworks: vec![],
+        reason: "MSIX dependency pre-checks are only meaningful on Windows".to_string(),
+    }
 }
 
 #[cfg(windows)]
@@ -817,5 +964,51 @@ mod tests {
             report.msix_deployment.state,
             crate::capability::CapabilityState::Unavailable
         );
+    }
+
+    // Pure routing logic for the framework pre-check — verified on every host so
+    // the steer-to-portable decision is covered even though the probe that fills
+    // the struct only runs on Windows.
+    #[test]
+    fn precheck_routes_portable_only_when_a_framework_is_positively_missing() {
+        // Missing framework, positively determined -> route to portable.
+        let missing = super::MsixDependencyPrecheck {
+            checked: true,
+            frameworks_ok: false,
+            missing_frameworks: vec!["Microsoft.VCLibs.140.00".to_string()],
+            reason: "required framework packages are not installed: Microsoft.VCLibs.140.00"
+                .to_string(),
+        };
+        assert!(missing.should_route_portable());
+
+        // All frameworks present -> proceed with the sideload.
+        let ok = super::MsixDependencyPrecheck {
+            checked: true,
+            frameworks_ok: true,
+            missing_frameworks: vec![],
+            reason: String::new(),
+        };
+        assert!(!ok.should_route_portable());
+
+        // Probe could not run (manifest unreadable / PowerShell failed) -> do NOT
+        // block on an unknown signal; let the sideload + health check decide.
+        let unknown = super::MsixDependencyPrecheck {
+            checked: false,
+            frameworks_ok: true,
+            missing_frameworks: vec![],
+            reason: "framework dependency probe could not run; proceeding with sideload"
+                .to_string(),
+        };
+        assert!(!unknown.should_route_portable());
+
+        // Defensive: even if flags say not-ok, an empty list must not route (we
+        // only steer when we can name the missing framework).
+        let inconsistent = super::MsixDependencyPrecheck {
+            checked: true,
+            frameworks_ok: false,
+            missing_frameworks: vec![],
+            reason: String::new(),
+        };
+        assert!(!inconsistent.should_route_portable());
     }
 }

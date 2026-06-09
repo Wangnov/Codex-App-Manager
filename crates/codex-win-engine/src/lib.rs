@@ -35,7 +35,9 @@ pub use download::{
 };
 pub use manifest::{parse_manifest, WindowsRelease};
 pub use msix::{
-    parse_appx_manifest_xml, read_msix_identity, validate_codex_identity, MsixIdentity,
+    framework_dependencies, is_framework_dependency, parse_appx_manifest_dependencies,
+    parse_appx_manifest_xml, read_msix_dependencies, read_msix_identity, validate_codex_identity,
+    MsixIdentity, MsixPackageDependency,
 };
 pub use plan::{plan_update, WinInstallRoute, WindowsUpdatePlan};
 pub use portable::{
@@ -46,7 +48,10 @@ pub use sys::{
     detect_installed_codex, detect_portable_install, fetch_text, launch_codex,
     probe_capabilities, remove_msix_package, InstalledWindowsCodex, MsixRemoveReport,
 };
-pub use sys::{install_msix_sideload, verify_msix_health, MsixHealthReport, MsixSideloadReport};
+pub use sys::{
+    install_msix_sideload, precheck_msix_dependencies, verify_msix_health, MsixDependencyPrecheck,
+    MsixHealthReport, MsixSideloadReport,
+};
 pub use version::{compare_versions, version_key};
 
 pub const OPENAI_PACKAGE_IDENTITY: &str = "OpenAI.Codex";
