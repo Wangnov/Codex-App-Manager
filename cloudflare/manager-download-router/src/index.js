@@ -18,9 +18,22 @@ export default {
     if (!url.pathname.startsWith(PREFIX)) {
       return new Response("Not found", { status: 404 });
     }
-    const key = decodeURIComponent(url.pathname.slice(PREFIX.length));
+    let key = decodeURIComponent(url.pathname.slice(PREFIX.length));
     if (!key || key.endsWith("/") || key.includes("..")) {
       return new Response("Not found", { status: 404 });
+    }
+
+    // /manager/latest/<file> → rewrite to the current immutable versioned key
+    // (latest/CodexAppManager_aarch64.dmg → 0.1.12/CodexAppManager_aarch64.dmg)
+    // so the README can link a permanent URL that never needs a version bump.
+    // The rewrite is IN-PLACE (no redirect): still ONE Worker invocation, and
+    // the resolved versioned object keeps its hard cache. Cost is one cheap R2
+    // GET of latest.json per first-install click; self-update traffic (which
+    // fetches latest.json + the .app.tar.gz directly) never reaches this path.
+    if (key.startsWith("latest/")) {
+      const version = await currentVersion(env);
+      if (!version) return new Response("Not found", { status: 404 });
+      key = `${version}/${withVersion(key.slice("latest/".length), version)}`;
     }
 
     const country = request.cf?.country || request.headers.get("CF-IPCountry") || "";
@@ -99,6 +112,29 @@ function redirect(location) {
 function objectKeyForKey(key, prefix) {
   const cleanPrefix = prefix.replace(/^\/+|\/+$/g, "");
   return cleanPrefix ? `${cleanPrefix}/${key}` : key;
+}
+
+// Resolve the current release version from latest.json (root object on R2).
+// Used only to rewrite /manager/latest/* — returns null on any miss so the
+// caller 404s instead of guessing a version.
+async function currentVersion(env) {
+  try {
+    const object = await env.BUCKET.get("latest.json");
+    if (!object) return null;
+    const manifest = await object.json();
+    return typeof manifest.version === "string" && manifest.version ? manifest.version : null;
+  } catch {
+    return null;
+  }
+}
+
+// Installers live under <version>/. The macOS .dmg names are version-less and
+// pass straight through; the Windows NSIS .exe embeds the version in its file
+// name, so insert it so a stable "latest" link resolves to the real object.
+function withVersion(file, version) {
+  return file === "CodexAppManager_x64-setup.exe"
+    ? `CodexAppManager_${version}_x64-setup.exe`
+    : file;
 }
 
 // ── AWS SigV4 presigner (GET/HEAD), identical scheme to codex-app-mirror ─────

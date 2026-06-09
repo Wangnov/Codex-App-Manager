@@ -79,11 +79,11 @@ brew install --cask wangnov/tap/codex-app-manager
 
 | 平台 | 文件 | 镜像直链 |
 |---|---|---|
-| Apple Silicon Mac | `CodexAppManager_aarch64.dmg` | [⤓ 镜像下载](https://codexapp.agentsmirror.com/manager/0.1.11/CodexAppManager_aarch64.dmg) |
-| Intel Mac | `CodexAppManager_x86_64.dmg` | [⤓ 镜像下载](https://codexapp.agentsmirror.com/manager/0.1.11/CodexAppManager_x86_64.dmg) |
-| Windows x64 | `CodexAppManager_0.1.11_x64-setup.exe` | [⤓ 镜像下载](https://codexapp.agentsmirror.com/manager/0.1.11/CodexAppManager_0.1.11_x64-setup.exe) |
+| Apple Silicon Mac | `CodexAppManager_aarch64.dmg` | [⤓ 镜像下载](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_aarch64.dmg) |
+| Intel Mac | `CodexAppManager_x86_64.dmg` | [⤓ 镜像下载](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x86_64.dmg) |
+| Windows x64 | `CodexAppManager_x64-setup.exe` | [⤓ 镜像下载](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x64-setup.exe) |
 
-macOS 版本经 **Developer ID 签名 + Apple 公证**,首次打开不会被 Gatekeeper 拦截。镜像直链对应 **v0.1.11**;装好后 Manager 会通过**应用内自更新**保持最新(见下),首次安装无需手动追最新版本号。
+macOS 版本经 **Developer ID 签名 + Apple 公证**,首次打开不会被 Gatekeeper 拦截。镜像直链恒指向**最新版**——`/manager/latest/` 由 Cloudflare Worker 自动解析到当前发布,无需随版本更新;装好后 Manager 还会通过**应用内自更新**保持最新(见下)。
 
 > 安装 Manager 后,真正的 Codex 桌面应用由 Manager 负责安装与更新——你不需要单独去下载 Codex 本体。
 
@@ -196,11 +196,11 @@ Grab your platform's file from the [latest GitHub Release](https://github.com/Wa
 
 | Platform | File | Mirror link |
 |---|---|---|
-| Apple Silicon Mac | `CodexAppManager_aarch64.dmg` | [⤓ mirror](https://codexapp.agentsmirror.com/manager/0.1.11/CodexAppManager_aarch64.dmg) |
-| Intel Mac | `CodexAppManager_x86_64.dmg` | [⤓ mirror](https://codexapp.agentsmirror.com/manager/0.1.11/CodexAppManager_x86_64.dmg) |
-| Windows x64 | `CodexAppManager_0.1.11_x64-setup.exe` | [⤓ mirror](https://codexapp.agentsmirror.com/manager/0.1.11/CodexAppManager_0.1.11_x64-setup.exe) |
+| Apple Silicon Mac | `CodexAppManager_aarch64.dmg` | [⤓ mirror](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_aarch64.dmg) |
+| Intel Mac | `CodexAppManager_x86_64.dmg` | [⤓ mirror](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x86_64.dmg) |
+| Windows x64 | `CodexAppManager_x64-setup.exe` | [⤓ mirror](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x64-setup.exe) |
 
-The macOS builds are **Developer ID signed + Apple notarized**, so Gatekeeper won't block first launch. The mirror links point at **v0.1.11**; after install, the Manager keeps **itself** up to date via in-app self-update (below), so you don't need to chase the latest version number by hand.
+The macOS builds are **Developer ID signed + Apple notarized**, so Gatekeeper won't block first launch. The mirror links always resolve to the **latest** release — `/manager/latest/` is auto-resolved to the current version by the Cloudflare Worker, with no per-release edits; after install, the Manager also keeps **itself** up to date via in-app self-update (below).
 
 > Once the Manager is installed, it installs and updates the actual Codex desktop app for you — you don't need to download Codex separately.
 
