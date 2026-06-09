@@ -893,17 +893,25 @@ pub fn uninstall_macos(keep_codex_home: bool) -> Result<MacUninstallReport, AppE
     let (kept_codex_home, mut message) = if keep_codex_home {
         (true, "已卸载 Codex,保留了 ~/.codex".to_string())
     } else {
-        let mut cleared = true;
+        // Best-effort, non-fatal: a purge failure must not abort the uninstall
+        // report. But like the Windows path (purge_codex_user_data), surface the
+        // real underlying io/fs error instead of a generic "purge failed" so the
+        // user can diagnose it (permissions, busy file, …) rather than guess.
+        let mut purge_err: Option<String> = None;
         if let Ok(home) = std::env::var("HOME") {
             let codex_home = PathBuf::from(home).join(".codex");
             if codex_home.exists() {
-                cleared = std::fs::remove_dir_all(&codex_home).is_ok();
+                if let Err(e) = std::fs::remove_dir_all(&codex_home) {
+                    purge_err = Some(e.to_string());
+                }
             }
         }
-        if cleared {
-            (false, "已卸载 Codex,并清除了 ~/.codex".to_string())
-        } else {
-            (true, "已卸载 Codex,但 ~/.codex 清除失败,数据仍保留".to_string())
+        match purge_err {
+            None => (false, "已卸载 Codex,并清除了 ~/.codex".to_string()),
+            Some(err) => (
+                true,
+                format!("已卸载 Codex,但 ~/.codex 清除失败,数据仍保留: {err}"),
+            ),
         }
     };
     if !prov_saved {
