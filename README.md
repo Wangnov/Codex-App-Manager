@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Wangnov/Codex-App-Manager/releases/latest"><img src="https://img.shields.io/github/downloads/Wangnov/Codex-App-Manager/total?logo=github&label=downloads&color=2ea44f" alt="GitHub downloads"></a>
+  <a href="https://github.com/Wangnov/Codex-App-Manager/releases/latest"><img src="https://img.shields.io/github/downloads/Wangnov/Codex-App-Manager/total?logo=github&label=GitHub%20downloads&color=2ea44f" alt="GitHub release downloads (mirror downloads not counted)"></a>
   <a href="https://github.com/Wangnov/Codex-App-Manager/stargazers"><img src="https://img.shields.io/github/stars/Wangnov/Codex-App-Manager?logo=github&label=stars&color=f5c518" alt="GitHub stars"></a>
   <a href="https://github.com/Wangnov/Codex-App-Manager/releases/latest"><img src="https://img.shields.io/github/v/release/Wangnov/Codex-App-Manager?logo=github&label=release" alt="Latest release"></a>
   <a href="https://github.com/Wangnov/Codex-App-Manager/releases/latest"><img src="https://img.shields.io/github/release-date/Wangnov/Codex-App-Manager?label=updated&logo=github" alt="Latest update time"></a>
@@ -73,15 +73,17 @@
 brew install --cask wangnov/tap/codex-app-manager
 ```
 
-### 手动下载
+### 直接下载
 
-打开 [最新 GitHub Release](https://github.com/Wangnov/Codex-App-Manager/releases/latest),下载对应平台文件:
+到 [最新 GitHub Release](https://github.com/Wangnov/Codex-App-Manager/releases/latest) 下载(全球),或用 **agentsmirror 镜像直链**(国内免梯子,Cloudflare Worker 按地域选路:中国大陆走 IHEP、海外走 R2):
 
-- **Apple Silicon Mac**:`CodexAppManager_aarch64.dmg`
-- **Intel Mac**:`CodexAppManager_x86_64.dmg`
-- **Windows x64**:`CodexAppManager_<版本>_x64-setup.exe`
+| 平台 | 文件 | 镜像直链 |
+|---|---|---|
+| Apple Silicon Mac | `CodexAppManager_aarch64.dmg` | [⤓ 镜像下载](https://codexapp.agentsmirror.com/manager/0.1.11/CodexAppManager_aarch64.dmg) |
+| Intel Mac | `CodexAppManager_x86_64.dmg` | [⤓ 镜像下载](https://codexapp.agentsmirror.com/manager/0.1.11/CodexAppManager_x86_64.dmg) |
+| Windows x64 | `CodexAppManager_0.1.11_x64-setup.exe` | [⤓ 镜像下载](https://codexapp.agentsmirror.com/manager/0.1.11/CodexAppManager_0.1.11_x64-setup.exe) |
 
-macOS 版本经 **Developer ID 签名 + Apple 公证**,首次打开不会被 Gatekeeper 拦截。装好后,后续 Manager 自身的升级由**应用内自更新**完成(见下),通常无需再手动下载。
+macOS 版本经 **Developer ID 签名 + Apple 公证**,首次打开不会被 Gatekeeper 拦截。镜像直链对应 **v0.1.11**;装好后 Manager 会通过**应用内自更新**保持最新(见下),首次安装无需手动追最新版本号。
 
 > 安装 Manager 后,真正的 Codex 桌面应用由 Manager 负责安装与更新——你不需要单独去下载 Codex 本体。
 
@@ -188,15 +190,17 @@ npm run tauri:build    # 本地构建(未签名)
 brew install --cask wangnov/tap/codex-app-manager
 ```
 
-### Manual download
+### Direct download
 
-Open the [latest GitHub Release](https://github.com/Wangnov/Codex-App-Manager/releases/latest) and grab your platform's file:
+Grab your platform's file from the [latest GitHub Release](https://github.com/Wangnov/Codex-App-Manager/releases/latest) (global), or use the **agentsmirror mirror** (no VPN needed in China; a Cloudflare Worker routes by region — IHEP for mainland China, R2 elsewhere):
 
-- **Apple Silicon Mac**: `CodexAppManager_aarch64.dmg`
-- **Intel Mac**: `CodexAppManager_x86_64.dmg`
-- **Windows x64**: `CodexAppManager_<version>_x64-setup.exe`
+| Platform | File | Mirror link |
+|---|---|---|
+| Apple Silicon Mac | `CodexAppManager_aarch64.dmg` | [⤓ mirror](https://codexapp.agentsmirror.com/manager/0.1.11/CodexAppManager_aarch64.dmg) |
+| Intel Mac | `CodexAppManager_x86_64.dmg` | [⤓ mirror](https://codexapp.agentsmirror.com/manager/0.1.11/CodexAppManager_x86_64.dmg) |
+| Windows x64 | `CodexAppManager_0.1.11_x64-setup.exe` | [⤓ mirror](https://codexapp.agentsmirror.com/manager/0.1.11/CodexAppManager_0.1.11_x64-setup.exe) |
 
-The macOS builds are **Developer ID signed + Apple notarized**, so Gatekeeper won't block first launch. After install, the Manager keeps **itself** up to date via in-app self-update (below) — you usually won't download it manually again.
+The macOS builds are **Developer ID signed + Apple notarized**, so Gatekeeper won't block first launch. The mirror links point at **v0.1.11**; after install, the Manager keeps **itself** up to date via in-app self-update (below), so you don't need to chase the latest version number by hand.
 
 > Once the Manager is installed, it installs and updates the actual Codex desktop app for you — you don't need to download Codex separately.
 
