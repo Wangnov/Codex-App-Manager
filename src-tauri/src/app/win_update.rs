@@ -523,9 +523,21 @@ pub fn perform_windows_update_with_install_mode(
     // the post-install health check + transparent fallback remain the backstop.
     let precheck = precheck_msix_dependencies(PathBuf::from(&staged_path).as_path());
     if precheck.should_route_portable() {
-        // We're going to portable, but `install_portable_after_stage` overwrites
-        // the portable install in place and does not stop a running build, so a
-        // managed portable instance must be closed first (same as the MSIX path).
+        // We're switching to portable, but the running build must be stopped
+        // first — `install_portable_after_stage` overwrites the portable install
+        // in place and does NOT stop a running instance. Close BOTH a still-present
+        // MSIX install (we're skipping the sideload that would otherwise replace it)
+        // and any managed portable build, exactly like the sideload path below —
+        // otherwise the old MSIX Codex keeps running and the user ends up on the
+        // stale build or with two instances side by side.
+        if let Some(installed) =
+            detect_installed_codex(PathBuf::from(&settings.install_root).as_path())
+        {
+            if installed.source == "msix" {
+                close_codex_gracefully_for_root(30, PathBuf::from(&installed.path).as_path())
+                    .map_err(engine_err)?;
+            }
+        }
         if let Some(previous) = &previous_installed {
             if previous.source == "portable" {
                 close_codex_gracefully_for_root(30, PathBuf::from(&previous.path).as_path())
