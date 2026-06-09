@@ -81,6 +81,7 @@ const ZH = {
   "install.done.open": "打开 Codex",
 
   "success.title": "已更新",
+  "success.flow": "已更新 {from} → {to}",
   "success.sub": "现在是 {version}",
   "success.relaunched": "Codex 已重启",
   "success.manualLaunch": "请手动启动 Codex",
@@ -242,6 +243,7 @@ const EN: Record<Key, string> = {
   "install.done.open": "Open Codex",
 
   "success.title": "Updated",
+  "success.flow": "Updated {from} → {to}",
   "success.sub": "Now on {version}",
   "success.relaunched": "Codex restarted",
   "success.manualLaunch": "Please launch Codex manually",
@@ -400,6 +402,7 @@ const FR: Record<Key, string> = {
   "install.done.open": "Ouvrir Codex",
 
   "success.title": "Mis à jour",
+  "success.flow": "Mis à jour {from} → {to}",
   "success.sub": "Maintenant en {version}",
   "success.relaunched": "Codex a redémarré",
   "success.manualLaunch": "Veuillez lancer Codex manuellement",
@@ -559,6 +562,7 @@ const ZH_TW: Record<Key, string> = {
   "install.done.open": "開啟 Codex",
 
   "success.title": "更新完成",
+  "success.flow": "已更新 {from} → {to}",
   "success.sub": "目前版本 {version}",
   "success.relaunched": "Codex 已重新啟動",
   "success.manualLaunch": "請手動啟動 Codex",
@@ -730,6 +734,7 @@ const DE: Record<Key, string> = {
   "install.done.open": "Codex öffnen",
 
   "success.title": "Aktualisiert",
+  "success.flow": "Aktualisiert {from} → {to}",
   "success.sub": "Jetzt Version {version}",
   "success.relaunched": "Codex neu gestartet",
   "success.manualLaunch": "Bitte Codex manuell starten",
@@ -901,6 +906,7 @@ const KO: Record<Key, string> = {
   "install.done.open": "Codex 열기",
 
   "success.title": "업데이트 완료",
+  "success.flow": "{from} → {to} 업데이트 완료",
   "success.sub": "현재 버전: {version}",
   "success.relaunched": "Codex가 재시작되었습니다",
   "success.manualLaunch": "Codex를 수동으로 실행해 주세요",
@@ -1063,6 +1069,7 @@ const JA: Record<Key, string> = {
   "install.done.title": "Codex をインストールしました",
   "install.done.open": "Codex を開く",
   "success.title": "アップデート完了",
+  "success.flow": "{from} → {to} に更新",
   "success.sub": "{version} になりました",
   "success.relaunched": "Codex を再起動しました",
   "success.manualLaunch": "Codex を手動で起動してください",
@@ -1212,6 +1219,7 @@ const RU: Record<Key, string> = {
   "install.done.title": "Codex установлен",
   "install.done.open": "Открыть Codex",
   "success.title": "Обновлено",
+  "success.flow": "Обновлено {from} → {to}",
   "success.sub": "Теперь версия {version}",
   "success.relaunched": "Codex перезапущен",
   "success.manualLaunch": "Запустите Codex вручную",
@@ -1361,6 +1369,7 @@ const AR: Record<Key, string> = {
   "install.done.title": "تم تثبيت Codex",
   "install.done.open": "فتح Codex",
   "success.title": "تم التحديث",
+  "success.flow": "تم التحديث {from} ← {to}",
   "success.sub": "الإصدار الحالي {version}",
   "success.relaunched": "أُعيد تشغيل Codex",
   "success.manualLaunch": "يُرجى تشغيل Codex يدوياً",
@@ -1510,6 +1519,7 @@ const ES: Record<Key, string> = {
   "install.done.title": "Codex instalado",
   "install.done.open": "Abrir Codex",
   "success.title": "Actualizado",
+  "success.flow": "Actualizado {from} → {to}",
   "success.sub": "Ahora en {version}",
   "success.relaunched": "Codex reiniciado",
   "success.manualLaunch": "Inicia Codex manualmente",
@@ -1659,6 +1669,7 @@ const PT_BR: Record<Key, string> = {
   "install.done.title": "Codex instalado",
   "install.done.open": "Abrir Codex",
   "success.title": "Atualizado",
+  "success.flow": "Atualizado {from} → {to}",
   "success.sub": "Agora na {version}",
   "success.relaunched": "Codex reiniciado",
   "success.manualLaunch": "Inicie o Codex manualmente",

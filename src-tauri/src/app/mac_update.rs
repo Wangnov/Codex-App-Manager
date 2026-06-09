@@ -397,8 +397,17 @@ pub struct MacPerformReport {
     pub verified: bool,
     /// The new version was relaunched (only when Codex had been running).
     pub relaunched: bool,
+    /// Codex WAS running but the relaunch failed — the user must start it
+    /// manually. Distinct from a plain `!relaunched`, which also covers the
+    /// clean case where Codex simply wasn't running (no action needed).
+    pub relaunch_failed: bool,
     /// The post-swap health check failed and we restored the previous bundle.
     pub rolled_back: bool,
+    /// A non-fatal warning to surface alongside an otherwise *successful* update
+    /// — e.g. the provenance record couldn't be saved (the install will keep
+    /// being seen as external), or where the previous bundle's backup was kept
+    /// after a relaunch failure. None on a fully clean update.
+    pub warning: Option<String>,
     pub message: String,
 }
 
@@ -548,7 +557,9 @@ pub fn perform_macos_update(
             installed_path: installed.path,
             verified: false,
             relaunched: false,
+            relaunch_failed: false,
             rolled_back: false,
+            warning: None,
             message: format!("已是最新 (build {})", plan.latest_build),
         });
     }
@@ -632,9 +643,9 @@ pub fn perform_macos_update(
         // keep classifying this now-manager install as "external".
         let mut store = ProvenanceStore::load();
         store.record(installed.path.clone(), plan.latest_build, "manager-installed");
-        let save_note = match store.save() {
-            Ok(()) => String::new(),
-            Err(e) => format!("；但托管记录保存失败（{e}），安装暂仍会被识别为外部"),
+        let save_warning = match store.save() {
+            Ok(()) => None,
+            Err(e) => Some(format!("托管记录保存失败（{e}），安装暂仍会被识别为外部")),
         };
 
         if was_running {
@@ -651,13 +662,15 @@ pub fn perform_macos_update(
                     installed_path: installed.path,
                     verified: true,
                     relaunched: false,
+                    relaunch_failed: true,
                     rolled_back: false,
+                    warning: Some(match &save_warning {
+                        Some(note) => format!("旧版本备份暂留于 {}；{note}", backup.display()),
+                        None => format!("旧版本备份暂留于 {}", backup.display()),
+                    }),
                     message: format!(
-                        "已替换为 build {}，但自动重启失败（{err}）：请手动启动 Codex；\
-                         旧版本备份暂留于 {}{}",
-                        plan.latest_build,
-                        backup.display(),
-                        save_note
+                        "已替换为 build {}，但自动重启失败（{err}）：请手动启动 Codex",
+                        plan.latest_build
                     ),
                 });
             }
@@ -673,11 +686,10 @@ pub fn perform_macos_update(
             installed_path: installed.path,
             verified: true,
             relaunched: was_running,
+            relaunch_failed: false,
             rolled_back: false,
-            message: format!(
-                "已更新 build {} → {}{}",
-                installed.build, plan.latest_build, save_note
-            ),
+            warning: save_warning,
+            message: format!("已更新 build {} → {}", installed.build, plan.latest_build),
         })
     } else {
         rollback(&install_path, &backup)
@@ -691,7 +703,9 @@ pub fn perform_macos_update(
             installed_path: installed.path,
             verified: true,
             relaunched,
+            relaunch_failed: false,
             rolled_back: true,
+            warning: None,
             message: "新版本健康检查未通过，已回滚到旧版本".to_string(),
         })
     }

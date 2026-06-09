@@ -277,7 +277,9 @@ export const managerApi = {
         installedPath: expected.path,
         verified: true,
         relaunched: true,
+        relaunchFailed: false,
         rolledBack: false,
+        warning: null,
         message: "（浏览器开发态：真实替换仅在桌面 app 内执行）",
       });
     }

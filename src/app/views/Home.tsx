@@ -12,7 +12,7 @@ import type {
 import { DEFAULT_SETTINGS } from "../../shared/types";
 import { Icon, CodexGlyph } from "../icons";
 import { useI18n, dirOf, type TKey } from "../i18n";
-import { Ring, TopBar } from "../components";
+import { Ring, TopBar, ResultBanner } from "../components";
 import { currentPlatform } from "../platform";
 import { WinHome } from "./WinHome";
 import { useCountUp } from "../useCountUp";
@@ -31,6 +31,9 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [report, setReport] = useState<MacUpdateReport | null>(null);
   const [status, setStatus] = useState<MacInstallStatus | null>(null);
   const [perform, setPerform] = useState<MacPerformReport | null>(null);
+  // Human-facing version pair captured at perform time, so the outcome strip can
+  // read "26.602.40724 → 26.602.71036" instead of raw build numbers.
+  const [updatedVer, setUpdatedVer] = useState<{ from: string; to: string } | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [busy, setBusy] = useState<"plan" | "perform" | "adopt" | "install" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -154,6 +157,11 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     if (!installed || !plan || plan.upToDate) return;
     setBusy("perform");
     setError(null);
+    // Capture the human-facing versions BEFORE the swap — afterward a re-check
+    // makes installed/latest identical. Fall back to a build number only if a
+    // feed omits the short version.
+    const fromVersion = installed.shortVersion || `build ${installed.build}`;
+    const toVersion = plan.latestShortVersion || `build ${plan.latestBuild}`;
     const un = await startDlListen();
     try {
       const result = await managerApi.macPerformUpdate({
@@ -162,6 +170,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         path: installed.path,
       });
       setPerform(result);
+      setUpdatedVer({ from: fromVersion, to: toVersion });
       setConfirmOpen(false);
       await refreshStatus();
       await check();
@@ -240,6 +249,20 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         : `${kind}${rechecking ? "-checking" : ""}`
   }`;
   const success = justInstalled || (!rechecking && kind === "uptodate");
+  // Outcome-strip detail + persistence. Surface a relaunch-failure prompt and
+  // any backend warning (provenance save failure, kept backup path), and pin the
+  // strip — no auto-dismiss — whenever there's something to act on or read, so a
+  // real warning never silently fades. A fully clean update has neither and
+  // self-dismisses.
+  const performDetail =
+    (perform &&
+      [perform.relaunchFailed ? t("success.manualLaunch") : null, perform.warning]
+        .filter(Boolean)
+        .join(" · ")) ||
+    undefined;
+  const performPinned = Boolean(
+    perform && (perform.rolledBack || perform.relaunchFailed || perform.warning),
+  );
   // Char-split only LTR scripts — splitting a cursive RTL script (Arabic) into
   // per-char elements breaks its contextual letter joining.
   const splitHeadline = !isShimmer && dirOf(lang) === "ltr";
@@ -328,12 +351,22 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
 
       <div className="scroll" ref={scopeRef}>
         {perform ? (
-          <div className={`banner ${perform.rolledBack ? "err" : "ok"}`}>
-            <Icon name={perform.rolledBack ? "alert" : "check"} />
-            {/* Backend message carries the full outcome: relaunch-failed +
-                backup kept, provenance save failure, rollback, etc. */}
-            <span>{perform.message}</span>
-          </div>
+          <ResultBanner
+            tone={perform.rolledBack ? "err" : "ok"}
+            title={
+              perform.rolledBack
+                ? t("success.rolledBack")
+                : updatedVer
+                  ? t("success.flow", { from: updatedVer.from, to: updatedVer.to })
+                  : t("success.title")
+            }
+            detail={perform.rolledBack ? undefined : performDetail}
+            autoDismissMs={performPinned ? undefined : 6000}
+            onClose={() => {
+              setPerform(null);
+              setUpdatedVer(null);
+            }}
+          />
         ) : null}
         {error ? (
           <div className="banner err">

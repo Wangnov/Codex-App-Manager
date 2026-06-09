@@ -12,7 +12,7 @@ import type {
 import { DEFAULT_SETTINGS } from "../../shared/types";
 import { Icon, CodexGlyph } from "../icons";
 import { useI18n, dirOf, type TKey } from "../i18n";
-import { Ring, TopBar } from "../components";
+import { Ring, TopBar, ResultBanner } from "../components";
 import { useCountUp } from "../useCountUp";
 import { mib, fmtDateTime } from "../format";
 import { useHomeMotion } from "../motion";
@@ -32,6 +32,9 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [report, setReport] = useState<WinUpdateReport | null>(null);
   const [status, setStatus] = useState<WinInstallStatus | null>(null);
   const [perform, setPerform] = useState<WinPerformReport | null>(null);
+  // Version pair captured at update time (fresh installs have no "from"), so the
+  // outcome strip can read "X → Y" like the mac side.
+  const [updatedVer, setUpdatedVer] = useState<{ from: string; to: string } | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [defaultInstallRoot, setDefaultInstallRoot] = useState(DEFAULT_SETTINGS.installRoot);
   const [busy, setBusy] = useState<"plan" | "perform" | "adopt" | "install" | null>(null);
@@ -146,10 +149,20 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     async (mode: "perform" | "install", installRoot?: string) => {
       setBusy(mode);
       setError(null);
+      // For an in-place update (not a fresh install) capture the human-facing
+      // versions before the swap, so the outcome strip can show "X → Y".
+      const fromVersion =
+        mode === "perform" ? status?.installed?.version ?? report?.installed?.version ?? "" : "";
+      const toVersion = report?.plan?.latestVersion ?? "";
       const unlisten = await startDlListen();
       try {
         const result = await managerApi.winPerformUpdate(true, installRoot);
         setPerform(result);
+        setUpdatedVer(
+          mode === "perform" && fromVersion && toVersion
+            ? { from: fromVersion, to: toVersion }
+            : null,
+        );
         setConfirmOpen(false);
         setInstallDirOpen(false);
         await refreshStatus();
@@ -164,7 +177,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         setDl(null);
       }
     },
-    [refreshStatus, check, startDlListen],
+    [status, report, refreshStatus, check, startDlListen],
   );
 
   const freshInstallNeedsLocation = useCallback(async () => {
@@ -274,6 +287,14 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const isShimmer = progressing || rechecking || kind === "loading";
   const scene = `${lang}/${progressing ? `progress-${busy}` : `${kind}${rechecking ? "-checking" : ""}`}`;
   const success = !rechecking && kind === "uptodate";
+  // A Windows install/update is "clean" only when it actually changed something
+  // without a detour — not a stale-plan no-op (stage.upToDate) and not an
+  // MSIX→portable fallback. Non-clean successes keep the backend's explanation
+  // (message + notes) and stay pinned; only clean ones self-dismiss.
+  const winClean =
+    Boolean(perform?.success) && !perform?.stage?.upToDate && !perform?.fallbackAttempted;
+  const winResultDetail =
+    perform && !winClean ? perform.notes.filter(Boolean).join(" · ") || undefined : undefined;
   // Char-split only LTR scripts — splitting cursive RTL (Arabic) breaks joining.
   const splitHeadline = !isShimmer && dirOf(lang) === "ltr";
   useHomeMotion(scopeRef, scene, { splitHeadline, success });
@@ -327,10 +348,25 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
 
       <div className="scroll" ref={scopeRef}>
         {perform ? (
-          <div className={`banner ${perform.success ? "ok" : "err"}`}>
-            <Icon name={perform.success ? "check" : "alert"} />
-            <span>{perform.message}</span>
-          </div>
+          <ResultBanner
+            tone={perform.success ? "ok" : "err"}
+            // Clean success → the version bump / install line. Anything non-clean
+            // (no-op, fallback, or failure) keeps the backend's message so the
+            // reason is never lost.
+            title={
+              winClean
+                ? updatedVer
+                  ? t("success.flow", { from: updatedVer.from, to: updatedVer.to })
+                  : t("install.done.title")
+                : perform.message
+            }
+            detail={winResultDetail}
+            autoDismissMs={winClean ? 6000 : undefined}
+            onClose={() => {
+              setPerform(null);
+              setUpdatedVer(null);
+            }}
+          />
         ) : null}
         {error ? (
           <div className="banner err">

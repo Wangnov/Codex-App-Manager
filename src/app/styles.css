@@ -986,7 +986,10 @@ button.row.danger:hover {
   border-radius: var(--r-pill);
   box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.3),
     0 0 12px color-mix(in oklch, var(--accent) 45%, transparent);
-  transition: width 0.4s var(--ease);
+  /* NO width transition. The fill width is already eased frame-by-frame by
+     useCountUp — the SAME value that drives the % readout. Layering a CSS
+     transition on top double-eases it: every rAF tick restarts a 0.4s tween,
+     so the bar lags tens of percent behind the number (46% number, ~15% bar). */
 }
 .pct {
   margin-top: var(--space-xs);
@@ -1203,6 +1206,114 @@ button.row.danger:hover {
   opacity: 0.5;
   cursor: default;
 }
+
+/* ── Result strip (update / install outcome) ─────────────────────────────── */
+/* Owns its lifecycle (auto-dismiss + ✕), unlike the static .banner notes. A
+   calm neutral surface carrying a single tinted badge of color — the version
+   bump is the message, not a wall of green. On exit the slot collapses its own
+   height so the hero below glides up. */
+.resultbar-slot {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 0.34s var(--ease);
+}
+.resultbar-slot.leaving {
+  grid-template-rows: 0fr;
+}
+.resultbar {
+  min-height: 0; /* let the grid row collapse it to nothing on exit */
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  box-shadow: var(--elev-1);
+  animation: resultbar-in 0.42s var(--ease-out) both;
+  transition: opacity 0.22s var(--ease), transform 0.26s var(--ease);
+}
+.resultbar-slot.leaving .resultbar {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+@keyframes resultbar-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+.rb-badge {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+}
+.rb-badge svg {
+  width: 15px;
+  height: 15px;
+}
+.resultbar.ok .rb-badge {
+  background: var(--success-tint);
+  color: var(--success-deep);
+}
+.resultbar.err .rb-badge {
+  background: var(--danger-tint);
+  color: var(--danger-deep);
+}
+.rb-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.rb-title {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.005em;
+  font-variant-numeric: tabular-nums;
+}
+.rb-detail {
+  font-size: var(--fs-label);
+  font-weight: 500;
+  color: var(--text-soft);
+}
+.rb-close {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  border: none;
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: background 0.16s var(--ease), color 0.16s var(--ease);
+}
+.rb-close:hover {
+  background: var(--surface-3);
+  color: var(--text-soft);
+}
+.rb-close svg {
+  width: 15px;
+  height: 15px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .resultbar {
+    animation: none;
+    transition: none;
+  }
+  .resultbar-slot {
+    transition: none;
+  }
+}
+
 .note {
   font-size: var(--fs-label);
   color: var(--text-faint);

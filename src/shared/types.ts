@@ -67,7 +67,15 @@ export interface MacPerformReport {
   installedPath: string;
   verified: boolean;
   relaunched: boolean;
+  /** Codex was running but the relaunch failed — the user must start it
+   *  manually. Distinct from `!relaunched`, which also covers the clean case
+   *  where Codex simply wasn't running (no action needed). */
+  relaunchFailed: boolean;
   rolledBack: boolean;
+  /** Non-fatal warning to surface on an otherwise successful update (e.g. a
+   *  provenance save failure, or where the previous backup was kept). null when
+   *  the update was fully clean. */
+  warning: string | null;
   message: string;
 }
 

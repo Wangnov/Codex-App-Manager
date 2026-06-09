@@ -155,6 +155,63 @@ export function Ring({
   );
 }
 
+/** Update-outcome strip shown after a perform/install completes. Unlike the
+ *  inline `.banner` notes it owns its lifecycle: it can be dismissed by hand
+ *  (✕), and a clean success auto-dismisses after `autoDismissMs`. On exit it
+ *  collapses its own height (grid-rows) so the content below glides up instead
+ *  of snapping. Carries one rare accent of color (the badge) and a tabular
+ *  title, so a version bump like "26.602.40724 → 26.602.71036" reads cleanly. */
+export function ResultBanner({
+  tone,
+  title,
+  detail,
+  autoDismissMs,
+  onClose,
+}: {
+  tone: "ok" | "err";
+  title: ReactNode;
+  detail?: ReactNode;
+  autoDismissMs?: number;
+  onClose: () => void;
+}) {
+  const { t } = useI18n();
+  const [leaving, setLeaving] = useState(false);
+
+  // Clean, relaunched success fades itself out; everything else stays until the
+  // user dismisses it (a rollback or a "launch manually" note must be read).
+  useEffect(() => {
+    if (!autoDismissMs) return;
+    const id = window.setTimeout(() => setLeaving(true), autoDismissMs);
+    return () => window.clearTimeout(id);
+  }, [autoDismissMs]);
+
+  // Once leaving, let the collapse/fade play, then actually unmount. Honor
+  // reduced-motion by unmounting immediately (the CSS drops the transition too).
+  useEffect(() => {
+    if (!leaving) return;
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    const id = window.setTimeout(onClose, reduce ? 0 : 340);
+    return () => window.clearTimeout(id);
+  }, [leaving, onClose]);
+
+  return (
+    <div className={`resultbar-slot${leaving ? " leaving" : ""}`}>
+      <div className={`resultbar ${tone}`} role="status" aria-live="polite">
+        <span className="rb-badge" aria-hidden="true">
+          <Icon name={tone === "ok" ? "check" : "alert"} />
+        </span>
+        <span className="rb-text">
+          <span className="rb-title">{title}</span>
+          {detail ? <span className="rb-detail">{detail}</span> : null}
+        </span>
+        <button className="rb-close" title={t("nav.close")} onClick={() => setLeaving(true)}>
+          <Icon name="close" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function Toggle({
   checked,
   onChange,
