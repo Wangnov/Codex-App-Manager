@@ -29,8 +29,6 @@ const ZH = {
 
   "nav.back": "返回",
   "nav.settings": "设置",
-  "nav.about": "关于",
-  "nav.uninstall": "卸载 Codex",
   "nav.config": "Codex 配置管理",
   "nav.close": "关闭",
 
@@ -74,7 +72,6 @@ const ZH = {
 
   "progress.title": "正在更新…",
   "progress.installing": "正在安装…",
-  "progress.downloading": "下载中 · 请稍候",
   "progress.downloadingFrom": "正在从 {source} 下载",
   "progress.preparing": "正在准备…",
   "install.done.title": "已安装 Codex",
@@ -82,8 +79,6 @@ const ZH = {
 
   "success.title": "已更新",
   "success.flow": "已更新 {from} → {to}",
-  "success.sub": "现在是 {version}",
-  "success.relaunched": "Codex 已重启",
   "success.manualLaunch": "请手动启动 Codex",
   "success.rolledBack": "更新未完成,已恢复到原版本",
   "success.done": "完成",
@@ -105,13 +100,10 @@ const ZH = {
   "settings.general.autostart": "开机时启动",
   "settings.general.autostartNote": "默认关闭",
   "settings.general.confirmClose": "关闭前确认",
-  "settings.general.signedOnly": "只安装官方签名的版本",
-  "settings.general.signedOnlyNote": "为你的安全,始终开启",
   "settings.windows.header": "Windows 安装方式",
   "settings.windows.msix": "标准安装（MSIX）",
   "settings.windows.msixDesc": "优先使用系统安装包;如果这台电脑不允许,会自动改用免安装版。",
   "settings.windows.portable": "免安装版（EXE）",
-  "settings.windows.portableDesc": "安装到用户目录,不需要管理员权限,也不会修改系统策略。",
   "settings.windows.portableDescDefault": "默认安装到当前用户目录,不需要管理员权限,也不会修改系统策略。",
   "settings.windows.portableDescCustom": "使用你选择的位置;普通文件夹会自动安装到其下的 Codex 子文件夹。",
   "settings.windows.installRoot": "安装位置",
@@ -157,8 +149,6 @@ const ZH = {
   "uninstall.confirm1.bodyPurge": "将从你的电脑移除 Codex 应用,并清除你的数据。",
   "uninstall.confirm2.title": "确定清除所有数据?",
   "uninstall.confirm2.body": "登录、会话与配置(~/.codex)将被永久删除,无法恢复。",
-  "uninstall.doneKept": "已卸载 Codex,并保留了你的数据。",
-  "uninstall.doneCleared": "已卸载 Codex,并清除了数据。",
 
   "config.soon": "即将支持",
   "config.desc": "在这里管理 ~/.codex 里的会话、登录与配置。",
@@ -179,8 +169,6 @@ const ZH = {
   "win.installDir.useCurrent": "安装到此位置",
   "win.installDir.browse": "浏览…",
   "win.installSub": "版本 {version}",
-  "win.uninstall.purge": "同时清除我的数据",
-  "win.uninstall.purgeNote": "登录、会话与配置都会被删除;不勾选则保留,重装后可继续使用。",
 } as const;
 
 type Key = keyof typeof ZH;
@@ -191,8 +179,6 @@ const EN: Record<Key, string> = {
 
   "nav.back": "Back",
   "nav.settings": "Settings",
-  "nav.about": "About",
-  "nav.uninstall": "Uninstall Codex",
   "nav.config": "Codex configuration",
   "nav.close": "Close",
 
@@ -236,7 +222,6 @@ const EN: Record<Key, string> = {
 
   "progress.title": "Updating…",
   "progress.installing": "Installing…",
-  "progress.downloading": "Downloading · please wait",
   "progress.downloadingFrom": "Downloading from {source}",
   "progress.preparing": "Preparing…",
   "install.done.title": "Codex installed",
@@ -244,8 +229,6 @@ const EN: Record<Key, string> = {
 
   "success.title": "Updated",
   "success.flow": "Updated {from} → {to}",
-  "success.sub": "Now on {version}",
-  "success.relaunched": "Codex restarted",
   "success.manualLaunch": "Please launch Codex manually",
   "success.rolledBack": "Update didn’t finish — restored the previous version",
   "success.done": "Done",
@@ -267,13 +250,10 @@ const EN: Record<Key, string> = {
   "settings.general.autostart": "Launch at login",
   "settings.general.autostartNote": "Off by default",
   "settings.general.confirmClose": "Confirm before closing",
-  "settings.general.signedOnly": "Only install officially signed builds",
-  "settings.general.signedOnlyNote": "Always on, for your safety",
   "settings.windows.header": "Windows install method",
   "settings.windows.msix": "Standard install (MSIX)",
   "settings.windows.msixDesc": "Use the system package first; if this PC blocks it, the app falls back automatically.",
   "settings.windows.portable": "Portable install (EXE)",
-  "settings.windows.portableDesc": "Install in your user folder with no admin prompt and no system policy changes.",
   "settings.windows.portableDescDefault": "By default, install in your current user folder with no admin prompt or system policy changes.",
   "settings.windows.portableDescCustom": "Use your chosen location; ordinary folders install into a Codex subfolder.",
   "settings.windows.installRoot": "Install location",
@@ -319,8 +299,6 @@ const EN: Record<Key, string> = {
   "uninstall.confirm1.bodyPurge": "This removes the Codex app and clears your data.",
   "uninstall.confirm2.title": "Erase all data?",
   "uninstall.confirm2.body": "Sign-in, sessions and config (~/.codex) will be permanently deleted — this can't be undone.",
-  "uninstall.doneKept": "Codex uninstalled — your data was kept.",
-  "uninstall.doneCleared": "Codex uninstalled — data cleared.",
 
   "config.soon": "Coming soon",
   "config.desc": "Manage the sessions, sign-in and config inside ~/.codex here.",
@@ -341,8 +319,6 @@ const EN: Record<Key, string> = {
   "win.installDir.useCurrent": "Install here",
   "win.installDir.browse": "Browse…",
   "win.installSub": "Version {version}",
-  "win.uninstall.purge": "Also delete my data",
-  "win.uninstall.purgeNote": "Sign-in, sessions and config are removed; leave it off to keep them for a reinstall.",
 };
 
 const FR: Record<Key, string> = {
@@ -350,8 +326,6 @@ const FR: Record<Key, string> = {
 
   "nav.back": "Retour",
   "nav.settings": "Réglages",
-  "nav.about": "À propos",
-  "nav.uninstall": "Désinstaller Codex",
   "nav.config": "Configuration Codex",
   "nav.close": "Fermer",
 
@@ -395,7 +369,6 @@ const FR: Record<Key, string> = {
 
   "progress.title": "Mise à jour en cours…",
   "progress.installing": "Installation…",
-  "progress.downloading": "Téléchargement · veuillez patienter",
   "progress.downloadingFrom": "Téléchargement depuis {source}",
   "progress.preparing": "Préparation…",
   "install.done.title": "Codex installé",
@@ -403,8 +376,6 @@ const FR: Record<Key, string> = {
 
   "success.title": "Mis à jour",
   "success.flow": "Mis à jour {from} → {to}",
-  "success.sub": "Maintenant en {version}",
-  "success.relaunched": "Codex a redémarré",
   "success.manualLaunch": "Veuillez lancer Codex manuellement",
   "success.rolledBack": "La mise à jour n'a pas abouti — version précédente restaurée",
   "success.done": "Terminé",
@@ -426,13 +397,10 @@ const FR: Record<Key, string> = {
   "settings.general.autostart": "Lancer au démarrage",
   "settings.general.autostartNote": "Désactivé par défaut",
   "settings.general.confirmClose": "Confirmer avant de fermer",
-  "settings.general.signedOnly": "N'installer que les versions signées officiellement",
-  "settings.general.signedOnlyNote": "Toujours activé, pour votre sécurité",
   "settings.windows.header": "Méthode d'installation Windows",
   "settings.windows.msix": "Installation standard (MSIX)",
   "settings.windows.msixDesc": "Utilise le paquet système en priorité ; si ce PC le bloque, l'application bascule automatiquement.",
   "settings.windows.portable": "Installation portable (EXE)",
-  "settings.windows.portableDesc": "S'installe dans votre dossier utilisateur, sans droits d'administrateur ni modification de stratégie système.",
   "settings.windows.portableDescDefault": "Par défaut, s'installe dans le dossier utilisateur actuel, sans droits d'administrateur ni modification de stratégie système.",
   "settings.windows.portableDescCustom": "Utilise l'emplacement choisi; les dossiers ordinaires s'installent automatiquement dans un sous-dossier Codex.",
   "settings.windows.installRoot": "Emplacement d'installation",
@@ -478,8 +446,6 @@ const FR: Record<Key, string> = {
   "uninstall.confirm1.bodyPurge": "L'application Codex sera supprimée ainsi que toutes vos données.",
   "uninstall.confirm2.title": "Effacer toutes les données ?",
   "uninstall.confirm2.body": "Connexion, sessions et configuration (~/.codex) seront définitivement supprimées — cette action est irréversible.",
-  "uninstall.doneKept": "Codex désinstallé — vos données ont été conservées.",
-  "uninstall.doneCleared": "Codex désinstallé — données effacées.",
 
   "config.soon": "Bientôt disponible",
   "config.desc": "Gérez les sessions, la connexion et la configuration dans ~/.codex ici.",
@@ -500,8 +466,6 @@ const FR: Record<Key, string> = {
   "win.installDir.useCurrent": "Installer ici",
   "win.installDir.browse": "Parcourir…",
   "win.installSub": "Version {version}",
-  "win.uninstall.purge": "Supprimer aussi mes données",
-  "win.uninstall.purgeNote": "Connexion, sessions et configuration seront supprimées ; laissez décoché pour les conserver en vue d'une réinstallation.",
 };
 
 const ZH_TW: Record<Key, string> = {
@@ -509,8 +473,6 @@ const ZH_TW: Record<Key, string> = {
 
   "nav.back": "返回",
   "nav.settings": "設定",
-  "nav.about": "關於",
-  "nav.uninstall": "卸載 Codex",
   "nav.config": "Codex 設定管理",
   "nav.close": "關閉",
 
@@ -555,7 +517,6 @@ const ZH_TW: Record<Key, string> = {
 
   "progress.title": "更新中…",
   "progress.installing": "安裝中…",
-  "progress.downloading": "下載中・請稍候",
   "progress.downloadingFrom": "正在從 {source} 下載",
   "progress.preparing": "準備中…",
   "install.done.title": "Codex 已安裝",
@@ -563,8 +524,6 @@ const ZH_TW: Record<Key, string> = {
 
   "success.title": "更新完成",
   "success.flow": "已更新 {from} → {to}",
-  "success.sub": "目前版本 {version}",
-  "success.relaunched": "Codex 已重新啟動",
   "success.manualLaunch": "請手動啟動 Codex",
   "success.rolledBack": "更新未完成，已還原至先前版本",
   "success.done": "完成",
@@ -586,15 +545,11 @@ const ZH_TW: Record<Key, string> = {
   "settings.general.autostart": "登入時啟動",
   "settings.general.autostartNote": "預設為關閉",
   "settings.general.confirmClose": "關閉前確認",
-  "settings.general.signedOnly": "僅安裝官方簽署的版本",
-  "settings.general.signedOnlyNote": "為保障安全，始終開啟",
   "settings.windows.header": "Windows 安裝方式",
   "settings.windows.msix": "標準安裝（MSIX）",
   "settings.windows.msixDesc":
     "優先使用系統安裝套件；若此電腦不允許，將自動改用免安裝版。",
   "settings.windows.portable": "免安裝版（EXE）",
-  "settings.windows.portableDesc":
-    "安裝至使用者目錄，無需系統管理員權限，也不會變更系統原則。",
   "settings.windows.portableDescDefault":
     "預設安裝到目前使用者目錄，無需系統管理員權限，也不會變更系統原則。",
   "settings.windows.portableDescCustom":
@@ -648,8 +603,6 @@ const ZH_TW: Record<Key, string> = {
   "uninstall.confirm2.title": "確定要清除所有資料？",
   "uninstall.confirm2.body":
     "登入狀態、工作階段與設定（~/.codex）將被永久刪除，無法復原。",
-  "uninstall.doneKept": "Codex 已卸載，資料已保留。",
-  "uninstall.doneCleared": "Codex 已卸載，資料已清除。",
 
   "config.soon": "即將推出",
   "config.desc": "在此管理 ~/.codex 中的工作階段、登入狀態與設定。",
@@ -671,9 +624,6 @@ const ZH_TW: Record<Key, string> = {
   "win.installDir.useCurrent": "安裝到此位置",
   "win.installDir.browse": "瀏覽…",
   "win.installSub": "版本 {version}",
-  "win.uninstall.purge": "同時刪除我的資料",
-  "win.uninstall.purgeNote":
-    "登入狀態、工作階段與設定都會被刪除；不勾選則保留，重新安裝後可繼續使用。",
 };
 
 const DE: Record<Key, string> = {
@@ -681,8 +631,6 @@ const DE: Record<Key, string> = {
 
   "nav.back": "Zurück",
   "nav.settings": "Einstellungen",
-  "nav.about": "Info",
-  "nav.uninstall": "Codex deinstallieren",
   "nav.config": "Codex-Konfiguration",
   "nav.close": "Schließen",
 
@@ -727,7 +675,6 @@ const DE: Record<Key, string> = {
 
   "progress.title": "Wird aktualisiert…",
   "progress.installing": "Wird installiert…",
-  "progress.downloading": "Download läuft · Bitte warten",
   "progress.downloadingFrom": "Download von {source}",
   "progress.preparing": "Wird vorbereitet…",
   "install.done.title": "Codex installiert",
@@ -735,8 +682,6 @@ const DE: Record<Key, string> = {
 
   "success.title": "Aktualisiert",
   "success.flow": "Aktualisiert {from} → {to}",
-  "success.sub": "Jetzt Version {version}",
-  "success.relaunched": "Codex neu gestartet",
   "success.manualLaunch": "Bitte Codex manuell starten",
   "success.rolledBack": "Update nicht abgeschlossen — vorherige Version wiederhergestellt",
   "success.done": "Fertig",
@@ -758,15 +703,11 @@ const DE: Record<Key, string> = {
   "settings.general.autostart": "Bei Anmeldung starten",
   "settings.general.autostartNote": "Standardmäßig deaktiviert",
   "settings.general.confirmClose": "Vor dem Schließen bestätigen",
-  "settings.general.signedOnly": "Nur offiziell signierte Versionen installieren",
-  "settings.general.signedOnlyNote": "Immer aktiv — zu deiner Sicherheit",
   "settings.windows.header": "Windows-Installationsmethode",
   "settings.windows.msix": "Standardinstallation (MSIX)",
   "settings.windows.msixDesc":
     "Verwendet zuerst das Systempaket; falls dieser PC es blockiert, wechselt die App automatisch.",
   "settings.windows.portable": "Portable-Version (EXE)",
-  "settings.windows.portableDesc":
-    "Ins Benutzerverzeichnis installieren — kein Administratorzugriff, keine Systemänderungen.",
   "settings.windows.portableDescDefault":
     "Standardmäßig ins aktuelle Benutzerverzeichnis installieren — ohne Administratorrechte und ohne Systemrichtlinien zu ändern.",
   "settings.windows.portableDescCustom":
@@ -819,8 +760,6 @@ const DE: Record<Key, string> = {
   "uninstall.confirm2.title": "Alle Daten löschen?",
   "uninstall.confirm2.body":
     "Anmeldung, Sitzungen und Konfiguration (~/.codex) werden dauerhaft gelöscht — dieser Vorgang kann nicht rückgängig gemacht werden.",
-  "uninstall.doneKept": "Codex deinstalliert — deine Daten wurden behalten.",
-  "uninstall.doneCleared": "Codex deinstalliert — Daten gelöscht.",
 
   "config.soon": "Demnächst verfügbar",
   "config.desc": "Sitzungen, Anmeldung und Konfiguration in ~/.codex hier verwalten.",
@@ -843,9 +782,6 @@ const DE: Record<Key, string> = {
   "win.installDir.useCurrent": "Hier installieren",
   "win.installDir.browse": "Durchsuchen…",
   "win.installSub": "Version {version}",
-  "win.uninstall.purge": "Meine Daten ebenfalls löschen",
-  "win.uninstall.purgeNote":
-    "Anmeldung, Sitzungen und Konfiguration werden entfernt; deaktiviert lassen, um sie für eine Neuinstallation zu behalten.",
 };
 
 const KO: Record<Key, string> = {
@@ -853,8 +789,6 @@ const KO: Record<Key, string> = {
 
   "nav.back": "뒤로",
   "nav.settings": "설정",
-  "nav.about": "정보",
-  "nav.uninstall": "Codex 제거",
   "nav.config": "Codex 구성 관리",
   "nav.close": "닫기",
 
@@ -899,7 +833,6 @@ const KO: Record<Key, string> = {
 
   "progress.title": "업데이트 중…",
   "progress.installing": "설치 중…",
-  "progress.downloading": "다운로드 중 · 잠시 기다려 주세요",
   "progress.downloadingFrom": "{source}에서 다운로드 중",
   "progress.preparing": "준비 중…",
   "install.done.title": "Codex 설치 완료",
@@ -907,8 +840,6 @@ const KO: Record<Key, string> = {
 
   "success.title": "업데이트 완료",
   "success.flow": "{from} → {to} 업데이트 완료",
-  "success.sub": "현재 버전: {version}",
-  "success.relaunched": "Codex가 재시작되었습니다",
   "success.manualLaunch": "Codex를 수동으로 실행해 주세요",
   "success.rolledBack": "업데이트가 완료되지 않아 이전 버전으로 복원되었습니다",
   "success.done": "완료",
@@ -930,15 +861,11 @@ const KO: Record<Key, string> = {
   "settings.general.autostart": "로그인 시 자동 실행",
   "settings.general.autostartNote": "기본값: 꺼짐",
   "settings.general.confirmClose": "닫기 전 확인",
-  "settings.general.signedOnly": "공식 서명된 버전만 설치",
-  "settings.general.signedOnlyNote": "보안을 위해 항상 활성화됩니다",
   "settings.windows.header": "Windows 설치 방식",
   "settings.windows.msix": "표준 설치 (MSIX)",
   "settings.windows.msixDesc":
     "시스템 패키지를 우선 사용하며, 이 PC에서 차단될 경우 자동으로 대체 방식으로 전환됩니다.",
   "settings.windows.portable": "포터블 설치 (EXE)",
-  "settings.windows.portableDesc":
-    "관리자 권한 없이 사용자 폴더에 설치하며, 시스템 정책을 변경하지 않습니다.",
   "settings.windows.portableDescDefault":
     "기본적으로 현재 사용자 폴더에 설치하며, 관리자 권한이나 시스템 정책 변경이 필요하지 않습니다.",
   "settings.windows.portableDescCustom":
@@ -991,8 +918,6 @@ const KO: Record<Key, string> = {
   "uninstall.confirm2.title": "모든 데이터를 삭제할까요?",
   "uninstall.confirm2.body":
     "로그인 상태, 세션 및 구성(~/.codex)이 영구적으로 삭제되며 복원할 수 없습니다.",
-  "uninstall.doneKept": "Codex가 제거되었습니다 — 데이터는 보존되었습니다.",
-  "uninstall.doneCleared": "Codex가 제거되었습니다 — 데이터도 삭제되었습니다.",
 
   "config.soon": "곧 지원 예정",
   "config.desc": "~/.codex 안의 세션, 로그인 및 구성을 여기서 관리하세요.",
@@ -1014,17 +939,12 @@ const KO: Record<Key, string> = {
   "win.installDir.useCurrent": "여기에 설치",
   "win.installDir.browse": "찾아보기…",
   "win.installSub": "버전 {version}",
-  "win.uninstall.purge": "데이터도 함께 삭제",
-  "win.uninstall.purgeNote":
-    "로그인 상태, 세션 및 구성이 삭제됩니다. 해제 시 보존되어 재설치 후에도 이어서 사용할 수 있습니다.",
 };
 
 const JA: Record<Key, string> = {
   "app.name": "Codex App マネージャー",
   "nav.back": "戻る",
   "nav.settings": "設定",
-  "nav.about": "このアプリについて",
-  "nav.uninstall": "Codex をアンインストール",
   "nav.config": "Codex 設定管理",
   "nav.close": "閉じる",
   "home.checking": "確認中…",
@@ -1063,15 +983,12 @@ const JA: Record<Key, string> = {
   "close.confirm.ok": "閉じる",
   "progress.title": "アップデート中…",
   "progress.installing": "インストール中…",
-  "progress.downloading": "ダウンロード中 · しばらくお待ちください",
   "progress.downloadingFrom": "{source} からダウンロード中",
   "progress.preparing": "準備中…",
   "install.done.title": "Codex をインストールしました",
   "install.done.open": "Codex を開く",
   "success.title": "アップデート完了",
   "success.flow": "{from} → {to} に更新",
-  "success.sub": "{version} になりました",
-  "success.relaunched": "Codex を再起動しました",
   "success.manualLaunch": "Codex を手動で起動してください",
   "success.rolledBack": "アップデートが完了しませんでした — 以前のバージョンに戻しました",
   "success.done": "完了",
@@ -1092,13 +1009,10 @@ const JA: Record<Key, string> = {
   "settings.general.autostart": "ログイン時に起動",
   "settings.general.autostartNote": "デフォルトはオフ",
   "settings.general.confirmClose": "閉じる前に確認",
-  "settings.general.signedOnly": "公式署名済みビルドのみインストール",
-  "settings.general.signedOnlyNote": "安全のため、常にオン",
   "settings.windows.header": "Windows インストール方法",
   "settings.windows.msix": "標準インストール（MSIX）",
   "settings.windows.msixDesc": "システムパッケージを優先して使用します。このPCでブロックされた場合は自動的に代替方法に切り替わります。",
   "settings.windows.portable": "ポータブルインストール（EXE）",
-  "settings.windows.portableDesc": "管理者権限不要でユーザーフォルダーにインストール。システムポリシーは変更しません。",
   "settings.windows.portableDescDefault":
     "既定では現在のユーザーフォルダーにインストールし、管理者権限もシステムポリシーの変更も不要です。",
   "settings.windows.portableDescCustom":
@@ -1145,8 +1059,6 @@ const JA: Record<Key, string> = {
   "uninstall.confirm1.bodyPurge": "Codex アプリを削除し、データも消去します。",
   "uninstall.confirm2.title": "すべてのデータを消去しますか？",
   "uninstall.confirm2.body": "サインイン情報、セッション、設定（~/.codex）が完全に削除されます — この操作は元に戻せません。",
-  "uninstall.doneKept": "Codex をアンインストールしました — データは保持されています。",
-  "uninstall.doneCleared": "Codex をアンインストールし、データを消去しました。",
   "config.soon": "近日公開",
   "config.desc": "~/.codex 内のセッション、サインイン情報、設定をここで管理します。",
   "source.auto": "自動",
@@ -1165,16 +1077,12 @@ const JA: Record<Key, string> = {
   "win.installDir.useCurrent": "この場所にインストール",
   "win.installDir.browse": "参照…",
   "win.installSub": "バージョン {version}",
-  "win.uninstall.purge": "データも一緒に削除する",
-  "win.uninstall.purgeNote": "サインイン情報、セッション、設定が削除されます。チェックしない場合は保持され、再インストール後に使用できます。",
 };
 
 const RU: Record<Key, string> = {
   "app.name": "Менеджер Codex App",
   "nav.back": "Назад",
   "nav.settings": "Настройки",
-  "nav.about": "О программе",
-  "nav.uninstall": "Удалить Codex",
   "nav.config": "Настройки Codex",
   "nav.close": "Закрыть",
   "home.checking": "Проверка…",
@@ -1213,15 +1121,12 @@ const RU: Record<Key, string> = {
   "close.confirm.ok": "Закрыть",
   "progress.title": "Обновление…",
   "progress.installing": "Установка…",
-  "progress.downloading": "Загрузка · подождите",
   "progress.downloadingFrom": "Загрузка из {source}",
   "progress.preparing": "Подготовка…",
   "install.done.title": "Codex установлен",
   "install.done.open": "Открыть Codex",
   "success.title": "Обновлено",
   "success.flow": "Обновлено {from} → {to}",
-  "success.sub": "Теперь версия {version}",
-  "success.relaunched": "Codex перезапущен",
   "success.manualLaunch": "Запустите Codex вручную",
   "success.rolledBack": "Обновление не завершилось — восстановлена предыдущая версия",
   "success.done": "Готово",
@@ -1242,13 +1147,10 @@ const RU: Record<Key, string> = {
   "settings.general.autostart": "Запускать при входе",
   "settings.general.autostartNote": "По умолчанию выключено",
   "settings.general.confirmClose": "Подтверждать закрытие",
-  "settings.general.signedOnly": "Устанавливать только официально подписанные сборки",
-  "settings.general.signedOnlyNote": "Всегда включено в целях безопасности",
   "settings.windows.header": "Способ установки на Windows",
   "settings.windows.msix": "Стандартная установка (MSIX)",
   "settings.windows.msixDesc": "Сначала используется системный пакет; если компьютер его блокирует, приложение автоматически переключится на другой вариант.",
   "settings.windows.portable": "Портативная версия (EXE)",
-  "settings.windows.portableDesc": "Устанавливается в папку пользователя без прав администратора и без изменения системных политик.",
   "settings.windows.portableDescDefault":
     "По умолчанию устанавливается в папку текущего пользователя без прав администратора и без изменения системных политик.",
   "settings.windows.portableDescCustom":
@@ -1295,8 +1197,6 @@ const RU: Record<Key, string> = {
   "uninstall.confirm1.bodyPurge": "Приложение Codex будет удалено вместе со всеми вашими данными.",
   "uninstall.confirm2.title": "Стереть все данные?",
   "uninstall.confirm2.body": "Данные для входа, сессии и конфигурация (~/.codex) будут удалены безвозвратно — отменить это действие невозможно.",
-  "uninstall.doneKept": "Codex удалён — ваши данные сохранены.",
-  "uninstall.doneCleared": "Codex удалён — данные очищены.",
   "config.soon": "Скоро",
   "config.desc": "Управляйте сессиями, данными для входа и конфигурацией в ~/.codex.",
   "source.auto": "Автоматически",
@@ -1315,16 +1215,12 @@ const RU: Record<Key, string> = {
   "win.installDir.useCurrent": "Установить сюда",
   "win.installDir.browse": "Обзор…",
   "win.installSub": "Версия {version}",
-  "win.uninstall.purge": "Также удалить мои данные",
-  "win.uninstall.purgeNote": "Данные для входа, сессии и конфигурация будут удалены; оставьте выключенным, чтобы сохранить их для переустановки.",
 };
 
 const AR: Record<Key, string> = {
   "app.name": "مدير تطبيق Codex",
   "nav.back": "رجوع",
   "nav.settings": "الإعدادات",
-  "nav.about": "حول",
-  "nav.uninstall": "إلغاء تثبيت Codex",
   "nav.config": "إعدادات Codex",
   "nav.close": "إغلاق",
   "home.checking": "جارٍ التحقق…",
@@ -1363,15 +1259,12 @@ const AR: Record<Key, string> = {
   "close.confirm.ok": "إغلاق",
   "progress.title": "جارٍ التحديث…",
   "progress.installing": "جارٍ التثبيت…",
-  "progress.downloading": "جارٍ التنزيل · يُرجى الانتظار",
   "progress.downloadingFrom": "جارٍ التنزيل من {source}",
   "progress.preparing": "جارٍ التحضير…",
   "install.done.title": "تم تثبيت Codex",
   "install.done.open": "فتح Codex",
   "success.title": "تم التحديث",
   "success.flow": "تم التحديث {from} ← {to}",
-  "success.sub": "الإصدار الحالي {version}",
-  "success.relaunched": "أُعيد تشغيل Codex",
   "success.manualLaunch": "يُرجى تشغيل Codex يدوياً",
   "success.rolledBack": "لم يكتمل التحديث — تم استعادة الإصدار السابق",
   "success.done": "تم",
@@ -1392,13 +1285,10 @@ const AR: Record<Key, string> = {
   "settings.general.autostart": "التشغيل عند بدء تشغيل الجهاز",
   "settings.general.autostartNote": "معطَّل افتراضياً",
   "settings.general.confirmClose": "تأكيد قبل الإغلاق",
-  "settings.general.signedOnly": "تثبيت الإصدارات الموقَّعة رسمياً فقط",
-  "settings.general.signedOnlyNote": "مفعَّل دائماً لحمايتك",
   "settings.windows.header": "طريقة تثبيت Windows",
   "settings.windows.msix": "تثبيت قياسي (MSIX)",
   "settings.windows.msixDesc": "استخدام حزمة النظام أولاً؛ إن حظرها الجهاز، يتحول التطبيق تلقائياً للنسخة المحمولة.",
   "settings.windows.portable": "تثبيت محمول (EXE)",
-  "settings.windows.portableDesc": "التثبيت في مجلد المستخدم دون صلاحيات المسؤول أو تغيير سياسات النظام.",
   "settings.windows.portableDescDefault":
     "افتراضياً، يتم التثبيت في مجلد المستخدم الحالي دون مطالبة مسؤول أو تغيير سياسات النظام.",
   "settings.windows.portableDescCustom":
@@ -1445,8 +1335,6 @@ const AR: Record<Key, string> = {
   "uninstall.confirm1.bodyPurge": "سيُزال تطبيق Codex وتُحذف بياناتك.",
   "uninstall.confirm2.title": "حذف جميع البيانات؟",
   "uninstall.confirm2.body": "ستُحذف تسجيل الدخول والجلسات والإعدادات (~/.codex) نهائياً — لا يمكن التراجع.",
-  "uninstall.doneKept": "تم إلغاء تثبيت Codex — بياناتك محتفظ بها.",
-  "uninstall.doneCleared": "تم إلغاء تثبيت Codex — تم حذف البيانات.",
   "config.soon": "قريباً",
   "config.desc": "أدِر الجلسات وتسجيل الدخول والإعدادات داخل ~/.codex من هنا.",
   "source.auto": "تلقائي",
@@ -1465,16 +1353,12 @@ const AR: Record<Key, string> = {
   "win.installDir.useCurrent": "التثبيت هنا",
   "win.installDir.browse": "استعراض…",
   "win.installSub": "الإصدار {version}",
-  "win.uninstall.purge": "حذف بياناتي أيضاً",
-  "win.uninstall.purgeNote": "ستُزال تسجيل الدخول والجلسات والإعدادات؛ اتركه معطَّلاً للاحتفاظ بها لإعادة التثبيت.",
 };
 
 const ES: Record<Key, string> = {
   "app.name": "Codex App Manager",
   "nav.back": "Atrás",
   "nav.settings": "Ajustes",
-  "nav.about": "Acerca de",
-  "nav.uninstall": "Desinstalar Codex",
   "nav.config": "Configuración de Codex",
   "nav.close": "Cerrar",
   "home.checking": "Comprobando…",
@@ -1513,15 +1397,12 @@ const ES: Record<Key, string> = {
   "close.confirm.ok": "Cerrar",
   "progress.title": "Actualizando…",
   "progress.installing": "Instalando…",
-  "progress.downloading": "Descargando · espera un momento",
   "progress.downloadingFrom": "Descargando desde {source}",
   "progress.preparing": "Preparando…",
   "install.done.title": "Codex instalado",
   "install.done.open": "Abrir Codex",
   "success.title": "Actualizado",
   "success.flow": "Actualizado {from} → {to}",
-  "success.sub": "Ahora en {version}",
-  "success.relaunched": "Codex reiniciado",
   "success.manualLaunch": "Inicia Codex manualmente",
   "success.rolledBack": "La actualización no se completó — se restauró la versión anterior",
   "success.done": "Listo",
@@ -1542,13 +1423,10 @@ const ES: Record<Key, string> = {
   "settings.general.autostart": "Iniciar al arrancar",
   "settings.general.autostartNote": "Desactivado por defecto",
   "settings.general.confirmClose": "Confirmar antes de cerrar",
-  "settings.general.signedOnly": "Instalar solo versiones firmadas oficialmente",
-  "settings.general.signedOnlyNote": "Siempre activado, por tu seguridad",
   "settings.windows.header": "Método de instalación en Windows",
   "settings.windows.msix": "Instalación estándar (MSIX)",
   "settings.windows.msixDesc": "Usa primero el paquete del sistema; si este equipo lo bloquea, la app cambia automáticamente.",
   "settings.windows.portable": "Instalación portátil (EXE)",
-  "settings.windows.portableDesc": "Se instala en tu carpeta de usuario sin permisos de administrador ni cambios en las directivas del sistema.",
   "settings.windows.portableDescDefault":
     "De forma predeterminada, se instala en la carpeta del usuario actual sin permisos de administrador ni cambios en las directivas del sistema.",
   "settings.windows.portableDescCustom":
@@ -1595,8 +1473,6 @@ const ES: Record<Key, string> = {
   "uninstall.confirm1.bodyPurge": "Se eliminará la app Codex y se borrarán tus datos.",
   "uninstall.confirm2.title": "¿Borrar todos los datos?",
   "uninstall.confirm2.body": "El inicio de sesión, las sesiones y la configuración (~/.codex) se eliminarán de forma permanente — esta acción no se puede deshacer.",
-  "uninstall.doneKept": "Codex desinstalado — tus datos se conservaron.",
-  "uninstall.doneCleared": "Codex desinstalado — datos eliminados.",
   "config.soon": "Próximamente",
   "config.desc": "Gestiona aquí las sesiones, el inicio de sesión y la configuración en ~/.codex.",
   "source.auto": "Automático",
@@ -1615,16 +1491,12 @@ const ES: Record<Key, string> = {
   "win.installDir.useCurrent": "Instalar aquí",
   "win.installDir.browse": "Explorar…",
   "win.installSub": "Versión {version}",
-  "win.uninstall.purge": "Eliminar también mis datos",
-  "win.uninstall.purgeNote": "El inicio de sesión, las sesiones y la configuración se eliminarán; déjalo desactivado para conservarlos al reinstalar.",
 };
 
 const PT_BR: Record<Key, string> = {
   "app.name": "Gerenciador do Codex App",
   "nav.back": "Voltar",
   "nav.settings": "Configurações",
-  "nav.about": "Sobre",
-  "nav.uninstall": "Desinstalar Codex",
   "nav.config": "Configuração do Codex",
   "nav.close": "Fechar",
   "home.checking": "Verificando…",
@@ -1663,15 +1535,12 @@ const PT_BR: Record<Key, string> = {
   "close.confirm.ok": "Fechar",
   "progress.title": "Atualizando…",
   "progress.installing": "Instalando…",
-  "progress.downloading": "Baixando · aguarde",
   "progress.downloadingFrom": "Baixando de {source}",
   "progress.preparing": "Preparando…",
   "install.done.title": "Codex instalado",
   "install.done.open": "Abrir Codex",
   "success.title": "Atualizado",
   "success.flow": "Atualizado {from} → {to}",
-  "success.sub": "Agora na {version}",
-  "success.relaunched": "Codex reiniciado",
   "success.manualLaunch": "Inicie o Codex manualmente",
   "success.rolledBack": "Atualização incompleta — versão anterior restaurada",
   "success.done": "Concluído",
@@ -1692,13 +1561,10 @@ const PT_BR: Record<Key, string> = {
   "settings.general.autostart": "Iniciar ao fazer login",
   "settings.general.autostartNote": "Desativado por padrão",
   "settings.general.confirmClose": "Confirmar antes de fechar",
-  "settings.general.signedOnly": "Instalar apenas versões assinadas oficialmente",
-  "settings.general.signedOnlyNote": "Sempre ativado, para sua segurança",
   "settings.windows.header": "Método de instalação no Windows",
   "settings.windows.msix": "Instalação padrão (MSIX)",
   "settings.windows.msixDesc": "Usa o pacote do sistema primeiro; se este PC bloquear, o app usa a versão portátil automaticamente.",
   "settings.windows.portable": "Instalação portátil (EXE)",
-  "settings.windows.portableDesc": "Instala na sua pasta de usuário sem solicitar administrador e sem alterar políticas do sistema.",
   "settings.windows.portableDescDefault":
     "Por padrão, instala na pasta do usuário atual, sem solicitar administrador e sem alterar políticas do sistema.",
   "settings.windows.portableDescCustom":
@@ -1745,8 +1611,6 @@ const PT_BR: Record<Key, string> = {
   "uninstall.confirm1.bodyPurge": "Isso remove o aplicativo Codex e apaga seus dados.",
   "uninstall.confirm2.title": "Apagar todos os dados?",
   "uninstall.confirm2.body": "Login, sessões e configurações (~/.codex) serão excluídos permanentemente — isso não pode ser desfeito.",
-  "uninstall.doneKept": "Codex desinstalado — seus dados foram mantidos.",
-  "uninstall.doneCleared": "Codex desinstalado — dados apagados.",
   "config.soon": "Em breve",
   "config.desc": "Gerencie as sessões, login e configurações dentro de ~/.codex aqui.",
   "source.auto": "Automático",
@@ -1765,8 +1629,6 @@ const PT_BR: Record<Key, string> = {
   "win.installDir.useCurrent": "Instalar aqui",
   "win.installDir.browse": "Procurar…",
   "win.installSub": "Versão {version}",
-  "win.uninstall.purge": "Também excluir meus dados",
-  "win.uninstall.purgeNote": "Login, sessões e configurações são removidos; desative para mantê-los para uma reinstalação.",
 };
 
 const CATALOG: Record<Lang, Record<Key, string>> = {
