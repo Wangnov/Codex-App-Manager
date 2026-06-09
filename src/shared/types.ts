@@ -59,18 +59,6 @@ export interface MacUpdateReport {
   installedPubDate?: string | null;
 }
 
-export interface MacStageReport {
-  upToDate: boolean;
-  strategy: string;
-  latestBuild: number;
-  latestShortVersion: string;
-  downloadSize: number;
-  fullSize: number;
-  savingsPct: number;
-  stagedPath: string | null;
-  verified: boolean;
-}
-
 export interface MacPerformReport {
   upToDate: boolean;
   fromBuild: number;
@@ -230,17 +218,6 @@ export interface WinStageReport {
   identityVerified: boolean;
   installReady: boolean;
   portableFallbackReady: boolean;
-  notes: string[];
-}
-
-export interface WinAutoStageReport {
-  enabled: boolean;
-  allowMetered: boolean;
-  attempted: boolean;
-  skipped: boolean;
-  reason: "disabled" | "up-to-date" | "metered-network" | "metered-unknown" | "staged" | string;
-  stage: WinStageReport | null;
-  capabilities: WinCapabilityReport | null;
   notes: string[];
 }
 

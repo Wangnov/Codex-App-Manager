@@ -7,10 +7,8 @@ import type {
   CommandError,
   MacInstallStatus,
   MacPerformReport,
-  MacStageReport,
   MacUninstallReport,
   MacUpdateReport,
-  WinAutoStageReport,
   WinInstallStatus,
   WinPerformReport,
   WinStageReport,
@@ -111,18 +109,6 @@ const FALLBACK_PLAN: MacUpdateReport = {
   },
 };
 
-const FALLBACK_STAGE: MacStageReport = {
-  upToDate: false,
-  strategy: "delta-from-3511",
-  latestBuild: 3575,
-  latestShortVersion: "26.602.30954",
-  downloadSize: 18260894,
-  fullSize: 406581087,
-  savingsPct: 95.5,
-  stagedPath: "(browser-dev mock) …/Codex3575-3511-arm64.delta",
-  verified: true,
-};
-
 const WIN_FALLBACK_PLAN: WinUpdateReport = {
   manifestUrl: "https://codexapp.agentsmirror.com/latest/manifest",
   checksumsUrl: "https://codexapp.agentsmirror.com/latest/checksums",
@@ -190,17 +176,6 @@ const WIN_FALLBACK_STAGE: WinStageReport = {
   notes: ["Non-destructive staging only; install execution is the next guarded step."],
 };
 
-const WIN_FALLBACK_AUTO_STAGE: WinAutoStageReport = {
-  enabled: true,
-  allowMetered: false,
-  attempted: true,
-  skipped: false,
-  reason: "staged",
-  stage: WIN_FALLBACK_STAGE,
-  capabilities: WIN_FALLBACK_PLAN.capabilities,
-  notes: ["browser-dev mock: package staged in the background."],
-};
-
 const WIN_FALLBACK_PERFORM: WinPerformReport = {
   success: true,
   action: "msix-sideload",
@@ -259,14 +234,6 @@ export const managerApi = {
       return Promise.resolve({ ...FALLBACK_PLAN, simulatedBuild: simulatedBuild ?? null });
     }
     return invoke<MacUpdateReport>("mac_plan_update", {
-      simulatedBuild: simulatedBuild ?? null,
-    });
-  },
-  macStageUpdate(simulatedBuild?: number): Promise<MacStageReport> {
-    if (!hasTauriRuntime()) {
-      return Promise.resolve(FALLBACK_STAGE);
-    }
-    return invoke<MacStageReport>("mac_stage_update", {
       simulatedBuild: simulatedBuild ?? null,
     });
   },
@@ -459,36 +426,6 @@ export const managerApi = {
       return Promise.resolve(WIN_FALLBACK_PLAN);
     }
     return invoke<WinUpdateReport>("win_plan_update");
-  },
-  winStageUpdate(): Promise<WinStageReport> {
-    if (!hasTauriRuntime()) {
-      return Promise.resolve(WIN_FALLBACK_STAGE);
-    }
-    return invoke<WinStageReport>("win_stage_update");
-  },
-  winAutoStageUpdate(enabled: boolean, allowMetered: boolean): Promise<WinAutoStageReport> {
-    if (!hasTauriRuntime()) {
-      if (!enabled) {
-        return Promise.resolve({
-          ...WIN_FALLBACK_AUTO_STAGE,
-          enabled,
-          allowMetered,
-          attempted: false,
-          skipped: true,
-          reason: "disabled",
-          stage: null,
-          notes: ["browser-dev mock: automatic pre-download is disabled."],
-        });
-      }
-      return Promise.resolve({ ...WIN_FALLBACK_AUTO_STAGE, enabled, allowMetered });
-    }
-    return invoke<WinAutoStageReport>("win_auto_stage_update", { enabled, allowMetered });
-  },
-  winCancelDownload(): Promise<boolean> {
-    if (!hasTauriRuntime()) {
-      return Promise.resolve(false);
-    }
-    return invoke<boolean>("win_cancel_download");
   },
   winPerformUpdate(confirm: boolean, installRoot?: string): Promise<WinPerformReport> {
     if (!hasTauriRuntime()) {
