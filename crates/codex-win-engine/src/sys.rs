@@ -556,6 +556,25 @@ try {
   }
 } catch {}
 
+$msixDeploymentKnown = $false
+$msixDeploymentOk = $false
+$msixDeploymentError = ''
+try {
+  $pm = New-Object -TypeName Windows.Management.Deployment.PackageManager -ErrorAction Stop
+  $msixDeploymentKnown = $true
+  $msixDeploymentOk = ($null -ne $pm)
+} catch {
+  $msixDeploymentKnown = $true
+  $msixDeploymentOk = $false
+  $hr = 0
+  try { $hr = [int]$_.Exception.HResult } catch {}
+  if ($hr -ne 0) {
+    $msixDeploymentError = ('{0} (HRESULT=0x{1:X8})' -f $_.Exception.Message, $hr)
+  } else {
+    $msixDeploymentError = [string]$_.Exception.Message
+  }
+}
+
 [pscustomobject]@{
   addAppxPackage = [bool]$add
   appxSvcExists = [bool]$svc
@@ -568,6 +587,9 @@ try {
   meteredKnown = $meteredKnown
   metered = $metered
   networkCostType = $costType
+  msixDeploymentKnown = $msixDeploymentKnown
+  msixDeploymentOk = $msixDeploymentOk
+  msixDeploymentError = $msixDeploymentError
 } | ConvertTo-Json -Compress
 "#;
 
@@ -577,6 +599,7 @@ try {
     {
         Some(value) => capabilities_from_probe_json(&value),
         None => WinCapabilityReport::from_checks(
+            CapabilityCheck::unknown("PowerShell capability probe failed"),
             CapabilityCheck::unknown("PowerShell capability probe failed"),
             CapabilityCheck::unknown("PowerShell capability probe failed"),
             CapabilityCheck::unknown("PowerShell capability probe failed"),
@@ -681,11 +704,38 @@ fn capabilities_from_probe_json(value: &serde_json::Value) -> WinCapabilityRepor
         CapabilityCheck::available(format!("current connection is not metered ({cost})"))
     };
 
+    // The functional probe: did the WinRT PackageManager actually activate? Only
+    // an explicit activation failure (known && !ok) flips this to Unavailable —
+    // an unrun probe stays Unknown so a good machine is never steered to portable
+    // on a signal we couldn't read. This is the check that catches 0x80040154.
+    let msix_deployment = if !value
+        .get("msixDeploymentKnown")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        CapabilityCheck::unknown("MSIX deployment (PackageManager) could not be probed")
+    } else if value
+        .get("msixDeploymentOk")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        CapabilityCheck::available("PackageManager (MSIX deployment runtime) activates")
+    } else {
+        let err = value
+            .get("msixDeploymentError")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        CapabilityCheck::unavailable(format!(
+            "PackageManager (MSIX deployment runtime) cannot activate: {err}"
+        ))
+    };
+
     WinCapabilityReport::from_checks(
         add,
         appx_service,
         sideload_policy,
         app_installer,
+        msix_deployment,
         metered_network,
         vec!["Certificate trust is verified after the MSIX is staged.".to_string()],
     )
@@ -710,12 +760,48 @@ mod tests {
             "allowAllTrustedAppsSource": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Appx",
             "meteredKnown": true,
             "metered": false,
-            "networkCostType": "Unrestricted"
+            "networkCostType": "Unrestricted",
+            "msixDeploymentKnown": true,
+            "msixDeploymentOk": true,
+            "msixDeploymentError": ""
         });
         let report = capabilities_from_probe_json(&value);
         assert_eq!(
             report.recommendation,
             crate::capability::SideloadRecommendation::PortableFallback
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parses_probe_json_into_portable_when_deployment_broken() {
+        // Every existence check looks fine, but the functional PackageManager
+        // probe failed (0x80040154). The recommendation must be portable and the
+        // deployment check must read Unavailable — this is the issue #13 machine.
+        let value = serde_json::json!({
+            "addAppxPackage": true,
+            "appxSvcExists": true,
+            "appxSvcStatus": "Running",
+            "appxSvcStartType": "Manual",
+            "appInstallerInstalled": true,
+            "appInstallerVersion": "1.0.0.0",
+            "allowAllTrustedApps": 1,
+            "allowAllTrustedAppsSource": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock",
+            "meteredKnown": true,
+            "metered": false,
+            "networkCostType": "Unrestricted",
+            "msixDeploymentKnown": true,
+            "msixDeploymentOk": false,
+            "msixDeploymentError": "没有注册类 (HRESULT=0x80040154)"
+        });
+        let report = capabilities_from_probe_json(&value);
+        assert_eq!(
+            report.recommendation,
+            crate::capability::SideloadRecommendation::PortableFallback
+        );
+        assert_eq!(
+            report.msix_deployment.state,
+            crate::capability::CapabilityState::Unavailable
         );
     }
 }

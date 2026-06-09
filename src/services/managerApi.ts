@@ -131,6 +131,7 @@ const WIN_FALLBACK_PLAN: WinUpdateReport = {
     appxService: { state: "available", detail: "browser-dev mock" },
     sideloadPolicy: { state: "unknown", detail: "browser-dev mock" },
     appInstaller: { state: "available", detail: "browser-dev mock" },
+    msixDeployment: { state: "available", detail: "browser-dev mock" },
     meteredNetwork: { state: "unknown", detail: "browser-dev mock" },
     recommendation: "msix-preferred",
     notes: ["Certificate trust is verified after the MSIX is staged."],

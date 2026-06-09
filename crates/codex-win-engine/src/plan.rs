@@ -89,6 +89,7 @@ mod tests {
             CapabilityCheck::available("running"),
             CapabilityCheck::available("AllowAllTrustedApps=1"),
             CapabilityCheck::available("installed"),
+            CapabilityCheck::available("PackageManager activates"),
             CapabilityCheck::unknown("not probed"),
             vec![],
         );
@@ -119,6 +120,7 @@ mod tests {
             CapabilityCheck::available("running"),
             CapabilityCheck::unavailable("policy blocks trusted apps"),
             CapabilityCheck::available("installed"),
+            CapabilityCheck::available("PackageManager activates"),
             CapabilityCheck::unknown("not probed"),
             vec![],
         );

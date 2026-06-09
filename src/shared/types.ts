@@ -155,6 +155,9 @@ export interface WinCapabilityReport {
   appxService: CapabilityCheck;
   sideloadPolicy: CapabilityCheck;
   appInstaller: CapabilityCheck;
+  /** Can the WinRT PackageManager actually activate? Catches the "registered but
+   * broken" machines where MSIX deploy dies with 0x80040154 (没有注册类). */
+  msixDeployment: CapabilityCheck;
   meteredNetwork: CapabilityCheck;
   recommendation: SideloadRecommendation;
   notes: string[];
