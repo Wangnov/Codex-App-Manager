@@ -4,6 +4,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 
 import type {
   AppSettings,
+  CommandError,
   MacInstallStatus,
   MacPerformReport,
   MacStageReport,
@@ -55,6 +56,17 @@ function hasTauriRuntime(): boolean {
   return typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__);
 }
 
+// A failing Tauri command rejects with the serialized backend `CommandError`
+// ({ code, message }). Narrow defensively — `cause` may also be a JS `Error`,
+// a plain string, or some other thrown value — and surface the most useful text.
+function isCommandError(cause: unknown): cause is CommandError {
+  if (!cause || typeof cause !== "object") {
+    return false;
+  }
+  const maybe = cause as Partial<Record<keyof CommandError, unknown>>;
+  return typeof maybe.message === "string" || typeof maybe.code === "string";
+}
+
 export function errorMessage(cause: unknown): string {
   if (cause instanceof Error) {
     return cause.message;
@@ -62,13 +74,12 @@ export function errorMessage(cause: unknown): string {
   if (typeof cause === "string") {
     return cause;
   }
-  if (cause && typeof cause === "object") {
-    const maybe = cause as { message?: unknown; code?: unknown };
-    if (typeof maybe.message === "string" && maybe.message.trim()) {
-      return maybe.message;
+  if (isCommandError(cause)) {
+    if (typeof cause.message === "string" && cause.message.trim()) {
+      return cause.message;
     }
-    if (typeof maybe.code === "string" && maybe.code.trim()) {
-      return maybe.code;
+    if (typeof cause.code === "string" && cause.code.trim()) {
+      return cause.code;
     }
     try {
       return JSON.stringify(cause);

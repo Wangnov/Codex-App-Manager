@@ -1,6 +1,18 @@
 export type OperatingSystem = "windows" | "macos" | "linux" | "unknown";
 export type Architecture = "x64" | "arm64" | "unknown";
 
+/**
+ * Serialized error returned by failing Tauri commands. Mirrors the backend
+ * `CommandError` struct (src-tauri/src/errors.rs), which serializes
+ * `#[serde(rename_all = "camelCase")]` from `AppError`.
+ */
+export interface CommandError {
+  /** Stable machine code, e.g. "unsupported_platform" | "engine_error" | "internal_error". */
+  code: string;
+  /** Human-facing message (the `Display` of the underlying `AppError`). */
+  message: string;
+}
+
 export interface InstalledCodex {
   path: string;
   build: number;
@@ -207,7 +219,7 @@ export interface MsixIdentity {
 
 export interface WinStageReport {
   upToDate: boolean;
-  route: string;
+  route: WinInstallRoute;
   latestVersion: string;
   downloadSize: number;
   stagedPath: string | null;
@@ -260,9 +272,26 @@ export interface MsixHealthReport {
   reason: string;
 }
 
+/**
+ * Outcome of `win_perform_update`. Enumerates the exact action strings the
+ * backend sets in src-tauri/src/app/win_update.rs:
+ *   - "none"                                   — already up to date.
+ *   - "msix-sideload"                          — MSIX sideload succeeded.
+ *   - "portable-fallback"                      — user chose portable mode.
+ *   - "portable-fallback-after-msix-failure"   — sideload failed, fell back.
+ *   - "portable-fallback-after-msix-unhealthy" — sideload registered but the
+ *                                                package failed its health check.
+ */
+export type WinPerformAction =
+  | "none"
+  | "msix-sideload"
+  | "portable-fallback"
+  | "portable-fallback-after-msix-failure"
+  | "portable-fallback-after-msix-unhealthy";
+
 export interface WinPerformReport {
   success: boolean;
-  action: string;
+  action: WinPerformAction;
   message: string;
   stage: WinStageReport;
   sideload: MsixSideloadReport | null;
@@ -304,9 +333,23 @@ export interface PortableUninstallReport {
   notes: string[];
 }
 
+/**
+ * Outcome of `win_uninstall`. Enumerates the exact action strings the backend
+ * sets in src-tauri/src/app/win_update.rs:
+ *   - "none"                 — nothing installed to remove.
+ *   - "external-not-managed" — detected install isn't manager-managed; refused.
+ *   - "remove-msix"          — removed the sideloaded MSIX package.
+ *   - "remove-portable"      — removed the portable install.
+ */
+export type WinUninstallAction =
+  | "none"
+  | "external-not-managed"
+  | "remove-msix"
+  | "remove-portable";
+
 export interface WinUninstallReport {
   success: boolean;
-  action: string;
+  action: WinUninstallAction;
   message: string;
   installedBefore: InstalledWindowsCodex | null;
   msix: MsixRemoveReport | null;
