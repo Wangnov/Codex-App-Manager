@@ -55,6 +55,15 @@ jobs:
 
       - run: npm ci
 
+      # ── macOS: vendor the Sparkle BinaryDelta helper BEFORE the build so it
+      #    ships in Resources/. Without it the manager can't apply deltas and
+      #    every macOS update silently falls back to the full-package download
+      #    (the 0.1.x releases up to 0.1.12 shipped without it). The script
+      #    pins Sparkle 2.9.1 by SHA-256; see scripts/vendor-binary-delta.sh.
+      - name: Vendor Sparkle BinaryDelta (macOS delta updates)
+        if: matrix.os == 'macos'
+        run: bash scripts/vendor-binary-delta.sh
+
       # ── macOS: import the Developer ID cert into a throwaway keychain ──────
       - name: Import Apple Developer ID certificate
         if: matrix.os == 'macos'
@@ -90,6 +99,21 @@ jobs:
           done
           echo "::error::tauri build failed after 3 attempts"
           exit 1
+
+      # Regression gate: losing the helper is otherwise SILENT — updates still
+      # succeed, they just always download the full ~400MB package instead of
+      # the ~40MB delta. Fail the release loudly instead.
+      - name: Assert BinaryDelta inside the bundle
+        if: matrix.os == 'macos'
+        run: |
+          APP="$(find "src-tauri/target/${{ matrix.target }}/release/bundle/macos" -maxdepth 1 -name '*.app' | head -1)"
+          BD="$APP/Contents/Resources/resources/BinaryDelta"
+          [ -x "$BD" ] || { echo "::error::BinaryDelta missing or not executable at $BD — macOS delta updates would silently fall back to full downloads"; exit 1; }
+          arches="$(lipo -archs "$BD")"
+          case "$arches" in
+            *x86_64*arm64*|*arm64*x86_64*) echo "BinaryDelta OK ($arches): $BD" ;;
+            *) echo "::error::BinaryDelta is not universal (arches: $arches)"; exit 1 ;;
+          esac
 
       # ── macOS: adaptive icon → sign → notarize → staple → repackage ───────
       - name: Finalize macOS bundle
