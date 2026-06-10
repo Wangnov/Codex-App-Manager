@@ -1,0 +1,398 @@
+/* ===========================================================================
+   Pipeline — the scroll-driven "journey of a byte"
+   Desktop (fine pointers, motion allowed): pinned SVG stage, scrubbed.
+   Mobile / reduced-motion: vertical rail timeline.
+=========================================================================== */
+
+.pipeline {
+  position: relative;
+  background:
+    linear-gradient(var(--bg), var(--bg-deep) 30%, var(--bg-deep) 75%, var(--bg));
+  overflow: clip;
+}
+
+.pipeline-head {
+  padding-top: clamp(96px, 14vh, 170px);
+  padding-bottom: clamp(30px, 6vh, 70px);
+}
+
+.pipeline-duo {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 26px;
+  padding: 10px 18px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: color-mix(in oklch, var(--surface) 60%, transparent);
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.pipeline-duo img {
+  width: 22px;
+  height: 22px;
+}
+
+.pipeline-duo .arrow {
+  color: var(--amber-deep);
+  font-weight: 700;
+}
+
+/* ---- pinned desktop stage ------------------------------------------------ */
+
+.pipeline-scroll {
+  display: none;
+  position: relative;
+}
+
+.pipeline-stage {
+  position: relative;
+  height: 100vh;
+  overflow: clip;
+}
+
+.pipe-bokeh {
+  top: 6%;
+  left: 2%;
+  width: 44%;
+  opacity: 0.25;
+}
+
+.pipe-mist {
+  bottom: -4%;
+  right: -8%;
+  width: 70%;
+  opacity: 0.3;
+}
+
+.pipe-svg-wrap {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+}
+
+.pipe-svg {
+  width: min(1380px, 96vw);
+  height: auto;
+  overflow: visible;
+}
+
+.pipe-track {
+  fill: none;
+  stroke: var(--line-strong);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 9;
+  stroke-linecap: round;
+}
+
+.pipe-lit {
+  fill: none;
+  stroke: url(#pipeGrad);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+.pipe-lit-glow {
+  fill: none;
+  stroke: var(--amber);
+  stroke-width: 9;
+  stroke-linecap: round;
+  opacity: 0.22;
+  filter: blur(6px);
+}
+
+.pipe-node circle.bgc {
+  fill: var(--surface);
+  stroke: var(--line-strong);
+  stroke-width: 1.5;
+  transition: stroke 0.4s, fill 0.4s;
+}
+
+.pipe-node .icon {
+  stroke: var(--ink-3);
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: stroke 0.4s;
+}
+
+.pipe-node.is-lit circle.bgc {
+  stroke: var(--amber);
+  fill: color-mix(in oklch, var(--amber) 12%, var(--surface));
+}
+
+.pipe-node.is-lit .icon {
+  stroke: var(--amber-deep);
+}
+
+.pipe-node.is-jade.is-lit circle.bgc {
+  stroke: var(--jade);
+  fill: color-mix(in oklch, var(--jade) 12%, var(--surface));
+}
+
+.pipe-node.is-jade.is-lit .icon {
+  stroke: var(--jade);
+}
+
+.pipe-label {
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  fill: var(--ink-3);
+  transition: fill 0.4s;
+}
+
+.pipe-node.is-lit ~ g .pipe-label {
+  fill: var(--ink-3);
+}
+
+.pipe-label.is-lit {
+  fill: var(--ink);
+}
+
+.pipe-branch-label {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  fill: var(--ink-3);
+  letter-spacing: 0.04em;
+}
+
+.pulse-ring {
+  fill: none;
+  stroke: var(--amber);
+  stroke-width: 1.5;
+  opacity: 0;
+}
+
+.packet {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 64px;
+  height: 64px;
+  margin: -32px 0 0 -32px;
+  opacity: 0;
+  will-change: transform;
+  z-index: 3;
+}
+
+.packet img {
+  width: 100%;
+  height: 100%;
+}
+
+/* stage copy card */
+
+.stage-card {
+  position: absolute;
+  left: clamp(24px, 5vw, 84px);
+  bottom: clamp(28px, 7vh, 84px);
+  z-index: 4;
+  width: min(440px, 38vw);
+  padding: 28px 30px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line);
+  background: color-mix(in oklch, var(--surface) 82%, transparent);
+  backdrop-filter: blur(16px) saturate(1.3);
+  -webkit-backdrop-filter: blur(16px) saturate(1.3);
+  box-shadow: var(--shadow-soft), var(--highlight);
+}
+
+.stage-card .stat {
+  position: absolute;
+  top: -14px;
+  right: 22px;
+}
+
+.stage-card h3 {
+  margin: 0 0 8px;
+  font-size: 21px;
+}
+
+.stage-card p {
+  margin: 0;
+  font-size: 14.5px;
+  color: var(--ink-2);
+}
+
+.stage-index {
+  position: absolute;
+  top: clamp(16px, 5vh, 48px);
+  right: clamp(24px, 5vw, 84px);
+  z-index: 1;
+  font-family: var(--font-display-en);
+  font-variation-settings: "opsz" 80;
+  font-size: clamp(96px, 14vw, 190px);
+  font-weight: 500;
+  line-height: 1;
+  color: transparent;
+  -webkit-text-stroke: 1px color-mix(in oklch, var(--ink) 22%, transparent);
+}
+
+.stage-progress {
+  position: absolute;
+  right: clamp(28px, 5vw, 88px);
+  bottom: clamp(28px, 7vh, 84px);
+  z-index: 4;
+  display: flex;
+  gap: 8px;
+}
+
+.stage-progress i {
+  width: 26px;
+  height: 3px;
+  border-radius: 3px;
+  background: color-mix(in oklch, var(--ink) 16%, transparent);
+  transition: background-color 0.3s;
+}
+
+.stage-progress i.is-on {
+  background: var(--amber);
+}
+
+.pipe-finale {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  opacity: 0;
+  visibility: hidden;
+  background: color-mix(in oklch, var(--bg) 62%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.pipe-finale .inner {
+  max-width: 640px;
+  padding: 0 28px;
+}
+
+.pipe-finale .display {
+  font-size: clamp(28px, 3.6vw, 44px);
+}
+
+.pipe-finale .chip {
+  margin-bottom: 26px;
+}
+
+/* ---- vertical rail (mobile + reduced motion) ----------------------------- */
+
+.pipeline-rail {
+  position: relative;
+  padding-bottom: clamp(80px, 12vh, 140px);
+}
+
+.rail-line {
+  position: absolute;
+  top: 10px;
+  bottom: clamp(80px, 12vh, 140px);
+  left: 27px;
+  width: 2px;
+  background: color-mix(in oklch, var(--ink) 12%, transparent);
+  overflow: hidden;
+}
+
+.rail-line i {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(var(--amber-deep), var(--amber));
+  transform-origin: top;
+  transform: scaleY(0);
+}
+
+.rail-item {
+  position: relative;
+  padding: 0 0 44px 76px;
+}
+
+.rail-item:last-child {
+  padding-bottom: 0;
+}
+
+.rail-node {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line-strong);
+  background: var(--surface);
+  display: grid;
+  place-items: center;
+  transition: border-color 0.4s, background-color 0.4s;
+}
+
+.rail-node svg {
+  width: 26px;
+  height: 26px;
+  stroke: var(--ink-3);
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: stroke 0.4s;
+}
+
+.rail-item.is-lit .rail-node {
+  border-color: var(--amber);
+  background: color-mix(in oklch, var(--amber) 10%, var(--surface));
+}
+
+.rail-item.is-lit .rail-node svg {
+  stroke: var(--amber-deep);
+}
+
+.rail-item:last-child.is-lit .rail-node {
+  border-color: var(--jade);
+  background: color-mix(in oklch, var(--jade) 10%, var(--surface));
+}
+
+.rail-item:last-child.is-lit .rail-node svg {
+  stroke: var(--jade);
+}
+
+.rail-item .stat-chip {
+  margin-bottom: 10px;
+}
+
+.rail-item h3 {
+  margin: 0 0 8px;
+  font-size: 19px;
+}
+
+.rail-item p {
+  margin: 0;
+  max-width: 34em;
+  font-size: 14.5px;
+  color: var(--ink-2);
+}
+
+.rail-finale {
+  margin: 8px 0 0 76px;
+  padding: 26px 28px;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in oklch, var(--jade) 30%, transparent);
+  background: var(--jade-tint);
+}
+
+.rail-finale .display {
+  font-size: clamp(20px, 4.6vw, 26px);
+}
+
+/* ---- mode switching ------------------------------------------------------ */
+
+@media (min-width: 1024px) and (prefers-reduced-motion: no-preference) {
+  .pipeline-scroll {
+    display: block;
+  }
+
+  .pipeline-rail {
+    display: none;
+  }
+}

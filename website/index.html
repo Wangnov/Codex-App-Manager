@@ -1,0 +1,855 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Codex App Manager — 官方 Codex 桌面应用的安装、更新与卸载管家</title>
+    <meta
+      name="description"
+      content="一键安装、增量更新、干净卸载官方 OpenAI Codex 桌面应用。macOS Sparkle 增量更新、EdDSA 逐字节校验、R2 + IHEP 双镜像,国内免代理直连。Tauri v2 构建,MIT 开源。"
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Codex App Manager — 一键装好官方 Codex,自动保持最新" />
+    <meta
+      property="og:description"
+      content="原样镜像官方安装包,送达你的 Mac 与 PC,每一步都可校验。macOS 增量更新、失败自动回滚、国内直连可达。Developer ID 签名 + Apple 公证,开源可审计。"
+    />
+    <link rel="canonical" href="https://codexapp.agentsmirror.com/" />
+    <meta property="og:url" content="https://codexapp.agentsmirror.com/" />
+    <meta property="og:image" content="https://codexapp.agentsmirror.com/img/og.jpg" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:locale:alternate" content="en_US" />
+    <meta name="theme-color" content="#17171f" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f1f1f6" media="(prefers-color-scheme: light)" />
+    <link rel="icon" type="image/png" href="img/logo-manager-192.png" />
+    <link
+      rel="preload"
+      href="fonts/shs-heavy.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <style>
+      /* Self-hosted display faces; relative URLs resolve against the page so
+         the bundle works on any host or subpath. */
+      @font-face {
+        font-family: "SHS Display";
+        src: url("fonts/shs-heavy.woff2") format("woff2");
+        font-weight: 900;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "SHS Display";
+        src: url("fonts/shs-bold.woff2") format("woff2");
+        font-weight: 700;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Fraunces";
+        src: url("fonts/fraunces.woff2") format("woff2");
+        font-weight: 100 900;
+        font-display: swap;
+      }
+    </style>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Codex App Manager",
+        "operatingSystem": "macOS, Windows",
+        "applicationCategory": "DeveloperApplication",
+        "license": "https://opensource.org/licenses/MIT",
+        "url": "https://github.com/Wangnov/Codex-App-Manager",
+        "downloadUrl": "https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_aarch64.dmg",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+      }
+    </script>
+  </head>
+  <body data-lang="zh">
+    <a class="skip-link" href="#main" data-i18n="ui.skip">跳到主要内容</a>
+
+    <header class="nav" id="nav">
+      <div class="container nav-inner">
+        <a class="brand" href="#top">
+          <img src="img/logo-manager-192.png" alt="" width="30" height="30" />
+          <span>Codex App Manager</span>
+        </a>
+        <ul class="nav-links">
+          <li><a href="#why" data-i18n="nav.why">为什么</a></li>
+          <li><a href="#manager" data-i18n="nav.manager">管理器</a></li>
+          <li><a href="#pipeline" data-i18n="nav.pipeline">镜像链路</a></li>
+          <li><a href="#trust" data-i18n="nav.trust">可信验证</a></li>
+          <li><a href="#scope" data-i18n="nav.scope">边界声明</a></li>
+        </ul>
+        <div class="nav-actions">
+          <button class="lang-switch" id="lang-switch" type="button" data-i18n-aria="ui.langAria" aria-label="切换语言">
+            <svg class="globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M3 12h18M12 3c2.5 2.6 3.8 5.7 3.8 9S14.5 18.4 12 21c-2.5-2.6-3.8-5.7-3.8-9S9.5 5.6 12 3Z" />
+            </svg>
+            <span id="lang-switch-label">EN</span>
+          </button>
+          <a class="btn btn-primary nav-cta" href="#download" data-i18n="nav.cta">下载</a>
+          <button class="nav-burger" id="nav-burger" type="button" aria-expanded="false" aria-controls="nav-menu" data-i18n-aria="ui.menu" aria-label="菜单">
+            <span></span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <nav class="nav-menu" id="nav-menu" aria-hidden="true">
+      <a href="#why" data-i18n="nav.why">为什么</a>
+      <a href="#manager" data-i18n="nav.manager">管理器</a>
+      <a href="#pipeline" data-i18n="nav.pipeline">镜像链路</a>
+      <a href="#trust" data-i18n="nav.trust">可信验证</a>
+      <a href="#scope" data-i18n="nav.scope">边界声明</a>
+      <a class="btn btn-primary menu-cta" href="#download" data-i18n="hero.ctaPrimary">立即下载</a>
+    </nav>
+
+    <main id="main">
+      <!-- ============================== HERO ============================== -->
+      <section class="hero" id="top" aria-label="Codex App Manager">
+        <div class="hero-bg" data-depth="0.06">
+          <picture>
+            <source
+              media="(prefers-color-scheme: light)"
+              type="image/avif"
+              srcset="img/hero-light-960.avif 960w, img/hero-light-1600.avif 1600w, img/hero-light-2560.avif 2560w"
+              sizes="100vw"
+            />
+            <source
+              media="(prefers-color-scheme: light)"
+              type="image/webp"
+              srcset="img/hero-light-960.webp 960w, img/hero-light-1600.webp 1600w, img/hero-light-2560.webp 2560w"
+              sizes="100vw"
+            />
+            <source
+              type="image/avif"
+              srcset="img/hero-dark-960.avif 960w, img/hero-dark-1600.avif 1600w, img/hero-dark-2560.avif 2560w"
+              sizes="100vw"
+            />
+            <source
+              type="image/webp"
+              srcset="img/hero-dark-960.webp 960w, img/hero-dark-1600.webp 1600w, img/hero-dark-2560.webp 2560w"
+              sizes="100vw"
+            />
+            <img src="img/hero-dark-1600.webp" alt="" fetchpriority="high" decoding="async" />
+          </picture>
+        </div>
+        <div class="hero-veil" aria-hidden="true"></div>
+        <img class="layer hero-bokeh" src="img/bokeh-1600.webp" width="1600" height="1600" alt="" aria-hidden="true" data-depth="0.12" decoding="async" />
+        <img class="layer hero-mist" src="img/mist-1600.webp" width="1600" height="800" alt="" aria-hidden="true" data-depth="0.2" decoding="async" />
+        <img class="layer hero-cloud" src="img/cloud-1200.webp" srcset="img/cloud-640.webp 640w, img/cloud-1200.webp 1200w" sizes="(max-width: 819px) 38vw, 26vw" width="1200" height="1200" alt="" aria-hidden="true" data-depth="0.32" decoding="async" />
+
+        <div class="container hero-content">
+          <div class="hero-grid">
+            <div class="hero-copy">
+              <p class="eyebrow" data-reveal data-i18n="hero.eyebrow">开源项目 · macOS 与 Windows</p>
+              <h1 class="display hero-title">
+                <span class="line"><span data-i18n="hero.titleA">官方 Codex 桌面应用</span></span>
+                <span class="line grad"><span data-i18n="hero.titleB">一键装好,持续最新</span></span>
+              </h1>
+              <p class="hero-tagline" data-reveal data-i18n="hero.tagline">
+                一键安装、增量更新、干净卸载官方 Codex 桌面应用,自带国内可达的自更新。
+              </p>
+              <p class="hero-sub" data-reveal data-i18n="hero.sub">
+                Windows 不用 Microsoft Store,macOS 只下载版本之间的增量。R2 与 IHEP 双镜像,国内直连可达,无需代理。
+              </p>
+              <div class="cta-row" data-reveal>
+                <a class="btn btn-primary" id="hero-dl" href="#download" data-i18n="hero.ctaPrimary">立即下载</a>
+                <a class="btn btn-ghost" href="https://github.com/Wangnov/Codex-App-Manager" target="_blank" rel="noopener" data-i18n="hero.ctaSecondary">GitHub 仓库</a>
+              </div>
+              <p class="hero-alt" data-reveal>
+                <a href="#download"><span data-i18n="hero.allOptions">全部下载方式</span><span aria-hidden="true"> ↓</span></a>
+              </p>
+              <ul class="hero-badges" data-reveal>
+                <li class="chip" data-i18n="hero.badges.0">Developer ID 签名 + Apple 公证</li>
+                <li class="chip" data-i18n="hero.badges.1">MIT 开源</li>
+                <li class="chip" data-i18n="hero.badges.2">Tauri v2</li>
+                <li class="chip" data-i18n="hero.badges.3">11 种语言</li>
+              </ul>
+            </div>
+
+            <div class="hero-demo" data-reveal>
+              <div class="mac-laptop" aria-hidden="false">
+                <div class="mac-screen" id="mac-screen">
+                  <picture class="mac-wall" aria-hidden="true">
+                    <source media="(prefers-color-scheme: light)" type="image/webp" srcset="img/hero-light-960.webp" />
+                    <img src="img/hero-dark-960.webp" alt="" decoding="async" />
+                  </picture>
+                  <span class="mac-notch" aria-hidden="true"></span>
+                  <div class="cam-window" id="cam-demo">
+                <div class="cam-titlebar">
+                  <i></i><i></i><i></i>
+                  <span data-i18n="demo.window">Codex App Manager</span>
+                  <svg class="cam-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+                    <circle cx="12" cy="12" r="3" />
+                    <path d="M19.2 12c0-.4 0-.8-.1-1.2l2-1.5-2-3.4-2.3 1a7.2 7.2 0 0 0-2-1.2L14.4 3H9.6l-.4 2.7a7.2 7.2 0 0 0-2 1.2l-2.3-1-2 3.4 2 1.5a7.3 7.3 0 0 0 0 2.4l-2 1.5 2 3.4 2.3-1a7.2 7.2 0 0 0 2 1.2l.4 2.7h4.8l.4-2.7a7.2 7.2 0 0 0 2-1.2l2.3 1 2-3.4-2-1.5c.1-.4.1-.8.1-1.2Z" />
+                  </svg>
+                </div>
+                <div class="cam-banner" id="cam-banner" aria-hidden="true">
+                  <span class="ok" aria-hidden="true">✓</span>
+                  <span data-i18n="demo.successFlow">已更新 26.602.40724 → 26.602.71036</span>
+                </div>
+                <div class="cam-body">
+                  <div class="cam-scene is-active" data-scene="update">
+                    <span class="cam-ring amber">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6" /></svg>
+                    </span>
+                    <p class="cam-headline" data-i18n="demo.updTitle">有新版本</p>
+                    <p class="cam-ver" data-i18n="demo.updVer">26.602.71036</p>
+                    <p class="cam-flow" data-i18n="demo.updFlow">当前 26.602.40724 → 新版 26.602.71036 · 约 12.6 MiB</p>
+                    <div class="cam-actions">
+                      <button type="button" class="cam-btn primary" data-demo="update">
+                        <span data-i18n="demo.updCta">立即更新</span>
+                      </button>
+                      <button type="button" class="cam-btn ghost" data-demo="launch" data-i18n="demo.launch">启动 Codex</button>
+                    </div>
+                  </div>
+
+                  <div class="cam-scene" data-scene="progress">
+                    <span class="cam-ring spin">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9" /></svg>
+                    </span>
+                    <p class="cam-headline" data-i18n="demo.progressTitle">正在更新…</p>
+                    <p class="cam-flow" data-i18n="demo.progressFrom">正在从 镜像 下载</p>
+                    <p class="cam-pct"><span id="cam-pct">0</span><span class="sign">%</span></p>
+                    <div class="cam-bar"><i id="cam-bar-fill"></i></div>
+                  </div>
+
+                  <div class="cam-scene" data-scene="done">
+                    <span class="cam-ring jade">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="m5 13 4 4L19 7" /></svg>
+                    </span>
+                    <p class="cam-headline" data-i18n="demo.uptodateTitle">已是最新</p>
+                    <p class="cam-flow" data-i18n="demo.uptodateSub">当前版本 26.602.71036</p>
+                    <p class="cam-cue">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3 5 6v5c0 4.4 3 8.4 7 9.5 4-1.1 7-5.1 7-9.5V6l-7-3Z" /></svg>
+                      <span data-i18n="demo.official">官方版本 · 刚刚检查</span>
+                    </p>
+                    <div class="cam-meta">
+                      <div class="cam-row"><span data-i18n="demo.releaseDate">发布时间</span><b data-i18n="demo.releaseVal">今天</b></div>
+                      <div class="cam-row"><span data-i18n="demo.loc">安装位置</span><b class="mono" data-i18n="demo.locVal">/Applications/Codex.app</b></div>
+                    </div>
+                    <div class="cam-actions">
+                      <button type="button" class="cam-btn primary" data-demo="launch" data-i18n="demo.launch">启动 Codex</button>
+                      <button type="button" class="cam-btn ghost" data-demo="recheck" data-i18n="demo.recheck">重新检查</button>
+                    </div>
+                  </div>
+
+                  <div class="cam-scene" data-scene="checking">
+                    <span class="cam-ring spin">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9" /></svg>
+                    </span>
+                    <p class="cam-headline" data-i18n="demo.checking">正在检查…</p>
+                    <p class="cam-flow" data-i18n="demo.uptodateSub">当前版本 26.602.71036</p>
+                  </div>
+                </div>
+                <div class="cam-foot">
+                  <span class="dot" aria-hidden="true"></span>
+                  <span data-i18n="demo.managed">已托管</span>
+                  <span aria-hidden="true">·</span>
+                  <span data-i18n="demo.source">更新源:镜像</span>
+                </div>
+              </div>
+                </div>
+                <div class="mac-base" aria-hidden="true"><i></i></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="scroll-hint" data-i18n="hero.scrollHint">往下看,它是怎么做到的</p>
+      </section>
+
+      <!-- ============================== PAIN ============================== -->
+      <section class="pain section-pad" id="why">
+        <div class="container">
+          <div class="pain-grid">
+            <div class="section-head">
+              <p class="kicker" data-reveal data-i18n="pain.kicker">为什么</p>
+              <h2 class="display section-title" data-reveal data-i18n="pain.title">装个官方应用,不该这么难</h2>
+              <p class="lead" data-reveal data-i18n="pain.lead">
+                Codex 桌面应用本身很好。难的是把它顺利装上、按时更新、干净卸掉——尤其当你身在国内。
+              </p>
+            </div>
+            <div class="dl-mock" data-reveal aria-hidden="true">
+              <div class="dl-file">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                  <path d="M12 3v12m0 0 4-4m-4 4-4-4" />
+                  <path d="M5 21h14" />
+                </svg>
+                <span data-i18n="pain.mock.file">Codex_Installer.dmg</span>
+              </div>
+              <p class="dl-host" data-i18n="pain.mock.host">来源:海外节点</p>
+              <div class="dl-bar"><i></i></div>
+              <div class="dl-status">
+                <span class="warn" data-i18n="pain.mock.status">网络超时,正在重试…</span>
+                <span data-i18n="pain.mock.retry">第 3 次重试</span>
+              </div>
+            </div>
+          </div>
+          <div class="pain-cards" data-reveal-group>
+            <article class="card">
+              <h3 data-i18n="pain.cards.0.title">Microsoft Store,指望不上</h3>
+              <p data-i18n="pain.cards.0.body">官方 Windows 版只在 Microsoft Store 分发。商店连不上、账号登录不了、设备被策略禁用——任何一条,都让你装不上 Codex。</p>
+            </article>
+            <article class="card">
+              <h3 data-i18n="pain.cards.1.title">下载与更新,都压在海外线路上</h3>
+              <p data-i18n="pain.cards.1.body">macOS 官方直链和 Sparkle 更新链路都托管在海外。网络一抖,下载重试、更新停在半路,版本越落越远。</p>
+            </article>
+            <article class="card">
+              <h3 data-i18n="pain.cards.2.title">手动安装,留下一地痕迹</h3>
+              <p data-i18n="pain.cards.2.body">自己下载、覆盖、删除,旧版本残留、状态错乱。出了问题没有回滚,只能从头再来。</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================= MANAGER ============================ -->
+      <section class="manager section-pad" id="manager">
+        <picture class="layer tex-fill" aria-hidden="true">
+          <source media="(prefers-color-scheme: light)" srcset="img/texture-light-1280.webp" />
+          <img src="img/texture-dark-1280.webp" alt="" loading="lazy" decoding="async" />
+        </picture>
+        <div class="container">
+          <div class="section-head">
+            <p class="kicker" data-reveal data-i18n="manager.kicker">Codex App Manager</p>
+            <h2 class="display section-title" data-reveal data-i18n="manager.title">安装、更新、卸载,三步完成</h2>
+            <p class="lead" data-reveal data-i18n="manager.lead">
+              Manager 不急着改动你的系统。它先检测本地的 Codex 安装状态,再生成一份计划,最后才谨慎执行——破坏性操作之前,逐项核验。
+            </p>
+          </div>
+
+          <div class="manager-stage" id="manager-stage">
+            <div class="manager-grid">
+              <ol class="steps" id="manager-steps">
+                <li class="step is-active">
+                  <span class="step-num">1</span>
+                  <span class="step-name" data-i18n="manager.steps.0.name">检测</span>
+                  <h3 data-i18n="manager.steps.0.title">看清本地的一切</h3>
+                  <p data-i18n="manager.steps.0.body">识别本机 Codex 的安装状态、版本与残留。这一步不碰任何文件,只是看清楚。</p>
+                </li>
+                <li class="step">
+                  <span class="step-num">2</span>
+                  <span class="step-name" data-i18n="manager.steps.1.name">规划</span>
+                  <h3 data-i18n="manager.steps.1.title">把每一步写在明处</h3>
+                  <p data-i18n="manager.steps.1.body">根据检测结果生成执行计划:装什么、换什么、删什么。先告诉你,再开始。</p>
+                </li>
+                <li class="step">
+                  <span class="step-num">3</span>
+                  <span class="step-name" data-i18n="manager.steps.2.name">执行</span>
+                  <h3 data-i18n="manager.steps.2.title">谨慎地完成</h3>
+                  <p data-i18n="manager.steps.2.body">破坏性操作前先验证,执行后确认结果;macOS 上更新校验失败会自动回滚。装好之后,一键启动 Codex。</p>
+                </li>
+              </ol>
+
+              <div class="app-mock" id="app-mock" aria-hidden="true">
+                <div class="mock-titlebar">
+                  <i></i><i></i><i></i>
+                  <span data-i18n="manager.mock.window">Codex App Manager</span>
+                </div>
+                <div class="mock-body">
+                  <div class="mock-panel is-active" data-panel="0">
+                    <div class="mock-scanline"></div>
+                    <p class="mock-note" style="margin: 0" data-i18n="manager.mock.detect.scan">正在检测本机环境…</p>
+                    <div class="mock-row"><span class="dot"></span><span data-i18n="manager.mock.detect.found">发现 Codex 桌面应用</span></div>
+                    <div class="mock-row"><span class="dot amber"></span><span data-i18n="manager.mock.detect.ver">版本落后于上游</span></div>
+                    <div class="mock-row"><span class="dot amber"></span><span data-i18n="manager.mock.detect.leftover">检测到旧版残留</span></div>
+                  </div>
+                  <div class="mock-panel" data-panel="1">
+                    <p class="mock-note" style="margin: 0" data-i18n="manager.mock.plan.title">执行计划</p>
+                    <div class="mock-check"><span class="box"></span><span data-i18n="manager.mock.plan.i1">下载增量更新包</span></div>
+                    <div class="mock-check"><span class="box"></span><span data-i18n="manager.mock.plan.i2">校验 EdDSA 签名</span></div>
+                    <div class="mock-check"><span class="box"></span><span data-i18n="manager.mock.plan.i3">替换应用文件</span></div>
+                    <div class="mock-check"><span class="box"></span><span data-i18n="manager.mock.plan.i4">运行健康检查</span></div>
+                    <p class="mock-note" data-i18n="manager.mock.plan.note">破坏性操作前将逐项核验</p>
+                  </div>
+                  <div class="mock-panel" data-panel="2">
+                    <p class="mock-note" style="margin: 0" data-i18n="manager.mock.exec.doing">正在应用更新…</p>
+                    <div class="mock-progress"><i id="mock-progress-bar"></i></div>
+                    <div class="mock-done" id="mock-done" style="opacity: 0">
+                      <span class="ring">✓</span>
+                      <span data-i18n="manager.mock.exec.ok">更新完成 · 签名校验通过</span>
+                    </div>
+                    <span class="mock-launch" id="mock-launch" style="opacity: 0" data-i18n="manager.mock.exec.launch">启动 Codex</span>
+                    <p class="mock-note" data-i18n="manager.mock.exec.rollback">如校验失败,将自动回滚</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="scenario-row" data-reveal-group>
+            <div class="scenario">
+              <b data-i18n="manager.scenarios.0.label">安装</b>
+              <p data-i18n="manager.scenarios.0.desc">一次点击,从零到可用。装完即可直接拉起 Codex。</p>
+            </div>
+            <div class="scenario">
+              <b data-i18n="manager.scenarios.1.label">更新</b>
+              <p data-i18n="manager.scenarios.1.desc">macOS 上消费 Sparkle appcast,只下载版本之间的增量,EdDSA 签名逐字节校验。</p>
+            </div>
+            <div class="scenario">
+              <b data-i18n="manager.scenarios.2.label">回滚</b>
+              <p data-i18n="manager.scenarios.2.desc">更新失败自动回到上一个可用版本,不留半成品在你的系统里。</p>
+            </div>
+          </div>
+
+          <div class="extras-grid" data-reveal-group>
+            <article class="card">
+              <h3 data-i18n="manager.extras.0.title">一键启动</h3>
+              <p data-i18n="manager.extras.0.body">安装、更新之后不必去翻启动台。在 Manager 里直接打开 Codex。</p>
+            </article>
+            <article class="card">
+              <h3 data-i18n="manager.extras.1.title">Windows 无需 Microsoft Store</h3>
+              <p data-i18n="manager.extras.1.body">直接安装官方 MSIX 或便携版,更新分阶段进行,装完自动执行健康检查——商店连不上也照样用。</p>
+            </article>
+            <article class="card">
+              <h3 data-i18n="manager.extras.2.title">11 种语言,一套温和的界面</h3>
+              <p data-i18n="manager.extras.2.body">OKLCH 暖色材质,深浅两套主题,GSAP 动效,支持包括阿拉伯语 RTL 在内的 11 种语言。</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================ DOWNLOAD ============================ -->
+      <section class="download section-pad" id="download">
+        <img class="layer dl-globe" src="img/globe-800.webp" width="800" height="800" alt="" aria-hidden="true" loading="lazy" decoding="async" />
+        <div class="container">
+          <div class="section-head">
+            <p class="kicker" data-reveal data-i18n="download.kicker">下载</p>
+            <h2 class="display section-title" data-reveal data-i18n="download.title">下载 Codex App Manager</h2>
+            <p class="lead" data-reveal data-i18n="download.lead">
+              选择适合你的方式。所有直链都是镜像永久链接,始终指向最新版本,国内直连可达。
+            </p>
+          </div>
+
+          <div class="dl-cards" data-reveal-group>
+            <article class="card dl-card" data-platform="mac-arm">
+              <span class="reco" data-i18n="download.recommended">为你推荐</span>
+              <span class="platform" data-i18n="download.direct.0.platform">macOS · Apple Silicon</span>
+              <p class="note" data-i18n="download.direct.0.note">永久链接,始终最新 · 国内直连可达</p>
+              <a
+                class="btn btn-primary"
+                href="https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_aarch64.dmg"
+                data-i18n="download.direct.0.label"
+                >下载 .dmg</a
+              >
+            </article>
+            <article class="card dl-card" data-platform="mac-intel">
+              <span class="reco" data-i18n="download.recommended">为你推荐</span>
+              <span class="platform" data-i18n="download.direct.1.platform">macOS · Intel</span>
+              <p class="note" data-i18n="download.direct.1.note">永久链接,始终最新 · 国内直连可达</p>
+              <a
+                class="btn btn-primary"
+                href="https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x86_64.dmg"
+                data-i18n="download.direct.1.label"
+                >下载 .dmg</a
+              >
+            </article>
+            <article class="card dl-card" data-platform="windows">
+              <span class="reco" data-i18n="download.recommended">为你推荐</span>
+              <span class="platform" data-i18n="download.direct.2.platform">Windows · x64</span>
+              <p class="note" data-i18n="download.direct.2.note">永久链接,始终最新 · 无需 Microsoft Store</p>
+              <a
+                class="btn btn-primary"
+                href="https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x64-setup.exe"
+                data-i18n="download.direct.2.label"
+                >下载 .exe</a
+              >
+            </article>
+          </div>
+
+          <div class="dl-alt">
+            <article class="card brew-card" data-reveal>
+              <h3 data-i18n="download.brew.title">Homebrew</h3>
+              <p data-i18n="download.brew.note">macOS 推荐</p>
+              <div class="cmd">
+                <code id="brew-cmd">brew install --cask wangnov/tap/codex-app-manager</code>
+                <button class="copy-btn" id="copy-brew" type="button" data-i18n="ui.copy">复制命令</button>
+              </div>
+            </article>
+            <article class="card gh-card" data-reveal>
+              <h3 data-i18n="download.github.title">GitHub</h3>
+              <p data-i18n="download.github.note">代码、Issue 与每一次发布记录,都公开在这里。</p>
+              <div class="repos">
+                <a class="repo-link" href="https://github.com/Wangnov/Codex-App-Manager" target="_blank" rel="noopener">
+                  <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                    <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+                  </svg>
+                  <span data-i18n="download.github.managerLabel" style="margin: 0">Wangnov/Codex-App-Manager</span>
+                  <span aria-hidden="true">↗</span>
+                </a>
+                <a class="repo-link" href="https://github.com/Wangnov/codex-app-mirror" target="_blank" rel="noopener">
+                  <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                    <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+                  </svg>
+                  <span data-i18n="download.github.mirrorLabel" style="margin: 0">Wangnov/codex-app-mirror</span>
+                  <span aria-hidden="true">↗</span>
+                </a>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================= PIPELINE =========================== -->
+      <section class="pipeline" id="pipeline">
+        <div class="container pipeline-head section-head">
+          <p class="kicker" data-reveal data-i18n="pipeline.kicker">Codex App Mirror</p>
+          <h2 class="display section-title" data-reveal data-i18n="pipeline.title">从官方上游,到你的桌面</h2>
+          <p class="lead" data-reveal data-i18n="pipeline.lead">
+            Mirror 负责把官方安装包原样送到离你最近的节点,每一步都可验证;Manager 把这份能力变成桌面上的安装与更新体验。下面是一个安装包的完整链路。
+          </p>
+          <p class="pipeline-duo" data-reveal>
+            <img src="img/logo-mirror-192.png" alt="" />
+            <span>Codex App Mirror</span>
+            <span class="arrow" aria-hidden="true">⟶</span>
+            <img src="img/logo-manager-192.png" alt="" />
+            <span>Codex App Manager</span>
+          </p>
+        </div>
+
+        <!-- desktop pinned stage -->
+        <div class="pipeline-scroll" id="pipeline-scroll">
+          <div class="pipeline-stage" id="pipeline-stage">
+            <img class="layer pipe-bokeh" src="img/bokeh-960.webp" width="960" height="960" alt="" aria-hidden="true" loading="lazy" decoding="async" />
+            <img class="layer pipe-mist" src="img/mist-960.webp" width="960" height="480" alt="" aria-hidden="true" loading="lazy" decoding="async" />
+            <div class="stage-index" id="stage-index" aria-hidden="true">01</div>
+
+            <div class="pipe-svg-wrap">
+              <svg class="pipe-svg" viewBox="0 0 1440 720" aria-hidden="true">
+                <defs>
+                  <linearGradient id="pipeGrad" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0" stop-color="oklch(0.72 0.13 70)" />
+                    <stop offset="1" stop-color="oklch(0.83 0.115 80)" />
+                  </linearGradient>
+                </defs>
+
+                <!-- faint tracks -->
+                <path class="pipe-track" d="M100,360 C190,360 270,230 360,230 C470,230 540,420 640,420" />
+                <path class="pipe-track" d="M640,420 C760,420 880,210 1000,210 C1090,210 1120,360 1180,360" />
+                <path class="pipe-track" d="M640,420 C760,420 880,510 1000,510 C1090,510 1120,360 1180,360" />
+                <path class="pipe-track" d="M1180,360 C1240,360 1290,360 1350,360" />
+
+                <!-- lit overlays (drawn progressively) -->
+                <g>
+                  <path class="pipe-lit-glow" id="lit-glow-1" d="M100,360 C190,360 270,230 360,230 C470,230 540,420 640,420" />
+                  <path class="pipe-lit" id="lit-1" d="M100,360 C190,360 270,230 360,230 C470,230 540,420 640,420" />
+                  <path class="pipe-lit-glow" id="lit-glow-r2" d="M640,420 C760,420 880,210 1000,210 C1090,210 1120,360 1180,360" />
+                  <path class="pipe-lit" id="lit-r2" d="M640,420 C760,420 880,210 1000,210 C1090,210 1120,360 1180,360" />
+                  <path class="pipe-lit-glow" id="lit-glow-cn" d="M640,420 C760,420 880,510 1000,510 C1090,510 1120,360 1180,360" />
+                  <path class="pipe-lit" id="lit-cn" d="M640,420 C760,420 880,510 1000,510 C1090,510 1120,360 1180,360" />
+                  <path class="pipe-lit-glow" id="lit-glow-tail" d="M1180,360 C1240,360 1290,360 1350,360" />
+                  <path class="pipe-lit" id="lit-tail" d="M1180,360 C1240,360 1290,360 1350,360" />
+                </g>
+
+                <!-- probe pulse rings -->
+                <circle class="pulse-ring" id="pulse-a" cx="360" cy="230" r="36" />
+                <circle class="pulse-ring" id="pulse-b" cx="360" cy="230" r="36" />
+
+                <!-- nodes -->
+                <g class="pipe-node" id="node-0" transform="translate(100,360)">
+                  <circle class="bgc" r="34" />
+                  <g class="icon" transform="translate(-12,-12)">
+                    <path d="M6.5 15.5h11a3.5 3.5 0 0 0 .6-6.95 5.5 5.5 0 0 0-10.7-1.1A4 4 0 0 0 6.5 15.5Z" />
+                  </g>
+                </g>
+                <g class="pipe-node" id="node-1" transform="translate(360,230)">
+                  <circle class="bgc" r="34" />
+                  <g class="icon" transform="translate(-12,-12)">
+                    <circle cx="12" cy="12" r="8.5" />
+                    <path d="M12 12 17 7M12 4v2.5M20 12h-2.5" />
+                    <circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none" />
+                  </g>
+                </g>
+                <g class="pipe-node" id="node-2" transform="translate(640,420)">
+                  <circle class="bgc" r="34" />
+                  <g class="icon" transform="translate(-12,-12)">
+                    <path d="M4.5 8 12 4l7.5 4v8L12 20l-7.5-4V8Z" />
+                    <path d="M4.5 8 12 12l7.5-4M12 12v8" />
+                  </g>
+                </g>
+                <g class="pipe-node" id="node-r2" transform="translate(1000,210)">
+                  <circle class="bgc" r="34" />
+                  <g class="icon" transform="translate(-12,-12)">
+                    <circle cx="12" cy="12" r="8.5" />
+                    <path d="M3.5 12h17M12 3.5c2.4 2.4 3.6 5.3 3.6 8.5s-1.2 6.1-3.6 8.5c-2.4-2.4-3.6-5.3-3.6-8.5s1.2-6.1 3.6-8.5Z" />
+                  </g>
+                </g>
+                <g class="pipe-node" id="node-cn" transform="translate(1000,510)">
+                  <circle class="bgc" r="34" />
+                  <g class="icon" transform="translate(-12,-12)">
+                    <ellipse cx="12" cy="6.5" rx="7.5" ry="3" />
+                    <path d="M4.5 6.5v11c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3v-11" />
+                    <path d="M4.5 12c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3" />
+                  </g>
+                </g>
+                <g class="pipe-node" id="node-4" transform="translate(1180,360)">
+                  <circle class="bgc" r="34" />
+                  <g class="icon" transform="translate(-12,-12)">
+                    <path d="M4 12h6M14 12h6M10 12c2.5 0 3.5-5 7-5M10 12c2.5 0 3.5 5 7 5" />
+                    <path d="M18.5 5.5 21 7l-2.5 1.5M18.5 15.5 21 17l-2.5 1.5" />
+                  </g>
+                </g>
+                <g class="pipe-node is-jade" id="node-5" transform="translate(1350,360)">
+                  <circle class="bgc" r="34" />
+                  <g class="icon" transform="translate(-12,-12)">
+                    <rect x="4" y="5" width="16" height="11" rx="1.6" />
+                    <path d="M2.5 19h19" />
+                  </g>
+                </g>
+
+                <!-- labels -->
+                <text class="pipe-label" id="label-0" x="100" y="424" text-anchor="middle" data-i18n="pipeline.nodes.0">官方上游</text>
+                <text class="pipe-label" id="label-1" x="360" y="294" text-anchor="middle" data-i18n="pipeline.nodes.1">15 分钟探测</text>
+                <text class="pipe-label" id="label-2" x="640" y="484" text-anchor="middle" data-i18n="pipeline.nodes.2">自动发版</text>
+                <text class="pipe-label" id="label-3" x="1000" y="155" text-anchor="middle" data-i18n="pipeline.nodes.3">双镜像</text>
+                <text class="pipe-label" id="label-4" x="1180" y="424" text-anchor="middle" data-i18n="pipeline.nodes.4">地域分流</text>
+                <text class="pipe-label" id="label-5" x="1350" y="424" text-anchor="middle" data-i18n="pipeline.nodes.5">你的桌面</text>
+                <text class="pipe-branch-label" x="845" y="245" data-i18n="pipeline.branchGlobal">全球 → R2</text>
+                <text class="pipe-branch-label" x="830" y="500" data-i18n="pipeline.branchCN">中国大陆 → IHEP S3</text>
+              </svg>
+            </div>
+
+            <!-- travelling byte packet -->
+            <div class="packet" id="packet">
+              <img src="img/orb-512.webp" alt="" aria-hidden="true" loading="lazy" decoding="async" />
+            </div>
+            <div class="packet" id="packet-2">
+              <img src="img/orb-512.webp" alt="" aria-hidden="true" loading="lazy" decoding="async" />
+            </div>
+
+            <!-- stage copy -->
+            <div id="stage-cards">
+              <div class="stage-card" data-card="0">
+                <span class="chip chip-amber stat" data-i18n="pipeline.stages.0.stat">MSIX + DMG</span>
+                <h3 data-i18n="pipeline.stages.0.title">官方上游</h3>
+                <p data-i18n="pipeline.stages.0.body">一切始于 OpenAI 官方发布的安装包。我们不生产字节,只负责送达。</p>
+              </div>
+              <div class="stage-card" data-card="1" style="visibility: hidden">
+                <span class="chip chip-amber stat" data-i18n="pipeline.stages.1.stat">15 min</span>
+                <h3 data-i18n="pipeline.stages.1.title">每 15 分钟看一眼</h3>
+                <p data-i18n="pipeline.stages.1.body">Cloudflare Cron 持续探测官方上游,GitHub Actions 作为后备。上游一有变化,即刻知晓。</p>
+              </div>
+              <div class="stage-card" data-card="2" style="visibility: hidden">
+                <span class="chip chip-amber stat" data-i18n="pipeline.stages.2.stat">SHA256</span>
+                <h3 data-i18n="pipeline.stages.2.title">原样自动发布</h3>
+                <p data-i18n="pipeline.stages.2.body">Windows MSIX 与 macOS DMG(arm64 + x64)逐字节镜像,零修改、零重新打包。每个版本附带 SHA256SUMS 与上游指纹清单。</p>
+              </div>
+              <div class="stage-card" data-card="3" style="visibility: hidden">
+                <span class="chip chip-amber stat" data-i18n="pipeline.stages.3.stat">R2 + IHEP</span>
+                <h3 data-i18n="pipeline.stages.3.title">双镜像落地</h3>
+                <p data-i18n="pipeline.stages.3.body">R2 面向全球,IHEP S3 面向中国大陆。同一份字节,落在两个节点。</p>
+              </div>
+              <div class="stage-card" data-card="4" style="visibility: hidden">
+                <span class="chip chip-amber stat" data-i18n="pipeline.stages.4.stat">CF-IPCountry</span>
+                <h3 data-i18n="pipeline.stages.4.title">一条短链,就近抵达</h3>
+                <p data-i18n="pipeline.stages.4.body">Cloudflare Worker 按 CF-IPCountry 路由:大陆走 IHEP 预签名链接,其余走 R2。你只需要记住一个地址。</p>
+              </div>
+              <div class="stage-card" data-card="5" style="visibility: hidden">
+                <span class="chip chip-amber stat" data-i18n="pipeline.stages.5.stat">EdDSA</span>
+                <h3 data-i18n="pipeline.stages.5.title">增量更新,落到桌面</h3>
+                <p data-i18n="pipeline.stages.5.body">macOS 上,Manager 读取 Sparkle appcast,只取版本之间的差异。官方 EdDSA 签名逐字节校验,失败自动回滚。</p>
+              </div>
+            </div>
+
+            <div class="stage-progress" id="stage-progress" aria-hidden="true">
+              <i class="is-on"></i><i></i><i></i><i></i><i></i><i></i>
+            </div>
+
+            <div class="pipe-finale" id="pipe-finale">
+              <div class="inner">
+                <span class="chip chip-jade" data-i18n="pipeline.verifiedChip">EdDSA 校验通过</span>
+                <p class="display" data-i18n="pipeline.finale">从官方上游到你的 Mac 与 PC,每一个字节都原样、可验证。</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- mobile / reduced-motion rail -->
+        <div class="container pipeline-rail" id="pipeline-rail">
+          <div class="rail-line" aria-hidden="true"><i id="rail-fill"></i></div>
+
+          <div class="rail-item">
+            <span class="rail-node" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M6.5 15.5h11a3.5 3.5 0 0 0 .6-6.95 5.5 5.5 0 0 0-10.7-1.1A4 4 0 0 0 6.5 15.5Z" /></svg>
+            </span>
+            <span class="chip chip-amber stat-chip" data-i18n="pipeline.stages.0.stat">MSIX + DMG</span>
+            <h3 data-i18n="pipeline.stages.0.title">官方上游</h3>
+            <p data-i18n="pipeline.stages.0.body">一切始于 OpenAI 官方发布的安装包。我们不生产字节,只负责送达。</p>
+          </div>
+          <div class="rail-item">
+            <span class="rail-node" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" /><path d="M12 12 17 7M12 4v2.5M20 12h-2.5" /></svg>
+            </span>
+            <span class="chip chip-amber stat-chip" data-i18n="pipeline.stages.1.stat">15 min</span>
+            <h3 data-i18n="pipeline.stages.1.title">每 15 分钟看一眼</h3>
+            <p data-i18n="pipeline.stages.1.body">Cloudflare Cron 持续探测官方上游,GitHub Actions 作为后备。上游一有变化,即刻知晓。</p>
+          </div>
+          <div class="rail-item">
+            <span class="rail-node" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M4.5 8 12 4l7.5 4v8L12 20l-7.5-4V8Z" /><path d="M4.5 8 12 12l7.5-4M12 12v8" /></svg>
+            </span>
+            <span class="chip chip-amber stat-chip" data-i18n="pipeline.stages.2.stat">SHA256</span>
+            <h3 data-i18n="pipeline.stages.2.title">原样自动发布</h3>
+            <p data-i18n="pipeline.stages.2.body">Windows MSIX 与 macOS DMG(arm64 + x64)逐字节镜像,零修改、零重新打包。每个版本附带 SHA256SUMS 与上游指纹清单。</p>
+          </div>
+          <div class="rail-item">
+            <span class="rail-node" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" /><path d="M3.5 12h17M12 3.5c2.4 2.4 3.6 5.3 3.6 8.5s-1.2 6.1-3.6 8.5c-2.4-2.4-3.6-5.3-3.6-8.5s1.2-6.1 3.6-8.5Z" /></svg>
+            </span>
+            <span class="chip chip-amber stat-chip" data-i18n="pipeline.stages.3.stat">R2 + IHEP</span>
+            <h3 data-i18n="pipeline.stages.3.title">双镜像落地</h3>
+            <p data-i18n="pipeline.stages.3.body">R2 面向全球,IHEP S3 面向中国大陆。同一份字节,落在两个节点。</p>
+          </div>
+          <div class="rail-item">
+            <span class="rail-node" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M4 12h6M14 12h6M10 12c2.5 0 3.5-5 7-5M10 12c2.5 0 3.5 5 7 5" /><path d="M18.5 5.5 21 7l-2.5 1.5M18.5 15.5 21 17l-2.5 1.5" /></svg>
+            </span>
+            <span class="chip chip-amber stat-chip" data-i18n="pipeline.stages.4.stat">CF-IPCountry</span>
+            <h3 data-i18n="pipeline.stages.4.title">一条短链,就近抵达</h3>
+            <p data-i18n="pipeline.stages.4.body">Cloudflare Worker 按 CF-IPCountry 路由:大陆走 IHEP 预签名链接,其余走 R2。你只需要记住一个地址。</p>
+          </div>
+          <div class="rail-item">
+            <span class="rail-node" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="1.6" /><path d="M2.5 19h19" /></svg>
+            </span>
+            <span class="chip chip-amber stat-chip" data-i18n="pipeline.stages.5.stat">EdDSA</span>
+            <h3 data-i18n="pipeline.stages.5.title">增量更新,落到桌面</h3>
+            <p data-i18n="pipeline.stages.5.body">macOS 上,Manager 读取 Sparkle appcast,只取版本之间的差异。官方 EdDSA 签名逐字节校验,失败自动回滚。</p>
+          </div>
+
+          <div class="rail-finale" data-reveal>
+            <span class="chip chip-jade" data-i18n="pipeline.verifiedChip">EdDSA 校验通过</span>
+            <p class="display" style="margin: 14px 0 0" data-i18n="pipeline.finale">从官方上游到你的 Mac 与 PC,每一个字节都原样、可验证。</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================== TRUST ============================= -->
+      <section class="trust section-pad" id="trust">
+        <div class="trust-hex" id="trust-hex" aria-hidden="true"></div>
+        <div class="container">
+          <div class="section-head" style="text-align: center; margin-bottom: clamp(48px, 8vh, 90px)">
+            <p class="kicker" data-reveal data-i18n="trust.kicker">可信验证</p>
+            <h2 class="display section-title" style="margin-inline: auto" data-reveal data-i18n="trust.title">每一环,都可验证</h2>
+            <p class="lead" style="margin-inline: auto" data-reveal data-i18n="trust.lead">
+              不需要相信我们的说法。镜像与官方是否一致,任何人随时都能自己验证。
+            </p>
+          </div>
+          <div class="trust-wrap">
+            <div class="verify-card" data-reveal>
+              <div class="vc-head">
+                <span data-i18n="trust.mock.title">校验对比</span>
+                <span class="vc-tag" data-i18n="trust.mock.tag">示意</span>
+              </div>
+              <div class="vc-row">
+                <span class="vc-label" data-i18n="trust.mock.official">官方 SHA256</span>
+                <code class="vc-hash" data-vc-hash>e3b0 c442 98fc 1c14 9afb f4c8 996f b924</code>
+              </div>
+              <div class="vc-row">
+                <span class="vc-label" data-i18n="trust.mock.mirror">镜像 SHA256</span>
+                <code class="vc-hash" data-vc-hash>e3b0 c442 98fc 1c14 9afb f4c8 996f b924</code>
+              </div>
+              <div class="vc-row">
+                <span class="vc-label" data-i18n="trust.mock.sig">EdDSA 签名</span>
+                <span class="vc-val" data-i18n="trust.mock.sigVal">逐字节复制官方签名</span>
+              </div>
+              <div class="vc-match">
+                <span class="chip chip-jade" id="vc-match-chip"><span aria-hidden="true">✓ </span><span data-i18n="trust.mock.match">完全一致</span></span>
+              </div>
+            </div>
+            <div class="trust-grid" data-reveal-group>
+              <article class="card">
+                <h3 data-i18n="trust.items.0.title">Developer ID 签名与公证</h3>
+                <p data-i18n="trust.items.0.body">macOS 版本由 Apple Developer ID 签名,并通过 Apple 公证。来源可查,系统原生验证。</p>
+              </article>
+              <article class="card">
+                <h3 data-i18n="trust.items.1.title">EdDSA 逐字节校验</h3>
+                <p data-i18n="trust.items.1.body">镜像逐字节复制官方 EdDSA 签名——签名无法伪造,我们也从不伪造。校验不通过,更新就不会安装。</p>
+              </article>
+              <article class="card">
+                <h3 data-i18n="trust.items.2.title">SHA256SUMS 与上游指纹</h3>
+                <p data-i18n="trust.items.2.body">每个镜像版本附带 SHA256SUMS 与上游指纹清单。任何人,任何时候,都能比对镜像与官方是否一致。</p>
+              </article>
+              <article class="card">
+                <h3 data-i18n="trust.items.3.title">开源,可审计</h3>
+                <p data-i18n="trust.items.3.body">Manager 与 Mirror 全部以 MIT 协议开源。每一行代码、每一条流水线,都摆在明处供你审阅。</p>
+              </article>
+            </div>
+          </div>
+        </div>
+      </section>
+
+
+      <!-- ============================== SCOPE ============================= -->
+      <section class="scope section-pad" id="scope">
+        <picture class="layer tex-fill" aria-hidden="true">
+          <source media="(prefers-color-scheme: light)" srcset="img/texture-light-1280.webp" />
+          <img src="img/texture-dark-1280.webp" alt="" loading="lazy" decoding="async" />
+        </picture>
+        <div class="container">
+          <div class="section-head">
+            <p class="kicker" data-reveal data-i18n="scope.kicker">边界声明</p>
+            <h2 class="display section-title" data-reveal data-i18n="scope.title">做什么,不做什么</h2>
+          </div>
+          <div class="scope-list" data-reveal-group>
+            <div class="scope-item">
+              <h3 data-i18n="scope.items.0.title">原样分发,从不改包</h3>
+              <p data-i18n="scope.items.0.body">不修改、不重新打包官方安装程序。EdDSA 签名逐字节复制——它无法被伪造,我们也绝不伪造。</p>
+            </div>
+            <div class="scope-item">
+              <h3 data-i18n="scope.items.1.title">独立项目,无任何隶属</h3>
+              <p data-i18n="scope.items.1.body">本项目是独立的社区工具,与 OpenAI、Microsoft 均无隶属或背书关系。</p>
+            </div>
+            <div class="scope-item">
+              <h3 data-i18n="scope.items.2.title">MIT 开源</h3>
+              <p data-i18n="scope.items.2.body">Manager 与 Mirror 均以 MIT 协议开源,代码与构建流水线公开,可审计。</p>
+            </div>
+          </div>
+          <p class="scope-mit" data-i18n="scope.mit">MIT License — 自由使用、修改与分发。</p>
+        </div>
+      </section>
+    </main>
+
+    <!-- ============================== FOOTER ============================== -->
+    <footer class="footer">
+      <div class="container">
+        <div class="footer-grid">
+          <div class="footer-brand">
+            <a class="brand" href="#top">
+              <img src="img/logo-manager-192.png" alt="" width="30" height="30" />
+              <span>Codex App Manager</span>
+            </a>
+            <p class="footer-thanks" data-i18n="footer.thanks">
+              感谢中国科学院高能物理研究所(IHEP)为中国大陆提供镜像节点。
+            </p>
+          </div>
+          <div class="footer-col">
+            <h4>GitHub</h4>
+            <ul>
+              <li><a href="https://github.com/Wangnov/Codex-App-Manager" target="_blank" rel="noopener" data-i18n="footer.links.manager">Codex App Manager</a></li>
+              <li><a href="https://github.com/Wangnov/codex-app-mirror" target="_blank" rel="noopener" data-i18n="footer.links.mirror">Codex App Mirror</a></li>
+            </ul>
+          </div>
+          <div class="footer-col">
+            <h4 data-i18n="nav.download">下载</h4>
+            <ul>
+              <li><a href="https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_aarch64.dmg">macOS · Apple Silicon</a></li>
+              <li><a href="https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x86_64.dmg">macOS · Intel</a></li>
+              <li><a href="https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x64-setup.exe">Windows · x64</a></li>
+              <li><a href="#download" data-i18n="download.brew.title">Homebrew</a></li>
+            </ul>
+          </div>
+        </div>
+        <div class="footer-base">
+          <p data-i18n="footer.license">MIT License · 开源可审计</p>
+          <p data-i18n="footer.made">用 Tauri,和一点耐心做成。</p>
+          <a href="#top" data-i18n="footer.backTop">回到顶部</a>
+        </div>
+      </div>
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

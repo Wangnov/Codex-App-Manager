@@ -1,0 +1,95 @@
+/* ---------------------------------------------------------------------------
+   Design tokens — inherited from the Manager app's OKLCH material system
+   (hue 274 porcelain neutrals + amber journey light + jade verification).
+   Dark is the default; light follows prefers-color-scheme.
+--------------------------------------------------------------------------- */
+
+:root {
+  color-scheme: dark;
+
+  --bg: oklch(0.162 0.015 274);
+  --bg-deep: oklch(0.125 0.013 274);
+  --surface: oklch(0.212 0.017 274);
+  --surface-top: oklch(0.245 0.018 274);
+  --surface-2: oklch(0.255 0.019 274);
+  --surface-2-top: oklch(0.29 0.02 274);
+
+  --ink: oklch(0.945 0.01 274);
+  --ink-2: oklch(0.78 0.02 274);
+  --ink-3: oklch(0.62 0.022 274);
+
+  --accent: oklch(0.72 0.145 276);
+  --accent-2: oklch(0.62 0.18 271);
+  --accent-soft: oklch(0.83 0.085 278);
+  --accent-ink: oklch(0.99 0.01 274);
+
+  --amber: oklch(0.83 0.115 80);
+  --amber-deep: oklch(0.72 0.13 70);
+  --jade: oklch(0.8 0.125 168);
+
+  --line: color-mix(in oklch, var(--ink) 13%, transparent);
+  --line-strong: color-mix(in oklch, var(--ink) 22%, transparent);
+  --accent-tint: color-mix(in oklch, var(--accent) 16%, transparent);
+  --accent-glow: color-mix(in oklch, var(--accent) 32%, transparent);
+  --amber-tint: color-mix(in oklch, var(--amber) 16%, transparent);
+  --jade-tint: color-mix(in oklch, var(--jade) 15%, transparent);
+
+  --shadow-soft: 0 24px 60px -24px oklch(0.05 0.01 274 / 0.55);
+  --shadow-card: 0 10px 34px -14px oklch(0.05 0.01 274 / 0.5);
+  --highlight: inset 0 1px 0 oklch(1 0 0 / 0.07);
+
+  --nav-bg: color-mix(in oklch, var(--bg) 78%, transparent);
+
+  --font-display-zh: "SHS Display", "Source Han Serif SC", "Noto Serif CJK SC",
+    "Songti SC", "SimSun", serif;
+  --font-display-en: "Fraunces", "Georgia", "Times New Roman", serif;
+  --font-body: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC",
+    "Hiragino Sans GB", "HarmonyOS Sans SC", "Microsoft YaHei", "Segoe UI",
+    Roboto, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  --radius: 18px;
+  --radius-lg: 26px;
+  --container: 1180px;
+  --nav-h: 64px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+
+    --bg: oklch(0.952 0.008 274);
+    --bg-deep: oklch(0.925 0.01 274);
+    --surface: oklch(0.99 0.003 274);
+    --surface-top: oklch(1 0 0);
+    --surface-2: oklch(0.973 0.005 274);
+    --surface-2-top: oklch(0.988 0.004 274);
+
+    --ink: oklch(0.27 0.024 274);
+    --ink-2: oklch(0.43 0.022 274);
+    --ink-3: oklch(0.56 0.02 274);
+
+    --accent: oklch(0.54 0.19 273);
+    --accent-2: oklch(0.49 0.2 270);
+    --accent-soft: oklch(0.5 0.17 274);
+    --accent-ink: oklch(0.99 0.01 274);
+
+    --amber: oklch(0.67 0.13 72);
+    --amber-deep: oklch(0.6 0.13 66);
+    --jade: oklch(0.56 0.125 165);
+
+    --line: color-mix(in oklch, var(--ink) 13%, transparent);
+    --line-strong: color-mix(in oklch, var(--ink) 24%, transparent);
+    --accent-tint: color-mix(in oklch, var(--accent) 11%, transparent);
+    --accent-glow: color-mix(in oklch, var(--accent) 22%, transparent);
+    --amber-tint: color-mix(in oklch, var(--amber) 14%, transparent);
+    --jade-tint: color-mix(in oklch, var(--jade) 13%, transparent);
+
+    --shadow-soft: 0 24px 60px -28px oklch(0.4 0.04 274 / 0.35);
+    --shadow-card: 0 10px 30px -14px oklch(0.4 0.04 274 / 0.28);
+    --highlight: inset 0 1px 0 oklch(1 0 0 / 0.85);
+
+    --nav-bg: color-mix(in oklch, var(--surface) 80%, transparent);
+  }
+}

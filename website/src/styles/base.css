@@ -1,0 +1,254 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.75;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-x: clip;
+}
+
+img,
+svg {
+  display: block;
+  max-width: 100%;
+}
+
+/* width/height attributes reserve layout space; CSS decides the real size */
+img {
+  height: auto;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  padding: 0;
+}
+
+::selection {
+  background: var(--accent-glow);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+.skip-link {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  z-index: 100;
+  padding: 10px 16px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  transform: translateY(-220%);
+  transition: transform 0.2s;
+}
+
+.skip-link:focus-visible {
+  transform: none;
+}
+
+/* ---- typography ---------------------------------------------------------- */
+
+.display {
+  margin: 0;
+  font-family: var(--font-display-zh);
+  font-weight: 900;
+  line-height: 1.2;
+  letter-spacing: 0.015em;
+  text-wrap: balance;
+}
+
+body[data-lang="en"] .display {
+  font-family: var(--font-display-en);
+  font-weight: 580;
+  line-height: 1.08;
+  letter-spacing: -0.012em;
+  font-variation-settings: "opsz" 78, "SOFT" 30, "WONK" 0;
+}
+
+.kicker {
+  margin: 0 0 18px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--amber-deep);
+}
+
+body[data-lang="zh"] .kicker {
+  letter-spacing: 0.42em;
+}
+
+.lead {
+  margin: 22px 0 0;
+  max-width: 34em;
+  font-size: clamp(16px, 1.35vw, 19px);
+  color: var(--ink-2);
+}
+
+.section-title {
+  font-size: clamp(34px, 4.6vw, 58px);
+  max-width: 18em;
+}
+
+/* ---- layout -------------------------------------------------------------- */
+
+.container {
+  width: min(var(--container), calc(100% - clamp(40px, 8vw, 128px)));
+  margin-inline: auto;
+}
+
+section {
+  position: relative;
+  scroll-margin-top: calc(var(--nav-h) + 12px);
+}
+
+.section-pad {
+  padding-block: clamp(96px, 14vh, 170px);
+}
+
+.section-head {
+  position: relative;
+  z-index: 2;
+}
+
+/* ---- buttons ------------------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 15px 30px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 16px;
+  line-height: 1.2;
+  transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.35s, background-color 0.35s, border-color 0.35s;
+  will-change: transform;
+}
+
+.btn:active {
+  transform: scale(0.97);
+}
+
+.btn-primary {
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklch, var(--accent) 82%, white),
+    var(--accent-2)
+  );
+  color: var(--accent-ink);
+  box-shadow: 0 10px 28px -8px var(--accent-glow), var(--highlight);
+}
+
+.btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 36px -8px var(--accent-glow), var(--highlight);
+}
+
+.btn-ghost {
+  border: 1px solid var(--line-strong);
+  background: color-mix(in oklch, var(--surface) 55%, transparent);
+  color: var(--ink);
+  backdrop-filter: blur(6px);
+}
+
+.btn-ghost:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in oklch, var(--ink) 38%, transparent);
+}
+
+/* ---- cards & chips ------------------------------------------------------- */
+
+.card {
+  position: relative;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, var(--surface-top), var(--surface));
+  box-shadow: var(--shadow-card), var(--highlight);
+  padding: 30px 30px 32px;
+}
+
+.card h3 {
+  margin: 0 0 10px;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.card p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 15.5px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 15px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: color-mix(in oklch, var(--surface-2) 72%, transparent);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-2);
+  backdrop-filter: blur(8px);
+}
+
+.chip-amber {
+  border-color: color-mix(in oklch, var(--amber) 30%, transparent);
+  background: var(--amber-tint);
+  color: var(--amber-deep);
+}
+
+.chip-jade {
+  border-color: color-mix(in oklch, var(--jade) 32%, transparent);
+  background: var(--jade-tint);
+  color: var(--jade);
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
+/* decorative layers never intercept input */
+.layer {
+  position: absolute;
+  pointer-events: none;
+  user-select: none;
+}
