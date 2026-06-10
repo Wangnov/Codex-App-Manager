@@ -76,8 +76,14 @@ menu?.querySelectorAll("a").forEach((a) =>
 (() => {
   const ua = navigator.userAgent;
   let platform: string | null = null;
+  // iPhone/iPad UAs contain "like Mac OS X", and desktop-mode iPadOS even
+  // reports "Macintosh" — neither can run a DMG, so bail out before the Mac
+  // branch (touch points are the reliable tell for masquerading iPads).
+  const isAppleMobile =
+    /iPhone|iPad|iPod/i.test(ua) ||
+    (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1);
   if (/Windows/i.test(ua)) platform = "windows";
-  else if (/Macintosh|Mac OS X/i.test(ua)) {
+  else if (!isAppleMobile && /Macintosh/i.test(ua)) {
     // Only commit to an architecture on a positive GPU signal — guessing
     // wrong would deep-link the hero CTA to an installer that won't run.
     try {
