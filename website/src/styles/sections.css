@@ -1494,13 +1494,18 @@ body[data-lang="en"] .hero-title {
   border-radius: 14px;
   border: 1px solid var(--line);
   background: var(--bg-deep);
-  overflow-x: auto;
+  overflow: hidden;
 }
 
 .brew-card .cmd code {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
   white-space: nowrap;
   font-size: 13.5px;
   color: var(--ink);
+  padding-block: 2px;
 }
 
 .brew-card .cmd code::before {
