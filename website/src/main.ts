@@ -22,6 +22,41 @@ function syncLangUI() {
 applyLang(lang);
 syncLangUI();
 
+/* ====================== loading orchestration =========================== */
+
+// The shell fades once the critical pixels are in: hero image + display font,
+// capped so a slow connection never stares at the spinner.
+const ready: Promise<void> = (() => {
+  const heroImg = document.querySelector<HTMLImageElement>(".hero-bg img");
+  const imgReady: Promise<void> =
+    heroImg && !heroImg.complete
+      ? new Promise((r) => {
+          heroImg.addEventListener("load", () => r(), { once: true });
+          heroImg.addEventListener("error", () => r(), { once: true });
+        })
+      : Promise.resolve();
+  const fontsReady: Promise<unknown> = document.fonts?.ready ?? Promise.resolve();
+  const cap = new Promise<void>((r) => setTimeout(r, 2200));
+  return Promise.race([Promise.all([imgReady, fontsReady]).then(() => undefined), cap]);
+})();
+
+ready.then(() => {
+  document.body.classList.add("loaded");
+  window.setTimeout(() => document.getElementById("preloader")?.remove(), 600);
+});
+
+// Every image stays invisible until decoded, then eases in — no half-painted
+// decorative layers while the network catches up.
+document.querySelectorAll<HTMLImageElement>("img").forEach((img) => {
+  if (img.closest(".preloader")) return;
+  img.classList.add("fade-in");
+  if (img.complete && img.naturalWidth > 0) return;
+  img.classList.add("fade-pending");
+  const done = () => img.classList.remove("fade-pending");
+  img.addEventListener("load", done, { once: true });
+  img.addEventListener("error", done, { once: true });
+});
+
 document.getElementById("lang-switch")?.addEventListener("click", () => {
   lang = lang === "zh" ? "en" : "zh";
   applyLang(lang);
@@ -267,29 +302,37 @@ mm.add("(prefers-reduced-motion: no-preference)", () => {
     });
   });
 
-  /* ---- hero intro ---- */
-  const heroLines = document.querySelectorAll(".hero-title .line > span");
-  gsap.from(heroLines, {
-    yPercent: 118,
-    duration: 1.25,
-    ease: "power4.out",
-    stagger: 0.14,
-    delay: 0.15,
+  /* ---- hero intro (waits for the preloader to lift) ---- */
+  void ready.then(() => {
+    gsap.from(".hero-title .line > span", {
+      yPercent: 118,
+      duration: 1.25,
+      ease: "power4.out",
+      stagger: 0.14,
+      delay: 0.1,
+    });
+    gsap.from(".hero-copy [data-reveal]", {
+      y: 26,
+      autoAlpha: 0,
+      duration: 1,
+      ease: "power3.out",
+      stagger: 0.1,
+      delay: 0.4,
+    });
+    gsap.from(".hero-cloud", {
+      y: 60,
+      autoAlpha: 0,
+      duration: 1.6,
+      ease: "power3.out",
+      delay: 0.25,
+    });
   });
-  gsap.from(".hero [data-reveal]", {
-    y: 26,
-    autoAlpha: 0,
-    duration: 1,
-    ease: "power3.out",
-    stagger: 0.1,
-    delay: 0.55,
-  });
-  gsap.from(".hero-cloud", {
+  gsap.from(".hero-demo", {
     y: 60,
     autoAlpha: 0,
-    duration: 1.6,
+    duration: 1.1,
     ease: "power3.out",
-    delay: 0.3,
+    scrollTrigger: { trigger: ".hero-demo", start: "top 88%", once: true },
   });
 
   /* ---- hero pointer parallax (fine pointers only) ---- */
@@ -395,9 +438,7 @@ mm.add(
       .to(".hero-bg img", { yPercent: 14, scale: 1.06, ease: "none" }, 0)
       .to(".hero-bokeh", { yPercent: -16, ease: "none" }, 0)
       .to(".hero-mist", { yPercent: -26, ease: "none" }, 0)
-      .to(".hero-cloud", { yPercent: -52, rotation: 2.5, ease: "none" }, 0)
-      .to(".hero-content", { yPercent: -10, autoAlpha: 0.2, ease: "none" }, 0)
-      .to(".scroll-hint", { autoAlpha: 0, ease: "none" }, 0);
+      .to(".hero-cloud", { yPercent: -52, rotation: 2.5, ease: "none" }, 0);
 
     /* pinned manager */
     const checks = gsap.utils.toArray<HTMLElement>(".mock-panel .mock-check");

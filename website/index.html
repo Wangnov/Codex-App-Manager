@@ -50,6 +50,50 @@
         font-weight: 100 900;
         font-display: swap;
       }
+
+      /* Preloader — self-contained (design tokens load with the JS bundle) */
+      .preloader {
+        position: fixed;
+        inset: 0;
+        z-index: 200;
+        display: grid;
+        place-items: center;
+        background: #17171f;
+        transition: opacity 0.5s ease, visibility 0.5s;
+      }
+      @media (prefers-color-scheme: light) {
+        .preloader {
+          background: #f1f1f6;
+        }
+      }
+      .preloader img {
+        width: 56px;
+        height: 56px;
+      }
+      .preloader-ring {
+        position: absolute;
+        width: 96px;
+        height: 96px;
+        border-radius: 50%;
+        border: 2px solid rgba(138, 143, 232, 0.18);
+        border-top-color: #8a8fe8;
+        animation: pre-spin 0.9s linear infinite;
+      }
+      @keyframes pre-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .preloader-ring {
+          animation: none;
+        }
+      }
+      body.loaded .preloader {
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+      }
     </style>
     <script type="application/ld+json">
       {
@@ -66,6 +110,12 @@
     </script>
   </head>
   <body data-lang="zh">
+    <div class="preloader" id="preloader" aria-hidden="true">
+      <span class="preloader-ring"></span>
+      <img src="img/logo-manager-192.png" alt="" width="56" height="56" />
+    </div>
+    <noscript><style>.preloader { display: none; }</style></noscript>
+
     <a class="skip-link" href="#main" data-i18n="ui.skip">跳到主要内容</a>
 
     <header class="nav" id="nav">

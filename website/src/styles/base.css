@@ -252,3 +252,12 @@ code {
   pointer-events: none;
   user-select: none;
 }
+
+/* progressive image loading: stay invisible until decoded, then ease in */
+img.fade-in {
+  transition: opacity 0.7s ease;
+}
+
+img.fade-pending {
+  opacity: 0 !important;
+}
