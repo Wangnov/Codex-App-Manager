@@ -10,6 +10,7 @@
 </p>
 
 <p align="center">
+  <a href="https://codexapp.agentsmirror.com"><img src="https://img.shields.io/badge/website-codexapp.agentsmirror.com-7c83ff" alt="Official website"></a>
   <a href="https://github.com/Wangnov/Codex-App-Manager/releases/latest"><img src="https://img.shields.io/github/downloads/Wangnov/Codex-App-Manager/total?logo=github&label=GitHub%20downloads&color=2ea44f" alt="GitHub release downloads (mirror downloads not counted)"></a>
   <a href="https://github.com/Wangnov/Codex-App-Manager/stargazers"><img src="https://img.shields.io/github/stars/Wangnov/Codex-App-Manager?logo=github&label=stars&color=f5c518" alt="GitHub stars"></a>
   <a href="https://github.com/Wangnov/Codex-App-Manager/releases/latest"><img src="https://img.shields.io/github/v/release/Wangnov/Codex-App-Manager?logo=github&label=release" alt="Latest release"></a>
@@ -23,7 +24,7 @@
 </p>
 
 <p align="center">
-  <a href="#readme-cn">中文</a> · <a href="#readme-en">English</a>
+  <a href="https://codexapp.agentsmirror.com"><b>官网 · Official Website</b></a> · <a href="#readme-cn">中文</a> · <a href="#readme-en">English</a>
 </p>
 
 ---
