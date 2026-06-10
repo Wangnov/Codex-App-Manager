@@ -1,0 +1,5 @@
+node_modules/
+dist/
+assets/raw/
+assets/fonts-src/
+copy-*.json
