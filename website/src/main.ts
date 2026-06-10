@@ -78,16 +78,18 @@ menu?.querySelectorAll("a").forEach((a) =>
   let platform: string | null = null;
   if (/Windows/i.test(ua)) platform = "windows";
   else if (/Macintosh|Mac OS X/i.test(ua)) {
-    platform = "mac-arm";
+    // Only commit to an architecture on a positive GPU signal — guessing
+    // wrong would deep-link the hero CTA to an installer that won't run.
     try {
       const gl = document.createElement("canvas").getContext("webgl");
       const dbg = gl?.getExtension("WEBGL_debug_renderer_info");
       const renderer = dbg
         ? String(gl!.getParameter(dbg.UNMASKED_RENDERER_WEBGL))
         : "";
-      if (/(intel|amd|nvidia|radeon)/i.test(renderer)) platform = "mac-intel";
+      if (/apple/i.test(renderer)) platform = "mac-arm";
+      else if (/(intel|amd|nvidia|radeon)/i.test(renderer)) platform = "mac-intel";
     } catch {
-      /* keep default */
+      /* unknown — let the user pick from the download section */
     }
   }
   if (!platform) return;
@@ -357,6 +359,8 @@ mm.add("(prefers-reduced-motion: no-preference)", () => {
 mm.add("(prefers-reduced-motion: reduce)", () => {
   gsap.set("#rail-fill", { scaleY: 1 });
   document.querySelectorAll(".rail-item").forEach((el) => el.classList.add("is-lit"));
+  // show the final "execute" panel, with every step lit and the outcome settled
+  setManagerStage(2);
   steps.forEach((s) => s.classList.add("is-active"));
   gsap.set("#mock-progress-bar", { width: "100%" });
   gsap.set("#mock-done, #mock-launch", { opacity: 1 });
