@@ -296,6 +296,21 @@ fn host_of(url: &str) -> String {
 /// No-op progress sink for downloads whose progress isn't surfaced (e.g. stage).
 fn no_progress(_p: DownloadProgress) {}
 
+/// Graceful quit with a user-actionable failure message. Codex often answers
+/// the quit event with its own confirmation dialog ("Quit Codex?" when
+/// automations are enabled); the engine brings that dialog frontmost after a
+/// grace period, and if the user still hasn't confirmed by the timeout we say
+/// exactly what to click instead of a bare timeout. Never force-kills.
+fn quit_codex_gracefully() -> Result<(), AppError> {
+    quit_codex(30).map_err(|_| {
+        AppError::Engine(
+            "Codex 未在限时内退出——它可能正在等待退出确认（如「Quit Codex?」对话框，已尝试将其带到前台）。\
+             请在 Codex 中确认退出后重试；为保护进行中的会话，不会强制结束 Codex"
+                .to_string(),
+        )
+    })
+}
+
 fn download_and_verify(
     url: &str,
     size: u64,
@@ -622,7 +637,7 @@ pub fn perform_macos_update(
     //     the swap fails after the quit, swap_in_place has restored the old
     //     bundle in place — bring the user's app back before surfacing the error.
     let was_running = codex_running();
-    quit_codex(30).map_err(|e| AppError::Engine(e.to_string()))?;
+    quit_codex_gracefully()?;
     if let Err(err) = swap_in_place(&install_path, &out_app, &backup) {
         if was_running {
             let _ = relaunch(&install_path);
@@ -874,7 +889,7 @@ pub fn uninstall_macos(keep_codex_home: bool) -> Result<MacUninstallReport, AppE
         ));
     }
 
-    quit_codex(30).map_err(|e| AppError::Engine(e.to_string()))?;
+    quit_codex_gracefully()?;
 
     // Delete first: if we lack permission to remove the bundle (e.g. a root-owned
     // install), the managed record stays intact so the user can retry without

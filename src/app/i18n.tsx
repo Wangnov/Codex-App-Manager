@@ -62,7 +62,7 @@ const ZH = {
   "prov.external": "未管理",
 
   "confirm.title": "更新到 {version}?",
-  "confirm.body": "更新时会关闭 Codex,完成后自动重启,大约一分钟。",
+  "confirm.body": "更新时会关闭 Codex,完成后自动重启,大约一分钟。若 Codex 弹出退出确认框,请在 Codex 中点击确认。",
   "confirm.cancel": "取消",
   "confirm.ok": "更新",
 
@@ -212,7 +212,7 @@ const EN: Record<Key, string> = {
   "prov.external": "Unmanaged",
 
   "confirm.title": "Update to {version}?",
-  "confirm.body": "Codex will close and reopen automatically — about a minute.",
+  "confirm.body": "Codex will close and reopen automatically — about a minute. If Codex asks you to confirm quitting, click Quit there.",
   "confirm.cancel": "Cancel",
   "confirm.ok": "Update",
 
@@ -359,7 +359,7 @@ const FR: Record<Key, string> = {
   "prov.external": "Non géré",
 
   "confirm.title": "Mettre à jour vers {version} ?",
-  "confirm.body": "Codex va se fermer puis redémarrer automatiquement — environ une minute.",
+  "confirm.body": "Codex va se fermer puis redémarrer automatiquement — environ une minute. Si Codex demande de confirmer la fermeture, confirmez-la dans Codex.",
   "confirm.cancel": "Annuler",
   "confirm.ok": "Mettre à jour",
 
@@ -507,7 +507,7 @@ const ZH_TW: Record<Key, string> = {
   "prov.external": "未管理",
 
   "confirm.title": "更新至 {version}？",
-  "confirm.body": "更新時 Codex 會自動關閉並重新啟動，約需一分鐘。",
+  "confirm.body": "更新時 Codex 會自動關閉並重新啟動，約需一分鐘。若 Codex 跳出結束確認視窗，請在 Codex 中點按確認。",
   "confirm.cancel": "取消",
   "confirm.ok": "更新",
 
@@ -665,7 +665,7 @@ const DE: Record<Key, string> = {
   "prov.external": "Nicht verwaltet",
 
   "confirm.title": "Auf {version} aktualisieren?",
-  "confirm.body": "Codex wird geschlossen und automatisch neu gestartet — dauert etwa eine Minute.",
+  "confirm.body": "Codex wird geschlossen und automatisch neu gestartet — dauert etwa eine Minute. Falls Codex eine Beenden-Bestätigung anzeigt, bestätigen Sie diese in Codex.",
   "confirm.cancel": "Abbrechen",
   "confirm.ok": "Aktualisieren",
 
@@ -823,7 +823,7 @@ const KO: Record<Key, string> = {
   "prov.external": "미관리",
 
   "confirm.title": "{version}으로 업데이트할까요?",
-  "confirm.body": "업데이트 중 Codex가 종료되며, 완료 후 자동으로 재시작됩니다 — 약 1분 소요.",
+  "confirm.body": "업데이트 중 Codex가 종료되며, 완료 후 자동으로 재시작됩니다 — 약 1분 소요. Codex가 종료 확인 창을 표시하면 Codex에서 확인을 눌러 주세요.",
   "confirm.cancel": "취소",
   "confirm.ok": "업데이트",
 
@@ -975,7 +975,7 @@ const JA: Record<Key, string> = {
   "prov.managed": "管理済み",
   "prov.external": "未管理",
   "confirm.title": "{version} にアップデートしますか？",
-  "confirm.body": "アップデート中は Codex が閉じ、完了後に自動で再起動します — 約 1 分かかります。",
+  "confirm.body": "アップデート中は Codex が閉じ、完了後に自動で再起動します — 約 1 分かかります。Codex が終了確認を表示した場合は、Codex 側で確認してください。",
   "confirm.cancel": "キャンセル",
   "confirm.ok": "アップデート",
   "close.confirm.title": "マネージャーを閉じますか？",
@@ -1113,7 +1113,7 @@ const RU: Record<Key, string> = {
   "prov.managed": "Управляется",
   "prov.external": "Не управляется",
   "confirm.title": "Обновить до {version}?",
-  "confirm.body": "Codex закроется и перезапустится автоматически — около минуты.",
+  "confirm.body": "Codex закроется и перезапустится автоматически — около минуты. Если Codex запросит подтверждение выхода, подтвердите его в Codex.",
   "confirm.cancel": "Отмена",
   "confirm.ok": "Обновить",
   "close.confirm.title": "Закрыть менеджер?",
@@ -1251,7 +1251,7 @@ const AR: Record<Key, string> = {
   "prov.managed": "مُدار",
   "prov.external": "غير مُدار",
   "confirm.title": "تحديث إلى {version}؟",
-  "confirm.body": "سيُغلق Codex ثم يُعاد تشغيله تلقائياً — دقيقة تقريباً.",
+  "confirm.body": "سيُغلق Codex ثم يُعاد تشغيله تلقائياً — دقيقة تقريباً. إذا طلب Codex تأكيد الإنهاء، فأكِّده في Codex.",
   "confirm.cancel": "إلغاء",
   "confirm.ok": "تحديث",
   "close.confirm.title": "إغلاق المدير؟",
@@ -1389,7 +1389,7 @@ const ES: Record<Key, string> = {
   "prov.managed": "Gestionado",
   "prov.external": "No gestionado",
   "confirm.title": "¿Actualizar a {version}?",
-  "confirm.body": "Codex se cerrará y se reabrirá automáticamente — tarda alrededor de un minuto.",
+  "confirm.body": "Codex se cerrará y se reabrirá automáticamente — tarda alrededor de un minuto. Si Codex pide confirmar el cierre, confírmalo en Codex.",
   "confirm.cancel": "Cancelar",
   "confirm.ok": "Actualizar",
   "close.confirm.title": "¿Cerrar el gestor?",
@@ -1527,7 +1527,7 @@ const PT_BR: Record<Key, string> = {
   "prov.managed": "Gerenciado",
   "prov.external": "Não gerenciado",
   "confirm.title": "Atualizar para {version}?",
-  "confirm.body": "O Codex vai fechar e reabrir automaticamente — cerca de um minuto.",
+  "confirm.body": "O Codex vai fechar e reabrir automaticamente — cerca de um minuto. Se o Codex pedir confirmação para sair, confirme no Codex.",
   "confirm.cancel": "Cancelar",
   "confirm.ok": "Atualizar",
   "close.confirm.title": "Fechar o gerenciador?",

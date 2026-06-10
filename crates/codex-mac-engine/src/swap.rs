@@ -27,6 +27,13 @@ pub fn codex_running() -> bool {
 
 /// Ask Codex to quit gracefully (AppleScript), polling up to `timeout_secs`.
 /// Never force-kills.
+///
+/// Codex may answer the quit event with its own in-app confirmation dialog
+/// instead of quitting (e.g. "Quit Codex? Enabled automations won't run…"
+/// when automations are enabled). When Codex isn't frontmost that dialog sits
+/// on a window the user never sees, so the quit silently stalls. After a short
+/// grace period we therefore `activate` Codex — bringing the pending dialog
+/// frontmost so the user can answer it — and keep waiting until the timeout.
 pub fn quit_codex(timeout_secs: u64) -> Result<(), EngineError> {
     if !codex_running() {
         return Ok(());
@@ -35,14 +42,26 @@ pub fn quit_codex(timeout_secs: u64) -> Result<(), EngineError> {
         .args(["-e", r#"tell application "Codex" to quit"#])
         .status();
 
-    for _ in 0..(timeout_secs * 4) {
+    // 250ms ticks; if Codex is still running after ~5s it is most likely
+    // waiting on its quit-confirmation dialog — surface it.
+    let activate_tick = 5 * 4;
+    for tick in 0..(timeout_secs * 4) {
         if !codex_running() {
             return Ok(());
+        }
+        if tick == activate_tick {
+            let _ = Command::new("osascript")
+                .args(["-e", r#"tell application "Codex" to activate"#])
+                .status();
         }
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
     Err(EngineError::Io(
-        "Codex did not quit within the timeout (left running to protect in-flight work)".to_string(),
+        "Codex did not quit within the timeout — it may be waiting on its own \
+         quit-confirmation dialog (e.g. \"Quit Codex?\" when automations are \
+         enabled); confirm the quit in Codex and retry (left running to \
+         protect in-flight work)"
+            .to_string(),
     ))
 }
 
