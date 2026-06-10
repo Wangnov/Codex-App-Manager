@@ -222,6 +222,17 @@ menu?.querySelectorAll("a").forEach((a) =>
 
 const mm = gsap.matchMedia();
 
+/* manager-enactment lookups — declared before any mm.add(), because a
+   matching context (e.g. prefers-reduced-motion) runs its callback
+   synchronously at registration */
+const steps = gsap.utils.toArray<HTMLElement>("#manager-steps .step");
+const panels = gsap.utils.toArray<HTMLElement>(".mock-panel");
+
+function setManagerStage(k: number) {
+  steps.forEach((s, i) => s.classList.toggle("is-active", i === k));
+  panels.forEach((p, i) => p.classList.toggle("is-active", i === k));
+}
+
 mm.add("(prefers-reduced-motion: no-preference)", () => {
   /* ---- generic reveals (hero has its own intro) ---- */
   document.querySelectorAll<HTMLElement>("[data-reveal]").forEach((el) => {
@@ -353,14 +364,6 @@ mm.add("(prefers-reduced-motion: reduce)", () => {
 });
 
 /* ---- manager enactment: desktop = pinned scrub, mobile = step triggers -- */
-
-const steps = gsap.utils.toArray<HTMLElement>("#manager-steps .step");
-const panels = gsap.utils.toArray<HTMLElement>(".mock-panel");
-
-function setManagerStage(k: number) {
-  steps.forEach((s, i) => s.classList.toggle("is-active", i === k));
-  panels.forEach((p, i) => p.classList.toggle("is-active", i === k));
-}
 
 mm.add(
   "(min-width: 1024px) and (prefers-reduced-motion: no-preference)",
