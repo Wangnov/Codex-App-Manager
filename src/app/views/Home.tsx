@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
-import { errorMessage, managerApi } from "../../services/managerApi";
+import { errorCode, errorMessage, managerApi } from "../../services/managerApi";
 import type {
   AppSettings,
   DownloadProgress,
@@ -37,6 +37,11 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [busy, setBusy] = useState<"plan" | "perform" | "adopt" | "install" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // A non-error, transient heads-up (e.g. "we re-checked because the install
+  // changed"). Kept SEPARATE from `error` on purpose: `error` drives the
+  // "检查失败" hero in the `!installed` branch, so reusing it for an info note
+  // would strand a now-uninstalled user on an error screen with no install CTA.
+  const [notice, setNotice] = useState<string | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   // Whether the status request has finished (success OR failure) — distinct from
   // the value, so a failed macStatus doesn't leave the home stuck on "loading".
@@ -83,21 +88,6 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     }
   }, [onDlProgress]);
 
-  const check = useCallback(async () => {
-    setBusy("plan");
-    setError(null);
-    try {
-      setReport(await managerApi.macPlanUpdate());
-    } catch (cause) {
-      // Drop any stale plan so a failed re-check can't keep driving "立即更新"
-      // off an outdated currentBuild/latestBuild.
-      setReport(null);
-      setError(errorMessage(cause));
-    } finally {
-      setBusy(null);
-    }
-  }, []);
-
   const refreshStatus = useCallback(async () => {
     try {
       setStatus(await managerApi.macStatus());
@@ -110,6 +100,30 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     }
   }, []);
 
+  // Re-plan AND re-detect in the same breath: everything on screen (and the
+  // perform expectation) must come from one coherent moment. Refreshing only
+  // one of the two is how "当前 X → 新版 X" cards and doomed expectations happen
+  // after an out-of-band install change. Returns whether the check succeeded,
+  // so a caller can layer a notice on top without masking a check failure.
+  const check = useCallback(async (): Promise<boolean> => {
+    setBusy("plan");
+    setError(null);
+    setNotice(null);
+    try {
+      const [r] = await Promise.all([managerApi.macPlanUpdate(), refreshStatus()]);
+      setReport(r);
+      return true;
+    } catch (cause) {
+      // Drop any stale plan so a failed re-check can't keep driving "立即更新"
+      // off an outdated currentBuild/latestBuild.
+      setReport(null);
+      setError(errorMessage(cause));
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  }, [refreshStatus]);
+
   useEffect(() => {
     void (async () => {
       const s = await managerApi.getSettings().catch(() => DEFAULT_SETTINGS);
@@ -121,6 +135,72 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       }
     })();
   }, [check, refreshStatus]);
+
+  // The snapshot/busy values the focus listener (a long-lived subscription)
+  // reads — refs so the subscription doesn't tear down on every state change.
+  const reportRef = useRef<MacUpdateReport | null>(null);
+  useEffect(() => {
+    reportRef.current = report;
+  }, [report]);
+  const busyRef = useRef(busy);
+  useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
+
+  // Window focus → silently re-detect the local install (milliseconds, no
+  // network). If it no longer matches the snapshot on screen (Codex was
+  // updated / downgraded out-of-band while we weren't looking), re-run the
+  // full check so the card corrects itself instead of waiting to fail the
+  // perform-time guard.
+  useEffect(() => {
+    let last = 0;
+    let un: (() => void) | undefined;
+    void (async () => {
+      try {
+        un = await listen("tauri://focus", () => {
+          const now = Date.now();
+          if (busyRef.current || now - last < 3000) return;
+          last = now;
+          void (async () => {
+            try {
+              const st = await managerApi.macStatus();
+              setStatus(st);
+              setStatusLoaded(true);
+              setStatusFailed(false);
+              // Re-check whenever the install identity (build OR path) differs
+              // from the last checked snapshot — in EITHER direction, so a
+              // fresh external install (snapshot had none), a removal, a
+              // version change, and a same-build move to a new path all
+              // re-plan. Gate on `checked` (we have planned at least once), not
+              // on a non-null installed, or the none→installed transition is
+              // missed. The perform expectation pins build+path, so a stale
+              // plan here would only fail the backend guard or mislead the card.
+              const checked = reportRef.current;
+              const snap = checked?.installed ?? null;
+              const fresh = st.installed ?? null;
+              const identityChanged =
+                (snap?.build ?? null) !== (fresh?.build ?? null) ||
+                (snap?.path ?? null) !== (fresh?.path ?? null);
+              if (checked && identityChanged) {
+                // Drop any open confirm sheet first: it was built for the OLD
+                // target, and the install may now be external/gone. Leaving it
+                // up would let a click run perform against a snapshot the user
+                // never saw — bypassing the external→adopt boundary. The user
+                // re-confirms against the freshly-checked card.
+                setConfirmOpen(false);
+                void check();
+              }
+            } catch {
+              // Transient/unsupported — the next explicit check will surface it.
+            }
+          })();
+        });
+      } catch {
+        // Non-Tauri (web preview): no event bus — nothing to clean up.
+      }
+    })();
+    return () => un?.();
+  }, [check]);
 
   const adopt = useCallback(async () => {
     setBusy("adopt");
@@ -152,7 +232,12 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   }, [check, startDlListen]);
 
   const runPerform = useCallback(async () => {
-    const installed = status?.installed;
+    // ONE atomic snapshot (the report carries installed + plan detected
+    // together) drives both the labels and the consent expectation — never mix
+    // it with the separately-fetched `status`, which can lag an out-of-band
+    // install change. The backend re-verifies reality against exactly this
+    // expectation before the destructive swap.
+    const installed = report?.installed;
     const plan = report?.plan;
     if (!installed || !plan || plan.upToDate) return;
     setBusy("perform");
@@ -172,20 +257,35 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       setPerform(result);
       setUpdatedVer({ from: fromVersion, to: toVersion });
       setConfirmOpen(false);
-      await refreshStatus();
       await check();
     } catch (cause) {
-      setError(errorMessage(cause));
       setConfirmOpen(false);
+      if (errorCode(cause) === "stale_expectation") {
+        // Reality moved between confirm and execute (the backend's TOCTOU
+        // guard). Refresh the snapshot and post a NOTICE (not an error) so the
+        // card can settle into whatever it now is — update / up-to-date / none
+        // (Codex was removed) — without the `error`-driven "检查失败" hero
+        // hijacking the none case. A failed re-check keeps its own error.
+        if (await check()) {
+          setNotice(t("home.stale.rechecked"));
+        }
+      } else {
+        setError(errorMessage(cause));
+      }
     } finally {
       un();
       setBusy(null);
       setDl(null);
     }
-  }, [status, report, refreshStatus, check, startDlListen]);
+  }, [report, check, startDlListen, t]);
 
   const plan = report?.plan ?? null;
-  const installed = status?.installed ?? report?.installed ?? null;
+  // The report is one atomic backend snapshot (installed detected together
+  // with the plan) — when it exists, it is the truth the card paints and the
+  // expectation signs. `status` (local-only, loads before the first network
+  // check and refreshes on focus) fills in until then and drives the
+  // managed/external badge.
+  const installed = (report ? report.installed : status?.installed) ?? null;
   const isManaged = status?.status === "managed";
   const updateAvailable = Boolean(plan) && !plan?.upToDate;
 
@@ -366,6 +466,14 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
               setPerform(null);
               setUpdatedVer(null);
             }}
+          />
+        ) : null}
+        {notice ? (
+          <ResultBanner
+            tone="ok"
+            title={notice}
+            autoDismissMs={6000}
+            onClose={() => setNotice(null)}
           />
         ) : null}
         {error ? (

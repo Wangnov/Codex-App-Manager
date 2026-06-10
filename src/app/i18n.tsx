@@ -57,6 +57,7 @@ const ZH = {
   "home.error.title": "检查失败",
   "home.error.sub": "请稍后重试,或在设置里更换更新源。",
   "home.source": "更新源:{source}",
+  "home.stale.rechecked": "安装状态已变化,已重新检查——请再次确认。",
 
   "prov.managed": "已托管",
   "prov.external": "未管理",
@@ -207,6 +208,7 @@ const EN: Record<Key, string> = {
   "home.error.title": "Check failed",
   "home.error.sub": "Try again later, or switch the update source in Settings.",
   "home.source": "Source: {source}",
+  "home.stale.rechecked": "The installed state changed — re-checked; please confirm again.",
 
   "prov.managed": "Managed",
   "prov.external": "Unmanaged",
@@ -354,6 +356,7 @@ const FR: Record<Key, string> = {
   "home.error.title": "Vérification échouée",
   "home.error.sub": "Réessayez plus tard ou changez la source dans les Réglages.",
   "home.source": "Source : {source}",
+  "home.stale.rechecked": "L'état installé a changé — nouvelle vérification effectuée ; veuillez confirmer à nouveau.",
 
   "prov.managed": "Géré",
   "prov.external": "Non géré",
@@ -502,6 +505,7 @@ const ZH_TW: Record<Key, string> = {
   "home.error.title": "檢查失敗",
   "home.error.sub": "請稍後再試，或在設定中更換更新來源。",
   "home.source": "來源：{source}",
+  "home.stale.rechecked": "安裝狀態已變更，已重新檢查——請再次確認。",
 
   "prov.managed": "已管理",
   "prov.external": "未管理",
@@ -660,6 +664,7 @@ const DE: Record<Key, string> = {
   "home.error.title": "Prüfung fehlgeschlagen",
   "home.error.sub": "Später erneut versuchen oder in den Einstellungen eine andere Updatequelle wählen.",
   "home.source": "Quelle: {source}",
+  "home.stale.rechecked": "Der Installationszustand hat sich geändert — erneut geprüft; bitte noch einmal bestätigen.",
 
   "prov.managed": "Verwaltet",
   "prov.external": "Nicht verwaltet",
@@ -818,6 +823,7 @@ const KO: Record<Key, string> = {
   "home.error.title": "확인 실패",
   "home.error.sub": "잠시 후 다시 시도하거나, 설정에서 업데이트 소스를 변경해 보세요.",
   "home.source": "소스: {source}",
+  "home.stale.rechecked": "설치 상태가 변경되어 다시 확인했습니다 — 다시 한번 확인해 주세요.",
 
   "prov.managed": "관리됨",
   "prov.external": "미관리",
@@ -972,6 +978,7 @@ const JA: Record<Key, string> = {
   "home.error.title": "確認に失敗しました",
   "home.error.sub": "しばらくしてから再試行するか、設定でアップデート元を変更してください。",
   "home.source": "ソース: {source}",
+  "home.stale.rechecked": "インストール状態が変わったため再チェックしました — もう一度ご確認ください。",
   "prov.managed": "管理済み",
   "prov.external": "未管理",
   "confirm.title": "{version} にアップデートしますか？",
@@ -1110,6 +1117,7 @@ const RU: Record<Key, string> = {
   "home.error.title": "Ошибка проверки",
   "home.error.sub": "Повторите позже или смените источник обновлений в настройках.",
   "home.source": "Источник: {source}",
+  "home.stale.rechecked": "Состояние установки изменилось — проверка выполнена заново; подтвердите ещё раз.",
   "prov.managed": "Управляется",
   "prov.external": "Не управляется",
   "confirm.title": "Обновить до {version}?",
@@ -1248,6 +1256,7 @@ const AR: Record<Key, string> = {
   "home.error.title": "فشل التحقق",
   "home.error.sub": "حاول مجدداً لاحقاً، أو غيِّر مصدر التحديث في الإعدادات.",
   "home.source": "المصدر: {source}",
+  "home.stale.rechecked": "تغيّرت حالة التثبيت — أُعيد الفحص؛ يُرجى التأكيد مرة أخرى.",
   "prov.managed": "مُدار",
   "prov.external": "غير مُدار",
   "confirm.title": "تحديث إلى {version}؟",
@@ -1386,6 +1395,7 @@ const ES: Record<Key, string> = {
   "home.error.title": "Error al comprobar",
   "home.error.sub": "Inténtalo más tarde o cambia la fuente de actualización en Ajustes.",
   "home.source": "Fuente: {source}",
+  "home.stale.rechecked": "El estado de instalación cambió — se volvió a comprobar; confírmalo de nuevo.",
   "prov.managed": "Gestionado",
   "prov.external": "No gestionado",
   "confirm.title": "¿Actualizar a {version}?",
@@ -1524,6 +1534,7 @@ const PT_BR: Record<Key, string> = {
   "home.error.title": "Falha na verificação",
   "home.error.sub": "Tente novamente mais tarde ou troque a fonte de atualização nas Configurações.",
   "home.source": "Fonte: {source}",
+  "home.stale.rechecked": "O estado da instalação mudou — verificado novamente; confirme mais uma vez.",
   "prov.managed": "Gerenciado",
   "prov.external": "Não gerenciado",
   "confirm.title": "Atualizar para {version}?",

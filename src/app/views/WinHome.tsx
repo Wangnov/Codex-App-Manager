@@ -151,8 +151,10 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       setError(null);
       // For an in-place update (not a fresh install) capture the human-facing
       // versions before the swap, so the outcome strip can show "X → Y".
+      // Prefer the report (one atomic snapshot of installed + plan) so the
+      // strip can't pair a stale installed version with a fresh plan.
       const fromVersion =
-        mode === "perform" ? status?.installed?.version ?? report?.installed?.version ?? "" : "";
+        mode === "perform" ? report?.installed?.version ?? status?.installed?.version ?? "" : "";
       const toVersion = report?.plan?.latestVersion ?? "";
       const unlisten = await startDlListen();
       try {

@@ -7,6 +7,12 @@ pub enum AppError {
     UnsupportedPlatform,
     #[error("update engine error: {0}")]
     Engine(String),
+    /// Reality (installed bundle / feed target) no longer matches the snapshot
+    /// the user confirmed — the TOCTOU guard before a destructive step. The
+    /// message is already user-facing; the UI reacts to the code by silently
+    /// re-checking and asking the user to confirm the fresh plan.
+    #[error("{0}")]
+    StaleExpectation(String),
     #[error("{0}")]
     Internal(String),
 }
@@ -16,6 +22,7 @@ impl AppError {
         match self {
             Self::UnsupportedPlatform => "unsupported_platform",
             Self::Engine(_) => "engine_error",
+            Self::StaleExpectation(_) => "stale_expectation",
             Self::Internal(_) => "internal_error",
         }
     }

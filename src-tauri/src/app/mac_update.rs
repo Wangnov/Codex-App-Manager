@@ -514,20 +514,27 @@ pub fn perform_macos_update(
     expected: PerformExpectation,
     progress: &dyn Fn(DownloadProgress),
 ) -> Result<MacPerformReport, AppError> {
-    let installed = detect_installed()
-        .ok_or_else(|| AppError::Engine("no Codex detected to update".to_string()))?;
+    // A vanished install is itself a stale snapshot: the user confirmed an
+    // update against a Codex that is no longer there (deleted / moved between
+    // confirm and execute). Route it through StaleExpectation so the UI
+    // auto-re-checks (→ none/install) instead of looping on a dead error.
+    let installed = detect_installed().ok_or_else(|| {
+        AppError::StaleExpectation(
+            "未检测到 Codex（可能已被删除或移动）：请重新检查后再试".to_string(),
+        )
+    })?;
 
     // Consent integrity: the destructive swap must target exactly what the user
     // saw + confirmed. If Codex self-updated (Sparkle), moved, or staging is
     // stale, refuse rather than act on a stale consent.
     if installed.path != expected.install_path {
-        return Err(AppError::Engine(format!(
+        return Err(AppError::StaleExpectation(format!(
             "安装位置已变化（确认时 {}，现在 {}）：请重新检查后再试",
             expected.install_path, installed.path
         )));
     }
     if installed.build != expected.from_build {
-        return Err(AppError::Engine(format!(
+        return Err(AppError::StaleExpectation(format!(
             "已装版本已变化（确认时 build {}，现在 build {}）：请重新检查后再试",
             expected.from_build, installed.build
         )));
@@ -542,7 +549,7 @@ pub fn perform_macos_update(
 
     // The appcast must still point at the build the user confirmed.
     if plan.latest_build != expected.to_build {
-        return Err(AppError::Engine(format!(
+        return Err(AppError::StaleExpectation(format!(
             "更新目标已变化（确认时 build {}，现在 build {}）：请重新检查后再试",
             expected.to_build, plan.latest_build
         )));

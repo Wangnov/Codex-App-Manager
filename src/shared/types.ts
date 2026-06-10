@@ -7,7 +7,11 @@ export type Architecture = "x64" | "arm64" | "unknown";
  * `#[serde(rename_all = "camelCase")]` from `AppError`.
  */
 export interface CommandError {
-  /** Stable machine code, e.g. "unsupported_platform" | "engine_error" | "internal_error". */
+  /**
+   * Stable machine code, e.g. "unsupported_platform" | "engine_error" |
+   * "stale_expectation" | "internal_error". `stale_expectation` means reality
+   * no longer matches the snapshot the user confirmed — re-check, re-confirm.
+   */
   code: string;
   /** Human-facing message (the `Display` of the underlying `AppError`). */
   message: string;

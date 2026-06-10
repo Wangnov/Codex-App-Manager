@@ -88,6 +88,14 @@ export function errorMessage(cause: unknown): string {
   return String(cause);
 }
 
+/** Stable machine code from a backend `CommandError`, or null for other throwables. */
+export function errorCode(cause: unknown): string | null {
+  if (isCommandError(cause) && typeof cause.code === "string" && cause.code.trim()) {
+    return cause.code;
+  }
+  return null;
+}
+
 // Browser-dev fallbacks (no Tauri runtime) — a simulated "one version behind"
 // so the UI renders meaningfully outside the desktop shell.
 const FALLBACK_PLAN: MacUpdateReport = {
