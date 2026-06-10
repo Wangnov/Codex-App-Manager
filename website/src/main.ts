@@ -92,8 +92,11 @@ menu?.querySelectorAll("a").forEach((a) =>
       const renderer = dbg
         ? String(gl!.getParameter(dbg.UNMASKED_RENDERER_WEBGL))
         : "";
-      if (/apple/i.test(renderer)) platform = "mac-arm";
-      else if (/(intel|amd|nvidia|radeon)/i.test(renderer)) platform = "mac-intel";
+      // Order matters: Chrome's ANGLE-on-Metal renderer string on Intel Macs
+      // reads "ANGLE (Apple, ... Intel ...)" — the discrete-GPU vendors are
+      // the discriminating signal, "Apple" alone is not.
+      if (/(intel|amd|nvidia|radeon)/i.test(renderer)) platform = "mac-intel";
+      else if (/apple/i.test(renderer)) platform = "mac-arm";
     } catch {
       /* unknown — let the user pick from the download section */
     }
