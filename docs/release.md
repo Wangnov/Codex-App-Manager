@@ -1,5 +1,12 @@
 # Release & code-signing
 
+## Release notes
+
+每个版本的 release note 写在 `docs/releases/v<X.Y.Z>.md`,随版本号 bump 一起进发版 PR;
+tag 推送后 `release.yml` 按 tag 名取用该文件作为 GitHub Release 正文,并自动追加
+"What's Changed" 与 Full Changelog。文件缺失时回退到 `docs/releases/FALLBACK.md`
+(安装表 + 升级说明),正文永远不会为空。写法与双语风格见 `docs/releases/TEMPLATE.md`。
+
 Cross-platform release is tag-driven via [`.github/workflows/release.yml`](../.github/workflows/release.yml).
 Push a `v*` tag and CI builds, signs, notarizes, and publishes a GitHub Release
 with the Tauri updater manifest.
