@@ -262,9 +262,12 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   }, [runPerform]);
 
   const plan = report?.plan ?? null;
-  const installed = report?.installed ?? status?.installed ?? null;
+  const installed = report ? report.installed : status?.installed ?? null;
   const statusMatchesInstalled = Boolean(
-    installed && status?.installed && samePath(installed.path, status.installed.path),
+    installed &&
+      status?.installed &&
+      samePath(installed.path, status.installed.path) &&
+      installed.version === status.installed.version,
   );
   const isManaged = statusMatchesInstalled && status?.status === "managed";
   const updateAvailable = Boolean(plan) && !plan?.upToDate;
