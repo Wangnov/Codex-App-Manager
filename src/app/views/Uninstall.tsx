@@ -33,10 +33,21 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
     try {
       // mac keeps ~/.codex via keepCodexHome; win purges via purgeUserData (the
       // inverse) — both surface the backend message as the source of truth.
-      const r = win
-        ? await managerApi.winUninstall(true, !keepData)
-        : await managerApi.macUninstall(keepData);
-      setDone(r.message);
+      if (win) {
+        const r = await managerApi.winUninstall(true, !keepData);
+        if (!r.success) {
+          setError(r.message);
+          return;
+        }
+        setDone(r.message);
+      } else {
+        const r = await managerApi.macUninstall(keepData);
+        if (!r.removed) {
+          setError(r.message);
+          return;
+        }
+        setDone(r.message);
+      }
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {

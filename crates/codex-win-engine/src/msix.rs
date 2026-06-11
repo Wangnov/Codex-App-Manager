@@ -25,7 +25,11 @@ pub struct MsixIdentity {
 pub struct MsixPackageDependency {
     pub name: String,
     #[serde(default)]
+    pub publisher: Option<String>,
+    #[serde(default)]
     pub min_version: Option<String>,
+    #[serde(default)]
+    pub processor_architecture: Option<String>,
 }
 
 /// Known framework-package name prefixes that an MSIX can take a runtime
@@ -109,9 +113,21 @@ pub fn parse_appx_manifest_dependencies(
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string);
+            let publisher = node
+                .attribute("Publisher")
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let processor_architecture = node
+                .attribute("ProcessorArchitecture")
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
             Some(MsixPackageDependency {
                 name: name.to_string(),
+                publisher,
                 min_version,
+                processor_architecture,
             })
         })
         .collect();
@@ -249,7 +265,9 @@ mod tests {
         let deps = parse_appx_manifest_dependencies(xml).unwrap();
         assert_eq!(deps.len(), 3);
         assert_eq!(deps[0].name, "Microsoft.VCLibs.140.00");
+        assert_eq!(deps[0].publisher.as_deref(), Some("CN=Microsoft"));
         assert_eq!(deps[0].min_version.as_deref(), Some("14.0.30704.0"));
+        assert!(deps[0].processor_architecture.is_none());
 
         let frameworks = framework_dependencies(&deps);
         // Contoso.Helper is a non-framework dependency and is excluded.
@@ -285,5 +303,17 @@ mod tests {
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "Microsoft.UI.Xaml.2.8");
         assert!(deps[0].min_version.is_none());
+    }
+
+    #[test]
+    fn parses_package_dependency_architecture() {
+        let xml = r#"
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">
+  <Dependencies>
+    <PackageDependency Name="Microsoft.VCLibs.140.00" Publisher="CN=Microsoft" MinVersion="14.0.0.0" ProcessorArchitecture="x64" />
+  </Dependencies>
+</Package>"#;
+        let deps = parse_appx_manifest_dependencies(xml).unwrap();
+        assert_eq!(deps[0].processor_architecture.as_deref(), Some("x64"));
     }
 }

@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use codex_win_engine::{
     cancel_active_download, close_codex_gracefully_for_root, detect_installed_codex,
@@ -45,6 +45,7 @@ pub struct WinStageReport {
     pub up_to_date: bool,
     pub route: String,
     pub latest_version: String,
+    pub package_moniker: String,
     pub download_size: u64,
     pub staged_path: Option<String>,
     pub sha256: String,
@@ -75,7 +76,7 @@ pub struct WinAutoStageReport {
 #[serde(rename_all = "camelCase")]
 pub struct WinPerformReport {
     pub success: bool,
-    pub action: String,
+    pub action: WinPerformAction,
     pub message: String,
     pub stage: WinStageReport,
     pub sideload: Option<MsixSideloadReport>,
@@ -85,6 +86,45 @@ pub struct WinPerformReport {
     pub fallback_available: bool,
     pub fallback_attempted: bool,
     pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum WinPerformAction {
+    None,
+    MsixSideload,
+    PortableFallback,
+    PortableFallbackAfterMsixFailure,
+    PortableFallbackAfterMsixUnhealthy,
+    PortableFallbackMissingFramework,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WinPerformExpectation {
+    pub current_version: Option<String>,
+    pub latest_version: String,
+    pub package_moniker: String,
+    pub route: String,
+}
+
+impl WinPerformAction {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::MsixSideload => "msix-sideload",
+            Self::PortableFallback => "portable-fallback",
+            Self::PortableFallbackAfterMsixFailure => "portable-fallback-after-msix-failure",
+            Self::PortableFallbackAfterMsixUnhealthy => "portable-fallback-after-msix-unhealthy",
+            Self::PortableFallbackMissingFramework => "portable-fallback-missing-framework",
+        }
+    }
+}
+
+impl std::fmt::Display for WinPerformAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -159,6 +199,58 @@ fn route_label(plan: &WindowsUpdatePlan) -> String {
         codex_win_engine::WinInstallRoute::PortableFallback => "portable-fallback",
     }
     .to_string()
+}
+
+fn validate_perform_expectation(
+    expected: &WinPerformExpectation,
+    previous_installed: Option<&InstalledWindowsCodex>,
+    stage: &WinStageReport,
+) -> Result<(), AppError> {
+    let actual_current = previous_installed.map(|installed| installed.version.as_str());
+    if actual_current != expected.current_version.as_deref() {
+        return Err(AppError::StaleExpectation(format!(
+            "Windows Codex changed before install (expected current {:?}, found {:?}); please re-check and confirm again.",
+            expected.current_version, actual_current
+        )));
+    }
+    if stage.latest_version != expected.latest_version {
+        return Err(AppError::StaleExpectation(format!(
+            "Windows update target changed from {} to {}; please re-check and confirm again.",
+            expected.latest_version, stage.latest_version
+        )));
+    }
+    if stage.package_moniker != expected.package_moniker {
+        return Err(AppError::StaleExpectation(format!(
+            "Windows package changed from {} to {}; please re-check and confirm again.",
+            expected.package_moniker, stage.package_moniker
+        )));
+    }
+    if stage.route != expected.route {
+        return Err(AppError::StaleExpectation(format!(
+            "Windows install route changed from {} to {}; please re-check and confirm again.",
+            expected.route, stage.route
+        )));
+    }
+    Ok(())
+}
+
+fn close_existing_codex_before_portable_fallback(
+    settings: &AppSettings,
+    previous_installed: Option<&InstalledWindowsCodex>,
+) -> Result<(), AppError> {
+    if let Some(installed) = detect_installed_codex(PathBuf::from(&settings.install_root).as_path()) {
+        if installed.source == "msix" {
+            close_codex_gracefully_for_root(30, PathBuf::from(&installed.path).as_path())
+                .map_err(engine_err)?;
+        }
+    }
+    if let Some(previous) = previous_installed {
+        if previous.source == "portable" {
+            close_codex_gracefully_for_root(30, PathBuf::from(&previous.path).as_path())
+                .map_err(engine_err)?;
+        }
+    }
+    Ok(())
 }
 
 /// Detect the installed Codex, preferring a manager-managed PORTABLE build over
@@ -253,6 +345,7 @@ pub fn stage_windows_update_with_install_mode(
             up_to_date: true,
             route,
             latest_version: report.plan.latest_version,
+            package_moniker: report.plan.package_moniker,
             download_size: 0,
             staged_path: None,
             sha256: report.plan.sha256,
@@ -340,6 +433,7 @@ pub fn stage_windows_update_with_install_mode(
         up_to_date: false,
         route,
         latest_version: report.plan.latest_version,
+        package_moniker: report.plan.package_moniker,
         download_size: actual_size,
         staged_path: Some(dest.to_string_lossy().into_owned()),
         sha256: actual_sha,
@@ -464,7 +558,7 @@ pub fn perform_windows_update(
     settings: &AppSettings,
     confirm: bool,
 ) -> Result<WinPerformReport, AppError> {
-    perform_windows_update_with_install_mode(endpoints, settings, confirm, "msix", &no_progress)
+    perform_windows_update_with_install_mode(endpoints, settings, confirm, "msix", None, &no_progress)
 }
 
 pub fn perform_windows_update_with_install_mode(
@@ -472,6 +566,7 @@ pub fn perform_windows_update_with_install_mode(
     settings: &AppSettings,
     confirm: bool,
     install_mode: &str,
+    expected: Option<WinPerformExpectation>,
     progress: &dyn Fn(DownloadProgress),
 ) -> Result<WinPerformReport, AppError> {
     if !confirm {
@@ -485,10 +580,13 @@ pub fn perform_windows_update_with_install_mode(
         .or_else(|| detect_installed_codex(PathBuf::from(&settings.install_root).as_path()));
     let stage =
         stage_windows_update_with_install_mode(endpoints, settings, install_mode, progress)?;
+    if let Some(expected) = &expected {
+        validate_perform_expectation(expected, previous_installed.as_ref(), &stage)?;
+    }
     if stage.up_to_date {
         return Ok(WinPerformReport {
             success: true,
-            action: "none".to_string(),
+            action: WinPerformAction::None,
             message: "Windows Codex is already current.".to_string(),
             installed: win_install_status(settings).installed,
             sideload: None,
@@ -502,6 +600,7 @@ pub fn perform_windows_update_with_install_mode(
     }
 
     if stage.route == "portable-fallback" {
+        close_existing_codex_before_portable_fallback(settings, previous_installed.as_ref())?;
         return install_portable_after_stage(settings, stage, None, None, previous_installed);
     }
 
@@ -523,27 +622,8 @@ pub fn perform_windows_update_with_install_mode(
     // the post-install health check + transparent fallback remain the backstop.
     let precheck = precheck_msix_dependencies(PathBuf::from(&staged_path).as_path());
     if precheck.should_route_portable() {
-        // We're switching to portable, but the running build must be stopped
-        // first — `install_portable_after_stage` overwrites the portable install
-        // in place and does NOT stop a running instance. Close BOTH a still-present
-        // MSIX install (we're skipping the sideload that would otherwise replace it)
-        // and any managed portable build, exactly like the sideload path below —
-        // otherwise the old MSIX Codex keeps running and the user ends up on the
-        // stale build or with two instances side by side.
-        if let Some(installed) =
-            detect_installed_codex(PathBuf::from(&settings.install_root).as_path())
-        {
-            if installed.source == "msix" {
-                close_codex_gracefully_for_root(30, PathBuf::from(&installed.path).as_path())
-                    .map_err(engine_err)?;
-            }
-        }
-        if let Some(previous) = &previous_installed {
-            if previous.source == "portable" {
-                close_codex_gracefully_for_root(30, PathBuf::from(&previous.path).as_path())
-                    .map_err(engine_err)?;
-            }
-        }
+        // We're switching to portable, but the running build must be stopped first.
+        close_existing_codex_before_portable_fallback(settings, previous_installed.as_ref())?;
         let mut stage = stage;
         stage.notes.push(format!(
             "Skipped MSIX sideload before attempting it: {}. Routed to the portable build, which carries its own runtime and does not need these framework packages.",
@@ -551,7 +631,7 @@ pub fn perform_windows_update_with_install_mode(
         ));
         let mut report =
             install_portable_after_stage(settings, stage, None, None, previous_installed)?;
-        report.action = "portable-fallback-missing-framework".to_string();
+        report.action = WinPerformAction::PortableFallbackMissingFramework;
         return Ok(report);
     }
 
@@ -596,12 +676,14 @@ pub fn perform_windows_update_with_install_mode(
                         "Unhealthy MSIX package was removed after portable fallback succeeded."
                             .to_string(),
                     );
+                    report.notes.extend(remove.notes);
                 }
                 Ok(remove) => {
                     report.notes.push(format!(
                         "Portable fallback succeeded, but removing the unhealthy MSIX package failed: {}",
                         remove.message
                     ));
+                    report.notes.extend(remove.notes);
                 }
                 Err(err) => {
                     report.notes.push(format!(
@@ -631,7 +713,7 @@ pub fn perform_windows_update_with_install_mode(
 
         return Ok(WinPerformReport {
             success: true,
-            action: "msix-sideload".to_string(),
+            action: WinPerformAction::MsixSideload,
             message: sideload.message.clone(),
             installed,
             sideload: Some(sideload),
@@ -706,13 +788,12 @@ fn install_portable_after_stage(
     notes.extend(portable.notes.clone());
 
     let action = if msix_unhealthy {
-        "portable-fallback-after-msix-unhealthy"
+        WinPerformAction::PortableFallbackAfterMsixUnhealthy
     } else if sideload.is_some() {
-        "portable-fallback-after-msix-failure"
+        WinPerformAction::PortableFallbackAfterMsixFailure
     } else {
-        "portable-fallback"
-    }
-    .to_string();
+        WinPerformAction::PortableFallback
+    };
 
     Ok(WinPerformReport {
         success: true,
@@ -823,6 +904,7 @@ pub fn uninstall_windows_codex(
         if msix.success {
             store.remove(&installed_before.path);
             store.save()?;
+            notes.extend(msix.notes.clone());
             // Honor the user's "don't keep my data" choice on the MSIX path too,
             // exactly like the portable path — remove ~/.codex when asked.
             if purge_user_data {
@@ -865,4 +947,34 @@ pub fn uninstall_windows_codex(
         notes: portable.notes.clone(),
         portable: Some(portable),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WinPerformAction;
+
+    #[test]
+    fn serializes_win_perform_actions_as_frontend_contract() {
+        let cases = [
+            (WinPerformAction::None, "\"none\""),
+            (WinPerformAction::MsixSideload, "\"msix-sideload\""),
+            (WinPerformAction::PortableFallback, "\"portable-fallback\""),
+            (
+                WinPerformAction::PortableFallbackAfterMsixFailure,
+                "\"portable-fallback-after-msix-failure\"",
+            ),
+            (
+                WinPerformAction::PortableFallbackAfterMsixUnhealthy,
+                "\"portable-fallback-after-msix-unhealthy\"",
+            ),
+            (
+                WinPerformAction::PortableFallbackMissingFramework,
+                "\"portable-fallback-missing-framework\"",
+            ),
+        ];
+
+        for (action, expected) in cases {
+            assert_eq!(serde_json::to_string(&action).unwrap(), expected);
+        }
+    }
 }

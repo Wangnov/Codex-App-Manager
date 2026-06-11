@@ -27,6 +27,8 @@ pub struct PortableInstallReport {
 #[serde(rename_all = "camelCase")]
 pub struct PortableUninstallReport {
     pub success: bool,
+    #[serde(default)]
+    pub partial: bool,
     pub install_root: String,
     pub removed_files: bool,
     pub removed_shortcut: bool,
@@ -638,23 +640,43 @@ pub fn uninstall_portable(
         false
     };
 
-    let removed_shortcut = remove_start_menu_shortcut().unwrap_or(false);
-    let removed_uninstall_entry = remove_uninstall_entry().unwrap_or(false);
     let mut notes = Vec::new();
+    let removed_shortcut = match remove_start_menu_shortcut() {
+        Ok(removed) => removed,
+        Err(err) => {
+            notes.push(format!("Start Menu shortcut cleanup failed: {err}"));
+            false
+        }
+    };
+    let removed_uninstall_entry = match remove_uninstall_entry() {
+        Ok(removed) => removed,
+        Err(err) => {
+            notes.push(format!("Apps & Features uninstall entry cleanup failed: {err}"));
+            false
+        }
+    };
     let purged_user_data = if purge_user_data {
         purge_codex_user_data(&mut notes)?
     } else {
         false
     };
+    let partial = notes
+        .iter()
+        .any(|note| note.contains("cleanup failed"));
 
     Ok(PortableUninstallReport {
         success: true,
+        partial,
         install_root: install_root.to_string_lossy().into_owned(),
         removed_files,
         removed_shortcut,
         removed_uninstall_entry,
         purged_user_data,
-        message: "Portable Codex uninstall completed.".to_string(),
+        message: if partial {
+            "Portable Codex uninstall completed with cleanup warnings.".to_string()
+        } else {
+            "Portable Codex uninstall completed.".to_string()
+        },
         notes,
     })
 }

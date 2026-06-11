@@ -22,11 +22,13 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  actions: write # dispatch winget.yml after publishing (release events from GITHUB_TOKEN don't cascade)
+  contents: read
 
 jobs:
   build:
+    if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -39,6 +41,8 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v6
         with:
@@ -84,9 +88,6 @@ jobs:
       # ── Build WITHOUT a tauri signingIdentity; we sign inside-out after ────
       - name: Build (Tauri, unsigned)
         shell: bash
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         # Bundling downloads toolchains on the fly (e.g. the NSIS archive from
         # GitHub) which occasionally 504s and fails the whole release. Retry a
         # few times so a transient download hiccup doesn't sink the run — cargo
@@ -191,10 +192,16 @@ jobs:
           if-no-files-found: error
 
   release:
+    if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
     needs: build
+    permissions:
+      contents: write
+      actions: write # dispatch winget.yml after publishing (release events from GITHUB_TOKEN don't cascade)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - uses: actions/download-artifact@v8
         with:

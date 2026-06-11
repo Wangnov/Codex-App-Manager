@@ -107,6 +107,7 @@ export function Settings({
   const portableDescKey: TKey = installRootIsDefault
     ? "settings.windows.portableDescDefault"
     : "settings.windows.portableDescCustom";
+  const availableSources = SOURCES.filter((src) => !(win && src.kind === "official"));
 
   return (
     <div className="pop">
@@ -123,7 +124,7 @@ export function Settings({
         <div className="group">
           <div className="group-h">{t("settings.source.header")}</div>
           <div className="list">
-            {SOURCES.map((src) => (
+            {availableSources.map((src) => (
               <button
                 key={src.kind}
                 className="row"

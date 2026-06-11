@@ -51,6 +51,8 @@ pub struct MsixRemoveReport {
     pub success: bool,
     pub message: String,
     pub raw_error: Option<String>,
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 /// Post-install sanity check for a sideloaded MSIX. `Add-AppxPackage` returning
@@ -121,13 +123,47 @@ pub fn fetch_text(url: &str) -> Result<String, EngineError> {
         .map_err(|e| EngineError::Io(format!("spawn curl: {e}")))?;
 
     if !output.status.success() {
-        return Err(EngineError::Io(format!(
-            "curl failed for {url}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+        return Err(EngineError::Io(curl_failure_message(
+            url,
+            output.status.code(),
+            &String::from_utf8_lossy(&output.stderr),
         )));
     }
 
     String::from_utf8(output.stdout).map_err(|e| EngineError::Io(e.to_string()))
+}
+
+fn curl_failure_message(url: &str, exit_code: Option<i32>, stderr: &str) -> String {
+    format!(
+        "curl failed for host={} exit={}: stderr='{}'; {}",
+        url_host(url),
+        exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "signal".to_string()),
+        stderr.trim(),
+        proxy_env_summary(),
+    )
+}
+
+fn url_host(url: &str) -> &str {
+    url.split("://")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .unwrap_or("")
+}
+
+fn proxy_env_summary() -> String {
+    let vars = ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY"];
+    let configured = vars
+        .iter()
+        .filter(|name| std::env::var_os(name).is_some())
+        .copied()
+        .collect::<Vec<_>>();
+    if configured.is_empty() {
+        "no curl proxy environment variables are set; Windows system proxy/PAC may not be used automatically".to_string()
+    } else {
+        format!("curl proxy environment variables set: {}", configured.join(", "))
+    }
 }
 
 pub fn detect_installed_codex(portable_root: &Path) -> Option<InstalledWindowsCodex> {
@@ -137,6 +173,11 @@ pub fn detect_installed_codex(portable_root: &Path) -> Option<InstalledWindowsCo
 #[cfg(windows)]
 fn ps_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
+}
+
+#[cfg(windows)]
+fn ps_nullable(value: Option<&str>) -> String {
+    value.map(ps_quote).unwrap_or_else(|| "$null".to_string())
 }
 
 #[cfg(windows)]
@@ -269,30 +310,88 @@ pub fn precheck_msix_dependencies(path: &Path) -> MsixDependencyPrecheck {
         };
     }
 
-    let names: Vec<String> = frameworks.iter().map(|d| d.name.clone()).collect();
-    let names_literal = names
+    let package_architecture = crate::msix::read_msix_identity(path)
+        .ok()
+        .map(|identity| identity.processor_architecture);
+    let deps_literal = frameworks
         .iter()
-        .map(|n| ps_quote(n))
+        .map(|dep| {
+            format!(
+                "[pscustomobject]@{{ Name = {name}; Publisher = {publisher}; MinVersion = {min_version}; ProcessorArchitecture = {arch} }}",
+                name = ps_quote(&dep.name),
+                publisher = ps_nullable(dep.publisher.as_deref()),
+                min_version = ps_nullable(dep.min_version.as_deref()),
+                arch = ps_nullable(dep.processor_architecture.as_deref()),
+            )
+        })
         .collect::<Vec<_>>()
         .join(", ");
-    // For each declared framework name, report whether ANY package with that
-    // name is registered. We deliberately check presence (not version) here: an
-    // outright-missing framework is the doomed case; version-floor mismatches
-    // are still caught by the post-install `verify_msix_health` check.
+    let package_arch_literal = ps_nullable(package_architecture.as_deref());
     let script = format!(
         r#"
-$ErrorActionPreference = 'SilentlyContinue'
-$names = @({names})
-$missing = @()
-foreach ($n in $names) {{
-  $present = @(Get-AppxPackage -Name $n -ErrorAction SilentlyContinue)
-  if ($present.Count -eq 0) {{ $missing += $n }}
-}}
-[pscustomobject]@{{
-  missing = ($missing -join ', ')
-}} | ConvertTo-Json -Compress
-"#,
-        names = names_literal
+	$ErrorActionPreference = 'SilentlyContinue'
+	$deps = @({deps})
+	$mainArch = {package_arch}
+	$missing = @()
+	function Convert-ToVersion($value) {{
+	  try {{
+	    $text = [string]$value
+	    if ([string]::IsNullOrWhiteSpace($text)) {{ return $null }}
+	    return [version]$text
+	  }} catch {{
+	    return $null
+	  }}
+	}}
+	function Same-Publisher($package, [string]$publisher) {{
+	  if ([string]::IsNullOrWhiteSpace($publisher)) {{ return $true }}
+	  return [string]$package.Publisher -eq $publisher
+	}}
+	function Same-Architecture($package, [string]$required) {{
+	  if ([string]::IsNullOrWhiteSpace($required) -or $required -eq 'neutral') {{ return $true }}
+	  $arch = [string]$package.Architecture
+	  return [string]::IsNullOrWhiteSpace($arch) -or $arch -eq 'Neutral' -or $arch -eq $required
+	}}
+	foreach ($d in $deps) {{
+	  $name = [string]$d.Name
+	  if ([string]::IsNullOrWhiteSpace($name)) {{ continue }}
+	  $publisher = [string]$d.Publisher
+	  $requiredArch = [string]$d.ProcessorArchitecture
+	  if ([string]::IsNullOrWhiteSpace($requiredArch)) {{ $requiredArch = $mainArch }}
+	  $candidates = @(Get-AppxPackage -Name $name -ErrorAction SilentlyContinue)
+	  if ($candidates.Count -eq 0) {{
+	    $missing += "$name not installed"
+	    continue
+	  }}
+	  $publisherCandidates = @($candidates | Where-Object {{ Same-Publisher $_ $publisher }})
+	  if ($candidates.Count -gt 0 -and $publisherCandidates.Count -eq 0) {{
+	    $missing += "$name publisher $publisher not installed"
+	    continue
+	  }}
+	  $archCandidates = @($publisherCandidates | Where-Object {{ Same-Architecture $_ $requiredArch }})
+	  if ($publisherCandidates.Count -gt 0 -and $archCandidates.Count -eq 0) {{
+	    $missing += "$name architecture $requiredArch not installed"
+	    continue
+	  }}
+	  $depPkg = $archCandidates |
+	    Sort-Object -Property @{{ Expression = {{ Convert-ToVersion $_.Version }}; Descending = $true }} |
+	    Select-Object -First 1
+	  if ($null -eq $depPkg) {{
+	    $missing += "$name not installed"
+	    continue
+	  }}
+	  $minText = [string]$d.MinVersion
+	  $min = Convert-ToVersion $minText
+	  $installedVersion = Convert-ToVersion $depPkg.Version
+	  if ($null -ne $min -and $null -ne $installedVersion -and $installedVersion -lt $min) {{
+	    $missing += "$name >= $minText required (installed $($depPkg.Version))"
+	  }}
+	}}
+	[pscustomobject]@{{
+	  missing = ($missing -join ', ')
+	}} | ConvertTo-Json -Compress
+	"#,
+        deps = deps_literal,
+        package_arch = package_arch_literal,
     );
 
     let parsed = run_powershell_json(&script)
@@ -354,32 +453,56 @@ pub fn precheck_msix_dependencies(_path: &Path) -> MsixDependencyPrecheck {
 pub fn remove_msix_package() -> Result<MsixRemoveReport, EngineError> {
     let script = format!(
         r#"
-$ErrorActionPreference = 'Stop'
-try {{
-  $packages = Get-AppxPackage -Name {name} -ErrorAction SilentlyContinue
-  if (-not $packages) {{
-    [pscustomobject]@{{
-      success = $true
-      message = 'MSIX package was not installed'
-      rawError = $null
-    }} | ConvertTo-Json -Compress
-    exit 0
-  }}
-  foreach ($p in $packages) {{
-    Remove-AppxPackage -Package $p.PackageFullName -ErrorAction Stop
-  }}
-  [pscustomobject]@{{
-    success = $true
-    message = 'Remove-AppxPackage succeeded'
-    rawError = $null
-  }} | ConvertTo-Json -Compress
-}} catch {{
-  [pscustomobject]@{{
-    success = $false
-    message = [string]$_.Exception.Message
-    rawError = [string]$_
-  }} | ConvertTo-Json -Compress
-}}
+	$ErrorActionPreference = 'Stop'
+	$notes = @()
+	function Add-ResidualNotes {{
+	  try {{
+	    $allUsers = @(Get-AppxPackage -AllUsers -Name {name} -ErrorAction SilentlyContinue)
+	    if ($allUsers.Count -gt 0) {{
+	      $notes += 'MSIX package still exists for another user or elevated context: ' + (($allUsers | ForEach-Object {{ $_.PackageFullName }}) -join ', ')
+	    }}
+	  }} catch {{
+	    $notes += 'Could not query all-user MSIX registrations: ' + [string]$_.Exception.Message
+	  }}
+	  try {{
+	    $provisioned = @(Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | Where-Object {{ $_.DisplayName -eq {name} }})
+	    if ($provisioned.Count -gt 0) {{
+	      $notes += 'Provisioned MSIX package remains and may be reinstalled for new users; remove it from an elevated shell with Remove-AppxProvisionedPackage if desired.'
+	    }}
+	  }} catch {{
+	    $notes += 'Could not query provisioned MSIX packages: ' + [string]$_.Exception.Message
+	  }}
+	}}
+	try {{
+	  $packages = Get-AppxPackage -Name {name} -ErrorAction SilentlyContinue
+	  if (-not $packages) {{
+	    Add-ResidualNotes
+	    [pscustomobject]@{{
+	      success = $true
+	      message = 'MSIX package was not installed'
+	      rawError = $null
+	      notes = $notes
+	    }} | ConvertTo-Json -Compress
+	    exit 0
+	  }}
+	  foreach ($p in $packages) {{
+	    Remove-AppxPackage -Package $p.PackageFullName -ErrorAction Stop
+	  }}
+	  Add-ResidualNotes
+	  [pscustomobject]@{{
+	    success = $true
+	    message = 'Remove-AppxPackage succeeded'
+	    rawError = $null
+	    notes = $notes
+	  }} | ConvertTo-Json -Compress
+	}} catch {{
+	  [pscustomobject]@{{
+	    success = $false
+	    message = [string]$_.Exception.Message
+	    rawError = [string]$_
+	    notes = $notes
+	  }} | ConvertTo-Json -Compress
+	}}
 "#,
         name = ps_quote(crate::OPENAI_PACKAGE_IDENTITY)
     );
@@ -395,6 +518,7 @@ pub fn remove_msix_package() -> Result<MsixRemoveReport, EngineError> {
         success: false,
         message: "MSIX removal is only available on Windows".to_string(),
         raw_error: None,
+        notes: vec![],
     })
 }
 
@@ -493,20 +617,19 @@ try {{
         .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok());
 
     let Some(value) = parsed else {
-        // The health probe itself could not run. Don't overturn a successful
-        // Add-AppxPackage on an unverifiable signal — keep the MSIX install.
-        // The keep-MSIX decision (healthy = true) is intentional, but mark the
-        // report unverified so callers don't mistake it for an observed clean
-        // bill of health.
+        // The health probe itself could not run. On managed/stripped Windows this
+        // is exactly the situation where an MSIX can register but fail to launch,
+        // so treat the verdict as degraded and let the caller fall back to the
+        // portable build instead of silently keeping an unverifiable package.
         return MsixHealthReport {
-            healthy: true,
+            healthy: false,
             verified: false,
             package_registered: true,
             status: "probe-failed".to_string(),
-            status_ok: true,
-            aumid_resolved: true,
+            status_ok: false,
+            aumid_resolved: false,
             missing_dependencies: vec![],
-            reason: "health probe could not run; keeping the MSIX install".to_string(),
+            reason: "health probe could not run; routed to portable fallback".to_string(),
         };
     };
 

@@ -204,28 +204,42 @@ fn effective_build(simulated_build: Option<u64>, installed: &Option<InstalledCod
         .unwrap_or(0)
 }
 
+fn installed_from_path_build(path: String, build: u64) -> InstalledCodex {
+    let arch = sys::app_arch(&path).unwrap_or_else(|| std::env::consts::ARCH.to_string());
+    let short_version = sys::read_bundle_short_version(&path).unwrap_or_default();
+    // Bundle mtime -> when this build landed on disk (install / in-place swap).
+    let installed_at = std::fs::metadata(Path::new(&path))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+    InstalledCodex {
+        path,
+        build,
+        short_version,
+        arch,
+        installed_at,
+    }
+}
+
 fn detect_installed() -> Option<InstalledCodex> {
-    sys::installed_codex_build().map(|(path, build)| {
-        let arch = sys::app_arch(&path).unwrap_or_else(|| std::env::consts::ARCH.to_string());
-        let short_version = sys::read_bundle_short_version(&path).unwrap_or_default();
-        // Bundle mtime → when this build landed on disk (install / in-place swap).
-        let installed_at = std::fs::metadata(Path::new(&path))
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs());
-        InstalledCodex {
-            path,
-            build,
-            short_version,
-            arch,
-            installed_at,
+    sys::installed_codex_build().map(|(path, build)| installed_from_path_build(path, build))
+}
+
+fn detect_managed_installed() -> Option<InstalledCodex> {
+    let store = ProvenanceStore::load();
+    for record in store.managed.iter().rev() {
+        if let Some((path, build)) = sys::installed_codex_build_at_path(&record.path) {
+            if store.is_managed_build(&path, build) {
+                return Some(installed_from_path_build(path, build));
+            }
         }
-    })
+    }
+    detect_installed()
 }
 
 pub fn plan_macos_update(simulated_build: Option<u64>) -> Result<MacUpdateReport, AppError> {
-    let installed = detect_installed();
+    let installed = detect_managed_installed();
     let (appcast_url, xml) = fetch_appcast_for_arch(arch_of(&installed))?;
     let appcast = parse_appcast(&xml).map_err(|e| AppError::Engine(e.to_string()))?;
     let plan = plan_update(&appcast, effective_build(simulated_build, &installed));
@@ -357,7 +371,7 @@ fn download_and_verify(
 }
 
 pub fn stage_macos_update(simulated_build: Option<u64>) -> Result<MacStageReport, AppError> {
-    let installed = detect_installed();
+    let installed = detect_managed_installed();
     let (_, xml) = fetch_appcast_for_arch(arch_of(&installed))?;
     let appcast = parse_appcast(&xml).map_err(|e| AppError::Engine(e.to_string()))?;
     let plan = plan_update(&appcast, effective_build(simulated_build, &installed))
@@ -533,7 +547,7 @@ pub fn perform_macos_update(
     // update against a Codex that is no longer there (deleted / moved between
     // confirm and execute). Route it through StaleExpectation so the UI
     // auto-re-checks (→ none/install) instead of looping on a dead error.
-    let installed = detect_installed().ok_or_else(|| {
+    let installed = detect_managed_installed().ok_or_else(|| {
         AppError::StaleExpectation(
             "未检测到 Codex（可能已被删除或移动）：请重新检查后再试".to_string(),
         )
@@ -653,8 +667,8 @@ pub fn perform_macos_update(
     }
 
     // 6) filesystem health check on the installed root.
-    let healthy = detect_installed()
-        .map(|i| i.build == plan.latest_build)
+    let healthy = sys::installed_codex_build_at_path(&installed.path)
+        .map(|(_, build)| build == plan.latest_build)
         .unwrap_or(false)
         && gate_reconstructed(&install_path).is_ok();
 
@@ -743,7 +757,7 @@ pub struct MacInstallStatus {
 
 /// Classify the installed Codex against our provenance store.
 pub fn mac_install_status() -> MacInstallStatus {
-    let installed = detect_installed();
+    let installed = detect_managed_installed();
     let store = ProvenanceStore::load();
     let status = match &installed {
         None => "none",
@@ -859,7 +873,7 @@ pub fn install_macos(progress: &dyn Fn(DownloadProgress)) -> Result<MacInstallSt
 /// action (we no longer auto-launch after a fresh install).
 pub fn launch_codex() -> Result<(), AppError> {
     let installed =
-        detect_installed().ok_or_else(|| AppError::Engine("没有可打开的 Codex".to_string()))?;
+        detect_managed_installed().ok_or_else(|| AppError::Engine("没有可打开的 Codex".to_string()))?;
     std::process::Command::new("open")
         .arg(&installed.path)
         .spawn()
@@ -881,7 +895,7 @@ pub struct MacUninstallReport {
 /// true by default at the UI: the user's `~/.codex` (sign-in, sessions, config)
 /// survives unless they explicitly opt out. Quits Codex first (never force-kills).
 pub fn uninstall_macos(keep_codex_home: bool) -> Result<MacUninstallReport, AppError> {
-    let installed = detect_installed()
+    let installed = detect_managed_installed()
         .ok_or_else(|| AppError::Engine("no Codex detected to uninstall".to_string()))?;
     let install_path = PathBuf::from(&installed.path);
 

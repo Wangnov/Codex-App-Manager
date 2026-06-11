@@ -159,6 +159,7 @@ const WIN_FALLBACK_STAGE: WinStageReport = {
   upToDate: false,
   route: "msix-sideload",
   latestVersion: "26.602.3474.0",
+  packageMoniker: "OpenAI.Codex_26.602.3474.0_x64__2p2nqsd0c76g0",
   downloadSize: 566504666,
   stagedPath: "(browser-dev mock) …/OpenAI.Codex_26.602.3474.0_x64__2p2nqsd0c76g0.msix",
   sha256: "6dc2e05ac2b760bbc77ce3f8a992efdb327363512c9c4744b9a146c41bc4d55a",
@@ -224,6 +225,7 @@ const WIN_FALLBACK_UNINSTALL: WinUninstallReport = {
   msix: null,
   portable: {
     success: true,
+    partial: false,
     installRoot: "%LOCALAPPDATA%\\Programs\\Codex",
     removedFiles: true,
     removedShortcut: true,
@@ -435,7 +437,16 @@ export const managerApi = {
     }
     return invoke<WinUpdateReport>("win_plan_update");
   },
-  winPerformUpdate(confirm: boolean, installRoot?: string): Promise<WinPerformReport> {
+  winPerformUpdate(
+    confirm: boolean,
+    expected?: {
+      currentVersion: string | null;
+      latestVersion: string;
+      packageMoniker: string;
+      route: string;
+    },
+    installRoot?: string,
+  ): Promise<WinPerformReport> {
     if (!hasTauriRuntime()) {
       return confirm
         ? Promise.resolve(WIN_FALLBACK_PERFORM)
@@ -444,6 +455,7 @@ export const managerApi = {
     return invoke<WinPerformReport>("win_perform_update", {
       confirm,
       installRoot: installRoot ?? null,
+      expected: expected ?? null,
     });
   },
   winUninstall(confirm: boolean, purgeUserData: boolean): Promise<WinUninstallReport> {

@@ -60,7 +60,11 @@ pub fn fetch_text_timeout(url: &str, max_secs: u64) -> Result<String, EngineErro
 pub fn installed_codex_build() -> Option<(String, u64)> {
     candidate_app_paths()
         .into_iter()
-        .find_map(|app| read_bundle_build(&app).map(|build| (app, build)))
+        .find_map(|app| installed_codex_build_at_path(&app))
+}
+
+pub fn installed_codex_build_at_path(app: &str) -> Option<(String, u64)> {
+    read_bundle_build(app).map(|build| (app.to_string(), build))
 }
 
 fn candidate_app_paths() -> Vec<String> {

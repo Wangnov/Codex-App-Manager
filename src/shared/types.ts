@@ -213,6 +213,7 @@ export interface WinStageReport {
   upToDate: boolean;
   route: WinInstallRoute;
   latestVersion: string;
+  packageMoniker: string;
   downloadSize: number;
   stagedPath: string | null;
   sha256: string;
@@ -262,13 +263,16 @@ export interface MsixHealthReport {
  *   - "portable-fallback-after-msix-failure"   — sideload failed, fell back.
  *   - "portable-fallback-after-msix-unhealthy" — sideload registered but the
  *                                                package failed its health check.
+ *   - "portable-fallback-missing-framework"    — staged MSIX declared framework
+ *                                                dependencies absent locally.
  */
 export type WinPerformAction =
   | "none"
   | "msix-sideload"
   | "portable-fallback"
   | "portable-fallback-after-msix-failure"
-  | "portable-fallback-after-msix-unhealthy";
+  | "portable-fallback-after-msix-unhealthy"
+  | "portable-fallback-missing-framework";
 
 export interface WinPerformReport {
   success: boolean;
@@ -301,10 +305,12 @@ export interface MsixRemoveReport {
   success: boolean;
   message: string;
   rawError: string | null;
+  notes: string[];
 }
 
 export interface PortableUninstallReport {
   success: boolean;
+  partial: boolean;
   installRoot: string;
   removedFiles: boolean;
   removedShortcut: boolean;

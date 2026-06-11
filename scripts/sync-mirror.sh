@@ -98,7 +98,12 @@ if [ -n "${MANAGER_R2_S3_ENDPOINT:-}" ] && [ -n "${MANAGER_R2_ACCESS_KEY_ID:-}" 
   upload_all "$MANAGER_R2_S3_ENDPOINT" "${MANAGER_R2_BUCKET:-codex-app-manager}" "auto" \
     "$MANAGER_R2_ACCESS_KEY_ID" "$MANAGER_R2_SECRET_ACCESS_KEY"
 else
-  echo "::warning::MANAGER_R2_* not set — skipped R2 mirror sync (self-update mirror endpoint will go stale)"
+  if [ "${ALLOW_STALE_MIRROR:-}" = "1" ]; then
+    echo "::warning::MANAGER_R2_* not set — skipped R2 mirror sync because ALLOW_STALE_MIRROR=1"
+  else
+    echo "::error::MANAGER_R2_* not set — refusing stable release with stale self-update mirror (set ALLOW_STALE_MIRROR=1 only for an intentional manual/pre-release bypass)" >&2
+    exit 1
+  fi
 fi
 
 if [ -n "${MANAGER_IHEP_S3_ENDPOINT:-}" ] && [ -n "${MANAGER_IHEP_S3_BUCKET:-}" ] && [ -n "${MANAGER_IHEP_S3_ACCESS_KEY_ID:-}" ] && [ -n "${MANAGER_IHEP_S3_SECRET_ACCESS_KEY:-}" ]; then

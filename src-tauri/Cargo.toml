@@ -11,7 +11,7 @@ description = "A cross-platform manager for installing and updating mirrored off
 authors = ["Wangnov"]
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/Wangnov/codex-app-mirror"
+repository = "https://github.com/Wangnov/Codex-App-Manager"
 
 [lib]
 name = "codex_app_manager_lib"
@@ -32,4 +32,4 @@ tauri-plugin-dialog = "2.7.1"
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
 thiserror = "2.0"
-windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

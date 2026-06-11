@@ -5,7 +5,7 @@ use codex_app_manager_lib::adapters::host;
 use codex_app_manager_lib::app::provenance::ProvenanceStore;
 use codex_app_manager_lib::app::win_update::{
     perform_windows_update, plan_windows_update, uninstall_windows_codex, win_adopt,
-    win_install_status, WinInstallStatus,
+    win_install_status, WinInstallStatus, WinPerformAction,
 };
 use codex_app_manager_lib::domain::manifest::MirrorEndpoints;
 use codex_app_manager_lib::domain::settings::AppSettings;
@@ -1129,7 +1129,7 @@ fn run_old_msix_to_latest_msix() -> Result<SmokeReport, String> {
     let upgraded = perform_windows_update(&endpoints, &settings, true)
         .map_err(|e| format!("upgrade old MSIX to latest: {e}"))?;
     step(&mut steps, "upgrade-old-msix-to-latest", &upgraded)?;
-    if upgraded.action != "msix-sideload" {
+    if upgraded.action != WinPerformAction::MsixSideload {
         return Err(format!(
             "expected MSIX sideload upgrade action, got {}",
             upgraded.action

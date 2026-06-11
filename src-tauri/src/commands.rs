@@ -16,7 +16,7 @@ use crate::app::win_update::{
     stage_windows_update_with_install_mode, uninstall_windows_codex,
     win_adopt as adopt_windows_install, win_install_status,
     DownloadProgress as WinDownloadProgress, WinAutoStageReport, WinInstallStatus,
-    WinPerformReport, WinStageReport, WinUninstallReport, WinUpdateReport,
+    WinPerformExpectation, WinPerformReport, WinStageReport, WinUninstallReport, WinUpdateReport,
 };
 use crate::domain::settings::AppSettings as DomainAppSettings;
 use crate::domain::target::OperatingSystem;
@@ -46,7 +46,8 @@ fn normalize_windows_source_base(raw: &str) -> Option<String> {
 fn windows_endpoints_for_settings(
     state: &ManagerState,
 ) -> Result<crate::domain::manifest::MirrorEndpoints, AppError> {
-    let saved = PersistedAppSettings::load();
+    let mut saved = PersistedAppSettings::load();
+    normalize_settings_for_target(&mut saved, &state.target);
     match saved.source.as_str() {
         "custom" => {
             let base = normalize_windows_source_base(&saved.custom_url)
@@ -61,6 +62,12 @@ fn windows_endpoints_for_settings(
         // official source exposes the same contract.
         "auto" | "mirror" => Ok(state.endpoints.clone()),
         _ => Ok(state.endpoints.clone()),
+    }
+}
+
+fn normalize_settings_for_target(settings: &mut PersistedAppSettings, target: &crate::domain::target::Target) {
+    if matches!(target.os, OperatingSystem::Windows) && settings.source == "official" {
+        settings.source = "auto".to_string();
     }
 }
 
@@ -440,15 +447,21 @@ pub async fn win_stage_update(
 
 /// Read persisted app settings (update source + general).
 #[tauri::command]
-pub fn get_settings() -> Result<PersistedAppSettings, CommandError> {
-    Ok(PersistedAppSettings::load())
+pub fn get_settings(state: State<'_, ManagerState>) -> Result<PersistedAppSettings, CommandError> {
+    let mut settings = PersistedAppSettings::load();
+    normalize_settings_for_target(&mut settings, &state.target);
+    Ok(settings)
 }
 
 /// Persist app settings. `signed_only` is forced on regardless of input.
 #[tauri::command]
-pub fn set_settings(settings: PersistedAppSettings) -> Result<PersistedAppSettings, CommandError> {
+pub fn set_settings(
+    state: State<'_, ManagerState>,
+    settings: PersistedAppSettings,
+) -> Result<PersistedAppSettings, CommandError> {
     let mut s = settings;
     s.normalize();
+    normalize_settings_for_target(&mut s, &state.target);
     s.save()?;
     Ok(s)
 }
@@ -615,26 +628,100 @@ pub fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), Command
 /// http(s) so it can't be coerced into launching arbitrary local handlers.
 #[tauri::command]
 pub fn open_url(url: String) -> Result<(), CommandError> {
-    if !(url.starts_with("https://") || url.starts_with("http://")) {
-        return Err(AppError::Internal("仅支持 http(s) 链接".to_string()).into());
-    }
-    #[cfg(target_os = "macos")]
-    let spawned = std::process::Command::new("open").arg(&url).spawn();
-    #[cfg(target_os = "windows")]
-    let spawned = {
-        use std::os::windows::process::CommandExt;
+    validate_external_http_url(&url)?;
+    open_external_url(&url).map_err(|e| AppError::Internal(format!("打开链接失败: {e}")).into())
+}
 
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", url.as_str()])
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
+fn validate_external_http_url(url: &str) -> Result<(), AppError> {
+    if url
+        .chars()
+        .any(|ch| ch.is_control() || ch.is_whitespace() || ch == '\\')
+    {
+        return Err(AppError::Internal("链接包含非法字符".to_string()));
+    }
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return Err(AppError::Internal("仅支持 http(s) 链接".to_string()));
     };
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let spawned = std::process::Command::new("xdg-open").arg(&url).spawn();
-    spawned
+    if !(scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http")) {
+        return Err(AppError::Internal("仅支持 http(s) 链接".to_string()));
+    }
+    let host = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim_matches('.');
+    if host.is_empty() || host.contains('@') {
+        return Err(AppError::Internal("链接缺少有效主机名".to_string()));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn open_external_url(url: &str) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(url)
+        .spawn()
         .map(|_| ())
-        .map_err(|e| AppError::Internal(format!("打开链接失败: {e}")).into())
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn open_external_url(url: &str) -> Result<(), String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr::null;
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let operation: Vec<u16> = OsStr::new("open").encode_wide().chain([0]).collect();
+    let target: Vec<u16> = OsStr::new(url).encode_wide().chain([0]).collect();
+    let result = unsafe {
+        ShellExecuteW(
+            0,
+            operation.as_ptr(),
+            target.as_ptr(),
+            null(),
+            null(),
+            SW_SHOWNORMAL,
+        )
+    } as isize;
+    if result <= 32 {
+        Err(format!("ShellExecuteW failed with code {result}"))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn open_external_url(url: &str) -> Result<(), String> {
+    std::process::Command::new("xdg-open")
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod open_url_tests {
+    use super::validate_external_http_url;
+
+    #[test]
+    fn accepts_http_urls_with_query_delimiters() {
+        assert!(validate_external_http_url("https://example.com/a?x=1&y=2").is_ok());
+    }
+
+    #[test]
+    fn rejects_non_http_and_shell_sensitive_url_shapes() {
+        for url in [
+            "file:///C:/Windows/notepad.exe",
+            "https://example.com/a b",
+            "https://example.com\\evil",
+            "https://user@example.com/",
+            "https://",
+        ] {
+            assert!(validate_external_http_url(url).is_err(), "{url} should be rejected");
+        }
+    }
 }
 
 /// Windows-only: classify the installed Codex (managed / external / none).
@@ -676,6 +763,7 @@ pub async fn win_perform_update(
     state: State<'_, ManagerState>,
     confirm: bool,
     install_root: Option<String>,
+    expected: Option<WinPerformExpectation>,
 ) -> Result<WinPerformReport, CommandError> {
     if !matches!(state.target.os, OperatingSystem::Windows) {
         return Err(AppError::UnsupportedPlatform.into());
@@ -704,6 +792,7 @@ pub async fn win_perform_update(
             &settings,
             confirm,
             &install_mode,
+            expected,
             &report,
         )
     })

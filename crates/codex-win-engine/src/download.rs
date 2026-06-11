@@ -52,6 +52,39 @@ fn partial_path(dest: &Path) -> PathBuf {
     dest.with_file_name(format!("{file_name}.part"))
 }
 
+fn url_host(url: &str) -> &str {
+    url.split("://")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .unwrap_or("")
+}
+
+fn proxy_env_summary() -> String {
+    let vars = ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY"];
+    let configured = vars
+        .iter()
+        .filter(|name| std::env::var_os(name).is_some())
+        .copied()
+        .collect::<Vec<_>>();
+    if configured.is_empty() {
+        "no curl proxy environment variables are set; Windows system proxy/PAC may not be used automatically".to_string()
+    } else {
+        format!("curl proxy environment variables set: {}", configured.join(", "))
+    }
+}
+
+fn curl_failure_message(url: &str, exit_code: Option<i32>, stderr: &str) -> String {
+    format!(
+        "curl failed for host={} exit={}: stderr='{}'; {}",
+        url_host(url),
+        exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "signal".to_string()),
+        stderr.trim(),
+        proxy_env_summary(),
+    )
+}
+
 fn run_curl(url: &str, dest: &Path, resume: bool, on_progress: &dyn Fn(u64)) -> Result<(), String> {
     let dest = dest.to_string_lossy().into_owned();
     let mut args = vec![
@@ -98,9 +131,10 @@ fn run_curl(url: &str, dest: &Path, resume: bool, on_progress: &dyn Fn(u64)) -> 
     };
 
     if !output.status.success() {
-        return Err(format!(
-            "curl failed for {url}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+        return Err(curl_failure_message(
+            url,
+            output.status.code(),
+            &String::from_utf8_lossy(&output.stderr),
         ));
     }
     let downloaded = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
