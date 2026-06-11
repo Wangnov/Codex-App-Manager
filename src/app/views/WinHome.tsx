@@ -187,6 +187,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         setConfirmOpen(false);
         setInstallDirOpen(false);
         if (errorCode(cause) === "stale_expectation") {
+          await refreshStatus();
           if (await check()) {
             setNotice(t("home.stale.rechecked"));
           }
@@ -261,8 +262,11 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   }, [runPerform]);
 
   const plan = report?.plan ?? null;
-  const installed = status?.installed ?? report?.installed ?? null;
-  const isManaged = status?.status === "managed";
+  const installed = report?.installed ?? status?.installed ?? null;
+  const statusMatchesInstalled = Boolean(
+    installed && status?.installed && samePath(installed.path, status.installed.path),
+  );
+  const isManaged = statusMatchesInstalled && status?.status === "managed";
   const updateAvailable = Boolean(plan) && !plan?.upToDate;
   const routeNote =
     plan?.route === "portable-fallback" ? t("win.route.portable") : t("win.route.msix");
@@ -281,13 +285,23 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       return "none";
     }
     if (!statusLoaded) return "loading";
-    if (status?.status === "external") return "external";
+    if (statusMatchesInstalled && status?.status === "external") return "external";
     if (busy === "plan" && !report) return "loading";
     if (error && !report) return "error";
     if (!report) return "idle";
     if (updateAvailable) return "update";
     return "uptodate";
-  }, [busy, report, error, installed, updateAvailable, status, statusLoaded, statusFailed]);
+  }, [
+    busy,
+    report,
+    error,
+    installed,
+    updateAvailable,
+    status,
+    statusMatchesInstalled,
+    statusLoaded,
+    statusFailed,
+  ]);
 
   const version = installed?.version || plan?.latestVersion || "";
   const sourceLabel = t(`source.${settings.source}` as TKey);

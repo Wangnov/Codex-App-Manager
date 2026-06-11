@@ -454,23 +454,23 @@ pub fn remove_msix_package() -> Result<MsixRemoveReport, EngineError> {
     let script = format!(
         r#"
 	$ErrorActionPreference = 'Stop'
-	$notes = @()
+	$script:notes = @()
 	function Add-ResidualNotes {{
 	  try {{
 	    $allUsers = @(Get-AppxPackage -AllUsers -Name {name} -ErrorAction SilentlyContinue)
 	    if ($allUsers.Count -gt 0) {{
-	      $notes += 'MSIX package still exists for another user or elevated context: ' + (($allUsers | ForEach-Object {{ $_.PackageFullName }}) -join ', ')
+	      $script:notes += 'MSIX package still exists for another user or elevated context: ' + (($allUsers | ForEach-Object {{ $_.PackageFullName }}) -join ', ')
 	    }}
 	  }} catch {{
-	    $notes += 'Could not query all-user MSIX registrations: ' + [string]$_.Exception.Message
+	    $script:notes += 'Could not query all-user MSIX registrations: ' + [string]$_.Exception.Message
 	  }}
 	  try {{
 	    $provisioned = @(Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | Where-Object {{ $_.DisplayName -eq {name} }})
 	    if ($provisioned.Count -gt 0) {{
-	      $notes += 'Provisioned MSIX package remains and may be reinstalled for new users; remove it from an elevated shell with Remove-AppxProvisionedPackage if desired.'
+	      $script:notes += 'Provisioned MSIX package remains and may be reinstalled for new users; remove it from an elevated shell with Remove-AppxProvisionedPackage if desired.'
 	    }}
 	  }} catch {{
-	    $notes += 'Could not query provisioned MSIX packages: ' + [string]$_.Exception.Message
+	    $script:notes += 'Could not query provisioned MSIX packages: ' + [string]$_.Exception.Message
 	  }}
 	}}
 	try {{
@@ -481,7 +481,7 @@ pub fn remove_msix_package() -> Result<MsixRemoveReport, EngineError> {
 	      success = $true
 	      message = 'MSIX package was not installed'
 	      rawError = $null
-	      notes = $notes
+	      notes = $script:notes
 	    }} | ConvertTo-Json -Compress
 	    exit 0
 	  }}
@@ -493,14 +493,14 @@ pub fn remove_msix_package() -> Result<MsixRemoveReport, EngineError> {
 	    success = $true
 	    message = 'Remove-AppxPackage succeeded'
 	    rawError = $null
-	    notes = $notes
+	    notes = $script:notes
 	  }} | ConvertTo-Json -Compress
 	}} catch {{
 	  [pscustomobject]@{{
 	    success = $false
 	    message = [string]$_.Exception.Message
 	    rawError = [string]$_
-	    notes = $notes
+	    notes = $script:notes
 	  }} | ConvertTo-Json -Compress
 	}}
 "#,

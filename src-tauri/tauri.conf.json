@@ -27,7 +27,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost https://codexapp.agentsmirror.com https://github.com https://persistent.oaistatic.com"
+      "csp": "default-src 'self'; img-src 'self' data: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost https://codexapp.agentsmirror.com https://github.com https://persistent.oaistatic.com"
     }
   },
   "bundle": {

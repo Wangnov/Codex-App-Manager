@@ -669,7 +669,7 @@ fn open_external_url(url: &str) -> Result<(), String> {
 fn open_external_url(url: &str) -> Result<(), String> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    use std::ptr::null;
+    use std::ptr::{null, null_mut};
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
@@ -677,7 +677,7 @@ fn open_external_url(url: &str) -> Result<(), String> {
     let target: Vec<u16> = OsStr::new(url).encode_wide().chain([0]).collect();
     let result = unsafe {
         ShellExecuteW(
-            0,
+            null_mut(),
             operation.as_ptr(),
             target.as_ptr(),
             null(),

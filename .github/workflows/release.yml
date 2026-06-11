@@ -211,24 +211,11 @@ jobs:
       - name: Generate updater manifest (latest.json)
         run: node scripts/gen-updater-manifest.mjs "${{ github.ref_name }}" dist
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ github.ref_name }}
-          draft: false
-          # Tags carrying a pre-release identifier (e.g. v0.1.2-rc1) publish as a
-          # prerelease, so GitHub's `releases/latest` — and the updater endpoint
-          # pointing at it — keep resolving to the last stable build instead of
-          # serving a release-candidate to real users.
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          files: |
-            dist/*
-            latest.json
-
       # Mirror the release to the CDN so in-app self-update works without GitHub
       # (slow/blocked for the CN audience). Skips pre-releases so a -rc tag never
-      # overwrites the mirror's single latest.json. No-ops cleanly until the
-      # MANAGER_R2_* (and optionally MANAGER_IHEP_S3_*) secrets are configured.
+      # overwrites the mirror's single latest.json. For stable tags this runs
+      # before GitHub Release publication, so missing/failed R2 sync blocks the
+      # release instead of leaving the public release ahead of the updater mirror.
       - name: Sync to CDN mirror (R2 + IHEP S3)
         if: ${{ !contains(github.ref_name, '-') }}
         env:
@@ -244,6 +231,21 @@ jobs:
         run: |
           [ -f dist/latest.json ] || cp latest.json dist/latest.json
           bash scripts/sync-mirror.sh dist
+          rm -f dist/latest.mirror.json
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          # Tags carrying a pre-release identifier (e.g. v0.1.2-rc1) publish as a
+          # prerelease, so GitHub's `releases/latest` — and the updater endpoint
+          # pointing at it — keep resolving to the last stable build instead of
+          # serving a release-candidate to real users.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            dist/*
+            latest.json
 
       # The release above is created with GITHUB_TOKEN, which by design does not
       # trigger other workflows — so winget.yml's `on: release` never fires.

@@ -575,13 +575,17 @@ pub fn perform_windows_update_with_install_mode(
         ));
     }
 
-    let store = ProvenanceStore::load();
-    let previous_installed = detect_managed_codex(settings, &store)
-        .or_else(|| detect_installed_codex(PathBuf::from(&settings.install_root).as_path()));
     let stage =
         stage_windows_update_with_install_mode(endpoints, settings, install_mode, progress)?;
+    // Staging can take long enough for Codex to self-update, be uninstalled, or
+    // move between the user's confirmation and our destructive work. Re-detect
+    // after staging and use this fresh snapshot for both consent validation and
+    // every close/provenance/install-root decision below.
+    let store = ProvenanceStore::load();
+    let current_installed = detect_managed_codex(settings, &store)
+        .or_else(|| detect_installed_codex(PathBuf::from(&settings.install_root).as_path()));
     if let Some(expected) = &expected {
-        validate_perform_expectation(expected, previous_installed.as_ref(), &stage)?;
+        validate_perform_expectation(expected, current_installed.as_ref(), &stage)?;
     }
     if stage.up_to_date {
         return Ok(WinPerformReport {
@@ -600,8 +604,8 @@ pub fn perform_windows_update_with_install_mode(
     }
 
     if stage.route == "portable-fallback" {
-        close_existing_codex_before_portable_fallback(settings, previous_installed.as_ref())?;
-        return install_portable_after_stage(settings, stage, None, None, previous_installed);
+        close_existing_codex_before_portable_fallback(settings, current_installed.as_ref())?;
+        return install_portable_after_stage(settings, stage, None, None, current_installed);
     }
 
     let staged_path = stage
@@ -623,14 +627,14 @@ pub fn perform_windows_update_with_install_mode(
     let precheck = precheck_msix_dependencies(PathBuf::from(&staged_path).as_path());
     if precheck.should_route_portable() {
         // We're switching to portable, but the running build must be stopped first.
-        close_existing_codex_before_portable_fallback(settings, previous_installed.as_ref())?;
+        close_existing_codex_before_portable_fallback(settings, current_installed.as_ref())?;
         let mut stage = stage;
         stage.notes.push(format!(
             "Skipped MSIX sideload before attempting it: {}. Routed to the portable build, which carries its own runtime and does not need these framework packages.",
             precheck.reason
         ));
         let mut report =
-            install_portable_after_stage(settings, stage, None, None, previous_installed)?;
+            install_portable_after_stage(settings, stage, None, None, current_installed)?;
         report.action = WinPerformAction::PortableFallbackMissingFramework;
         return Ok(report);
     }
@@ -644,9 +648,9 @@ pub fn perform_windows_update_with_install_mode(
     }
     // A managed portable build (possibly under a previous install root) is not
     // stopped by the MSIX sideload below, so close it first — otherwise it keeps
-    // running after we switch the user over to the MSIX package. `previous_installed`
+    // running after we switch the user over to the MSIX package. `current_installed`
     // comes from the provenance-aware detect_managed_codex above.
-    if let Some(previous) = &previous_installed {
+    if let Some(previous) = &current_installed {
         if previous.source == "portable" {
             close_codex_gracefully_for_root(30, PathBuf::from(&previous.path).as_path())
                 .map_err(engine_err)?;
@@ -668,7 +672,7 @@ pub fn perform_windows_update_with_install_mode(
                 stage,
                 Some(sideload),
                 Some(health),
-                previous_installed,
+                current_installed,
             )?;
             match remove_msix_package() {
                 Ok(remove) if remove.success => {
@@ -700,7 +704,7 @@ pub fn perform_windows_update_with_install_mode(
             .or_else(|| win_install_status(settings).installed);
         if let Some(installed) = &installed {
             let mut store = ProvenanceStore::load();
-            if let Some(previous) = &previous_installed {
+            if let Some(previous) = &current_installed {
                 store.remove(&previous.path);
             }
             store.record(
@@ -726,7 +730,7 @@ pub fn perform_windows_update_with_install_mode(
         });
     }
 
-    install_portable_after_stage(settings, stage, Some(sideload), None, previous_installed)
+    install_portable_after_stage(settings, stage, Some(sideload), None, current_installed)
 }
 
 fn install_portable_after_stage(
