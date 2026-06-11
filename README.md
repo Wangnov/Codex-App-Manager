@@ -1,4 +1,8 @@
 <p align="center">
+  <img src="./assets/banner.svg" alt="Codex App Manager — 一键装好官方 Codex,持续最新" width="100%">
+</p>
+
+<p align="center">
   <img src="./assets/logo.png" width="200" alt="Codex App Manager logo">
 </p>
 
