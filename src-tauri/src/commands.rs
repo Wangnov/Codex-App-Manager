@@ -5,13 +5,13 @@ use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_dialog::DialogExt;
 
 use crate::app::mac_update::{
-    install_macos, perform_macos_update, plan_macos_update, stage_macos_update, uninstall_macos,
-    MacInstallStatus, MacPerformReport, MacStageReport, MacUninstallReport, MacUpdateReport,
-    PerformExpectation,
+    cancel_macos_download, install_macos, pause_macos_download, perform_macos_update,
+    plan_macos_update, stage_macos_update, uninstall_macos, MacInstallStatus, MacPerformReport,
+    MacStageReport, MacUninstallReport, MacUpdateReport, PerformExpectation,
 };
 use crate::app::settings_store::AppSettings as PersistedAppSettings;
 use crate::app::win_update::{
-    auto_stage_windows_update_with_install_mode, cancel_windows_download,
+    auto_stage_windows_update_with_install_mode, cancel_windows_download, pause_windows_download,
     perform_windows_update_with_install_mode, plan_windows_update_with_install_mode,
     stage_windows_update_with_install_mode, uninstall_windows_codex,
     win_adopt as adopt_windows_install, win_install_status,
@@ -412,17 +412,44 @@ pub async fn mac_install(app: tauri::AppHandle) -> Result<MacInstallStatus, Comm
     .map_err(Into::into)
 }
 
+/// macOS-only: request pausing an active package download.
+/// Partial bytes are left in place for the next resume-capable run.
+#[tauri::command]
+pub fn mac_pause_download() -> Result<bool, CommandError> {
+    if !cfg!(target_os = "macos") {
+        return Err(AppError::UnsupportedPlatform.into());
+    }
+    Ok(pause_macos_download())
+}
+
+/// macOS-only: request cancellation of an active package download.
+/// Partial bytes are discarded.
+#[tauri::command]
+pub fn mac_cancel_download() -> Result<bool, CommandError> {
+    if !cfg!(target_os = "macos") {
+        return Err(AppError::UnsupportedPlatform.into());
+    }
+    Ok(cancel_macos_download())
+}
+
 /// Windows-only: detect installed Codex, read mirror manifest/checksums, probe
 /// sideload capabilities, and return the preferred update path. Read-only.
 #[tauri::command]
-pub fn win_plan_update(state: State<'_, ManagerState>) -> Result<WinUpdateReport, CommandError> {
+pub async fn win_plan_update(
+    state: State<'_, ManagerState>,
+) -> Result<WinUpdateReport, CommandError> {
     if !matches!(state.target.os, OperatingSystem::Windows) {
         return Err(AppError::UnsupportedPlatform.into());
     }
     let endpoints = windows_endpoints_for_settings(&state)?;
     let settings = windows_domain_settings_for_persisted(&state);
     let install_mode = windows_install_mode_for_settings();
-    plan_windows_update_with_install_mode(&endpoints, &settings, &install_mode).map_err(Into::into)
+    tauri::async_runtime::spawn_blocking(move || {
+        plan_windows_update_with_install_mode(&endpoints, &settings, &install_mode)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("join: {e}")))?
+    .map_err(Into::into)
 }
 
 /// Windows-only: plan + download + size/SHA256/AuthentiCode/AppxManifest gates
@@ -598,8 +625,18 @@ pub async fn win_auto_stage_update(
     .map_err(Into::into)
 }
 
-/// Windows-only: request cancellation of an active background/manual download.
+/// Windows-only: request pausing an active background/manual download.
 /// Partial bytes are left in place for the next resume-capable staging run.
+#[tauri::command]
+pub fn win_pause_download(state: State<'_, ManagerState>) -> Result<bool, CommandError> {
+    if !matches!(state.target.os, OperatingSystem::Windows) {
+        return Err(AppError::UnsupportedPlatform.into());
+    }
+    Ok(pause_windows_download())
+}
+
+/// Windows-only: request cancellation of an active background/manual download.
+/// Partial bytes are discarded.
 #[tauri::command]
 pub fn win_cancel_download(state: State<'_, ManagerState>) -> Result<bool, CommandError> {
     if !matches!(state.target.os, OperatingSystem::Windows) {

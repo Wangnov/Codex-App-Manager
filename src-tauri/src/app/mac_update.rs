@@ -881,6 +881,14 @@ pub fn launch_codex() -> Result<(), AppError> {
         .map_err(|e| AppError::Engine(format!("打开 Codex 失败: {e}")))
 }
 
+pub fn pause_macos_download() -> bool {
+    download::pause_active_download()
+}
+
+pub fn cancel_macos_download() -> bool {
+    download::cancel_active_download()
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MacUninstallReport {

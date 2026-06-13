@@ -12,12 +12,14 @@ use crate::EngineError;
 
 static DOWNLOAD_ACTIVE: AtomicBool = AtomicBool::new(false);
 static DOWNLOAD_CANCELLED: AtomicBool = AtomicBool::new(false);
+static DOWNLOAD_DISCARD: AtomicBool = AtomicBool::new(false);
 
 struct DownloadGuard;
 
 impl DownloadGuard {
     fn acquire() -> Result<Self, String> {
         DOWNLOAD_CANCELLED.store(false, Ordering::SeqCst);
+        DOWNLOAD_DISCARD.store(false, Ordering::SeqCst);
         DOWNLOAD_ACTIVE
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .map(|_| Self)
@@ -29,15 +31,25 @@ impl Drop for DownloadGuard {
     fn drop(&mut self) {
         DOWNLOAD_ACTIVE.store(false, Ordering::SeqCst);
         DOWNLOAD_CANCELLED.store(false, Ordering::SeqCst);
+        DOWNLOAD_DISCARD.store(false, Ordering::SeqCst);
     }
 }
 
-pub fn cancel_active_download() -> bool {
+fn request_cancel(discard_partial: bool) -> bool {
     let active = DOWNLOAD_ACTIVE.load(Ordering::SeqCst);
     if active {
+        DOWNLOAD_DISCARD.store(discard_partial, Ordering::SeqCst);
         DOWNLOAD_CANCELLED.store(true, Ordering::SeqCst);
     }
     active
+}
+
+pub fn pause_active_download() -> bool {
+    request_cancel(false)
+}
+
+pub fn cancel_active_download() -> bool {
+    request_cancel(true)
 }
 
 fn is_cancelled_error(err: &str) -> bool {
@@ -165,12 +177,18 @@ pub fn download_to_with_progress(
     let download_result = run_curl(url, &part, should_resume, on_progress);
     if let Err(first_err) = download_result {
         if is_cancelled_error(&first_err) {
+            if DOWNLOAD_DISCARD.load(Ordering::SeqCst) {
+                let _ = std::fs::remove_file(&part);
+            }
             return Err(EngineError::Io(first_err));
         }
         if should_resume {
             let _ = std::fs::remove_file(&part);
             run_curl(url, &part, false, on_progress).map_err(|second_err| {
                 if is_cancelled_error(&second_err) {
+                    if DOWNLOAD_DISCARD.load(Ordering::SeqCst) {
+                        let _ = std::fs::remove_file(&part);
+                    }
                     return EngineError::Io(second_err);
                 }
                 EngineError::Io(format!(

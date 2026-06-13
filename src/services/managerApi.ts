@@ -96,6 +96,10 @@ export function errorCode(cause: unknown): string | null {
   return null;
 }
 
+export function isDownloadCancelled(cause: unknown): boolean {
+  return errorMessage(cause).toLowerCase().includes("download cancelled");
+}
+
 // Connectivity failures (DNS / TLS / timeout / curl transport) all surface here
 // as opaque engine strings. Match transport-specific text, not the generic
 // "curl failed for ..." wrapper: curl exit 22 also uses that wrapper for HTTP
@@ -357,6 +361,18 @@ export const managerApi = {
     }
     return invoke<MacInstallStatus>("mac_install");
   },
+  macPauseDownload(): Promise<boolean> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve(true);
+    }
+    return invoke<boolean>("mac_pause_download");
+  },
+  macCancelDownload(): Promise<boolean> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve(true);
+    }
+    return invoke<boolean>("mac_cancel_download");
+  },
   // Open the installed Codex — explicit user action after install (we no longer
   // auto-launch).
   macLaunch(): Promise<void> {
@@ -469,6 +485,18 @@ export const managerApi = {
       return Promise.resolve(WIN_FALLBACK_PLAN);
     }
     return invoke<WinUpdateReport>("win_plan_update");
+  },
+  winPauseDownload(): Promise<boolean> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve(true);
+    }
+    return invoke<boolean>("win_pause_download");
+  },
+  winCancelDownload(): Promise<boolean> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve(true);
+    }
+    return invoke<boolean>("win_cancel_download");
   },
   winPerformUpdate(
     confirm: boolean,

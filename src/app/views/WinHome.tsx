@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { Pause, XCircle } from "lucide-react";
 
-import { errorCode, errorMessage, managerApi } from "../../services/managerApi";
+import {
+  errorCode,
+  errorMessage,
+  isDownloadCancelled,
+  managerApi,
+} from "../../services/managerApi";
 import type {
   AppSettings,
   DownloadProgress,
@@ -24,6 +30,7 @@ function samePath(a: string, b: string): boolean {
 }
 
 type Kind = "loading" | "error" | "none" | "idle" | "update" | "external" | "uptodate";
+type DownloadStopIntent = "pause" | "cancel";
 
 // Windows counterpart of MacHome — same design system + state machine, driven by
 // the win_* backend (codex-win-engine): MSIX sideload or portable fallback.
@@ -49,6 +56,9 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [dl, setDl] = useState<DownloadProgress | null>(null);
   const [speed, setSpeed] = useState(0);
   const dlSample = useRef<{ t: number; bytes: number } | null>(null);
+  const [downloadStop, setDownloadStop] = useState<DownloadStopIntent | null>(null);
+  const [downloadStopBusy, setDownloadStopBusy] = useState(false);
+  const downloadStopRef = useRef<DownloadStopIntent | null>(null);
   const scopeRef = useRef<HTMLDivElement>(null);
   // Smoothly roll the live download figures instead of snapping per event.
   const dlPctTarget = dl && dl.total > 0 ? Math.min(100, (dl.downloaded / dl.total) * 100) : 0;
@@ -79,6 +89,33 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       return () => {};
     }
   }, [onDlProgress]);
+
+  const requestDownloadStop = useCallback(
+    async (intent: DownloadStopIntent) => {
+      setActionError(null);
+      setDownloadStop(intent);
+      setDownloadStopBusy(true);
+      downloadStopRef.current = intent;
+      try {
+        const active =
+          intent === "pause"
+            ? await managerApi.winPauseDownload()
+            : await managerApi.winCancelDownload();
+        if (!active) {
+          downloadStopRef.current = null;
+          setDownloadStop(null);
+          setDownloadStopBusy(false);
+          setActionError(t("progress.cannotCancel"));
+        }
+      } catch (cause) {
+        downloadStopRef.current = null;
+        setDownloadStop(null);
+        setDownloadStopBusy(false);
+        setActionError(errorMessage(cause));
+      }
+    },
+    [t],
+  );
 
   const check = useCallback(async () => {
     setBusy("plan");
@@ -189,7 +226,10 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       } catch (cause) {
         setConfirmOpen(false);
         setInstallDirOpen(false);
-        if (errorCode(cause) === "stale_expectation") {
+        const stop = downloadStopRef.current;
+        if (stop && isDownloadCancelled(cause)) {
+          setNotice(t(stop === "pause" ? "progress.paused" : "progress.cancelled"));
+        } else if (errorCode(cause) === "stale_expectation") {
           await refreshStatus();
           if (await check()) {
             setNotice(t("home.stale.rechecked"));
@@ -201,6 +241,9 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         unlisten();
         setBusy(null);
         setDl(null);
+        setDownloadStop(null);
+        setDownloadStopBusy(false);
+        downloadStopRef.current = null;
       }
     },
     [status, report, refreshStatus, check, startDlListen, t],
@@ -348,6 +391,8 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   if (progressing) {
     const known = Boolean(dl && dl.total > 0);
     const pct = known ? Math.round(dlPct) : null;
+    const canStopDownload =
+      Boolean(dl && dl.total > 0 && dl.downloaded < dl.total) && !downloadStopBusy;
     return (
       <div className="pop">
         <TopBar />
@@ -378,6 +423,24 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
                 {dlSpeed > 0 ? ` · ${mib(dlSpeed)}/s` : ""}
               </div>
             ) : null}
+            <div className="progress-actions">
+              <button
+                className="btn ghost"
+                onClick={() => void requestDownloadStop("pause")}
+                disabled={!canStopDownload}
+              >
+                <Pause />
+                {downloadStop === "pause" ? t("progress.pausePending") : t("progress.pause")}
+              </button>
+              <button
+                className="btn ghost"
+                onClick={() => void requestDownloadStop("cancel")}
+                disabled={!canStopDownload}
+              >
+                <XCircle />
+                {downloadStop === "cancel" ? t("progress.cancelPending") : t("progress.cancel")}
+              </button>
+            </div>
           </div>
         </div>
       </div>

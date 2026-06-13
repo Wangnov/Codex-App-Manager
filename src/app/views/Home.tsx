@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { Pause, XCircle } from "lucide-react";
 
-import { errorCode, errorMessage, managerApi } from "../../services/managerApi";
+import {
+  errorCode,
+  errorMessage,
+  isDownloadCancelled,
+  managerApi,
+} from "../../services/managerApi";
 import type {
   AppSettings,
   DownloadProgress,
@@ -20,6 +26,7 @@ import { mib, fmtDateTime } from "../format";
 import { useHomeMotion } from "../motion";
 
 type Kind = "loading" | "error" | "none" | "idle" | "update" | "external" | "uptodate";
+type DownloadStopIntent = "pause" | "cancel";
 
 /** Platform dispatcher — the backend command surface differs per OS. */
 export function Home(props: { onOpenSettings: () => void }) {
@@ -57,6 +64,9 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [dl, setDl] = useState<DownloadProgress | null>(null);
   const [speed, setSpeed] = useState(0);
   const dlSample = useRef<{ t: number; bytes: number } | null>(null);
+  const [downloadStop, setDownloadStop] = useState<DownloadStopIntent | null>(null);
+  const [downloadStopBusy, setDownloadStopBusy] = useState(false);
+  const downloadStopRef = useRef<DownloadStopIntent | null>(null);
   const scopeRef = useRef<HTMLDivElement>(null);
   // Smoothly roll the live download figures instead of snapping per event.
   const dlPctTarget = dl && dl.total > 0 ? Math.min(100, (dl.downloaded / dl.total) * 100) : 0;
@@ -88,6 +98,33 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       return () => {};
     }
   }, [onDlProgress]);
+
+  const requestDownloadStop = useCallback(
+    async (intent: DownloadStopIntent) => {
+      setActionError(null);
+      setDownloadStop(intent);
+      setDownloadStopBusy(true);
+      downloadStopRef.current = intent;
+      try {
+        const active =
+          intent === "pause"
+            ? await managerApi.macPauseDownload()
+            : await managerApi.macCancelDownload();
+        if (!active) {
+          downloadStopRef.current = null;
+          setDownloadStop(null);
+          setDownloadStopBusy(false);
+          setActionError(t("progress.cannotCancel"));
+        }
+      } catch (cause) {
+        downloadStopRef.current = null;
+        setDownloadStop(null);
+        setDownloadStopBusy(false);
+        setActionError(errorMessage(cause));
+      }
+    },
+    [t],
+  );
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -226,13 +263,21 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       setJustInstalled(true);
       await check();
     } catch (cause) {
-      setActionError(errorMessage(cause));
+      const stop = downloadStopRef.current;
+      if (stop && isDownloadCancelled(cause)) {
+        setNotice(t(stop === "pause" ? "progress.paused" : "progress.cancelled"));
+      } else {
+        setActionError(errorMessage(cause));
+      }
     } finally {
       un();
       setBusy(null);
       setDl(null);
+      setDownloadStop(null);
+      setDownloadStopBusy(false);
+      downloadStopRef.current = null;
     }
-  }, [check, startDlListen]);
+  }, [check, startDlListen, t]);
 
   const runPerform = useCallback(async () => {
     // ONE atomic snapshot (the report carries installed + plan detected
@@ -263,7 +308,10 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       await check();
     } catch (cause) {
       setConfirmOpen(false);
-      if (errorCode(cause) === "stale_expectation") {
+      const stop = downloadStopRef.current;
+      if (stop && isDownloadCancelled(cause)) {
+        setNotice(t(stop === "pause" ? "progress.paused" : "progress.cancelled"));
+      } else if (errorCode(cause) === "stale_expectation") {
         // Reality moved between confirm and execute (the backend's TOCTOU
         // guard). Refresh the snapshot and post a NOTICE (not an error) so the
         // card can settle into whatever it now is — update / up-to-date / none
@@ -279,6 +327,9 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       un();
       setBusy(null);
       setDl(null);
+      setDownloadStop(null);
+      setDownloadStopBusy(false);
+      downloadStopRef.current = null;
     }
   }, [report, check, startDlListen, t]);
 
@@ -376,6 +427,8 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   if (busy === "perform" || busy === "install") {
     const known = Boolean(dl && dl.total > 0);
     const pct = known ? Math.round(dlPct) : null;
+    const canStopDownload =
+      Boolean(dl && dl.total > 0 && dl.downloaded < dl.total) && !downloadStopBusy;
     return (
       <div className="pop">
         <TopBar />
@@ -406,6 +459,24 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
                 {dlSpeed > 0 ? ` · ${mib(dlSpeed)}/s` : ""}
               </div>
             ) : null}
+            <div className="progress-actions">
+              <button
+                className="btn ghost"
+                onClick={() => void requestDownloadStop("pause")}
+                disabled={!canStopDownload}
+              >
+                <Pause />
+                {downloadStop === "pause" ? t("progress.pausePending") : t("progress.pause")}
+              </button>
+              <button
+                className="btn ghost"
+                onClick={() => void requestDownloadStop("cancel")}
+                disabled={!canStopDownload}
+              >
+                <XCircle />
+                {downloadStop === "cancel" ? t("progress.cancelPending") : t("progress.cancel")}
+              </button>
+            </div>
           </div>
         </div>
       </div>

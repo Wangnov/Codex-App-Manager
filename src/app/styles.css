@@ -1058,6 +1058,22 @@ button.row.danger:hover {
   letter-spacing: 0.01em;
   font-variant-numeric: tabular-nums;
 }
+.progress-actions {
+  width: min(100%, 320px);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-xs);
+  margin-top: var(--space-md);
+}
+.progress-actions .btn {
+  min-width: 0;
+  /* The window is a fixed 400px and never resizes, so a long localized label
+     (e.g. a "Cancelling…" pending state) wraps inside the button instead of
+     spilling past it. The grid keeps both buttons the same height. */
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.2;
+}
 /* Preparing phase: no byte total yet — sweep instead of a fake fixed width. */
 .bar-fill.indeterminate {
   width: 42%;

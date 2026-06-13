@@ -13,13 +13,13 @@ use serde::{Deserialize, Serialize};
 use codex_win_engine::{
     cancel_active_download, close_codex_gracefully_for_root, detect_installed_codex,
     detect_portable_install, download_to_with_progress, fetch_text, find_msix_sha256,
-    install_msix_sideload, install_portable_from_msix, parse_manifest, plan_update,
-    precheck_msix_dependencies, probe_capabilities, purge_codex_user_data, read_msix_identity,
-    remove_msix_package, sha256_file, uninstall_portable, validate_codex_identity,
-    verify_msix_health, verify_openai_authenticode, version_key, AuthenticodeReport,
-    CapabilityState, InstalledWindowsCodex, MsixHealthReport, MsixIdentity, MsixRemoveReport,
-    MsixSideloadReport, PortableInstallReport, PortableUninstallReport, WinCapabilityReport,
-    WinInstallRoute, WindowsRelease, WindowsUpdatePlan,
+    install_msix_sideload, install_portable_from_msix, parse_manifest, pause_active_download,
+    plan_update, precheck_msix_dependencies, probe_capabilities, purge_codex_user_data,
+    read_msix_identity, remove_msix_package, sha256_file, uninstall_portable,
+    validate_codex_identity, verify_msix_health, verify_openai_authenticode, version_key,
+    AuthenticodeReport, CapabilityState, InstalledWindowsCodex, MsixHealthReport, MsixIdentity,
+    MsixRemoveReport, MsixSideloadReport, PortableInstallReport, PortableUninstallReport,
+    WinCapabilityReport, WinInstallRoute, WindowsRelease, WindowsUpdatePlan,
 };
 
 use crate::app::provenance::ProvenanceStore;
@@ -551,6 +551,10 @@ pub fn auto_stage_windows_update_with_install_mode(
 
 pub fn cancel_windows_download() -> bool {
     cancel_active_download()
+}
+
+pub fn pause_windows_download() -> bool {
+    pause_active_download()
 }
 
 pub fn perform_windows_update(
