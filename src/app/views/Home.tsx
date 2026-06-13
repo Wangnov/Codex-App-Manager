@@ -12,7 +12,7 @@ import type {
 import { DEFAULT_SETTINGS } from "../../shared/types";
 import { Icon, CodexGlyph } from "../icons";
 import { useI18n, dirOf, type TKey } from "../i18n";
-import { Ring, TopBar, ResultBanner } from "../components";
+import { Ring, TopBar, ResultBanner, ErrorHero } from "../components";
 import { currentPlatform } from "../platform";
 import { WinHome } from "./WinHome";
 import { useCountUp } from "../useCountUp";
@@ -36,9 +36,10 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [updatedVer, setUpdatedVer] = useState<{ from: string; to: string } | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [busy, setBusy] = useState<"plan" | "perform" | "adopt" | "install" | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [checkError, setCheckError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   // A non-error, transient heads-up (e.g. "we re-checked because the install
-  // changed"). Kept SEPARATE from `error` on purpose: `error` drives the
+  // changed"). Kept SEPARATE from `checkError` on purpose: `checkError` drives the
   // "检查失败" hero in the `!installed` branch, so reusing it for an info note
   // would strand a now-uninstalled user on an error screen with no install CTA.
   const [notice, setNotice] = useState<string | null>(null);
@@ -107,7 +108,8 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   // so a caller can layer a notice on top without masking a check failure.
   const check = useCallback(async (): Promise<boolean> => {
     setBusy("plan");
-    setError(null);
+    setCheckError(null);
+    setActionError(null);
     setNotice(null);
     try {
       const [r] = await Promise.all([managerApi.macPlanUpdate(), refreshStatus()]);
@@ -117,7 +119,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       // Drop any stale plan so a failed re-check can't keep driving "立即更新"
       // off an outdated currentBuild/latestBuild.
       setReport(null);
-      setError(errorMessage(cause));
+      setCheckError(errorMessage(cause));
       return false;
     } finally {
       setBusy(null);
@@ -204,11 +206,12 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   const adopt = useCallback(async () => {
     setBusy("adopt");
-    setError(null);
+    setCheckError(null);
+    setActionError(null);
     try {
       setStatus(await managerApi.macAdopt());
     } catch (cause) {
-      setError(errorMessage(cause));
+      setActionError(errorMessage(cause));
     } finally {
       setBusy(null);
     }
@@ -216,14 +219,14 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   const runInstall = useCallback(async () => {
     setBusy("install");
-    setError(null);
+    setActionError(null);
     const un = await startDlListen();
     try {
       setStatus(await managerApi.macInstall());
       setJustInstalled(true);
       await check();
     } catch (cause) {
-      setError(errorMessage(cause));
+      setActionError(errorMessage(cause));
     } finally {
       un();
       setBusy(null);
@@ -241,7 +244,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     const plan = report?.plan;
     if (!installed || !plan || plan.upToDate) return;
     setBusy("perform");
-    setError(null);
+    setActionError(null);
     // Capture the human-facing versions BEFORE the swap — afterward a re-check
     // makes installed/latest identical. Fall back to a build number only if a
     // feed omits the short version.
@@ -264,13 +267,13 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         // Reality moved between confirm and execute (the backend's TOCTOU
         // guard). Refresh the snapshot and post a NOTICE (not an error) so the
         // card can settle into whatever it now is — update / up-to-date / none
-        // (Codex was removed) — without the `error`-driven "检查失败" hero
+        // (Codex was removed) — without the `checkError`-driven "检查失败" hero
         // hijacking the none case. A failed re-check keeps its own error.
         if (await check()) {
           setNotice(t("home.stale.rechecked"));
         }
       } else {
-        setError(errorMessage(cause));
+        setActionError(errorMessage(cause));
       }
     } finally {
       un();
@@ -295,7 +298,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       // A failed status (unsupported platform) OR a failed check (OS too old /
       // appcast unreachable) → error, never an install entry that would just
       // fail again.
-      if (statusFailed || error) return "error";
+      if (statusFailed || checkError) return "error";
       return "none";
     }
     // Don't classify (update / idle / uptodate) until the local adoption status
@@ -307,11 +310,11 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     // is never hidden (auto-check off / appcast error) or bypassed (update).
     if (status?.status === "external") return "external";
     if (busy === "plan" && !report) return "loading";
-    if (error && !report) return "error";
+    if (checkError && !report) return "error";
     if (!report) return "idle";
     if (updateAvailable) return "update";
     return "uptodate";
-  }, [busy, report, error, installed, updateAvailable, status, statusLoaded, statusFailed]);
+  }, [busy, report, checkError, installed, updateAvailable, status, statusLoaded, statusFailed]);
 
   // Always show the LOCAL installed version (CFBundleShortVersionString), never
   // the source's latest — they differ when the mirror lags or Codex was updated
@@ -331,7 +334,8 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const onLaunch = () => {
     // Surface a failed open (stale path / backend error) via the error banner
     // like every other action, instead of an unhandled rejection with no feedback.
-    void managerApi.macLaunch().catch((cause) => setError(errorMessage(cause)));
+    setActionError(null);
+    void managerApi.macLaunch().catch((cause) => setActionError(errorMessage(cause)));
   };
 
   // One string identifying the visible "scene"; when it changes the hero
@@ -414,10 +418,10 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       <div className="pop">
         <TopBar />
         <div className="scroll" ref={scopeRef}>
-          {error ? (
+          {actionError ? (
             <div className="banner err">
               <Icon name="alert" />
-              <span>{error}</span>
+              <span>{actionError}</span>
             </div>
           ) : null}
           <section className="hero" style={{ marginTop: 16 }} key={scene}>
@@ -476,10 +480,10 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             onClose={() => setNotice(null)}
           />
         ) : null}
-        {error ? (
+        {actionError ? (
           <div className="banner err">
             <Icon name="alert" />
-            <span>{error}</span>
+            <span>{actionError}</span>
           </div>
         ) : null}
 
@@ -504,11 +508,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
               <div className="headline shimmer">{t("home.checking")}</div>
             </>
           ) : kind === "error" ? (
-            <>
-              <Ring icon="alert" variant="danger" />
-              <div className="headline">{t("home.error.title")}</div>
-              <div className="desc">{t("home.error.sub")}</div>
-            </>
+            <ErrorHero message={checkError} />
           ) : kind === "none" ? (
             <>
               <Ring icon="download" variant="muted" />
@@ -669,6 +669,27 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
                 {t("home.recheck")}
               </button>
             </>
+          ) : null}
+          {/* "请稍后重试" must come with a way to retry. When Codex is installed
+              the user can still launch it despite the failed check. */}
+          {!rechecking && kind === "error" ? (
+            installed ? (
+              <>
+                <button className="btn primary big" onClick={onLaunch} disabled={busy !== null}>
+                  <CodexGlyph />
+                  {t("home.launch")}
+                </button>
+                <button className="btn ghost" onClick={check} disabled={busy !== null}>
+                  <Icon name="refresh" />
+                  {t("home.recheck")}
+                </button>
+              </>
+            ) : (
+              <button className="btn primary big" onClick={check} disabled={busy !== null}>
+                <Icon name="refresh" />
+                {t("home.recheck")}
+              </button>
+            )
           ) : null}
         </div>
 

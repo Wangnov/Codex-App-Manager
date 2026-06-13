@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 
-import { managerApi } from "../services/managerApi";
+import { isNetworkError, managerApi } from "../services/managerApi";
 import { Icon, type IconName, CodexMark } from "./icons";
 import { useI18n } from "./i18n";
 
@@ -152,6 +152,39 @@ export function Ring({
     <div className={`ring ${v} ${spin ? "spin" : ""} ${className}`}>
       <Icon name={icon} />
     </div>
+  );
+}
+
+/** The "检查失败" hero, shared by both platform homes. Classifies a connectivity
+ *  failure (DNS / TLS / timeout) apart from other errors so the user sees a
+ *  calm, actionable line instead of a raw curl diagnostic — the raw message
+ *  stays one tap away behind 查看详情 for bug reports. Render this inside the
+ *  hero `<section>` for the `kind === "error"` branch. */
+export function ErrorHero({ message }: { message: string | null }) {
+  const { t } = useI18n();
+  const [showDetails, setShowDetails] = useState(false);
+  const network = message ? isNetworkError(message) : false;
+  return (
+    <>
+      <Ring icon="alert" variant="danger" />
+      <div className="headline">
+        {t(network ? "home.error.network.title" : "home.error.title")}
+      </div>
+      <div className="desc">{t(network ? "home.error.network.sub" : "home.error.sub")}</div>
+      {message ? (
+        <>
+          <button
+            type="button"
+            className={`errdetails-toggle${showDetails ? " open" : ""}`}
+            aria-expanded={showDetails}
+            onClick={() => setShowDetails((v) => !v)}
+          >
+            {t("home.error.details")}
+          </button>
+          {showDetails ? <pre className="errdetails">{message}</pre> : null}
+        </>
+      ) : null}
+    </>
   );
 }
 

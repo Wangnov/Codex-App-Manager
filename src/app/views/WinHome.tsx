@@ -12,7 +12,7 @@ import type {
 import { DEFAULT_SETTINGS } from "../../shared/types";
 import { Icon, CodexGlyph } from "../icons";
 import { useI18n, dirOf, type TKey } from "../i18n";
-import { Ring, TopBar, ResultBanner } from "../components";
+import { Ring, TopBar, ResultBanner, ErrorHero } from "../components";
 import { useCountUp } from "../useCountUp";
 import { mib, fmtDateTime } from "../format";
 import { useHomeMotion } from "../motion";
@@ -38,7 +38,8 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [defaultInstallRoot, setDefaultInstallRoot] = useState(DEFAULT_SETTINGS.installRoot);
   const [busy, setBusy] = useState<"plan" | "perform" | "adopt" | "install" | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [checkError, setCheckError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [installDirOpen, setInstallDirOpen] = useState(false);
@@ -81,14 +82,15 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   const check = useCallback(async () => {
     setBusy("plan");
-    setError(null);
+    setCheckError(null);
+    setActionError(null);
     setNotice(null);
     try {
       setReport(await managerApi.winPlanUpdate());
       return true;
     } catch (cause) {
       setReport(null);
-      setError(errorMessage(cause));
+      setCheckError(errorMessage(cause));
       return false;
     } finally {
       setBusy(null);
@@ -120,12 +122,13 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   const adopt = useCallback(async () => {
     setBusy("adopt");
-    setError(null);
+    setCheckError(null);
+    setActionError(null);
     setNotice(null);
     try {
       setStatus(await managerApi.winAdopt());
     } catch (cause) {
-      setError(errorMessage(cause));
+      setActionError(errorMessage(cause));
     } finally {
       setBusy(null);
     }
@@ -137,12 +140,12 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   // the preference, then re-plan so the route flips to portable and this notice
   // clears.
   const switchToPortable = useCallback(async () => {
-    setError(null);
+    setActionError(null);
     try {
       const next: AppSettings = { ...settings, windowsInstallMode: "portable" };
       setSettings(await managerApi.setSettings(next));
     } catch (cause) {
-      setError(errorMessage(cause));
+      setActionError(errorMessage(cause));
       return;
     }
     await check();
@@ -153,7 +156,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const runPerform = useCallback(
     async (mode: "perform" | "install", installRoot?: string) => {
       setBusy(mode);
-      setError(null);
+      setActionError(null);
       setNotice(null);
       // For an in-place update (not a fresh install) capture the human-facing
       // versions before the swap, so the outcome strip can show "X → Y".
@@ -192,7 +195,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             setNotice(t("home.stale.rechecked"));
           }
         } else {
-          setError(errorMessage(cause));
+          setActionError(errorMessage(cause));
         }
       } finally {
         unlisten();
@@ -211,13 +214,14 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       return false;
     }
     setBusy("plan");
-    setError(null);
+    setCheckError(null);
+    setActionError(null);
     try {
       const next = await managerApi.winPlanUpdate();
       setReport(next);
       return next.plan?.route === "portable-fallback";
     } catch (cause) {
-      setError(errorMessage(cause));
+      setCheckError(errorMessage(cause));
       return null;
     } finally {
       setBusy(null);
@@ -242,7 +246,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   const browseInstallRoot = useCallback(async () => {
     setInstallDirBusy(true);
-    setError(null);
+    setActionError(null);
     try {
       const path = await managerApi.winPickInstallDir();
       if (!path) return;
@@ -254,7 +258,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       const refreshed = await managerApi.getSettings().catch(() => null);
       if (refreshed) setSettings(refreshed);
     } catch (cause) {
-      setError(errorMessage(cause));
+      setActionError(errorMessage(cause));
       setInstallDirOpen(false);
     } finally {
       setInstallDirBusy(false);
@@ -284,20 +288,20 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const kind: Kind = useMemo(() => {
     if (!installed) {
       if (busy === "plan" || !statusLoaded) return "loading";
-      if (statusFailed || error) return "error";
+      if (statusFailed || checkError) return "error";
       return "none";
     }
     if (!statusLoaded) return "loading";
     if (statusMatchesInstalled && status?.status === "external") return "external";
     if (busy === "plan" && !report) return "loading";
-    if (error && !report) return "error";
+    if (checkError && !report) return "error";
     if (!report) return "idle";
     if (updateAvailable) return "update";
     return "uptodate";
   }, [
     busy,
     report,
-    error,
+    checkError,
     installed,
     updateAvailable,
     status,
@@ -318,7 +322,8 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const onLaunch = () => {
     // Surface a failed open (PowerShell/AUMID or portable-exe error) via the
     // error banner like every other action, not an unhandled rejection.
-    void managerApi.winLaunch().catch((cause) => setError(errorMessage(cause)));
+    setActionError(null);
+    void managerApi.winLaunch().catch((cause) => setActionError(errorMessage(cause)));
   };
 
   // Scene id; on change the hero remounts and GSAP replays the entrance. `lang`
@@ -415,10 +420,10 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             <span>{notice}</span>
           </div>
         ) : null}
-        {error ? (
+        {actionError ? (
           <div className="banner err">
             <Icon name="alert" />
-            <span>{error}</span>
+            <span>{actionError}</span>
           </div>
         ) : null}
 
@@ -443,11 +448,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
               <div className="headline shimmer">{t("home.checking")}</div>
             </>
           ) : kind === "error" ? (
-            <>
-              <Ring icon="alert" variant="danger" />
-              <div className="headline">{t("home.error.title")}</div>
-              <div className="desc">{t("home.error.sub")}</div>
-            </>
+            <ErrorHero message={checkError} />
           ) : kind === "none" ? (
             <>
               <Ring icon="download" variant="muted" />
@@ -613,6 +614,27 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
                 {t("home.recheck")}
               </button>
             </>
+          ) : null}
+          {/* "请稍后重试" must come with a way to retry. When Codex is installed
+              the user can still launch it despite the failed check. */}
+          {!rechecking && kind === "error" ? (
+            installed ? (
+              <>
+                <button className="btn primary big" onClick={onLaunch} disabled={busy !== null}>
+                  <CodexGlyph />
+                  {t("home.launch")}
+                </button>
+                <button className="btn ghost" onClick={check} disabled={busy !== null}>
+                  <Icon name="refresh" />
+                  {t("home.recheck")}
+                </button>
+              </>
+            ) : (
+              <button className="btn primary big" onClick={check} disabled={busy !== null}>
+                <Icon name="refresh" />
+                {t("home.recheck")}
+              </button>
+            )
           ) : null}
         </div>
 

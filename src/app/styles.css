@@ -607,6 +607,58 @@ input {
   max-width: 30ch;
 }
 
+/* "查看详情" disclosure under the error hero — keeps the raw engine/curl text
+   reachable for bug reports without letting it shout at every user. */
+.errdetails-toggle {
+  margin-top: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  color: var(--text-soft);
+  font: inherit;
+  font-size: var(--fs-caption);
+  padding: 2px 4px;
+  border-radius: var(--r-sm);
+  transition: color 0.16s var(--ease);
+}
+.errdetails-toggle:hover {
+  color: var(--text);
+}
+.errdetails-toggle::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 0.18s var(--ease);
+  margin-bottom: 3px;
+}
+.errdetails-toggle.open::after {
+  transform: rotate(-135deg);
+  margin-bottom: -2px;
+}
+.errdetails {
+  margin: 10px auto 0;
+  max-width: 34ch;
+  max-height: 140px;
+  overflow: auto;
+  text-align: start;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: var(--fs-caption);
+  line-height: 1.5;
+  color: var(--text-soft);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+}
+
 /* ── Buttons ─────────────────────────────────────────────────────────────── */
 .actions {
   display: flex;

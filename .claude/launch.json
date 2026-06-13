@@ -2,6 +2,12 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "manager",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--", "--port", "1420", "--strictPort"],
+      "port": 1420
+    },
+    {
       "name": "website",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "website", "run", "dev", "--", "--port", "5183", "--strictPort"],

@@ -96,6 +96,39 @@ export function errorCode(cause: unknown): string | null {
   return null;
 }
 
+// Connectivity failures (DNS / TLS / timeout / curl transport) all surface here
+// as opaque engine strings. Match transport-specific text, not the generic
+// "curl failed for ..." wrapper: curl exit 22 also uses that wrapper for HTTP
+// 404/500 responses, where the right guidance is "try later / switch source"
+// rather than "check your connection".
+const NETWORK_ERROR_MARKERS = [
+  "could not resolve host",
+  "connection timed out",
+  "operation timed out",
+  "failed to connect",
+  "connection reset",
+  "connection refused",
+  "network is unreachable",
+  "empty reply from server",
+  "appcast are unreachable",
+  "curl: (6)",
+  "curl: (7)",
+  "curl: (28)",
+  "curl: (35)",
+  "curl: (52)",
+  "curl: (56)",
+  "ssl/tls",
+  "schannel",
+];
+
+/** Heuristic: does this surfaced error message describe a connectivity failure
+ *  rather than a logic/verification error? Lets the UI show a calm "can't reach
+ *  the update server, retry" instead of a raw curl diagnostic. */
+export function isNetworkError(message: string): boolean {
+  const m = message.toLowerCase();
+  return NETWORK_ERROR_MARKERS.some((marker) => m.includes(marker));
+}
+
 // Browser-dev fallbacks (no Tauri runtime) — a simulated "one version behind"
 // so the UI renders meaningfully outside the desktop shell.
 const FALLBACK_PLAN: MacUpdateReport = {
