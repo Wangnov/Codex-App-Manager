@@ -24,7 +24,7 @@ tauri-build = { version = "2.6.2", features = [] }
 codex-mac-engine = { path = "../crates/codex-mac-engine" }
 codex-win-engine = { path = "../crates/codex-win-engine" }
 directories = "6.0.0"
-fs4 = "0.13"
+fs4 = "1.1"
 log = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
