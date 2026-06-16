@@ -13,3 +13,7 @@ pub fn settings_path() -> Option<PathBuf> {
 pub fn provenance_path() -> Option<PathBuf> {
     data_dir().map(|dir| dir.join("provenance.json"))
 }
+
+pub fn codex_home_dir() -> Option<PathBuf> {
+    directories::UserDirs::new().map(|dirs| dirs.home_dir().join(".codex"))
+}

@@ -704,6 +704,8 @@ input {
   align-items: center;
   justify-content: center;
   gap: 7px;
+  min-width: 0;
+  white-space: normal;
   box-shadow: var(--elev-1);
   transition: transform 0.09s var(--ease), background 0.18s var(--ease),
     border-color 0.18s var(--ease), box-shadow 0.2s var(--ease), opacity 0.18s;
@@ -729,6 +731,7 @@ input {
   padding: 13px 18px;
   font-size: var(--fs-lg);
   border-radius: var(--r-lg);
+  line-height: 1.25;
 }
 .btn.primary {
   background: linear-gradient(
@@ -1002,6 +1005,7 @@ button.row.danger:hover {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  min-width: 0;
   min-height: 28px;
   padding: 5px 10px;
   border: 1px solid var(--line-2);
@@ -1010,6 +1014,7 @@ button.row.danger:hover {
   color: var(--text-soft);
   font-size: var(--fs-label);
   font-weight: 600;
+  white-space: normal;
   box-shadow: var(--elev-1);
   transition: background 0.16s var(--ease), color 0.16s var(--ease),
     box-shadow 0.16s var(--ease);
@@ -1536,6 +1541,19 @@ button.row.danger:hover {
 }
 .sheet .row2 > * {
   flex: 1;
+  min-width: 0;
+  line-height: 1.25;
+  white-space: normal;
+}
+
+.data-path-row {
+  align-items: flex-start;
+  flex-direction: column;
+}
+.data-path-row .install-root-actions {
+  justify-content: flex-start;
+  gap: var(--space-xs);
+  flex-wrap: wrap;
 }
 
 /* ── Motion: Codex-style shimmer / glow / micro-interactions ──────────────── */
@@ -1757,7 +1775,7 @@ button.row.danger:hover {
    Most layout mirrors automatically via flexbox + logical properties. These
    are the few physical bits that need an explicit flip. */
 [dir="rtl"] .navback svg,
-[dir="rtl"] .row .chev {
+[dir="rtl"] .chev {
   transform: scaleX(-1);
 }
 [dir="rtl"] button.row:hover .chev {
@@ -1780,6 +1798,7 @@ button.row.danger:hover {
 [dir="rtl"] .pct,
 [dir="rtl"] .pctbig,
 [dir="rtl"] .install-root-value,
+[dir="rtl"] .path,
 [dir="rtl"] .sheet-path,
 [dir="rtl"] .input.mono {
   direction: ltr;

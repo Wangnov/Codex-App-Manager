@@ -1,50 +1,22 @@
-import { useCallback, useState } from "react";
+import { useCallback, useId, useState } from "react";
 
 import { errorMessage, managerApi, type ManagerUpdateAvailable } from "../../services/managerApi";
-import type { Diagnostics } from "../../shared/types";
 import { Icon, CodexMark } from "../icons";
 import { useI18n } from "../i18n";
 import { NavBar, Ring } from "../components";
+import { formatDiagnostics } from "../diagnostics";
+import { Sheet } from "../Sheet";
 
 const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? "0.0.0";
 const REPO_URL = "https://github.com/Wangnov/Codex-App-Manager";
-
-function formatDiagnostics(diagnostics: Diagnostics): string {
-  const health = diagnostics.configHealth;
-  const recentErrors = diagnostics.recentErrors.length
-    ? diagnostics.recentErrors.map((line) => `- ${line}`).join("\n")
-    : "- none";
-  return [
-    "# Codex App Manager diagnostics",
-    "",
-    `Generated: ${new Date(diagnostics.generatedAtUnix * 1000).toISOString()}`,
-    `Version: ${diagnostics.appVersion}`,
-    `Platform: ${diagnostics.os}/${diagnostics.arch}`,
-    `Update source: ${diagnostics.updateSource}`,
-    `Custom source host: ${diagnostics.customSourceHost ?? "none"}`,
-    `Windows install mode: ${diagnostics.windowsInstallMode ?? "n/a"}`,
-    `Install status: ${diagnostics.installStatus}`,
-    `Logs dir: ${diagnostics.logsDir ?? "n/a"}`,
-    "",
-    "## Config health",
-    `Settings: ${health.settingsStatus}`,
-    `Provenance: ${health.provenanceStatus}`,
-    `Unknown source: ${health.unknownSource ?? "none"}`,
-    `Detail: ${health.detail ?? "none"}`,
-    "",
-    "## Recent warnings/errors",
-    recentErrors,
-    "",
-    "## Log tail",
-    diagnostics.logTail || "(empty)",
-  ].join("\n");
-}
 
 export function About({ onBack }: { onBack: () => void }) {
   const { t } = useI18n();
   const [mgrBusy, setMgrBusy] = useState(false);
   const [mgrMsg, setMgrMsg] = useState<string | null>(null);
   const [pendingUpdate, setPendingUpdate] = useState<ManagerUpdateAvailable | null>(null);
+  const updateTitleId = useId();
+  const updateBodyId = useId();
 
   const closeUpdateConfirm = useCallback(() => {
     if (mgrBusy) return;
@@ -118,7 +90,7 @@ export function About({ onBack }: { onBack: () => void }) {
           relaunches the manager process and could interrupt a Codex op started
           back on the home screen. */}
       <NavBar title={t("settings.more.about")} onBack={onBack} disableBack={mgrBusy} />
-      <div className="scroll view">
+      <div className="scroll view" inert={pendingUpdate ? true : undefined}>
         <section className="hero" style={{ paddingTop: 8 }}>
           <div className="mark mark-lg" style={{ marginBottom: 14 }}>
             <CodexMark />
@@ -163,23 +135,28 @@ export function About({ onBack }: { onBack: () => void }) {
           </button>
         </div>
       </div>
-      {pendingUpdate ? (
-        <div className="scrim" onClick={closeUpdateConfirm}>
-          <div className="sheet" onClick={(e) => e.stopPropagation()}>
-            <Ring icon="arrowUp" />
-            <h3>{t("confirm.title", { version: pendingUpdate.version })}</h3>
-            <p>{t("about.mgrConfirmBody")}</p>
-            <div className="row2">
-              <button className="btn ghost" onClick={closeUpdateConfirm} disabled={mgrBusy}>
-                {t("confirm.cancel")}
-              </button>
-              <button className="btn primary" onClick={installManagerUpdate} disabled={mgrBusy}>
-                {mgrBusy ? t("progress.installing") : t("confirm.ok")}
-              </button>
-            </div>
-          </div>
+      <Sheet
+        open={Boolean(pendingUpdate)}
+        onDismiss={closeUpdateConfirm}
+        dismissable={!mgrBusy}
+        labelledBy={updateTitleId}
+        describedBy={updateBodyId}
+        initialFocus="dismiss"
+      >
+        <Ring icon="arrowUp" />
+        <h3 id={updateTitleId}>
+          {pendingUpdate ? t("confirm.title", { version: pendingUpdate.version }) : ""}
+        </h3>
+        <p id={updateBodyId}>{t("about.mgrConfirmBody")}</p>
+        <div className="row2">
+          <button className="btn ghost" onClick={closeUpdateConfirm} disabled={mgrBusy}>
+            {t("confirm.cancel")}
+          </button>
+          <button className="btn primary" onClick={installManagerUpdate} disabled={mgrBusy}>
+            {mgrBusy ? t("progress.installing") : t("confirm.ok")}
+          </button>
         </div>
-      ) : null}
+      </Sheet>
     </div>
   );
 }

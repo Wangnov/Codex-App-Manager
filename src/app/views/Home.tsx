@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Pause, XCircle } from "lucide-react";
 
@@ -24,6 +24,7 @@ import { WinHome } from "./WinHome";
 import { useCountUp } from "../useCountUp";
 import { mib, fmtDateTime } from "../format";
 import { useHomeMotion } from "../motion";
+import { Sheet } from "../Sheet";
 
 type Kind = "loading" | "error" | "none" | "idle" | "update" | "external" | "uptodate";
 type DownloadStopIntent = "pause" | "cancel";
@@ -68,6 +69,8 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [downloadStopBusy, setDownloadStopBusy] = useState(false);
   const downloadStopRef = useRef<DownloadStopIntent | null>(null);
   const scopeRef = useRef<HTMLDivElement>(null);
+  const confirmTitleId = useId();
+  const confirmBodyId = useId();
   // Smoothly roll the live download figures instead of snapping per event.
   const dlPctTarget = dl && dl.total > 0 ? Math.min(100, (dl.downloaded / dl.total) * 100) : 0;
   const dlPct = useCountUp(dlPctTarget);
@@ -524,7 +527,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         </button>
       </TopBar>
 
-      <div className="scroll" ref={scopeRef}>
+      <div className="scroll" ref={scopeRef} inert={confirmOpen ? true : undefined}>
         {perform ? (
           <ResultBanner
             tone={perform.rolledBack ? "err" : "ok"}
@@ -775,23 +778,25 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         ) : null}
       </div>
 
-      {confirmOpen && plan ? (
-        <div className="scrim" onClick={() => setConfirmOpen(false)}>
-          <div className="sheet" onClick={(e) => e.stopPropagation()}>
-            <Ring icon="arrowUp" className="" />
-            <h3>{t("confirm.title", { version: latestVersion })}</h3>
-            <p>{t("confirm.body")}</p>
-            <div className="row2">
-              <button className="btn ghost" onClick={() => setConfirmOpen(false)}>
-                {t("confirm.cancel")}
-              </button>
-              <button className="btn primary" onClick={runPerform}>
-                {t("confirm.ok")}
-              </button>
-            </div>
-          </div>
+      <Sheet
+        open={confirmOpen && Boolean(plan)}
+        onDismiss={() => setConfirmOpen(false)}
+        labelledBy={confirmTitleId}
+        describedBy={confirmBodyId}
+        initialFocus="primary"
+      >
+        <Ring icon="arrowUp" className="" />
+        <h3 id={confirmTitleId}>{t("confirm.title", { version: latestVersion })}</h3>
+        <p id={confirmBodyId}>{t("confirm.body")}</p>
+        <div className="row2">
+          <button className="btn ghost" onClick={() => setConfirmOpen(false)}>
+            {t("confirm.cancel")}
+          </button>
+          <button className="btn primary" onClick={runPerform}>
+            {t("confirm.ok")}
+          </button>
         </div>
-      ) : null}
+      </Sheet>
     </div>
   );
 }

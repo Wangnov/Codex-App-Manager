@@ -46,11 +46,26 @@ describe("isNetworkError", () => {
 
 describe("diagnostics API", () => {
   it("returns browser fallbacks without invoking Tauri", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const diagnostics = await managerApi.getDiagnostics();
 
     expect(diagnostics.os).toBe("browser");
     await expect(managerApi.openLogsDir()).resolves.toBeUndefined();
+    await expect(managerApi.openCodexHome()).resolves.toBeUndefined();
+    await expect(
+      managerApi.reportFrontendError({
+        kind: "test",
+        message: "boom",
+        stack: null,
+        componentStack: null,
+      }),
+    ).resolves.toBeUndefined();
     expect(invokeMock).not.toHaveBeenCalled();
+    expect(consoleError).toHaveBeenCalledWith(
+      "[frontend]",
+      expect.objectContaining({ kind: "test", message: "boom" }),
+    );
+    consoleError.mockRestore();
   });
 
   it("invokes diagnostics commands inside Tauri", async () => {
@@ -75,11 +90,33 @@ describe("diagnostics API", () => {
       logTail: "",
       generatedAtUnix: 1,
     };
-    invokeMock.mockResolvedValueOnce(diagnostics).mockResolvedValueOnce(undefined);
+    invokeMock
+      .mockResolvedValueOnce(diagnostics)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined);
 
     await expect(managerApi.getDiagnostics()).resolves.toEqual(diagnostics);
     await expect(managerApi.openLogsDir()).resolves.toBeUndefined();
+    await expect(managerApi.openCodexHome()).resolves.toBeUndefined();
+    await expect(
+      managerApi.reportFrontendError({
+        kind: "test",
+        message: "boom",
+        stack: null,
+        componentStack: null,
+      }),
+    ).resolves.toBeUndefined();
     expect(invokeMock).toHaveBeenNthCalledWith(1, "get_diagnostics");
     expect(invokeMock).toHaveBeenNthCalledWith(2, "open_logs_dir");
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "open_codex_home");
+    expect(invokeMock).toHaveBeenNthCalledWith(4, "log_frontend_error", {
+      payload: {
+        kind: "test",
+        message: "boom",
+        stack: null,
+        componentStack: null,
+      },
+    });
   });
 });

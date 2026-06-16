@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use serde::Deserialize;
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_dialog::DialogExt;
@@ -228,6 +229,15 @@ fn path_is_equal_or_child(path: &Path, root: &Path) -> bool {
     let path = path_key(path);
     let root = path_key(root);
     path == root || path.starts_with(&format!("{root}\\"))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontendErrorPayload {
+    kind: String,
+    message: String,
+    stack: Option<String>,
+    component_stack: Option<String>,
 }
 
 #[cfg(windows)]
@@ -939,12 +949,11 @@ pub fn open_logs_dir(app: tauri::AppHandle) -> Result<(), CommandError> {
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.display();
     log::info!("open logs dir path={path}");
-    open_logs_dir_platform(&dir)
-        .map_err(|e| AppError::Internal(format!("打开日志目录失败: {e}")).into())
+    open_dir_platform(&dir).map_err(|e| AppError::Internal(format!("打开日志目录失败: {e}")).into())
 }
 
 #[cfg(target_os = "macos")]
-fn open_logs_dir_platform(dir: &Path) -> Result<(), String> {
+fn open_dir_platform(dir: &Path) -> Result<(), String> {
     std::process::Command::new("/usr/bin/open")
         .arg(dir)
         .spawn()
@@ -953,7 +962,7 @@ fn open_logs_dir_platform(dir: &Path) -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
-fn open_logs_dir_platform(dir: &Path) -> Result<(), String> {
+fn open_dir_platform(dir: &Path) -> Result<(), String> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
     use std::ptr::{null, null_mut};
@@ -980,12 +989,46 @@ fn open_logs_dir_platform(dir: &Path) -> Result<(), String> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn open_logs_dir_platform(dir: &Path) -> Result<(), String> {
+fn open_dir_platform(dir: &Path) -> Result<(), String> {
     std::process::Command::new("xdg-open")
         .arg(dir)
         .spawn()
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn open_codex_home() -> Result<(), CommandError> {
+    let dir = paths::codex_home_dir()
+        .ok_or_else(|| AppError::Internal("无法定位 Codex 数据目录".to_string()))?;
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.display();
+    log::info!("open Codex home path={path}");
+    open_dir_platform(&dir)
+        .map_err(|e| AppError::Internal(format!("打开 Codex 数据目录失败: {e}")).into())
+}
+
+#[tauri::command]
+pub fn log_frontend_error(payload: FrontendErrorPayload) {
+    let kind = single_line(&payload.kind);
+    let message = single_line(&payload.message);
+    let stack = payload
+        .stack
+        .as_deref()
+        .map(single_line)
+        .unwrap_or_else(|| "none".to_string());
+    let component_stack = payload
+        .component_stack
+        .as_deref()
+        .map(single_line)
+        .unwrap_or_else(|| "none".to_string());
+    log::error!(
+        "frontend error kind={kind} message={message} stack={stack} component_stack={component_stack}"
+    );
+}
+
+fn single_line(value: &str) -> String {
+    value.replace('\r', "\\r").replace('\n', "\\n")
 }
 
 fn validate_external_http_url(url: &str) -> Result<(), AppError> {

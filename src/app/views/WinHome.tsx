@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Pause, XCircle } from "lucide-react";
 
@@ -22,6 +22,7 @@ import { Ring, TopBar, ResultBanner, ErrorHero } from "../components";
 import { useCountUp } from "../useCountUp";
 import { mib, fmtDateTime } from "../format";
 import { useHomeMotion } from "../motion";
+import { Sheet } from "../Sheet";
 
 function samePath(a: string, b: string): boolean {
   const norm = (value: string) =>
@@ -60,6 +61,10 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [downloadStopBusy, setDownloadStopBusy] = useState(false);
   const downloadStopRef = useRef<DownloadStopIntent | null>(null);
   const scopeRef = useRef<HTMLDivElement>(null);
+  const confirmTitleId = useId();
+  const confirmBodyId = useId();
+  const installDirTitleId = useId();
+  const installDirBodyId = useId();
   // Smoothly roll the live download figures instead of snapping per event.
   const dlPctTarget = dl && dl.total > 0 ? Math.min(100, (dl.downloaded / dl.total) * 100) : 0;
   const dlPct = useCountUp(dlPctTarget);
@@ -455,7 +460,11 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         </button>
       </TopBar>
 
-      <div className="scroll" ref={scopeRef}>
+      <div
+        className="scroll"
+        ref={scopeRef}
+        inert={confirmOpen || installDirOpen ? true : undefined}
+      >
         {perform ? (
           <ResultBanner
             tone={perform.success ? "ok" : "err"}
@@ -712,58 +721,55 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         ) : null}
       </div>
 
-      {confirmOpen && plan ? (
-        <div className="scrim" onClick={() => setConfirmOpen(false)}>
-          <div className="sheet" onClick={(e) => e.stopPropagation()}>
-            <Ring icon="arrowUp" />
-            <h3>{t("confirm.title", { version: plan.latestVersion })}</h3>
-            <p>
-              {t("win.confirm.body")}
-              <br />
-              {routeNote}
-            </p>
-            <div className="row2">
-              <button className="btn ghost" onClick={() => setConfirmOpen(false)}>
-                {t("confirm.cancel")}
-              </button>
-              <button className="btn primary" onClick={() => runPerform("perform")}>
-                {t("confirm.ok")}
-              </button>
-            </div>
-          </div>
+      <Sheet
+        open={confirmOpen && Boolean(plan)}
+        onDismiss={() => setConfirmOpen(false)}
+        labelledBy={confirmTitleId}
+        describedBy={confirmBodyId}
+        initialFocus="primary"
+      >
+        <Ring icon="arrowUp" />
+        <h3 id={confirmTitleId}>
+          {plan ? t("confirm.title", { version: plan.latestVersion }) : ""}
+        </h3>
+        <p id={confirmBodyId}>
+          {t("win.confirm.body")}
+          <br />
+          {routeNote}
+        </p>
+        <div className="row2">
+          <button className="btn ghost" onClick={() => setConfirmOpen(false)}>
+            {t("confirm.cancel")}
+          </button>
+          <button className="btn primary" onClick={() => runPerform("perform")}>
+            {t("confirm.ok")}
+          </button>
         </div>
-      ) : null}
+      </Sheet>
 
-      {installDirOpen ? (
-        <div className="scrim" onClick={() => (installDirBusy ? undefined : setInstallDirOpen(false))}>
-          <div className="sheet" onClick={(e) => e.stopPropagation()}>
-            <Ring icon="download" />
-            <h3>{t("win.installDir.title")}</h3>
-            <p>{t("win.installDir.body")}</p>
-            <div className="sheet-path">{settings.installRoot}</div>
-            <div className="row2">
-              <button
-                className="btn ghost"
-                onClick={installToCurrentRoot}
-                disabled={installDirBusy}
-              >
-                {t(
-                  installRootIsDefault
-                    ? "win.installDir.useDefault"
-                    : "win.installDir.useCurrent",
-                )}
-              </button>
-              <button
-                className="btn primary"
-                onClick={browseInstallRoot}
-                disabled={installDirBusy}
-              >
-                {t("win.installDir.browse")}
-              </button>
-            </div>
-          </div>
+      <Sheet
+        open={installDirOpen}
+        onDismiss={() => setInstallDirOpen(false)}
+        dismissable={!installDirBusy}
+        labelledBy={installDirTitleId}
+        describedBy={installDirBodyId}
+        initialFocus="primary"
+      >
+        <Ring icon="download" />
+        <h3 id={installDirTitleId}>{t("win.installDir.title")}</h3>
+        <p id={installDirBodyId}>{t("win.installDir.body")}</p>
+        <div className="sheet-path">{settings.installRoot}</div>
+        <div className="row2">
+          <button className="btn ghost" onClick={installToCurrentRoot} disabled={installDirBusy}>
+            {t(
+              installRootIsDefault ? "win.installDir.useDefault" : "win.installDir.useCurrent",
+            )}
+          </button>
+          <button className="btn primary" onClick={browseInstallRoot} disabled={installDirBusy}>
+            {t("win.installDir.browse")}
+          </button>
         </div>
-      ) : null}
+      </Sheet>
     </div>
   );
 }

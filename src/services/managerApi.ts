@@ -37,6 +37,13 @@ export interface ManagerUpdateAvailable {
   discard: () => Promise<void>;
 }
 
+export interface FrontendErrorPayload {
+  kind: string;
+  message: string;
+  stack: string | null;
+  componentStack: string | null;
+}
+
 function localSettings(): AppSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_LS);
@@ -436,6 +443,21 @@ export const managerApi = {
       return Promise.resolve();
     }
     return invoke<void>("open_logs_dir");
+  },
+  openCodexHome(): Promise<void> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve();
+    }
+    return invoke<void>("open_codex_home");
+  },
+  reportFrontendError(payload: FrontendErrorPayload): Promise<void> {
+    if (!hasTauriRuntime()) {
+      console.error("[frontend]", payload);
+      return Promise.resolve();
+    }
+    return invoke<void>("log_frontend_error", { payload }).catch((cause) => {
+      console.error("[frontend]", payload, cause);
+    });
   },
 
   // Settings (update source + general). The backend persists them so the source

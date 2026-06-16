@@ -1,6 +1,8 @@
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
-import { dirOf, LANGS, matchTag, pickLang } from "./i18n";
+import { CATALOG, dirOf, I18nProvider, LANGS, matchTag, pickLang, useI18n } from "./i18n";
 
 describe("matchTag", () => {
   it("maps traditional-Chinese regions and scripts to zh-TW", () => {
@@ -64,5 +66,48 @@ describe("dirOf", () => {
 
   it("keeps exactly one RTL language in the catalogue", () => {
     expect(LANGS.filter((l) => l.dir === "rtl").map((l) => l.code)).toEqual(["ar"]);
+  });
+});
+
+function placeholders(value: string): string[] {
+  return Array.from(value.matchAll(/\{(\w+)\}/g), (match) => match[1]).sort();
+}
+
+describe("catalog placeholders", () => {
+  it("keeps placeholder sets aligned with English in every language", () => {
+    for (const key of Object.keys(CATALOG.en) as Array<keyof typeof CATALOG.en>) {
+      const expected = placeholders(CATALOG.en[key]);
+      for (const lang of LANGS.map((item) => item.code)) {
+        expect(placeholders(CATALOG[lang][key]), `${lang}:${key}`).toEqual(expected);
+      }
+    }
+  });
+});
+
+function DirProbe() {
+  const { setLang } = useI18n();
+  return (
+    <>
+      <button onClick={() => setLang("ar")}>Arabic</button>
+      <button onClick={() => setLang("en")}>English</button>
+    </>
+  );
+}
+
+describe("I18nProvider", () => {
+  it("updates document direction for RTL and LTR languages", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("cam.lang", "en");
+    render(
+      <I18nProvider>
+        <DirProbe />
+      </I18nProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Arabic" }));
+    expect(document.documentElement.dir).toBe("rtl");
+
+    await user.click(screen.getByRole("button", { name: "English" }));
+    expect(document.documentElement.dir).toBe("ltr");
   });
 });

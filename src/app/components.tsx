@@ -1,10 +1,11 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 
 import { isNetworkError, managerApi } from "../services/managerApi";
 import { Icon, type IconName, CodexMark } from "./icons";
 import { useI18n } from "./i18n";
+import { Sheet } from "./Sheet";
 
 function isTauri(): boolean {
   return (
@@ -64,6 +65,8 @@ function MinimizeButton() {
 export function QuitConfirm() {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  const titleId = useId();
+  const bodyId = useId();
 
   useEffect(() => {
     let un = () => {};
@@ -78,29 +81,33 @@ export function QuitConfirm() {
     };
   }, []);
 
-  if (!open) return null;
   return (
-    <div className="quit-scrim" onClick={() => setOpen(false)}>
-      <div className="sheet" onClick={(e) => e.stopPropagation()}>
-        <Ring icon="info" variant="amber" />
-        <h3>{t("close.confirm.title")}</h3>
-        <p>{t("close.confirm.body")}</p>
-        <div className="row2">
-          <button className="btn ghost" onClick={() => setOpen(false)}>
-            {t("confirm.cancel")}
-          </button>
-          <button
-            className="btn primary"
-            onClick={() => {
-              setOpen(false);
-              void managerApi.confirmQuit();
-            }}
-          >
-            {t("close.confirm.ok")}
-          </button>
-        </div>
+    <Sheet
+      open={open}
+      onDismiss={() => setOpen(false)}
+      scrimClass="quit-scrim"
+      labelledBy={titleId}
+      describedBy={bodyId}
+      initialFocus="dismiss"
+    >
+      <Ring icon="info" variant="amber" />
+      <h3 id={titleId}>{t("close.confirm.title")}</h3>
+      <p id={bodyId}>{t("close.confirm.body")}</p>
+      <div className="row2">
+        <button className="btn ghost" onClick={() => setOpen(false)}>
+          {t("confirm.cancel")}
+        </button>
+        <button
+          className="btn primary"
+          onClick={() => {
+            setOpen(false);
+            void managerApi.confirmQuit();
+          }}
+        >
+          {t("close.confirm.ok")}
+        </button>
       </div>
-    </div>
+    </Sheet>
   );
 }
 

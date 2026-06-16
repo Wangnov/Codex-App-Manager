@@ -148,6 +148,8 @@ pub fn run() {
             commands::win_uninstall,
             commands::get_diagnostics,
             commands::open_logs_dir,
+            commands::open_codex_home,
+            commands::log_frontend_error,
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]

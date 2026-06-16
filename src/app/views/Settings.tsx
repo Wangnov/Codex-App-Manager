@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 
 import { errorMessage, managerApi } from "../../services/managerApi";
 import type { AppSettings, UpdateSourceKind, WindowsInstallMode } from "../../shared/types";
@@ -8,6 +8,8 @@ import { useI18n, LANGS, type TKey } from "../i18n";
 import { useTheme, type ThemeMode } from "../theme";
 import { NavBar, Toggle } from "../components";
 import { isWindows } from "../platform";
+import { Sheet } from "../Sheet";
+import { useSettingsSaver } from "./useSettingsSaver";
 
 const SOURCES: { kind: UpdateSourceKind; label: TKey; desc: TKey | "" }[] = [
   { kind: "auto", label: "settings.source.auto", desc: "settings.source.autoDesc" },
@@ -49,46 +51,46 @@ export function Settings({
   const { t, lang, setLang } = useI18n();
   const { mode, setMode } = useTheme();
   const win = isWindows();
-  const [s, setS] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const {
+    settings: s,
+    status: saveStatus,
+    error: saveError,
+    update,
+    retry,
+    reset,
+    setDraft,
+  } = useSettingsSaver(DEFAULT_SETTINGS);
   const [defaultInstallRoot, setDefaultInstallRoot] = useState(DEFAULT_SETTINGS.installRoot);
   const [autostart, setAutostart] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [commandError, setCommandError] = useState<string | null>(null);
   const [langSheet, setLangSheet] = useState(false);
+  const langTitleId = useId();
 
   useEffect(() => {
-    void managerApi.getSettings().then(setS).catch(() => undefined);
+    void managerApi.getSettings().then(reset).catch(() => undefined);
     void managerApi.getAutostart().then(setAutostart).catch(() => undefined);
     if (win) {
       void managerApi.winDefaultInstallRoot().then(setDefaultInstallRoot).catch(() => undefined);
     }
-  }, [win]);
-
-  const save = (next: AppSettings) => {
-    setError(null);
-    setS(next);
-    void managerApi
-      .setSettings(next)
-      .then(setS)
-      .catch((cause) => setError(errorMessage(cause)));
-  };
+  }, [reset, win]);
 
   const pickInstallRoot = async () => {
-    setError(null);
+    setCommandError(null);
     try {
       const path = await managerApi.winPickInstallDir();
       if (!path) return;
-      setS(await managerApi.winSetInstallRoot(path));
+      reset(await managerApi.winSetInstallRoot(path));
     } catch (cause) {
-      setError(errorMessage(cause));
+      setCommandError(errorMessage(cause));
     }
   };
 
   const resetInstallRoot = async () => {
-    setError(null);
+    setCommandError(null);
     try {
-      setS(await managerApi.winResetInstallRoot());
+      reset(await managerApi.winResetInstallRoot());
     } catch (cause) {
-      setError(errorMessage(cause));
+      setCommandError(errorMessage(cause));
     }
   };
 
@@ -108,15 +110,30 @@ export function Settings({
     ? "settings.windows.portableDescDefault"
     : "settings.windows.portableDescCustom";
   const availableSources = SOURCES.filter((src) => !(win && src.kind === "official"));
+  const showingSaveError = !commandError && Boolean(saveError);
+  const error = commandError ?? saveError;
 
   return (
     <div className="pop">
       <NavBar title={t("settings.title")} onBack={onBack} />
-      <div className="scroll view">
+      <div className="scroll view" inert={langSheet ? true : undefined}>
+        {saveStatus === "saving" ? (
+          <div className="banner info" role="status">
+            <Icon name="loader" />
+            <span>{t("settings.saving")}</span>
+          </div>
+        ) : null}
         {error ? (
           <div className="banner err">
             <Icon name="alert" />
-            <span>{error}</span>
+            <span>
+              {showingSaveError ? `${t("settings.saveError")}: ${error}` : error}
+            </span>
+            {showingSaveError ? (
+              <button className="linkbtn" onClick={retry}>
+                {t("settings.retry")}
+              </button>
+            ) : null}
           </div>
         ) : null}
 
@@ -129,7 +146,10 @@ export function Settings({
                 key={src.kind}
                 className="row"
                 aria-checked={s.source === src.kind}
-                onClick={() => save({ ...s, source: src.kind })}
+                onClick={() => {
+                  setCommandError(null);
+                  update({ ...s, source: src.kind });
+                }}
               >
                 <span className="radio" />
                 <span className="rtext">
@@ -151,8 +171,11 @@ export function Settings({
                   className="input mono"
                   value={s.customUrl}
                   placeholder={t("settings.source.customPlaceholder")}
-                  onChange={(e) => setS({ ...s, customUrl: e.target.value })}
-                  onBlur={() => save(s)}
+                  onChange={(e) => setDraft({ ...s, customUrl: e.target.value })}
+                  onBlur={() => {
+                    setCommandError(null);
+                    update(s);
+                  }}
                 />
               </div>
             ) : null}
@@ -168,7 +191,10 @@ export function Settings({
                   key={mode.kind}
                   className="row"
                   aria-checked={s.windowsInstallMode === mode.kind}
-                  onClick={() => save({ ...s, windowsInstallMode: mode.kind })}
+                  onClick={() => {
+                    setCommandError(null);
+                    update({ ...s, windowsInstallMode: mode.kind });
+                  }}
                 >
                   <span className="radio" />
                   <span className="rtext">
@@ -230,13 +256,25 @@ export function Settings({
               <span className="rtext">
                 <span className="rtitle">{t("settings.general.autoCheck")}</span>
               </span>
-              <Toggle checked={s.autoCheck} onChange={(v) => save({ ...s, autoCheck: v })} />
+              <Toggle
+                checked={s.autoCheck}
+                onChange={(v) => {
+                  setCommandError(null);
+                  update({ ...s, autoCheck: v });
+                }}
+              />
             </div>
             <div className="row">
               <span className="rtext">
                 <span className="rtitle">{t("settings.general.askBefore")}</span>
               </span>
-              <Toggle checked={s.askBefore} onChange={(v) => save({ ...s, askBefore: v })} />
+              <Toggle
+                checked={s.askBefore}
+                onChange={(v) => {
+                  setCommandError(null);
+                  update({ ...s, askBefore: v });
+                }}
+              />
             </div>
             <div className="row">
               <span className="rtext">
@@ -251,7 +289,10 @@ export function Settings({
               </span>
               <Toggle
                 checked={s.confirmClose}
-                onChange={(v) => save({ ...s, confirmClose: v })}
+                onChange={(v) => {
+                  setCommandError(null);
+                  update({ ...s, confirmClose: v });
+                }}
               />
             </div>
           </div>
@@ -317,28 +358,29 @@ export function Settings({
         </div>
       </div>
 
-      {langSheet ? (
-        <div className="scrim" onClick={() => setLangSheet(false)}>
-          <div className="sheet" onClick={(e) => e.stopPropagation()}>
-            <h3>{t("settings.appearance.language")}</h3>
-            <div className="langgrid" style={{ marginTop: 14 }}>
-              {LANGS.map((l) => (
-                <button
-                  key={l.code}
-                  lang={l.code}
-                  aria-selected={lang === l.code}
-                  onClick={() => {
-                    setLangSheet(false);
-                    setLang(l.code);
-                  }}
-                >
-                  {l.native}
-                </button>
-              ))}
-            </div>
-          </div>
+      <Sheet
+        open={langSheet}
+        onDismiss={() => setLangSheet(false)}
+        labelledBy={langTitleId}
+        initialFocus="first"
+      >
+        <h3 id={langTitleId}>{t("settings.appearance.language")}</h3>
+        <div className="langgrid" style={{ marginTop: 14 }}>
+          {LANGS.map((l) => (
+            <button
+              key={l.code}
+              lang={l.code}
+              aria-selected={lang === l.code}
+              onClick={() => {
+                setLangSheet(false);
+                setLang(l.code);
+              }}
+            >
+              {l.native}
+            </button>
+          ))}
         </div>
-      ) : null}
+      </Sheet>
     </div>
   );
 }
