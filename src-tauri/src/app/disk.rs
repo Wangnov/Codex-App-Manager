@@ -81,6 +81,7 @@ fn platform_available_space(_path: &Path) -> Result<Option<u64>, AppError> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::available_space;
 
     #[cfg(unix)]
