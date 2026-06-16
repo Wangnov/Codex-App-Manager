@@ -1,7 +1,8 @@
 use serde::Serialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ConfigStatus {
+    #[default]
     Ok,
     Recovered,
     Corrupt,
@@ -14,12 +15,6 @@ impl ConfigStatus {
             Self::Recovered => "recovered",
             Self::Corrupt => "corrupt",
         }
-    }
-}
-
-impl Default for ConfigStatus {
-    fn default() -> Self {
-        Self::Ok
     }
 }
 

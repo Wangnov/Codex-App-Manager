@@ -306,7 +306,7 @@ fn human_bytes(bytes: u64) -> String {
 }
 
 fn preflight_mac_disk(plan: &UpdatePlan) -> Result<(), AppError> {
-    preflight_mac_disk_with_available(plan, |path| disk::available_space(path))
+    preflight_mac_disk_with_available(plan, disk::available_space)
 }
 
 fn preflight_mac_disk_with_available<F>(plan: &UpdatePlan, available: F) -> Result<(), AppError>

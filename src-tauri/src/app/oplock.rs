@@ -1,6 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -49,20 +49,18 @@ pub enum OperationError {
 
 pub struct OperationManager {
     inner: Arc<Mutex<Inner>>,
-    lock_path: PathBuf,
     stale_after_secs: u64,
 }
 
 struct Inner {
     active: Option<ActiveOp>,
+    lock_file: Result<File, String>,
 }
 
 struct ActiveOp {
     token: String,
     kind: OperationKind,
     started_unix: u64,
-    #[allow(dead_code)]
-    lock_file: File,
     detached: bool,
 }
 
@@ -93,6 +91,7 @@ impl Drop for OperationGuard {
             .as_ref()
             .is_some_and(|active| active.token == self.token.0)
         {
+            let _ = OperationManager::unlock_lock_file(&mut inner);
             inner.active.take();
         }
     }
@@ -104,9 +103,12 @@ impl OperationManager {
     }
 
     fn new_with_stale_after(lock_path: PathBuf, stale_after_secs: u64) -> Self {
+        let lock_file = Self::open_lock_file(&lock_path);
         Self {
-            inner: Arc::new(Mutex::new(Inner { active: None })),
-            lock_path,
+            inner: Arc::new(Mutex::new(Inner {
+                active: None,
+                lock_file,
+            })),
             stale_after_secs,
         }
     }
@@ -129,13 +131,14 @@ impl OperationManager {
             .inner
             .lock()
             .map_err(|_| OperationError::Lock("operation mutex poisoned".to_string()))?;
-        self.reclaim_stale_detached(&mut inner);
+        self.reclaim_stale_detached(&mut inner)?;
         let Some(active) = inner.active.as_ref() else {
             return Err(OperationError::InvalidToken);
         };
         if active.token != token.0 {
             return Err(OperationError::InvalidToken);
         }
+        Self::unlock_lock_file(&mut inner)?;
         inner.active.take();
         Ok(())
     }
@@ -145,7 +148,7 @@ impl OperationManager {
             .inner
             .lock()
             .map_err(|_| OperationError::Lock("operation mutex poisoned".to_string()))?;
-        self.reclaim_stale_detached(&mut inner);
+        self.reclaim_stale_detached(&mut inner)?;
         match inner.active.as_ref() {
             Some(active) if active.token == token.0 => Ok(()),
             _ => Err(OperationError::InvalidToken),
@@ -156,7 +159,7 @@ impl OperationManager {
         let Ok(mut inner) = self.inner.lock() else {
             return false;
         };
-        self.reclaim_stale_detached(&mut inner);
+        let _ = self.reclaim_stale_detached(&mut inner);
         inner.active.is_some()
     }
 
@@ -169,40 +172,50 @@ impl OperationManager {
             .inner
             .lock()
             .map_err(|_| OperationError::Lock("operation mutex poisoned".to_string()))?;
-        let stale = self.take_stale_detached(&mut inner);
+        self.reclaim_stale_detached(&mut inner)?;
         if let Some(active) = inner.active.as_ref() {
             return Err(OperationError::BusySameProcess(active.kind.as_str()));
         }
 
-        let mut lock_file = match stale {
-            Some(active) => active.lock_file,
-            None => self.open_and_lock()?,
-        };
         let started_unix = now_unix();
         let token = OperationToken(generate_token(started_unix));
-        let _ = write_lock_diagnostics(&mut lock_file, kind, &token, started_unix);
+        {
+            let lock_file = Self::lock_file_mut(&mut inner)?;
+            Self::try_lock_file(lock_file)?;
+            let _ = write_lock_diagnostics(lock_file, kind, &token, started_unix);
+        }
         inner.active = Some(ActiveOp {
             token: token.0.clone(),
             kind,
             started_unix,
-            lock_file,
             detached,
         });
         Ok(token)
     }
 
-    fn open_and_lock(&self) -> Result<File, OperationError> {
-        if let Some(parent) = self.lock_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| OperationError::Lock(e.to_string()))?;
+    fn open_lock_file(lock_path: &Path) -> Result<File, String> {
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        let file = OpenOptions::new()
+        OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
-            .open(&self.lock_path)
-            .map_err(|e| OperationError::Lock(e.to_string()))?;
+            .open(lock_path)
+            .map_err(|e| e.to_string())
+    }
+
+    fn lock_file_mut(inner: &mut Inner) -> Result<&mut File, OperationError> {
+        inner
+            .lock_file
+            .as_mut()
+            .map_err(|err| OperationError::Lock(err.clone()))
+    }
+
+    fn try_lock_file(file: &File) -> Result<(), OperationError> {
         match file.try_lock_exclusive() {
-            Ok(true) => Ok(file),
+            Ok(true) => Ok(()),
             Ok(false) => Err(OperationError::BusyOtherProcess),
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
                 Err(OperationError::BusyOtherProcess)
@@ -211,21 +224,25 @@ impl OperationManager {
         }
     }
 
-    fn reclaim_stale_detached(&self, inner: &mut Inner) {
-        let _ = self.take_stale_detached(inner);
+    fn unlock_lock_file(inner: &mut Inner) -> Result<(), OperationError> {
+        let file = Self::lock_file_mut(inner)?;
+        file.unlock()
+            .map_err(|err| OperationError::Lock(err.to_string()))
     }
 
-    fn take_stale_detached(&self, inner: &mut Inner) -> Option<ActiveOp> {
-        let Some(active) = inner.active.as_ref() else {
-            return None;
-        };
-        if active.detached
-            && now_unix().saturating_sub(active.started_unix) >= self.stale_after_secs
-        {
-            inner.active.take()
-        } else {
-            None
+    fn reclaim_stale_detached(&self, inner: &mut Inner) -> Result<(), OperationError> {
+        if self.has_stale_detached(inner) {
+            Self::unlock_lock_file(inner)?;
+            inner.active.take();
         }
+        Ok(())
+    }
+
+    fn has_stale_detached(&self, inner: &Inner) -> bool {
+        inner.active.as_ref().is_some_and(|active| {
+            active.detached
+                && now_unix().saturating_sub(active.started_unix) >= self.stale_after_secs
+        })
     }
 }
 

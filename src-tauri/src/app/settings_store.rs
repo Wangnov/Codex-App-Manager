@@ -171,7 +171,7 @@ impl RawAppSettings {
 fn append_detail(health: &mut StoreLoadHealth, detail: String) {
     match &mut health.detail {
         Some(existing) => {
-            existing.push_str("；");
+            existing.push('；');
             existing.push_str(&detail);
         }
         None => health.detail = Some(detail),
@@ -291,8 +291,10 @@ mod tests {
 
     #[test]
     fn app_settings_serializes_source_as_lowercase_string() {
-        let mut settings = AppSettings::default();
-        settings.source = UpdateSource::Custom;
+        let settings = AppSettings {
+            source: UpdateSource::Custom,
+            ..AppSettings::default()
+        };
         let value = serde_json::to_value(settings).unwrap();
         assert_eq!(value["source"], "custom");
     }
