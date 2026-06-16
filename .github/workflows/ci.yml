@@ -63,3 +63,75 @@ jobs:
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --manifest-path src-tauri/Cargo.toml --workspace
+
+  audit:
+    name: Audit (report)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+      - run: npm ci
+      - name: npm audit
+        run: npm audit --audit-level=high
+      - name: Install cargo audit tools
+        run: cargo install cargo-audit cargo-deny --locked
+      - name: cargo audit
+        run: cargo audit --file src-tauri/Cargo.lock
+      - name: cargo deny
+        run: cargo deny --manifest-path src-tauri/Cargo.toml check
+
+  worker-test:
+    name: Cloudflare worker tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          persist-credentials: false
+
+      - name: Detect Cloudflare changes
+        id: changes
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ] && [ -n "$BASE_SHA" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_SHA"
+            git diff --name-only "$BASE_SHA" HEAD > changed-files.txt
+          elif [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            git fetch --no-tags --depth=1 origin "$BEFORE_SHA" || true
+            git diff --name-only "$BEFORE_SHA" HEAD > changed-files.txt || git show --name-only --format= HEAD > changed-files.txt
+          else
+            git show --name-only --format= HEAD > changed-files.txt
+          fi
+
+          if grep -q '^cloudflare/' changed-files.txt; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No cloudflare/** changes; skipping worker tests."
+          fi
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
+        if: steps.changes.outputs.run == 'true'
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: cloudflare/manager-download-router/package-lock.json
+
+      - name: Install worker dependencies
+        if: steps.changes.outputs.run == 'true'
+        working-directory: cloudflare/manager-download-router
+        run: npm ci
+
+      - name: Run worker tests
+        if: steps.changes.outputs.run == 'true'
+        working-directory: cloudflare/manager-download-router
+        run: npm test

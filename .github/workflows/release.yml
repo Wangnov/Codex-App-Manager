@@ -27,6 +27,9 @@ permissions:
 jobs:
   build:
     if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
+    # Repo admins should configure the release environment and copy signing
+    # secrets there before moving them off repo-level Actions secrets.
+    environment: release
     permissions:
       contents: read
     strategy:
@@ -194,14 +197,23 @@ jobs:
   release:
     if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
     needs: build
+    # Repo admins should configure the release environment and copy mirror
+    # secrets there before moving them off repo-level Actions secrets.
+    environment: release
     permissions:
       contents: write
       actions: write # dispatch winget.yml after publishing (release events from GITHUB_TOKEN don't cascade)
+      id-token: write # provenance attestations
+      attestations: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
           persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
+        with:
+          node-version: 20
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
         with:
@@ -209,16 +221,18 @@ jobs:
           merge-multiple: true
 
       - name: Generate updater manifest (latest.json)
+        env:
+          ALLOW_PARTIAL_RELEASE: ${{ vars.ALLOW_PARTIAL_RELEASE }}
         run: node scripts/gen-updater-manifest.mjs "${{ github.ref_name }}" dist
 
-      # Mirror the release to the CDN so in-app self-update works without GitHub
-      # (slow/blocked for the CN audience). Skips pre-releases so a -rc tag never
-      # overwrites the mirror's single latest.json. For stable tags this runs
-      # before GitHub Release publication, so missing/failed R2 sync blocks the
-      # release instead of leaving the public release ahead of the updater mirror.
-      - name: Sync to CDN mirror (R2 + IHEP S3)
+      # Stable releases mirror in two phases: stage immutable versioned assets
+      # before GitHub Release publication, then promote latest.json only after
+      # the GitHub Release succeeds. Pre-releases still skip the mirror entirely.
+      - name: Stage CDN mirror candidate (R2 + IHEP S3)
+        id: mirror_stage
         if: ${{ !contains(github.ref_name, '-') }}
         env:
+          MIRROR_PHASE: stage
           MANAGER_R2_S3_ENDPOINT: ${{ secrets.MANAGER_R2_S3_ENDPOINT }}
           MANAGER_R2_ACCESS_KEY_ID: ${{ secrets.MANAGER_R2_ACCESS_KEY_ID }}
           MANAGER_R2_SECRET_ACCESS_KEY: ${{ secrets.MANAGER_R2_SECRET_ACCESS_KEY }}
@@ -259,7 +273,40 @@ jobs:
           fi
           cat SHA256SUMS
 
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+
+      - name: Generate SBOMs
+        id: sbom
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          status=0
+          : > release-assets/sbom-status.txt
+
+          if npm sbom --package-lock-only --sbom-format cyclonedx > release-assets/sbom-npm.cdx.json; then
+            echo "npm SBOM: generated" >> release-assets/sbom-status.txt
+          else
+            echo "::warning::npm SBOM generation failed"
+            echo "npm SBOM: failed" >> release-assets/sbom-status.txt
+            rm -f release-assets/sbom-npm.cdx.json
+            status=1
+          fi
+
+          if cargo metadata --manifest-path src-tauri/Cargo.toml --format-version=1 > "$RUNNER_TEMP/cargo-metadata.json" \
+            && node scripts/cargo-metadata-to-cyclonedx.mjs "$RUNNER_TEMP/cargo-metadata.json" release-assets/sbom-cargo.cdx.json; then
+            echo "cargo SBOM: generated" >> release-assets/sbom-status.txt
+          else
+            echo "::warning::cargo SBOM generation failed"
+            echo "cargo SBOM: failed" >> release-assets/sbom-status.txt
+            rm -f release-assets/sbom-cargo.cdx.json
+            status=1
+          fi
+
+          exit "$status"
+
       - name: Publish GitHub Release
+        id: publish_release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda  # v3
         with:
           tag_name: ${{ github.ref_name }}
@@ -275,6 +322,37 @@ jobs:
             dist/*
             latest.json
             SHA256SUMS
+            release-assets/*
+
+      - name: Promote CDN mirror latest (R2 + IHEP S3)
+        id: mirror_promote
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          MIRROR_PHASE: promote
+          MANAGER_R2_S3_ENDPOINT: ${{ secrets.MANAGER_R2_S3_ENDPOINT }}
+          MANAGER_R2_ACCESS_KEY_ID: ${{ secrets.MANAGER_R2_ACCESS_KEY_ID }}
+          MANAGER_R2_SECRET_ACCESS_KEY: ${{ secrets.MANAGER_R2_SECRET_ACCESS_KEY }}
+          MANAGER_IHEP_S3_ENDPOINT: ${{ secrets.MANAGER_IHEP_S3_ENDPOINT }}
+          MANAGER_IHEP_S3_BUCKET: ${{ secrets.MANAGER_IHEP_S3_BUCKET }}
+          MANAGER_IHEP_S3_REGION: ${{ secrets.MANAGER_IHEP_S3_REGION }}
+          MANAGER_IHEP_S3_PREFIX: ${{ secrets.MANAGER_IHEP_S3_PREFIX }}
+          MANAGER_IHEP_S3_ACCESS_KEY_ID: ${{ secrets.MANAGER_IHEP_S3_ACCESS_KEY_ID }}
+          MANAGER_IHEP_S3_SECRET_ACCESS_KEY: ${{ secrets.MANAGER_IHEP_S3_SECRET_ACCESS_KEY }}
+        run: |
+          [ -f dist/latest.json ] || cp latest.json dist/latest.json
+          bash scripts/sync-mirror.sh dist
+
+      - name: Attest build provenance
+        id: attest
+        if: ${{ steps.publish_release.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
+        with:
+          subject-path: |
+            dist/*
+            latest.json
+            SHA256SUMS
+            release-assets/*
 
       # The release above is created with GITHUB_TOKEN, which by design does not
       # trigger other workflows — so winget.yml's `on: release` never fires.
@@ -282,7 +360,25 @@ jobs:
       # without WINGET_TOKEN, and winget-releaser skips versions already present,
       # so a re-run is harmless.
       - name: Trigger winget submission
+        id: winget
         if: ${{ !contains(github.ref_name, '-') }}
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run winget.yml -f release-tag="${{ github.ref_name }}" --repo "${{ github.repository }}" || echo "::warning::winget dispatch failed"
+        run: |
+          if gh workflow run winget.yml -f release-tag="${{ github.ref_name }}" --repo "${{ github.repository }}"; then
+            echo "status=dispatched" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::winget dispatch failed"
+            echo "status=dispatch_failed" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write release summary
+        if: always()
+        env:
+          PUBLISH_OUTCOME: ${{ steps.publish_release.outcome }}
+          MIRROR_STAGE_OUTCOME: ${{ steps.mirror_stage.outcome }}
+          MIRROR_PROMOTE_OUTCOME: ${{ steps.mirror_promote.outcome }}
+          WINGET_OUTCOME: ${{ steps.winget.outputs.status || steps.winget.outcome }}
+          SBOM_OUTCOME: ${{ steps.sbom.outcome }}
+          ATTESTATION_OUTCOME: ${{ steps.attest.outcome }}
+        run: node scripts/write-release-summary.mjs
