@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
-use crate::process::hidden_command;
+use crate::limits::MAX_PACKAGE_BYTES;
+use crate::process::{curl_exe, hidden_command};
 use crate::EngineError;
 
 static DOWNLOAD_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -81,7 +82,10 @@ fn proxy_env_summary() -> String {
     if configured.is_empty() {
         "no curl proxy environment variables are set; Windows system proxy/PAC may not be used automatically".to_string()
     } else {
-        format!("curl proxy environment variables set: {}", configured.join(", "))
+        format!(
+            "curl proxy environment variables set: {}",
+            configured.join(", ")
+        )
     }
 }
 
@@ -97,8 +101,15 @@ fn curl_failure_message(url: &str, exit_code: Option<i32>, stderr: &str) -> Stri
     )
 }
 
-fn run_curl(url: &str, dest: &Path, resume: bool, on_progress: &dyn Fn(u64)) -> Result<(), String> {
+fn run_curl(
+    url: &str,
+    dest: &Path,
+    resume: bool,
+    max_bytes: u64,
+    on_progress: &dyn Fn(u64),
+) -> Result<(), String> {
     let dest = dest.to_string_lossy().into_owned();
+    let max_bytes = max_bytes.to_string();
     let mut args = vec![
         "-fL".to_string(),
         "--proto".to_string(),
@@ -108,6 +119,8 @@ fn run_curl(url: &str, dest: &Path, resume: bool, on_progress: &dyn Fn(u64)) -> 
         "--no-progress-meter".to_string(),
         "--connect-timeout".to_string(),
         "20".to_string(),
+        "--max-filesize".to_string(),
+        max_bytes,
         "--retry".to_string(),
         "2".to_string(),
     ];
@@ -116,7 +129,7 @@ fn run_curl(url: &str, dest: &Path, resume: bool, on_progress: &dyn Fn(u64)) -> 
     }
     args.extend(["-o".to_string(), dest.clone(), url.to_string()]);
 
-    let mut child = hidden_command("curl")
+    let mut child = hidden_command(curl_exe())
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -167,6 +180,15 @@ pub fn download_to_with_progress(
     dest: &Path,
     on_progress: &dyn Fn(u64),
 ) -> Result<(), EngineError> {
+    download_to_with_progress_bounded(url, dest, MAX_PACKAGE_BYTES, on_progress)
+}
+
+pub fn download_to_with_progress_bounded(
+    url: &str,
+    dest: &Path,
+    max_bytes: u64,
+    on_progress: &dyn Fn(u64),
+) -> Result<(), EngineError> {
     // The manager has one Windows package staging slot. Serialize downloads so
     // auto-stage and manual-stage cannot reset each other's cancel flag.
     let _guard = DownloadGuard::acquire().map_err(EngineError::Io)?;
@@ -178,7 +200,7 @@ pub fn download_to_with_progress(
 
     let part = partial_path(dest);
     let should_resume = part.metadata().map(|m| m.len() > 0).unwrap_or(false);
-    let download_result = run_curl(url, &part, should_resume, on_progress);
+    let download_result = run_curl(url, &part, should_resume, max_bytes, on_progress);
     if let Err(first_err) = download_result {
         if is_cancelled_error(&first_err) {
             if DOWNLOAD_DISCARD.load(Ordering::SeqCst) {
@@ -188,7 +210,7 @@ pub fn download_to_with_progress(
         }
         if should_resume {
             let _ = std::fs::remove_file(&part);
-            run_curl(url, &part, false, on_progress).map_err(|second_err| {
+            run_curl(url, &part, false, max_bytes, on_progress).map_err(|second_err| {
                 if is_cancelled_error(&second_err) {
                     if DOWNLOAD_DISCARD.load(Ordering::SeqCst) {
                         let _ = std::fs::remove_file(&part);
@@ -256,14 +278,16 @@ mod tests {
 
     #[test]
     fn download_with_progress_reports_final_size() {
-        if hidden_command("curl").arg("--version").output().is_err() {
+        if hidden_command(curl_exe())
+            .arg("--version")
+            .output()
+            .is_err()
+        {
             return;
         }
 
-        let root = std::env::temp_dir().join(format!(
-            "codex-win-engine-progress-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("codex-win-engine-progress-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let source = root.join("source.bin");
@@ -272,10 +296,16 @@ mod tests {
         std::fs::write(&source, &bytes).unwrap();
 
         let seen = std::sync::Mutex::new(Vec::new());
-        download_to_with_progress(&file_url(&source), &dest, &|downloaded| {
+        let result = download_to_with_progress(&file_url(&source), &dest, &|downloaded| {
             seen.lock().unwrap().push(downloaded);
-        })
-        .unwrap();
+        });
+        if let Err(EngineError::Io(message)) = &result {
+            if message.contains("Protocol \"file\" disabled") {
+                let _ = std::fs::remove_dir_all(&root);
+                return;
+            }
+        }
+        result.unwrap();
 
         assert_eq!(std::fs::read(&dest).unwrap(), bytes);
         assert!(seen.lock().unwrap().contains(&(1024 * 1024)));

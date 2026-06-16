@@ -9,11 +9,32 @@
 use std::path::Path;
 use std::process::Command;
 
+use crate::limits::MAX_TEXT_BYTES;
 use crate::EngineError;
+
+const CURL: &str = "/usr/bin/curl";
+const LIPO: &str = "/usr/bin/lipo";
+
+fn text_from_curl(url: &str, output: std::process::Output) -> Result<String, EngineError> {
+    if !output.status.success() {
+        return Err(EngineError::Io(format!(
+            "curl failed for {url}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    if output.stdout.len() > MAX_TEXT_BYTES as usize {
+        return Err(EngineError::Io(format!(
+            "text response exceeded {} bytes",
+            MAX_TEXT_BYTES
+        )));
+    }
+    String::from_utf8(output.stdout).map_err(|e| EngineError::Io(e.to_string()))
+}
 
 /// Fetch a small text resource (the appcast) over HTTPS via system `curl`.
 pub fn fetch_text(url: &str) -> Result<String, EngineError> {
-    let output = Command::new("curl")
+    let max_text = MAX_TEXT_BYTES.to_string();
+    let output = Command::new(CURL)
         .args([
             "-fsSL",
             "--proto",
@@ -22,26 +43,24 @@ pub fn fetch_text(url: &str) -> Result<String, EngineError> {
             "=https",
             "--connect-timeout",
             "20",
+            "--max-time",
+            "60",
+            "--max-filesize",
+            &max_text,
             url,
         ])
         .output()
         .map_err(|e| EngineError::Io(format!("spawn curl: {e}")))?;
 
-    if !output.status.success() {
-        return Err(EngineError::Io(format!(
-            "curl failed for {url}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-
-    String::from_utf8(output.stdout).map_err(|e| EngineError::Io(e.to_string()))
+    text_from_curl(url, output)
 }
 
 /// Like `fetch_text` but with a caller-set total timeout. Used to probe a
 /// possibly-unreachable source (e.g. OpenAI's official appcast for users behind
 /// a block) without stalling on the default long connect timeout.
 pub fn fetch_text_timeout(url: &str, max_secs: u64) -> Result<String, EngineError> {
-    let output = Command::new("curl")
+    let max_text = MAX_TEXT_BYTES.to_string();
+    let output = Command::new(CURL)
         .args([
             "-fsSL",
             "--proto",
@@ -52,19 +71,14 @@ pub fn fetch_text_timeout(url: &str, max_secs: u64) -> Result<String, EngineErro
             "5",
             "--max-time",
             &max_secs.to_string(),
+            "--max-filesize",
+            &max_text,
             url,
         ])
         .output()
         .map_err(|e| EngineError::Io(format!("spawn curl: {e}")))?;
 
-    if !output.status.success() {
-        return Err(EngineError::Io(format!(
-            "curl failed for {url}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-
-    String::from_utf8(output.stdout).map_err(|e| EngineError::Io(e.to_string()))
+    text_from_curl(url, output)
 }
 
 /// Locate an installed `Codex.app` and read its `CFBundleVersion` (build number).
@@ -105,7 +119,7 @@ pub fn app_arch(app: &str) -> Option<String> {
     if exe_name.is_empty() {
         return None;
     }
-    let output = Command::new("lipo")
+    let output = Command::new(LIPO)
         .args(["-archs", &format!("{app}/Contents/MacOS/{exe_name}")])
         .output()
         .ok()?;

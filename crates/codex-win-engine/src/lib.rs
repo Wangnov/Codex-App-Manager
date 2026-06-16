@@ -15,6 +15,7 @@ pub mod authenticode;
 pub mod capability;
 pub mod checksums;
 pub mod download;
+pub mod limits;
 pub mod manifest;
 pub mod msix;
 pub mod plan;
@@ -31,8 +32,8 @@ pub use capability::{
 };
 pub use checksums::{find_msix_sha256, parse_checksums, ChecksumEntry};
 pub use download::{
-    cancel_active_download, download_to, download_to_with_progress, pause_active_download,
-    read_file, sha256_file,
+    cancel_active_download, download_to, download_to_with_progress,
+    download_to_with_progress_bounded, pause_active_download, read_file, sha256_file,
 };
 pub use manifest::{parse_manifest, WindowsRelease};
 pub use msix::{
@@ -46,8 +47,8 @@ pub use portable::{
     purge_codex_user_data, uninstall_portable, PortableInstallReport, PortableUninstallReport,
 };
 pub use sys::{
-    detect_installed_codex, detect_portable_install, fetch_text, launch_codex,
-    probe_capabilities, remove_msix_package, InstalledWindowsCodex, MsixRemoveReport,
+    detect_installed_codex, detect_portable_install, fetch_text, launch_codex, probe_capabilities,
+    remove_msix_package, InstalledWindowsCodex, MsixRemoveReport,
 };
 pub use sys::{
     install_msix_sideload, precheck_msix_dependencies, verify_msix_health, MsixDependencyPrecheck,

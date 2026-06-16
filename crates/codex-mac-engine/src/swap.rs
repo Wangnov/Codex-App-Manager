@@ -16,9 +16,13 @@ use std::process::Command;
 
 use crate::EngineError;
 
+const OPEN: &str = "/usr/bin/open";
+const OSASCRIPT: &str = "/usr/bin/osascript";
+const PGREP: &str = "/usr/bin/pgrep";
+
 /// Is a process named `Codex` currently running?
 pub fn codex_running() -> bool {
-    Command::new("pgrep")
+    Command::new(PGREP)
         .args(["-x", "Codex"])
         .output()
         .map(|o| o.status.success())
@@ -38,7 +42,7 @@ pub fn quit_codex(timeout_secs: u64) -> Result<(), EngineError> {
     if !codex_running() {
         return Ok(());
     }
-    let _ = Command::new("osascript")
+    let _ = Command::new(OSASCRIPT)
         .args(["-e", r#"tell application "Codex" to quit"#])
         .status();
 
@@ -50,7 +54,7 @@ pub fn quit_codex(timeout_secs: u64) -> Result<(), EngineError> {
             return Ok(());
         }
         if tick == activate_tick {
-            let _ = Command::new("osascript")
+            let _ = Command::new(OSASCRIPT)
                 .args(["-e", r#"tell application "Codex" to activate"#])
                 .status();
         }
@@ -139,7 +143,7 @@ pub fn rollback(install_app: &Path, backup_app: &Path) -> Result<(), EngineError
 
 /// Relaunch Codex from the install root.
 pub fn relaunch(install_app: &Path) -> Result<(), EngineError> {
-    let status = Command::new("open")
+    let status = Command::new(OPEN)
         .arg(install_app)
         .status()
         .map_err(|e| EngineError::Io(format!("open Codex: {e}")))?;

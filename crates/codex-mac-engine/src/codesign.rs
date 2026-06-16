@@ -9,13 +9,16 @@ use std::process::Command;
 
 use crate::EngineError;
 
+const CODESIGN: &str = "/usr/bin/codesign";
+const SPCTL: &str = "/usr/sbin/spctl";
+
 /// OpenAI's Apple Developer Team ID — verified on a real notarized Codex.app
 /// (`Developer ID Application: OpenAI OpCo, LLC (2DC432GLL2)`).
 pub const OPENAI_TEAM_ID: &str = "2DC432GLL2";
 
 /// `codesign --verify --deep --strict` — fails if any sealed byte changed.
 pub fn verify_signature(app: &Path) -> Result<(), EngineError> {
-    let output = Command::new("codesign")
+    let output = Command::new(CODESIGN)
         .args(["--verify", "--deep", "--strict"])
         .arg(app)
         .output()
@@ -32,7 +35,7 @@ pub fn verify_signature(app: &Path) -> Result<(), EngineError> {
 /// Read the Team Identifier from a bundle's signature.
 pub fn team_identifier(app: &Path) -> Result<String, EngineError> {
     // `codesign -dv` prints its fields to stderr.
-    let output = Command::new("codesign")
+    let output = Command::new(CODESIGN)
         .args(["-dv", "--verbose=2"])
         .arg(app)
         .output()
@@ -59,7 +62,7 @@ pub fn require_team(app: &Path, expected: &str) -> Result<(), EngineError> {
 /// `spctl --assess --type execute` — Gatekeeper's verdict (notarization).
 /// Passes offline when the notarization ticket is stapled (Codex's is).
 pub fn assess_gatekeeper(app: &Path) -> Result<(), EngineError> {
-    let output = Command::new("spctl")
+    let output = Command::new(SPCTL)
         .args(["--assess", "--type", "execute"])
         .arg(app)
         .output()

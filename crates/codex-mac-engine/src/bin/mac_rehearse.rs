@@ -31,7 +31,11 @@ fn build_of(app: &Path) -> String {
 }
 
 fn ditto(src: &Path, dst: &Path) {
-    let status = Command::new("ditto").arg(src).arg(dst).status().expect("spawn ditto");
+    let status = Command::new("/usr/bin/ditto")
+        .arg(src)
+        .arg(dst)
+        .status()
+        .expect("spawn ditto");
     assert!(status.success(), "ditto {src:?} -> {dst:?} failed");
 }
 

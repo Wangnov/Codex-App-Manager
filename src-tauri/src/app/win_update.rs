@@ -12,14 +12,15 @@ use serde::{Deserialize, Serialize};
 
 use codex_win_engine::{
     cancel_active_download, close_codex_gracefully_for_root, detect_installed_codex,
-    detect_portable_install, download_to_with_progress, fetch_text, find_msix_sha256,
-    install_msix_sideload, install_portable_from_msix, parse_manifest, pause_active_download,
-    plan_update, precheck_msix_dependencies, probe_capabilities, purge_codex_user_data,
-    read_msix_identity, remove_msix_package, sha256_file, uninstall_portable,
-    validate_codex_identity, verify_msix_health, verify_openai_authenticode, version_key,
-    AuthenticodeReport, CapabilityState, InstalledWindowsCodex, MsixHealthReport, MsixIdentity,
-    MsixRemoveReport, MsixSideloadReport, PortableInstallReport, PortableUninstallReport,
-    WinCapabilityReport, WinInstallRoute, WindowsRelease, WindowsUpdatePlan,
+    detect_portable_install, download_to_with_progress_bounded, fetch_text, find_msix_sha256,
+    install_msix_sideload, install_portable_from_msix, limits::MAX_PACKAGE_BYTES, parse_manifest,
+    pause_active_download, plan_update, precheck_msix_dependencies, probe_capabilities,
+    purge_codex_user_data, read_msix_identity, remove_msix_package, sha256_file,
+    uninstall_portable, validate_codex_identity, verify_msix_health, verify_openai_authenticode,
+    version_key, AuthenticodeReport, CapabilityState, InstalledWindowsCodex, MsixHealthReport,
+    MsixIdentity, MsixRemoveReport, MsixSideloadReport, PortableInstallReport,
+    PortableUninstallReport, WinCapabilityReport, WinInstallRoute, WindowsRelease,
+    WindowsUpdatePlan,
 };
 
 use crate::app::provenance::ProvenanceStore;
@@ -175,11 +176,61 @@ fn portable_fallback_ready(_endpoints: &MirrorEndpoints) -> bool {
     true
 }
 
+fn msix_stem(file_name: &str) -> Option<&str> {
+    let base = file_name.rsplit('/').find(|segment| !segment.is_empty())?;
+    let suffix_start = base.len().checked_sub(5)?;
+    let suffix = base.get(suffix_start..)?;
+    if suffix.eq_ignore_ascii_case(".msix") {
+        base.get(..suffix_start)
+    } else {
+        None
+    }
+}
+
+fn package_file_name_from_url(package_url: &str) -> Result<String, AppError> {
+    let parsed = url::Url::parse(package_url)
+        .map_err(|e| AppError::Engine(format!("invalid Windows package URL: {e}")))?;
+    parsed
+        .path()
+        .rsplit('/')
+        .find(|segment| !segment.is_empty())
+        .map(|segment| segment.to_string())
+        .ok_or_else(|| AppError::Engine("Windows package URL has no file name".to_string()))
+}
+
+fn bind_manifest_checksums(
+    release: &WindowsRelease,
+    checksums_text: &str,
+    package_url: &str,
+) -> Result<String, AppError> {
+    let package_file = package_file_name_from_url(package_url)?;
+    let Some(url_moniker) = msix_stem(&package_file) else {
+        return Err(AppError::Engine(format!(
+            "Windows package URL does not end in .msix: {package_url}"
+        )));
+    };
+    if !url_moniker.eq_ignore_ascii_case(&release.package_moniker) {
+        return Err(AppError::Engine(format!(
+            "Windows manifest package moniker {} does not match URL artifact {}",
+            release.package_moniker, package_file
+        )));
+    }
+    if let Some(identity) = release.package_identity.as_deref() {
+        if identity != codex_win_engine::OPENAI_PACKAGE_IDENTITY {
+            return Err(AppError::Engine(format!(
+                "Windows manifest package identity {identity} does not match {}",
+                codex_win_engine::OPENAI_PACKAGE_IDENTITY
+            )));
+        }
+    }
+    find_msix_sha256(checksums_text, &release.package_moniker).map_err(engine_err)
+}
+
 fn read_windows_release(endpoints: &MirrorEndpoints) -> Result<(WindowsRelease, String), AppError> {
     let manifest_text = fetch_text(&endpoints.manifest_url).map_err(engine_err)?;
     let checksums_text = fetch_text(&endpoints.checksums_url).map_err(engine_err)?;
     let release = parse_manifest(&manifest_text).map_err(engine_err)?;
-    let sha256 = find_msix_sha256(&checksums_text, &release.package_moniker).map_err(engine_err)?;
+    let sha256 = bind_manifest_checksums(&release, &checksums_text, &endpoints.windows_msix_url)?;
     Ok((release, sha256))
 }
 
@@ -238,7 +289,8 @@ fn close_existing_codex_before_portable_fallback(
     settings: &AppSettings,
     previous_installed: Option<&InstalledWindowsCodex>,
 ) -> Result<(), AppError> {
-    if let Some(installed) = detect_installed_codex(PathBuf::from(&settings.install_root).as_path()) {
+    if let Some(installed) = detect_installed_codex(PathBuf::from(&settings.install_root).as_path())
+    {
         if installed.source == "msix" {
             close_codex_gracefully_for_root(30, PathBuf::from(&installed.path).as_path())
                 .map_err(engine_err)?;
@@ -361,6 +413,12 @@ pub fn stage_windows_update_with_install_mode(
 
     let dest = staged_msix_path(&report.release);
     let expected_size = report.release.content_length.unwrap_or(0);
+    if expected_size > MAX_PACKAGE_BYTES {
+        return Err(AppError::Engine(format!(
+            "MSIX content length {expected_size} exceeds {} byte limit",
+            MAX_PACKAGE_BYTES
+        )));
+    }
     let expected_sha = report.plan.sha256.clone();
     let source = host_of(&report.package_url);
 
@@ -372,13 +430,18 @@ pub fn stage_windows_update_with_install_mode(
         if dest.exists() {
             let _ = std::fs::remove_file(&dest);
         }
-        download_to_with_progress(&report.package_url, &dest, &|downloaded| {
-            progress(DownloadProgress {
-                downloaded,
-                total: expected_size,
-                source: source.clone(),
-            });
-        })
+        download_to_with_progress_bounded(
+            &report.package_url,
+            &dest,
+            MAX_PACKAGE_BYTES,
+            &|downloaded| {
+                progress(DownloadProgress {
+                    downloaded,
+                    total: expected_size,
+                    source: source.clone(),
+                });
+            },
+        )
         .map_err(engine_err)?;
     }
 
@@ -388,6 +451,12 @@ pub fn stage_windows_update_with_install_mode(
     if expected_size > 0 && actual_size != expected_size {
         return Err(AppError::Engine(format!(
             "MSIX size mismatch: {actual_size} != {expected_size}"
+        )));
+    }
+    if actual_size > MAX_PACKAGE_BYTES {
+        return Err(AppError::Engine(format!(
+            "MSIX size {actual_size} exceeds {} byte limit",
+            MAX_PACKAGE_BYTES
         )));
     }
     progress(DownloadProgress {
@@ -422,6 +491,14 @@ pub fn stage_windows_update_with_install_mode(
         report.release.architecture.as_deref(),
     )
     .map_err(engine_err)?;
+    if let Some(expected_identity) = report.release.package_identity.as_deref() {
+        if identity.name != expected_identity {
+            return Err(AppError::Engine(format!(
+                "MSIX identity {} does not match manifest package identity {}",
+                identity.name, expected_identity
+            )));
+        }
+    }
 
     let mut notes = report.plan.warnings.clone();
     notes.push(
@@ -562,7 +639,14 @@ pub fn perform_windows_update(
     settings: &AppSettings,
     confirm: bool,
 ) -> Result<WinPerformReport, AppError> {
-    perform_windows_update_with_install_mode(endpoints, settings, confirm, "msix", None, &no_progress)
+    perform_windows_update_with_install_mode(
+        endpoints,
+        settings,
+        confirm,
+        "msix",
+        None,
+        &no_progress,
+    )
 }
 
 pub fn perform_windows_update_with_install_mode(
@@ -826,7 +910,9 @@ pub fn win_install_status(settings: &AppSettings) -> WinInstallStatus {
         // Build-aware (matching the macOS path): a self-updated or path-reused
         // install no longer matches its record and reads as "external" so the
         // user is prompted to re-adopt rather than silently treated as managed.
-        Some(codex) if store.is_managed_build(&codex.path, version_key(&codex.version)) => "managed",
+        Some(codex) if store.is_managed_build(&codex.path, version_key(&codex.version)) => {
+            "managed"
+        }
         Some(_) => "external",
     }
     .to_string();
@@ -888,7 +974,10 @@ pub fn uninstall_windows_codex(
     // isn't an install we manage at this exact build. Path-only matching could
     // delete a path-reused external install or one left by a stale record —
     // more likely now that the install root is user-configurable.
-    if !store.is_managed_build(&installed_before.path, version_key(&installed_before.version)) {
+    if !store.is_managed_build(
+        &installed_before.path,
+        version_key(&installed_before.version),
+    ) {
         return Ok(WinUninstallReport {
             success: false,
             action: "external-not-managed".to_string(),
@@ -959,7 +1048,8 @@ pub fn uninstall_windows_codex(
 
 #[cfg(test)]
 mod tests {
-    use super::WinPerformAction;
+    use super::{bind_manifest_checksums, WinPerformAction};
+    use codex_win_engine::WindowsRelease;
 
     #[test]
     fn serializes_win_perform_actions_as_frontend_contract() {
@@ -984,5 +1074,63 @@ mod tests {
         for (action, expected) in cases {
             assert_eq!(serde_json::to_string(&action).unwrap(), expected);
         }
+    }
+
+    fn release() -> WindowsRelease {
+        WindowsRelease {
+            version: "26.602.3474.0".to_string(),
+            package_moniker: "OpenAI.Codex_26.602.3474.0_x64__2p2nqsd0c76g0".to_string(),
+            architecture: Some("x64".to_string()),
+            content_length: Some(566_504_666),
+            etag: None,
+            store_product_id: Some("9PLM9XGG6VKS".to_string()),
+            package_identity: Some("OpenAI.Codex".to_string()),
+        }
+    }
+
+    #[test]
+    fn binds_manifest_checksums_to_url_moniker() {
+        let checksums = "\
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  OpenAI.Codex_26.602.3474.0_x64__2p2nqsd0c76g0.Msix
+";
+        let sha = bind_manifest_checksums(
+            &release(),
+            checksums,
+            "https://example.com/OpenAI.Codex_26.602.3474.0_x64__2p2nqsd0c76g0.Msix",
+        )
+        .unwrap();
+        assert_eq!(
+            sha,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+    }
+
+    #[test]
+    fn rejects_manifest_url_moniker_mismatch() {
+        let checksums = "\
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  OpenAI.Codex_26.602.3474.0_x64__2p2nqsd0c76g0.Msix
+";
+        let err = bind_manifest_checksums(
+            &release(),
+            checksums,
+            "https://example.com/OpenAI.Codex_26.602.3474.0_arm64__2p2nqsd0c76g0.Msix",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("does not match URL artifact"));
+    }
+
+    #[test]
+    fn rejects_manifest_identity_mismatch() {
+        let mut release = release();
+        release.package_identity = Some("OpenAI.Other".to_string());
+        let checksums = "\
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  OpenAI.Codex_26.602.3474.0_x64__2p2nqsd0c76g0.Msix
+";
+        assert!(bind_manifest_checksums(
+            &release,
+            checksums,
+            "https://example.com/OpenAI.Codex_26.602.3474.0_x64__2p2nqsd0c76g0.Msix",
+        )
+        .is_err());
     }
 }

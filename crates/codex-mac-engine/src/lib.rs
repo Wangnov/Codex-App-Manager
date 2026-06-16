@@ -16,6 +16,7 @@ pub mod appcast;
 pub mod apply;
 pub mod codesign;
 pub mod download;
+pub mod limits;
 pub mod plan;
 pub mod swap;
 pub mod sys;

@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 use crate::capability::WinCapabilityReport;
 #[cfg(windows)]
 use crate::capability::{CapabilityCheck, CapabilityState};
+use crate::limits::MAX_TEXT_BYTES;
 use crate::msix::parse_appx_manifest_xml;
-use crate::process::hidden_command;
+use crate::process::{curl_exe, hidden_command};
 use crate::EngineError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,7 +118,8 @@ impl MsixDependencyPrecheck {
 }
 
 pub fn fetch_text(url: &str) -> Result<String, EngineError> {
-    let output = hidden_command("curl")
+    let max_text = MAX_TEXT_BYTES.to_string();
+    let output = hidden_command(curl_exe())
         .args([
             "-fsSL",
             "--proto",
@@ -126,6 +128,10 @@ pub fn fetch_text(url: &str) -> Result<String, EngineError> {
             "=https",
             "--connect-timeout",
             "20",
+            "--max-time",
+            "60",
+            "--max-filesize",
+            &max_text,
             url,
         ])
         .output()
@@ -136,6 +142,13 @@ pub fn fetch_text(url: &str) -> Result<String, EngineError> {
             url,
             output.status.code(),
             &String::from_utf8_lossy(&output.stderr),
+        )));
+    }
+
+    if output.stdout.len() > MAX_TEXT_BYTES as usize {
+        return Err(EngineError::Io(format!(
+            "text response exceeded {} bytes",
+            MAX_TEXT_BYTES
         )));
     }
 
@@ -171,7 +184,10 @@ fn proxy_env_summary() -> String {
     if configured.is_empty() {
         "no curl proxy environment variables are set; Windows system proxy/PAC may not be used automatically".to_string()
     } else {
-        format!("curl proxy environment variables set: {}", configured.join(", "))
+        format!(
+            "curl proxy environment variables set: {}",
+            configured.join(", ")
+        )
     }
 }
 

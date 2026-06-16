@@ -852,7 +852,7 @@ fn validate_external_http_url(url: &str) -> Result<(), AppError> {
 
 #[cfg(target_os = "macos")]
 fn open_external_url(url: &str) -> Result<(), String> {
-    std::process::Command::new("open")
+    std::process::Command::new("/usr/bin/open")
         .arg(url)
         .spawn()
         .map(|_| ())

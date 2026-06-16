@@ -517,6 +517,7 @@ dependencies = [
  "tauri-plugin-updater",
  "thiserror 2.0.18",
  "url",
+ "uuid",
  "windows-sys 0.61.2",
 ]
 
@@ -529,6 +530,7 @@ dependencies = [
  "roxmltree",
  "serde",
  "thiserror 2.0.18",
+ "uuid",
 ]
 
 [[package]]
@@ -540,6 +542,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
+ "uuid",
  "zip 2.4.2",
 ]
 

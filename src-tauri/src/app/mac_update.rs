@@ -27,6 +27,9 @@ use crate::app::settings_store::UpdateSource;
 use crate::app::url_guard::validate_custom_source;
 use crate::errors::AppError;
 
+const DITTO: &str = "/usr/bin/ditto";
+const OPEN: &str = "/usr/bin/open";
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstalledCodex {
@@ -374,9 +377,16 @@ fn quit_codex_gracefully() -> Result<(), AppError> {
 fn download_and_verify(
     url: &str,
     size: u64,
+    max_size: u64,
     signature: &str,
     progress: &dyn Fn(DownloadProgress),
 ) -> Result<PathBuf, AppError> {
+    if size > max_size {
+        return Err(AppError::Engine(format!(
+            "artifact size {size} exceeds {} byte limit",
+            max_size
+        )));
+    }
     let file_name = url.rsplit('/').next().unwrap_or("payload.bin");
     let dest = staging_dir().join(file_name);
     let source = host_of(url);
@@ -392,7 +402,7 @@ fn download_and_verify(
             source,
         });
     } else {
-        download::download_to_with_progress(url, &dest, &|downloaded| {
+        download::download_to_with_progress_bounded(url, &dest, max_size, &|downloaded| {
             progress(DownloadProgress {
                 downloaded,
                 total: size,
@@ -408,6 +418,12 @@ fn download_and_verify(
     if len != size {
         return Err(AppError::Engine(format!("size mismatch: {len} != {size}")));
     }
+    if len > max_size {
+        return Err(AppError::Engine(format!(
+            "artifact size {len} exceeds {} byte limit",
+            max_size
+        )));
+    }
 
     let bytes = download::read_file(&dest).map_err(|e| AppError::Engine(e.to_string()))?;
     if let Err(err) = verify_sparkle(&bytes, signature) {
@@ -416,6 +432,13 @@ fn download_and_verify(
     }
 
     Ok(dest)
+}
+
+fn max_bytes_for_strategy(strategy: &UpdateStrategy) -> u64 {
+    match strategy {
+        UpdateStrategy::Delta { .. } => codex_mac_engine::limits::MAX_DELTA_BYTES,
+        UpdateStrategy::Full => codex_mac_engine::limits::MAX_PACKAGE_BYTES,
+    }
 }
 
 pub fn stage_macos_update(simulated_build: Option<u64>) -> Result<MacStageReport, AppError> {
@@ -451,6 +474,7 @@ pub fn stage_macos_update(simulated_build: Option<u64>) -> Result<MacStageReport
     let dest = download_and_verify(
         &plan.download_url,
         plan.download_size,
+        max_bytes_for_strategy(&plan.strategy),
         &signature,
         &no_progress,
     )?;
@@ -515,7 +539,7 @@ fn unpack_app_zip(zip: &Path, work: &Path, out_app: &Path) -> Result<(), AppErro
     let _ = std::fs::remove_dir_all(&extract);
     std::fs::create_dir_all(&extract).map_err(|e| AppError::Engine(format!("mkdir unzip: {e}")))?;
 
-    let status = std::process::Command::new("ditto")
+    let status = std::process::Command::new(DITTO)
         .args(["-x", "-k"])
         .arg(zip)
         .arg(&extract)
@@ -527,8 +551,7 @@ fn unpack_app_zip(zip: &Path, work: &Path, out_app: &Path) -> Result<(), AppErro
         )));
     }
 
-    let found = find_dot_app(&extract)
-        .ok_or_else(|| AppError::Engine("no .app found inside the full-update zip".to_string()))?;
+    let found = require_single_codex_app(&extract)?;
     if out_app.exists() {
         let _ = std::fs::remove_dir_all(out_app);
     }
@@ -537,18 +560,38 @@ fn unpack_app_zip(zip: &Path, work: &Path, out_app: &Path) -> Result<(), AppErro
     Ok(())
 }
 
-/// Locate a `.app` bundle inside an extracted directory: prefer a top-level
-/// `Codex.app`, else the first `*.app` directory entry.
-fn find_dot_app(dir: &Path) -> Option<PathBuf> {
-    let direct = dir.join("Codex.app");
-    if direct.exists() {
-        return Some(direct);
+fn require_single_codex_app(dir: &Path) -> Result<PathBuf, AppError> {
+    let mut apps = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| AppError::Engine(format!("read unzip: {e}")))? {
+        let path = entry
+            .map_err(|e| AppError::Engine(format!("read unzip entry: {e}")))?
+            .path();
+        if path.is_dir() && path.extension().map(|x| x == "app").unwrap_or(false) {
+            apps.push(path);
+        }
     }
-    std::fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .map(|entry| entry.path())
-        .find(|p| p.is_dir() && p.extension().map(|x| x == "app").unwrap_or(false))
+    if apps.is_empty() {
+        return Err(AppError::Engine(
+            "full-update zip did not contain Codex.app".to_string(),
+        ));
+    }
+    if apps.len() > 1 {
+        return Err(AppError::Engine(
+            "full-update zip contained multiple .app bundles; refusing to guess".to_string(),
+        ));
+    }
+    let app = apps.remove(0);
+    if app
+        .file_name()
+        .map(|name| name == "Codex.app")
+        .unwrap_or(false)
+    {
+        Ok(app)
+    } else {
+        Err(AppError::Engine(
+            "full-update zip contained a non-Codex .app bundle".to_string(),
+        ))
+    }
 }
 
 /// Download the appcast's full enclosure (size + EdDSA verified) and unpack it
@@ -566,7 +609,13 @@ fn reconstruct_full(
     let sig = latest.full.ed_signature.clone().ok_or_else(|| {
         AppError::Engine("appcast full enclosure missing edSignature".to_string())
     })?;
-    let staged = download_and_verify(&latest.full.url, latest.full.length, &sig, progress)?;
+    let staged = download_and_verify(
+        &latest.full.url,
+        latest.full.length,
+        codex_mac_engine::limits::MAX_PACKAGE_BYTES,
+        &sig,
+        progress,
+    )?;
     unpack_app_zip(&staged, work, out_app)
 }
 
@@ -679,8 +728,13 @@ pub fn perform_macos_update(
                 .ed_signature
                 .clone()
                 .ok_or_else(|| AppError::Engine("appcast delta missing edSignature".to_string()))?;
-            let staged =
-                download_and_verify(&plan.download_url, plan.download_size, &sig, progress)?;
+            let staged = download_and_verify(
+                &plan.download_url,
+                plan.download_size,
+                codex_mac_engine::limits::MAX_DELTA_BYTES,
+                &sig,
+                progress,
+            )?;
             match apply_delta(tool, &install_path, &out_app, &staged) {
                 Ok(()) => strategy_label(&plan.strategy),
                 Err(delta_err) => {
@@ -937,7 +991,7 @@ pub fn install_macos(progress: &dyn Fn(DownloadProgress)) -> Result<MacInstallSt
 pub fn launch_codex() -> Result<(), AppError> {
     let installed = detect_managed_installed()
         .ok_or_else(|| AppError::Engine("没有可打开的 Codex".to_string()))?;
-    std::process::Command::new("open")
+    std::process::Command::new(OPEN)
         .arg(&installed.path)
         .spawn()
         .map(|_| ())
@@ -1079,7 +1133,7 @@ mod tests {
     use super::*;
 
     fn ditto(args: &[&str]) {
-        let status = std::process::Command::new("ditto")
+        let status = std::process::Command::new(DITTO)
             .args(args)
             .status()
             .expect("spawn ditto");
@@ -1120,17 +1174,14 @@ mod tests {
     }
 
     #[test]
-    fn find_dot_app_prefers_codex() {
+    fn require_single_codex_app_rejects_multiple_apps() {
         let root = std::env::temp_dir().join(format!("codex-find-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("Other.app")).unwrap();
         std::fs::create_dir_all(root.join("Codex.app")).unwrap();
 
-        let found = find_dot_app(&root).expect("an .app is found");
-        assert!(
-            found.ends_with("Codex.app"),
-            "prefers Codex.app, got {found:?}"
-        );
+        let err = require_single_codex_app(&root).unwrap_err();
+        assert!(err.to_string().contains("multiple .app"));
 
         let _ = std::fs::remove_dir_all(&root);
     }
