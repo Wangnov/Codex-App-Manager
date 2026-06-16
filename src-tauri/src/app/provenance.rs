@@ -69,6 +69,7 @@ impl ProvenanceStore {
 
     pub fn load_with_health() -> (Self, StoreLoadHealth) {
         let Some(path) = store_path() else {
+            log::error!("configuration corrupt which=provenance detail=missing-data-dir");
             return (
                 Self::default(),
                 StoreLoadHealth::corrupt("无法定位 provenance.json 数据目录".to_string()),
@@ -82,11 +83,17 @@ impl ProvenanceStore {
         let mut health = match outcome {
             LoadOutcome::Ok => StoreLoadHealth::ok(),
             LoadOutcome::RecoveredFromBak => {
+                log::warn!(
+                    "configuration recovered from backup which=provenance detail=provenance.json"
+                );
                 StoreLoadHealth::recovered("provenance.json 已从 .bak 备份恢复".to_string())
             }
-            LoadOutcome::Corrupt => StoreLoadHealth::corrupt(
-                "provenance.json 损坏且 .bak 备份不可用，已使用空托管记录".to_string(),
-            ),
+            LoadOutcome::Corrupt => {
+                log::error!("configuration corrupt which=provenance detail=unrecoverable");
+                StoreLoadHealth::corrupt(
+                    "provenance.json 损坏且 .bak 备份不可用，已使用空托管记录".to_string(),
+                )
+            }
         };
 
         let mut store = store.unwrap_or_default();

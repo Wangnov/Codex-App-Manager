@@ -87,7 +87,14 @@ pub fn read_msix_identity(path: &Path) -> Result<MsixIdentity, EngineError> {
     manifest
         .read_to_string(&mut xml)
         .map_err(|e| EngineError::Msix(format!("decode AppxManifest.xml: {e}")))?;
-    parse_appx_manifest_xml(&xml)
+    let identity = parse_appx_manifest_xml(&xml)?;
+    log::info!(
+        "MSIX identity name={} version={} arch={}",
+        identity.name,
+        identity.version,
+        identity.processor_architecture
+    );
+    Ok(identity)
 }
 
 /// Parse the `<Dependencies><PackageDependency .../>` entries from an
@@ -178,24 +185,36 @@ pub fn validate_codex_identity(
     expected_architecture: Option<&str>,
 ) -> Result<(), EngineError> {
     if identity.name != OPENAI_PACKAGE_IDENTITY {
-        return Err(EngineError::Msix(format!(
+        let err = EngineError::Msix(format!(
             "unexpected package identity {}; expected {}",
             identity.name, OPENAI_PACKAGE_IDENTITY
-        )));
+        ));
+        log::error!("MSIX identity mismatch error={err}");
+        return Err(err);
     }
     if identity.version != expected_version {
-        return Err(EngineError::Msix(format!(
+        let err = EngineError::Msix(format!(
             "unexpected package version {}; expected {}",
             identity.version, expected_version
-        )));
+        ));
+        log::error!("MSIX identity mismatch error={err}");
+        return Err(err);
     }
     if !arch_matches(&identity.processor_architecture, expected_architecture) {
-        return Err(EngineError::Msix(format!(
+        let err = EngineError::Msix(format!(
             "unexpected architecture {}; expected {}",
             identity.processor_architecture,
             expected_architecture.unwrap_or("any")
-        )));
+        ));
+        log::error!("MSIX identity mismatch error={err}");
+        return Err(err);
     }
+    log::info!(
+        "MSIX identity validated name={} version={} arch={}",
+        identity.name,
+        identity.version,
+        identity.processor_architecture
+    );
     Ok(())
 }
 

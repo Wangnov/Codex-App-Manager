@@ -28,6 +28,7 @@ pub fn apply_delta(
     out_app: &Path,
     patch: &Path,
 ) -> Result<(), EngineError> {
+    log::info!("delta reconstruction start");
     if out_app.exists() {
         std::fs::remove_dir_all(out_app)
             .map_err(|e| EngineError::Io(format!("clear out_app: {e}")))?;
@@ -42,11 +43,14 @@ pub fn apply_delta(
         .map_err(|e| EngineError::Io(format!("spawn BinaryDelta: {e}")))?;
 
     if !output.status.success() {
-        return Err(EngineError::Apply(format!(
+        let err = EngineError::Apply(format!(
             "BinaryDelta apply failed ({}): {}",
             output.status,
             String::from_utf8_lossy(&output.stderr).trim()
-        )));
+        ));
+        log::error!("delta reconstruction failed error={err}");
+        return Err(err);
     }
+    log::info!("delta reconstruction completed");
     Ok(())
 }

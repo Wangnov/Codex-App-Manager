@@ -1,6 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { isNetworkError } from "./managerApi";
+import { isNetworkError, managerApi } from "./managerApi";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
+}));
+
+const invokeMock = vi.mocked(invoke);
+
+beforeEach(() => {
+  invokeMock.mockReset();
+  vi.stubGlobal("window", { open: vi.fn(), __TAURI_INTERNALS__: undefined });
+});
 
 describe("isNetworkError", () => {
   it("classifies transport and TLS failures as connectivity errors", () => {
@@ -29,5 +41,45 @@ describe("isNetworkError", () => {
     ).toBe(false);
     expect(isNetworkError("appcast enclosure missing edSignature")).toBe(false);
     expect(isNetworkError("EdDSA signature does not match")).toBe(false);
+  });
+});
+
+describe("diagnostics API", () => {
+  it("returns browser fallbacks without invoking Tauri", async () => {
+    const diagnostics = await managerApi.getDiagnostics();
+
+    expect(diagnostics.os).toBe("browser");
+    await expect(managerApi.openLogsDir()).resolves.toBeUndefined();
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("invokes diagnostics commands inside Tauri", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    const diagnostics = {
+      appVersion: "0.1.17",
+      os: "macos",
+      arch: "aarch64",
+      locale: null,
+      updateSource: "auto",
+      customSourceHost: null,
+      windowsInstallMode: null,
+      installStatus: "macos status=none",
+      configHealth: {
+        settingsStatus: "ok",
+        provenanceStatus: "ok",
+        unknownSource: null,
+        detail: null,
+      },
+      logsDir: "/tmp/logs",
+      recentErrors: [],
+      logTail: "",
+      generatedAtUnix: 1,
+    };
+    invokeMock.mockResolvedValueOnce(diagnostics).mockResolvedValueOnce(undefined);
+
+    await expect(managerApi.getDiagnostics()).resolves.toEqual(diagnostics);
+    await expect(managerApi.openLogsDir()).resolves.toBeUndefined();
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "get_diagnostics");
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "open_logs_dir");
   });
 });

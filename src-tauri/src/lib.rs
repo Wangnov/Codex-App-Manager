@@ -69,6 +69,36 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .targets([
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                        file_name: Some("codex-app-manager".to_string()),
+                    }),
+                ])
+                .level(if cfg!(debug_assertions) {
+                    log::LevelFilter::Debug
+                } else {
+                    log::LevelFilter::Info
+                })
+                .level_for("tao", log::LevelFilter::Warn)
+                .level_for("wry", log::LevelFilter::Warn)
+                .max_file_size(crate::app::logging::MAX_LOG_FILE_BYTES)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepAll)
+                .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
+                .format(|out, message, record| {
+                    out.finish(format_args!(
+                        "[{}] [{}] [{}:{}] {}",
+                        record.level(),
+                        record.target(),
+                        record.file().unwrap_or("?"),
+                        record.line().unwrap_or(0),
+                        message
+                    ))
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
@@ -116,17 +146,35 @@ pub fn run() {
             commands::win_launch_codex,
             commands::win_perform_update,
             commands::win_uninstall,
+            commands::get_diagnostics,
+            commands::open_logs_dir,
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
             install_macos_menu(app)?;
+            log::info!(
+                "Codex App Manager v{} starting (os={}, arch={})",
+                app.package_info().version,
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            );
+            if let Some(logs_dir) = crate::app::logging::logs_dir(app.handle()) {
+                tauri::async_runtime::spawn_blocking(move || {
+                    crate::app::logging::prune_old_logs(
+                        &logs_dir,
+                        crate::app::logging::KEEP_LOG_FILES,
+                    );
+                });
+            }
             let operations = app.state::<state::ManagerState>().operations.clone();
             tauri::async_runtime::spawn_blocking(move || {
                 let summary = crate::app::staging::cleanup_stale_staging(&operations);
                 if summary.failed > 0 {
-                    eprintln!(
-                        "staging cleanup removed {} of {} stale dirs ({} failed)",
-                        summary.removed, summary.scanned, summary.failed
+                    log::warn!(
+                        "staging cleanup completed with failures scanned={} removed={} failed={}",
+                        summary.scanned,
+                        summary.removed,
+                        summary.failed
                     );
                 }
             });
@@ -137,6 +185,13 @@ pub fn run() {
                 .unwrap_or_else(|poison| poison.into_inner())
                 .clone();
             if !health.is_ok() {
+                log::warn!(
+                    "config health not ok: settings={} provenance={} unknown_source={:?} detail={:?}",
+                    health.settings_status,
+                    health.provenance_status,
+                    health.unknown_source,
+                    health.detail
+                );
                 let _ = app.emit("app://config-health", health);
             }
             Ok(())

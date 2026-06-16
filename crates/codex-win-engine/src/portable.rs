@@ -495,7 +495,22 @@ pub fn install_portable_from_msix(
     install_root: &Path,
     relaunch: bool,
 ) -> Result<PortableInstallReport, EngineError> {
-    install_portable_from_msix_inner(msix_path, install_root, true, relaunch)
+    let root = install_root.display();
+    log::info!("portable install start install_root={root}");
+    match install_portable_from_msix_inner(msix_path, install_root, true, relaunch) {
+        Ok(report) => {
+            let root = &report.install_root;
+            log::info!("portable install completed install_root={root}");
+            Ok(report)
+        }
+        Err(err) => {
+            log::error!(
+                "portable install failed install_root={} error={err}",
+                install_root.display()
+            );
+            Err(err)
+        }
+    }
 }
 
 fn install_portable_from_msix_inner(
@@ -617,6 +632,8 @@ pub fn purge_codex_user_data(notes: &mut Vec<String>) -> Result<bool, EngineErro
     };
     let user_data = PathBuf::from(home).join(".codex");
     if user_data.exists() {
+        let path = user_data.display();
+        log::warn!("purging Codex user data path={path}");
         fs::remove_dir_all(&user_data).map_err(|e| io_err("purge user data", e))?;
         Ok(true)
     } else {
@@ -628,6 +645,8 @@ pub fn uninstall_portable(
     install_root: &Path,
     purge_user_data: bool,
 ) -> Result<PortableUninstallReport, EngineError> {
+    let path = install_root.display();
+    log::info!("portable uninstall start path={path}");
     request_codex_close_for_root(30, install_root)?;
 
     let removed_files = if install_root.exists() {
@@ -661,7 +680,7 @@ pub fn uninstall_portable(
         .iter()
         .any(|note| note.contains("cleanup failed"));
 
-    Ok(PortableUninstallReport {
+    let report = PortableUninstallReport {
         success: true,
         partial,
         install_root: install_root.to_string_lossy().into_owned(),
@@ -675,7 +694,10 @@ pub fn uninstall_portable(
             "Portable Codex uninstall completed.".to_string()
         },
         notes,
-    })
+    };
+    let path = &report.install_root;
+    log::info!("portable uninstall completed path={path}");
+    Ok(report)
 }
 
 #[cfg(test)]

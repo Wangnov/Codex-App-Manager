@@ -118,6 +118,8 @@ impl MsixDependencyPrecheck {
 }
 
 pub fn fetch_text(url: &str) -> Result<String, EngineError> {
+    let source = url_host(url);
+    log::debug!("fetch Windows text source={source}");
     let max_text = MAX_TEXT_BYTES.to_string();
     let output = hidden_command(curl_exe())
         .args([
@@ -138,21 +140,28 @@ pub fn fetch_text(url: &str) -> Result<String, EngineError> {
         .map_err(|e| EngineError::Io(format!("spawn curl: {e}")))?;
 
     if !output.status.success() {
-        return Err(EngineError::Io(curl_failure_message(
+        let err = EngineError::Io(curl_failure_message(
             url,
             output.status.code(),
             &String::from_utf8_lossy(&output.stderr),
-        )));
+        ));
+        log::warn!("fetch Windows text failed source={source} error={err}");
+        return Err(err);
     }
 
     if output.stdout.len() > MAX_TEXT_BYTES as usize {
-        return Err(EngineError::Io(format!(
+        let err = EngineError::Io(format!(
             "text response exceeded {} bytes",
             MAX_TEXT_BYTES
-        )));
+        ));
+        log::warn!("fetch Windows text failed source={source} error={err}");
+        return Err(err);
     }
 
-    String::from_utf8(output.stdout).map_err(|e| EngineError::Io(e.to_string()))
+    let text = String::from_utf8(output.stdout).map_err(|e| EngineError::Io(e.to_string()))?;
+    let bytes = text.len();
+    log::debug!("fetch Windows text completed source={source} bytes={bytes}");
+    Ok(text)
 }
 
 fn curl_failure_message(url: &str, exit_code: Option<i32>, stderr: &str) -> String {
@@ -237,6 +246,8 @@ fn run_powershell_json(script: &str) -> Result<String, EngineError> {
 
 #[cfg(windows)]
 pub fn install_msix_sideload(path: &Path) -> Result<MsixSideloadReport, EngineError> {
+    let path_display = path.display();
+    log::info!("MSIX sideload start path={path_display}");
     let script = format!(
         r#"
 $ErrorActionPreference = 'Stop'
@@ -285,12 +296,23 @@ try {{
     );
     let json = run_powershell_json(&script)
         .map_err(|e| EngineError::Install(format!("run Add-AppxPackage: {e}")))?;
-    serde_json::from_str(&json)
-        .map_err(|e| EngineError::Install(format!("parse Add-AppxPackage result: {e}")))
+    let report: MsixSideloadReport = serde_json::from_str(&json)
+        .map_err(|e| EngineError::Install(format!("parse Add-AppxPackage result: {e}")))?;
+    if report.success {
+        let path_display = path.display();
+        log::info!("MSIX sideload completed path={path_display}");
+    } else {
+        let path_display = path.display();
+        let error = &report.message;
+        log::error!("MSIX sideload failed path={path_display} error={error}");
+    }
+    Ok(report)
 }
 
 #[cfg(not(windows))]
 pub fn install_msix_sideload(_path: &Path) -> Result<MsixSideloadReport, EngineError> {
+    log::info!("MSIX sideload start path=unsupported-platform");
+    log::error!("MSIX sideload failed error=unsupported-platform");
     Ok(MsixSideloadReport {
         success: false,
         message: "MSIX sideloading is only available on Windows".to_string(),
@@ -317,6 +339,7 @@ pub fn precheck_msix_dependencies(path: &Path) -> MsixDependencyPrecheck {
     let frameworks = match crate::msix::read_msix_dependencies(path) {
         Ok(deps) => crate::msix::framework_dependencies(&deps),
         Err(err) => {
+            log::warn!("MSIX dependency precheck could not read manifest error={err}");
             return MsixDependencyPrecheck {
                 checked: false,
                 frameworks_ok: true,
@@ -327,6 +350,7 @@ pub fn precheck_msix_dependencies(path: &Path) -> MsixDependencyPrecheck {
     };
 
     if frameworks.is_empty() {
+        log::info!("MSIX dependency precheck completed missing=[]");
         return MsixDependencyPrecheck {
             checked: true,
             frameworks_ok: true,
@@ -444,6 +468,10 @@ pub fn precheck_msix_dependencies(path: &Path) -> MsixDependencyPrecheck {
         .collect();
 
     let frameworks_ok = missing_frameworks.is_empty();
+    if !frameworks_ok {
+        let missing = missing_frameworks.join(",");
+        log::warn!("MSIX dependency precheck missing frameworks missing={missing}");
+    }
     let reason = if frameworks_ok {
         String::new()
     } else {
@@ -476,6 +504,8 @@ pub fn precheck_msix_dependencies(_path: &Path) -> MsixDependencyPrecheck {
 
 #[cfg(windows)]
 pub fn remove_msix_package() -> Result<MsixRemoveReport, EngineError> {
+    let package = crate::OPENAI_PACKAGE_IDENTITY;
+    log::info!("remove MSIX package package={package}");
     let script = format!(
         r#"
 	$ErrorActionPreference = 'Stop'
@@ -533,12 +563,25 @@ pub fn remove_msix_package() -> Result<MsixRemoveReport, EngineError> {
     );
     let json = run_powershell_json(&script)
         .map_err(|e| EngineError::Install(format!("run Remove-AppxPackage: {e}")))?;
-    serde_json::from_str(&json)
-        .map_err(|e| EngineError::Install(format!("parse Remove-AppxPackage result: {e}")))
+    let report: MsixRemoveReport = serde_json::from_str(&json)
+        .map_err(|e| EngineError::Install(format!("parse Remove-AppxPackage result: {e}")))?;
+    if report.success {
+        let package = crate::OPENAI_PACKAGE_IDENTITY;
+        log::info!("remove MSIX package completed package={package}");
+    } else {
+        let package = crate::OPENAI_PACKAGE_IDENTITY;
+        let error = &report.message;
+        log::error!(
+            "remove MSIX package failed package={package} error={error}"
+        );
+    }
+    Ok(report)
 }
 
 #[cfg(not(windows))]
 pub fn remove_msix_package() -> Result<MsixRemoveReport, EngineError> {
+    let package = crate::OPENAI_PACKAGE_IDENTITY;
+    log::info!("remove MSIX package package={package}");
     Ok(MsixRemoveReport {
         success: false,
         message: "MSIX removal is only available on Windows".to_string(),
@@ -549,6 +592,7 @@ pub fn remove_msix_package() -> Result<MsixRemoveReport, EngineError> {
 
 #[cfg(windows)]
 pub fn verify_msix_health() -> MsixHealthReport {
+    log::info!("MSIX health check start");
     let script = format!(
         r#"
 $ErrorActionPreference = 'SilentlyContinue'
@@ -646,6 +690,7 @@ try {{
         // is exactly the situation where an MSIX can register but fail to launch,
         // so treat the verdict as degraded and let the caller fall back to the
         // portable build instead of silently keeping an unverifiable package.
+        log::info!("MSIX health check result healthy=false status=probe-failed");
         return MsixHealthReport {
             healthy: false,
             verified: false,
@@ -702,7 +747,7 @@ try {{
         )
     };
 
-    MsixHealthReport {
+    let report = MsixHealthReport {
         healthy,
         // The probe ran and produced a real verdict.
         verified: true,
@@ -712,7 +757,11 @@ try {{
         aumid_resolved,
         missing_dependencies,
         reason,
-    }
+    };
+    let healthy = report.healthy;
+    let status = &report.status;
+    log::info!("MSIX health check result healthy={healthy} status={status}");
+    report
 }
 
 #[cfg(not(windows))]
@@ -720,6 +769,8 @@ pub fn verify_msix_health() -> MsixHealthReport {
     // Non-Windows builds never sideload, so there is nothing to verify; report
     // healthy so this can never be the thing that blocks a (non-existent) path,
     // but leave verified = false since no real check was performed.
+    log::info!("MSIX health check start");
+    log::info!("MSIX health check result healthy=true status=not-windows");
     MsixHealthReport {
         healthy: true,
         verified: false,
@@ -774,7 +825,7 @@ pub fn detect_portable_install(portable_root: &Path) -> Option<InstalledWindowsC
         .ok()
         .and_then(|xml| parse_appx_manifest_xml(&xml).ok());
 
-    Some(InstalledWindowsCodex {
+    let installed = InstalledWindowsCodex {
         path: portable_root.to_string_lossy().into_owned(),
         version: identity
             .as_ref()
@@ -784,7 +835,10 @@ pub fn detect_portable_install(portable_root: &Path) -> Option<InstalledWindowsC
         source: "portable".to_string(),
         package_family_name: None,
         installed_at: path_mtime_secs(&exe.to_string_lossy()),
-    })
+    };
+    let path = &installed.path;
+    log::debug!("detected portable install path={path}");
+    Some(installed)
 }
 
 /// Open the installed Codex: run the portable `Codex.exe`, or hand the MSIX

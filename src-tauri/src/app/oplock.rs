@@ -94,6 +94,11 @@ impl Drop for OperationGuard {
         {
             let _ = OperationManager::unlock_lock_file(&mut inner);
             inner.active.take();
+            log::info!(
+                "released operation lock kind={} token_prefix={}",
+                self.kind.as_str(),
+                token_prefix(&self.token.0)
+            );
         }
     }
 }
@@ -134,12 +139,20 @@ impl OperationManager {
             .map_err(|_| OperationError::Lock("operation mutex poisoned".to_string()))?;
         self.reclaim_stale_detached(&mut inner)?;
         let Some(active) = inner.active.as_ref() else {
+            log::warn!("end_operation received invalid token");
             return Err(OperationError::InvalidToken);
         };
         if active.token != token.0 {
+            log::warn!("end_operation received mismatched token");
             return Err(OperationError::InvalidToken);
         }
+        let active_kind = active.kind;
         Self::unlock_lock_file(&mut inner)?;
+        log::info!(
+            "ended operation lock kind={} token_prefix={}",
+            active_kind.as_str(),
+            token_prefix(&token.0)
+        );
         inner.active.take();
         Ok(())
     }
@@ -152,7 +165,10 @@ impl OperationManager {
         self.reclaim_stale_detached(&mut inner)?;
         match inner.active.as_ref() {
             Some(active) if active.token == token.0 => Ok(()),
-            _ => Err(OperationError::InvalidToken),
+            _ => {
+                log::warn!("operation token validation failed");
+                Err(OperationError::InvalidToken)
+            }
         }
     }
 
@@ -191,6 +207,11 @@ impl OperationManager {
             .map_err(|_| OperationError::Lock("operation mutex poisoned".to_string()))?;
         self.reclaim_stale_detached(&mut inner)?;
         if let Some(active) = inner.active.as_ref() {
+            log::warn!(
+                "operation lock rejected same process active_kind={} requested_kind={}",
+                active.kind.as_str(),
+                kind.as_str()
+            );
             return Err(OperationError::BusySameProcess(active.kind.as_str()));
         }
 
@@ -198,7 +219,15 @@ impl OperationManager {
         let token = OperationToken(generate_token(started_unix));
         {
             let lock_file = Self::lock_file_mut(&mut inner)?;
-            Self::try_lock_file(lock_file)?;
+            if let Err(err) = Self::try_lock_file(lock_file) {
+                if matches!(err, OperationError::BusyOtherProcess) {
+                    log::warn!(
+                        "operation lock rejected other process requested_kind={}",
+                        kind.as_str()
+                    );
+                }
+                return Err(err);
+            }
             let _ = write_lock_diagnostics(lock_file, kind, &token, started_unix);
         }
         inner.active = Some(ActiveOp {
@@ -207,6 +236,11 @@ impl OperationManager {
             started_unix,
             detached,
         });
+        log::info!(
+            "acquired operation lock kind={} token_prefix={} detached={detached}",
+            kind.as_str(),
+            token_prefix(&token.0)
+        );
         Ok(token)
     }
 
@@ -248,19 +282,28 @@ impl OperationManager {
     }
 
     fn reclaim_stale_detached(&self, inner: &mut Inner) -> Result<(), OperationError> {
-        if self.has_stale_detached(inner) {
+        if let Some(active) = self.stale_detached(inner) {
+            let age_secs = now_unix().saturating_sub(active.started_unix);
+            log::info!(
+                "reclaiming stale detached operation kind={} age_secs={age_secs}",
+                active.kind.as_str()
+            );
             Self::unlock_lock_file(inner)?;
             inner.active.take();
         }
         Ok(())
     }
 
-    fn has_stale_detached(&self, inner: &Inner) -> bool {
-        inner.active.as_ref().is_some_and(|active| {
+    fn stale_detached<'a>(&self, inner: &'a Inner) -> Option<&'a ActiveOp> {
+        inner.active.as_ref().filter(|active| {
             active.detached
                 && now_unix().saturating_sub(active.started_unix) >= self.stale_after_secs
         })
     }
+}
+
+fn token_prefix(token: &str) -> &str {
+    token.get(..8).unwrap_or(token)
 }
 
 fn generate_token(started_unix: u64) -> String {

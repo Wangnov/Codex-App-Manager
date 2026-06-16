@@ -55,7 +55,12 @@ impl Appcast {
 }
 
 pub fn parse_appcast(xml: &str) -> Result<Appcast, EngineError> {
-    let doc = roxmltree::Document::parse(xml).map_err(|e| EngineError::Parse(e.to_string()))?;
+    let len = xml.len();
+    log::debug!("parse appcast XML start len={len}");
+    let doc = roxmltree::Document::parse(xml).map_err(|e| {
+        log::warn!("parse appcast XML failed error={e}");
+        EngineError::Parse(e.to_string())
+    })?;
 
     let mut items = Vec::new();
     for item in doc
@@ -118,8 +123,18 @@ pub fn parse_appcast(xml: &str) -> Result<Appcast, EngineError> {
     }
 
     if items.is_empty() {
+        log::warn!("parse appcast produced no usable items");
         return Err(EngineError::EmptyAppcast);
     }
+    let latest = items.iter().max_by_key(|item| item.build);
+    let latest_build = latest.map(|item| item.build).unwrap_or(0);
+    let short_version = latest
+        .map(|item| item.short_version.as_str())
+        .unwrap_or_default();
+    let item_count = items.len();
+    log::info!(
+        "parse appcast succeeded items={item_count} latest_build={latest_build} short_version={short_version}"
+    );
     Ok(Appcast { items })
 }
 

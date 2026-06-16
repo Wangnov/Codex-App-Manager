@@ -46,17 +46,23 @@ struct WindowsUpdateManifest {
 }
 
 pub fn parse_manifest(text: &str) -> Result<WindowsRelease, EngineError> {
-    let manifest: MirrorManifest =
-        serde_json::from_str(text).map_err(|e| EngineError::Manifest(format!("json: {e}")))?;
+    let len = text.len();
+    log::debug!("parse Windows manifest start len={len}");
+    let manifest: MirrorManifest = serde_json::from_str(text).map_err(|e| {
+        log::warn!("parse Windows manifest failed error={e}");
+        EngineError::Manifest(format!("json: {e}"))
+    })?;
     if manifest.schema_version < 2 {
-        return Err(EngineError::Manifest(format!(
+        let err = EngineError::Manifest(format!(
             "unsupported schemaVersion {}",
             manifest.schema_version
-        )));
+        ));
+        log::warn!("parse Windows manifest failed error={err}");
+        return Err(err);
     }
 
     let windows = manifest.sources.windows;
-    Ok(WindowsRelease {
+    let release = WindowsRelease {
         version: windows.version,
         package_moniker: windows.package_moniker,
         architecture: windows.architecture,
@@ -68,7 +74,14 @@ pub fn parse_manifest(text: &str) -> Result<WindowsRelease, EngineError> {
             .and_then(|m| m.store_product_id.clone())
             .or(windows.product_id),
         package_identity: windows.update_manifest.and_then(|m| m.package_identity),
-    })
+    };
+    let arch = release.architecture.as_deref().unwrap_or("unknown");
+    log::debug!(
+        "parse Windows manifest succeeded version={} package_moniker={} arch={arch}",
+        release.version,
+        release.package_moniker
+    );
+    Ok(release)
 }
 
 #[cfg(test)]

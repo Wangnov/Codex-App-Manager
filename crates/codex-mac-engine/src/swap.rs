@@ -42,6 +42,7 @@ pub fn quit_codex(timeout_secs: u64) -> Result<(), EngineError> {
     if !codex_running() {
         return Ok(());
     }
+    log::info!("requesting Codex graceful quit timeout={timeout_secs}");
     let _ = Command::new(OSASCRIPT)
         .args(["-e", r#"tell application "Codex" to quit"#])
         .status();
@@ -60,6 +61,7 @@ pub fn quit_codex(timeout_secs: u64) -> Result<(), EngineError> {
         }
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
+    log::warn!("Codex graceful quit timed out");
     Err(EngineError::Io(
         "Codex did not quit within the timeout — it may be waiting on its own \
          quit-confirmation dialog (e.g. \"Quit Codex?\" when automations are \
@@ -77,7 +79,10 @@ pub fn same_volume(a: &Path, b: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     match (std::fs::metadata(a), std::fs::metadata(b)) {
         (Ok(ma), Ok(mb)) => ma.dev() == mb.dev(),
-        _ => false,
+        _ => {
+            log::warn!("same-volume preflight could not read metadata");
+            false
+        }
     }
 }
 
@@ -99,6 +104,7 @@ pub fn swap_in_place(
 ) -> Result<(), EngineError> {
     let install_parent = install_app.parent().unwrap_or(install_app);
     if new_app.exists() && install_parent.exists() && !same_volume(new_app, install_parent) {
+        log::warn!("atomic swap preflight rejected cross-volume target");
         return Err(EngineError::Io(
             "staged bundle is on a different volume than the install root; \
              stage it on the same volume for an atomic swap"
@@ -111,6 +117,8 @@ pub fn swap_in_place(
             .map_err(|e| EngineError::Io(format!("clear stale backup: {e}")))?;
     }
 
+    let install_path = install_app.display();
+    log::info!("atomic swap start install_path={install_path}");
     let had_old = install_app.exists();
     if had_old {
         std::fs::rename(install_app, backup_app)
@@ -118,14 +126,21 @@ pub fn swap_in_place(
     }
 
     match std::fs::rename(new_app, install_app) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            let install_path = install_app.display();
+            log::info!("atomic swap completed install_path={install_path}");
+            Ok(())
+        }
         Err(e) => {
             if had_old {
                 let _ = std::fs::rename(backup_app, install_app);
             }
-            Err(EngineError::Io(format!(
+            let err = EngineError::Io(format!(
                 "install new bundle failed (rolled back): {e}"
-            )))
+            ));
+            let install_path = install_app.display();
+            log::error!("atomic swap failed install_path={install_path} error={err}");
+            Err(err)
         }
     }
 }
@@ -133,23 +148,32 @@ pub fn swap_in_place(
 /// Restore the backup bundle over the install root (used when the new version
 /// fails its post-launch health check).
 pub fn rollback(install_app: &Path, backup_app: &Path) -> Result<(), EngineError> {
+    let install_path = install_app.display();
+    log::warn!("rollback start install_path={install_path}");
     if install_app.exists() {
         std::fs::remove_dir_all(install_app)
             .map_err(|e| EngineError::Io(format!("remove failed new bundle: {e}")))?;
     }
     std::fs::rename(backup_app, install_app)
-        .map_err(|e| EngineError::Io(format!("rollback: {e}")))
+        .map_err(|e| EngineError::Io(format!("rollback: {e}")))?;
+    let install_path = install_app.display();
+    log::warn!("rollback completed install_path={install_path}");
+    Ok(())
 }
 
 /// Relaunch Codex from the install root.
 pub fn relaunch(install_app: &Path) -> Result<(), EngineError> {
+    log::info!("relaunching Codex");
     let status = Command::new(OPEN)
         .arg(install_app)
         .status()
         .map_err(|e| EngineError::Io(format!("open Codex: {e}")))?;
     if !status.success() {
-        return Err(EngineError::Io(format!("open Codex exited with {status}")));
+        let err = EngineError::Io(format!("open Codex exited with {status}"));
+        log::warn!("Codex relaunch failed error={err}");
+        return Err(err);
     }
+    log::info!("Codex relaunch requested");
     Ok(())
 }
 

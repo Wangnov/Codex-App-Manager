@@ -8,6 +8,16 @@ pub enum CapabilityState {
     Unknown,
 }
 
+impl CapabilityState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Available => "available",
+            Self::Unavailable => "unavailable",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CapabilityCheck {
@@ -102,6 +112,19 @@ impl WinCapabilityReport {
             }
             SideloadRecommendation::MsixPreferred
         };
+        let add_appx = add_appx_package.state.as_str();
+        let appx_service_state = appx_service.state.as_str();
+        let sideload_policy_state = sideload_policy.state.as_str();
+        let msix_deployment_state = msix_deployment.state.as_str();
+        let developer_mode = "unknown";
+        let metered = metered_network.state.as_str();
+        log::info!(
+            "Windows capability probe result add_appx={add_appx} appx_service={appx_service_state} sideload_policy={sideload_policy_state} msix_deployment={msix_deployment_state} developer_mode={developer_mode} metered={metered}"
+        );
+        if recommendation == SideloadRecommendation::PortableFallback {
+            let reason = notes.last().map(String::as_str).unwrap_or("MSIX sideload blocked");
+            log::warn!("MSIX sideload blocked; recommending portable fallback reason={reason}");
+        }
 
         Self {
             add_appx_package,

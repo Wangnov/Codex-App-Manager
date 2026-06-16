@@ -6,7 +6,9 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::app::atomic_file;
 use crate::app::config_health::ConfigHealth;
+use crate::app::diagnostics::Diagnostics;
 use crate::app::disk::available_space;
+use crate::app::logging::redact_url;
 use crate::app::mac_update::{
     cancel_macos_download, install_macos, pause_macos_download, perform_macos_update,
     plan_macos_update, stage_macos_update, uninstall_macos, MacInstallStatus, MacPerformReport,
@@ -63,8 +65,11 @@ fn windows_endpoints_for_settings(
             let base = if saved.custom_url.trim().is_empty() {
                 state.settings.mirror_base_url.clone()
             } else {
-                let normalized = validate_custom_source(&saved.custom_url)
-                    .map_err(|e| AppError::Engine(e.to_string()))?;
+                let normalized = validate_custom_source(&saved.custom_url).map_err(|e| {
+                    let host = redact_url(&saved.custom_url);
+                    log::warn!("url_guard rejected custom Windows source reason={e} host={host}");
+                    AppError::Engine(e.to_string())
+                })?;
                 normalize_windows_source_base(&normalized)
                     .unwrap_or_else(|| state.settings.mirror_base_url.clone())
             };
@@ -122,7 +127,13 @@ fn begin_guard(state: &ManagerState, kind: OperationKind) -> Result<OperationGua
     state
         .operations
         .begin(kind)
-        .map_err(AppError::from)
+        .map_err(|err| {
+            log::warn!(
+                "failed to acquire operation guard kind={} error={err}",
+                kind.as_str()
+            );
+            AppError::from(err)
+        })
         .map_err(Into::into)
 }
 
@@ -155,10 +166,14 @@ impl Drop for DetachedGuard {
 fn destructive_token_error(err: OperationError) -> CommandError {
     match err {
         OperationError::InvalidToken => {
+            log::warn!("destructive token validation failed");
             AppError::StaleExpectation("操作令牌无效或已过期，请重新检查后再确认".to_string())
                 .into()
         }
-        other => AppError::from(other).into(),
+        other => {
+            log::warn!("destructive token rejected error={other}");
+            AppError::from(other).into()
+        }
     }
 }
 
@@ -576,12 +591,20 @@ pub fn set_settings(
     s.normalize();
     normalize_settings_for_target(&mut s, &state.target);
     if s.source == UpdateSource::Custom && !s.custom_url.trim().is_empty() {
-        s.custom_url =
-            validate_custom_source(&s.custom_url).map_err(|e| AppError::Engine(e.to_string()))?;
+        s.custom_url = validate_custom_source(&s.custom_url).map_err(|e| {
+            let host = redact_url(&s.custom_url);
+            log::warn!("url_guard rejected custom source reason={e} host={host}");
+            AppError::Engine(e.to_string())
+        })?;
     }
     let _op = begin_guard(&state, OperationKind::SetInstallRoot)?;
     s.save()?;
     refresh_config_health(&state);
+    log::info!(
+        "saved settings source={} windows_install_mode={}",
+        s.source.as_str(),
+        s.windows_install_mode
+    );
     Ok(s)
 }
 
@@ -623,6 +646,7 @@ pub fn restore_config_backup(
     if current_tmp.exists() {
         let _ = std::fs::remove_file(current_tmp);
     }
+    log::info!("restored config backup which={which}");
     Ok(refresh_config_health(&state))
 }
 
@@ -647,6 +671,7 @@ pub fn reset_config(
             )
         }
     }
+    log::info!("reset config which={which}");
     Ok(refresh_config_health(&state))
 }
 
@@ -658,7 +683,13 @@ pub fn begin_operation(
     state
         .operations
         .begin_detached(kind)
-        .map_err(AppError::from)
+        .map_err(|err| {
+            log::warn!(
+                "begin_operation rejected kind={} error={err}",
+                kind.as_str()
+            );
+            AppError::from(err)
+        })
         .map_err(Into::into)
 }
 
@@ -675,7 +706,13 @@ pub fn arm_destructive(
     state
         .operations
         .begin_detached(kind)
-        .map_err(AppError::from)
+        .map_err(|err| {
+            log::warn!(
+                "arm_destructive rejected kind={} error={err}",
+                kind.as_str()
+            );
+            AppError::from(err)
+        })
         .map_err(Into::into)
 }
 
@@ -757,6 +794,8 @@ pub fn win_set_install_root(
     settings.install_root = install_root;
     settings.normalize();
     settings.save()?;
+    let path = &settings.install_root;
+    log::info!("set Windows install root path={path}");
     Ok(settings)
 }
 
@@ -774,6 +813,8 @@ pub fn win_reset_install_root(
     settings.install_root = install_root;
     settings.normalize();
     settings.save()?;
+    let path = &settings.install_root;
+    log::info!("reset Windows install root path={path}");
     Ok(settings)
 }
 
@@ -880,7 +921,71 @@ pub fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), Command
 #[tauri::command]
 pub fn open_url(url: String) -> Result<(), CommandError> {
     validate_external_http_url(&url)?;
+    let host = redact_url(&url);
+    log::info!("open external URL host={host}");
     open_external_url(&url).map_err(|e| AppError::Internal(format!("打开链接失败: {e}")).into())
+}
+
+#[tauri::command]
+pub fn get_diagnostics(app: tauri::AppHandle, state: State<'_, ManagerState>) -> Diagnostics {
+    log::info!("collecting diagnostics");
+    crate::app::diagnostics::collect_diagnostics(&app, &state)
+}
+
+#[tauri::command]
+pub fn open_logs_dir(app: tauri::AppHandle) -> Result<(), CommandError> {
+    let dir = crate::app::logging::logs_dir(&app)
+        .ok_or_else(|| AppError::Internal("无法定位日志目录".to_string()))?;
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.display();
+    log::info!("open logs dir path={path}");
+    open_logs_dir_platform(&dir)
+        .map_err(|e| AppError::Internal(format!("打开日志目录失败: {e}")).into())
+}
+
+#[cfg(target_os = "macos")]
+fn open_logs_dir_platform(dir: &Path) -> Result<(), String> {
+    std::process::Command::new("/usr/bin/open")
+        .arg(dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn open_logs_dir_platform(dir: &Path) -> Result<(), String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr::{null, null_mut};
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let operation: Vec<u16> = OsStr::new("open").encode_wide().chain([0]).collect();
+    let target: Vec<u16> = dir.as_os_str().encode_wide().chain([0]).collect();
+    let result = unsafe {
+        ShellExecuteW(
+            null_mut(),
+            operation.as_ptr(),
+            target.as_ptr(),
+            null(),
+            null(),
+            SW_SHOWNORMAL,
+        )
+    } as isize;
+    if result <= 32 {
+        Err(format!("ShellExecuteW failed with code {result}"))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn open_logs_dir_platform(dir: &Path) -> Result<(), String> {
+    std::process::Command::new("xdg-open")
+        .arg(dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 fn validate_external_http_url(url: &str) -> Result<(), AppError> {

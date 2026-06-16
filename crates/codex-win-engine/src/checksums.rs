@@ -72,12 +72,18 @@ pub fn find_msix_sha256(text: &str, package_moniker: &str) -> Result<String, Eng
 
     match matches.as_slice() {
         [entry] => Ok(entry.sha256.clone()),
-        [] => Err(EngineError::Checksums(format!(
-            "checksums has no .msix entry matching moniker {package_moniker}"
-        ))),
-        _ => Err(EngineError::Checksums(format!(
-            "checksums has multiple .msix entries matching moniker {package_moniker}"
-        ))),
+        [] => {
+            log::error!("checksums has no matching MSIX moniker={package_moniker}");
+            Err(EngineError::Checksums(format!(
+                "checksums has no .msix entry matching moniker {package_moniker}"
+            )))
+        }
+        _ => {
+            log::error!("checksums has multiple matching MSIX entries moniker={package_moniker}");
+            Err(EngineError::Checksums(format!(
+                "checksums has multiple .msix entries matching moniker {package_moniker}"
+            )))
+        }
     }
 }
 

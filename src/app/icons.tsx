@@ -21,6 +21,8 @@ export type IconName =
   | "trash"
   | "sliders"
   | "message"
+  | "folder"
+  | "copy"
   | "globe"
   | "external"
   | "minimize"
@@ -93,6 +95,18 @@ const PATHS: Record<IconName, ReactNode> = {
   ),
   message: (
     <path d="M5 5h14a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 16H9l-4 3.5V6.5A1.5 1.5 0 0 1 5 5Z" />
+  ),
+  folder: (
+    <>
+      <path d="M4 6.5h6l2 2h8v9A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5Z" />
+      <path d="M4 9h16" />
+    </>
+  ),
+  copy: (
+    <>
+      <rect x="8" y="8" width="11" height="11" rx="1.5" />
+      <path d="M5 15.5V6.5A1.5 1.5 0 0 1 6.5 5h9" />
+    </>
   ),
   globe: (
     <>

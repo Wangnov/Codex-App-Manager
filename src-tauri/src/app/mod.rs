@@ -1,6 +1,8 @@
 pub mod atomic_file;
 pub mod config_health;
+pub mod diagnostics;
 pub mod disk;
+pub mod logging;
 pub mod mac_update;
 pub mod oplock;
 pub mod paths;

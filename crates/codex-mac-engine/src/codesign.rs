@@ -78,8 +78,33 @@ pub fn assess_gatekeeper(app: &Path) -> Result<(), EngineError> {
 
 /// Full post-apply gate: signature intact + correct team + Gatekeeper accepts.
 pub fn gate_reconstructed(app: &Path) -> Result<(), EngineError> {
-    verify_signature(app)?;
-    require_team(app, OPENAI_TEAM_ID)?;
-    assess_gatekeeper(app)?;
+    let app_name = app
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Codex.app");
+    log::info!("codesign Gatekeeper gate start path={app_name}");
+    if let Err(err) = verify_signature(app) {
+        log::error!("codesign gate failed path={app_name} error={err}");
+        return Err(err);
+    }
+    let team = match team_identifier(app) {
+        Ok(team) => team,
+        Err(err) => {
+            log::error!("codesign gate failed path={app_name} error={err}");
+            return Err(err);
+        }
+    };
+    if team != OPENAI_TEAM_ID {
+        let err = EngineError::Verify(format!(
+            "TeamIdentifier mismatch: got {team}, expected {OPENAI_TEAM_ID}"
+        ));
+        log::error!("codesign gate failed path={app_name} error={err}");
+        return Err(err);
+    }
+    if let Err(err) = assess_gatekeeper(app) {
+        log::error!("Gatekeeper gate failed path={app_name} error={err}");
+        return Err(err);
+    }
+    log::info!("codesign Gatekeeper gate passed path={app_name} team={team}");
     Ok(())
 }

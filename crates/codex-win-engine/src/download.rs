@@ -108,6 +108,7 @@ fn run_curl(
     max_bytes: u64,
     on_progress: &dyn Fn(u64),
 ) -> Result<(), String> {
+    let source = url_host(url);
     let dest = dest.to_string_lossy().into_owned();
     let max_bytes = max_bytes.to_string();
     let mut args = vec![
@@ -140,6 +141,8 @@ fn run_curl(
         if DOWNLOAD_CANCELLED.load(Ordering::SeqCst) {
             let _ = child.kill();
             let _ = child.wait();
+            let downloaded = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+            log::info!("Windows download cancelled source={source} downloaded={downloaded}");
             return Err("download cancelled".to_string());
         }
         let downloaded = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
@@ -168,6 +171,7 @@ fn run_curl(
     }
     let downloaded = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
     on_progress(downloaded);
+    log::info!("Windows curl download completed source={source} bytes={downloaded}");
     Ok(())
 }
 
@@ -200,6 +204,14 @@ pub fn download_to_with_progress_bounded(
 
     let part = partial_path(dest);
     let should_resume = part.metadata().map(|m| m.len() > 0).unwrap_or(false);
+    let source = url_host(url);
+    let dest_name = dest
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("download");
+    log::info!(
+        "Windows download start source={source} dest={dest_name} resume={should_resume} max_bytes={max_bytes}"
+    );
     let download_result = run_curl(url, &part, should_resume, max_bytes, on_progress);
     if let Err(first_err) = download_result {
         if is_cancelled_error(&first_err) {
@@ -210,6 +222,7 @@ pub fn download_to_with_progress_bounded(
         }
         if should_resume {
             let _ = std::fs::remove_file(&part);
+            log::warn!("Windows resume failed; retrying fresh source={source} first_err={first_err}");
             run_curl(url, &part, false, max_bytes, on_progress).map_err(|second_err| {
                 if is_cancelled_error(&second_err) {
                     if DOWNLOAD_DISCARD.load(Ordering::SeqCst) {
@@ -231,6 +244,8 @@ pub fn download_to_with_progress_bounded(
             .map_err(|e| EngineError::Io(format!("remove previous download: {e}")))?;
     }
     std::fs::rename(&part, dest).map_err(|e| EngineError::Io(format!("publish download: {e}")))?;
+    let bytes = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+    log::info!("Windows download finished source={source} bytes={bytes}");
     Ok(())
 }
 
@@ -252,7 +267,10 @@ pub fn sha256_file(path: &Path) -> Result<String, EngineError> {
         }
         hasher.update(&buf[..read]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    let sha256 = format!("{:x}", hasher.finalize());
+    let sha256_prefix = sha256.get(..12).unwrap_or(&sha256);
+    log::info!("SHA256 calculation completed sha256_prefix={sha256_prefix}");
+    Ok(sha256)
 }
 
 #[cfg(test)]

@@ -211,20 +211,27 @@ fn bind_manifest_checksums(
         )));
     };
     if !url_moniker.eq_ignore_ascii_case(&release.package_moniker) {
-        return Err(AppError::Engine(format!(
+        let err = AppError::Engine(format!(
             "Windows manifest package moniker {} does not match URL artifact {}",
             release.package_moniker, package_file
-        )));
+        ));
+        log::error!("Windows manifest checksums binding mismatch error={err}");
+        return Err(err);
     }
     if let Some(identity) = release.package_identity.as_deref() {
         if identity != codex_win_engine::OPENAI_PACKAGE_IDENTITY {
-            return Err(AppError::Engine(format!(
+            let err = AppError::Engine(format!(
                 "Windows manifest package identity {identity} does not match {}",
                 codex_win_engine::OPENAI_PACKAGE_IDENTITY
-            )));
+            ));
+            log::error!("Windows manifest checksums binding mismatch error={err}");
+            return Err(err);
         }
     }
-    find_msix_sha256(checksums_text, &release.package_moniker).map_err(engine_err)
+    find_msix_sha256(checksums_text, &release.package_moniker).map_err(|err| {
+        log::error!("Windows manifest checksums binding mismatch error={err}");
+        engine_err(err)
+    })
 }
 
 fn read_windows_release(endpoints: &MirrorEndpoints) -> Result<(WindowsRelease, String), AppError> {
@@ -284,6 +291,7 @@ fn close_existing_codex_before_portable_fallback(
     settings: &AppSettings,
     previous_installed: Option<&InstalledWindowsCodex>,
 ) -> Result<(), AppError> {
+    log::info!("Windows portable fallback close existing source=portable-fallback");
     if let Some(installed) = detect_installed_codex(PathBuf::from(&settings.install_root).as_path())
     {
         if installed.source == "msix" {
@@ -342,6 +350,7 @@ pub fn plan_windows_update_with_install_mode(
     settings: &AppSettings,
     install_mode: &str,
 ) -> Result<WinUpdateReport, AppError> {
+    log::info!("Windows plan start install_mode={install_mode}");
     let (release, sha256) = read_windows_release(endpoints)?;
     let installed = detect_managed_codex(settings, &ProvenanceStore::load());
     let capabilities = probe_capabilities();
@@ -354,6 +363,7 @@ pub fn plan_windows_update_with_install_mode(
         portable_fallback_ready(endpoints),
     );
     if install_mode == "portable" {
+        log::info!("Windows user selected portable; skipping MSIX sideload");
         plan.route = WinInstallRoute::PortableFallback;
         plan.warnings.push(
             "User selected the portable Windows install mode; MSIX sideload will be skipped."
@@ -361,7 +371,7 @@ pub fn plan_windows_update_with_install_mode(
         );
     }
 
-    Ok(WinUpdateReport {
+    let report = WinUpdateReport {
         manifest_url: endpoints.manifest_url.clone(),
         checksums_url: endpoints.checksums_url.clone(),
         package_url: endpoints.windows_msix_url.clone(),
@@ -369,7 +379,14 @@ pub fn plan_windows_update_with_install_mode(
         installed,
         capabilities,
         plan,
-    })
+    };
+    let route = route_label(&report.plan);
+    let recommendation = match report.capabilities.recommendation {
+        codex_win_engine::SideloadRecommendation::MsixPreferred => "msix-preferred",
+        codex_win_engine::SideloadRecommendation::PortableFallback => "portable-fallback",
+    };
+    log::info!("Windows plan complete route={route} capabilities={recommendation}");
+    Ok(report)
 }
 
 pub fn stage_windows_update(
@@ -385,9 +402,14 @@ pub fn stage_windows_update_with_install_mode(
     install_mode: &str,
     progress: &dyn Fn(DownloadProgress),
 ) -> Result<WinStageReport, AppError> {
+    log::info!("Windows stage start install_mode={install_mode}");
     let report = plan_windows_update_with_install_mode(endpoints, settings, install_mode)?;
     let route = route_label(&report.plan);
     if report.plan.up_to_date {
+        log::info!(
+            "Windows stage complete route={route} verified=false portable_fallback_ready={}",
+            report.plan.portable_fallback_ready
+        );
         return Ok(WinStageReport {
             up_to_date: true,
             route,
@@ -475,10 +497,12 @@ pub fn stage_windows_update_with_install_mode(
 
         let authenticode = verify_openai_authenticode(&dest).map_err(engine_err)?;
         if !authenticode.is_valid_openai() {
-            return Err(AppError::Engine(format!(
+            let err = AppError::Engine(format!(
                 "MSIX Authenticode verification failed: status={}, subject={}",
                 authenticode.status, authenticode.subject
-            )));
+            ));
+            log::error!("Windows stage failed error={err}");
+            return Err(err);
         }
 
         let identity = read_msix_identity(&dest).map_err(engine_err)?;
@@ -490,10 +514,12 @@ pub fn stage_windows_update_with_install_mode(
         .map_err(engine_err)?;
         if let Some(expected_identity) = report.release.package_identity.as_deref() {
             if identity.name != expected_identity {
-                return Err(AppError::Engine(format!(
+                let err = AppError::Engine(format!(
                     "MSIX identity {} does not match manifest package identity {}",
                     identity.name, expected_identity
-                )));
+                ));
+                log::error!("Windows stage failed error={err}");
+                return Err(err);
             }
         }
 
@@ -523,10 +549,17 @@ pub fn stage_windows_update_with_install_mode(
     match stage_result {
         Ok(report) => {
             let _ = staging.keep();
+            let route = &report.route;
+            let verified = report.hash_verified && report.identity_verified;
+            let portable_fallback_ready = report.portable_fallback_ready;
+            log::info!(
+                "Windows stage complete route={route} verified={verified} portable_fallback_ready={portable_fallback_ready}"
+            );
             Ok(report)
         }
         Err(err) => {
             staging.discard();
+            log::error!("Windows stage failed error={err}");
             Err(err)
         }
     }
@@ -548,6 +581,7 @@ pub fn auto_stage_windows_update_with_install_mode(
     allow_metered: bool,
     install_mode: &str,
 ) -> Result<WinAutoStageReport, AppError> {
+    log::info!("Windows auto-stage decision enabled={enabled} allow_metered={allow_metered}");
     if !enabled {
         return Ok(WinAutoStageReport {
             enabled,
@@ -582,6 +616,10 @@ pub fn auto_stage_windows_update_with_install_mode(
         match report.capabilities.metered_network.state {
             CapabilityState::Available => {}
             CapabilityState::Unavailable => {
+                let metered_state = report.capabilities.metered_network.state.as_str();
+                log::warn!(
+                    "Windows auto-stage skipped metered network metered_state={metered_state}"
+                );
                 return Ok(WinAutoStageReport {
                     enabled,
                     allow_metered,
@@ -597,6 +635,10 @@ pub fn auto_stage_windows_update_with_install_mode(
                 });
             }
             CapabilityState::Unknown => {
+                let metered_state = report.capabilities.metered_network.state.as_str();
+                log::warn!(
+                    "Windows auto-stage skipped metered network metered_state={metered_state}"
+                );
                 return Ok(WinAutoStageReport {
                     enabled,
                     allow_metered,
@@ -635,11 +677,15 @@ pub fn auto_stage_windows_update_with_install_mode(
 }
 
 pub fn cancel_windows_download() -> bool {
-    cancel_active_download()
+    let requested = cancel_active_download();
+    log::info!("Windows cancel download requested={requested}");
+    requested
 }
 
 pub fn pause_windows_download() -> bool {
-    pause_active_download()
+    let requested = pause_active_download();
+    log::info!("Windows pause download requested={requested}");
+    requested
 }
 
 pub fn perform_windows_update(
@@ -665,6 +711,7 @@ pub fn perform_windows_update_with_install_mode(
     expected: Option<WinPerformExpectation>,
     progress: &dyn Fn(DownloadProgress),
 ) -> Result<WinPerformReport, AppError> {
+    log::info!("Windows perform start install_mode={install_mode}");
     if !confirm {
         return Err(AppError::Internal(
             "explicit confirmation is required before installing Windows Codex".to_string(),
@@ -700,6 +747,7 @@ pub fn perform_windows_update_with_install_mode(
     }
 
     if stage.route == "portable-fallback" {
+        log::warn!("Windows route changed to portable fallback from_route=msix-sideload to_route=portable-fallback");
         close_existing_codex_before_portable_fallback(settings, current_installed.as_ref())?;
         return install_portable_after_stage(settings, stage, None, None, current_installed);
     }
@@ -722,6 +770,7 @@ pub fn perform_windows_update_with_install_mode(
     // the post-install health check + transparent fallback remain the backstop.
     let precheck = precheck_msix_dependencies(PathBuf::from(&staged_path).as_path());
     if precheck.should_route_portable() {
+        log::warn!("Windows route changed to portable fallback from_route=msix-sideload to_route=portable-fallback");
         // We're switching to portable, but the running build must be stopped first.
         close_existing_codex_before_portable_fallback(settings, current_installed.as_ref())?;
         let mut stage = stage;
@@ -763,6 +812,7 @@ pub fn perform_windows_update_with_install_mode(
         // a runnable build, then clean up the bad MSIX best-effort.
         let health = verify_msix_health();
         if !health.healthy {
+            log::warn!("Windows route changed to portable fallback from_route=msix-sideload to_route=portable-fallback");
             let mut report = install_portable_after_stage(
                 settings,
                 stage,
@@ -811,7 +861,7 @@ pub fn perform_windows_update_with_install_mode(
             store.save()?;
         }
 
-        return Ok(WinPerformReport {
+        let report = WinPerformReport {
             success: true,
             action: WinPerformAction::MsixSideload,
             message: sideload.message.clone(),
@@ -823,7 +873,15 @@ pub fn perform_windows_update_with_install_mode(
             fallback_attempted: false,
             notes: stage.notes.clone(),
             stage,
-        });
+        };
+        let action = report.action.as_str();
+        let installed_version = report
+            .installed
+            .as_ref()
+            .map(|installed| installed.version.as_str())
+            .unwrap_or("none");
+        log::info!("Windows perform success action={action} installed_version={installed_version}");
+        return Ok(report);
     }
 
     install_portable_after_stage(settings, stage, Some(sideload), None, current_installed)
@@ -895,7 +953,7 @@ fn install_portable_after_stage(
         WinPerformAction::PortableFallback
     };
 
-    Ok(WinPerformReport {
+    let report = WinPerformReport {
         success: true,
         action,
         message: portable.message.clone(),
@@ -907,7 +965,15 @@ fn install_portable_after_stage(
         fallback_attempted: true,
         notes,
         stage,
-    })
+    };
+    let action = report.action.as_str();
+    let installed_version = report
+        .installed
+        .as_ref()
+        .map(|installed| installed.version.as_str())
+        .unwrap_or("none");
+    log::info!("Windows perform success action={action} installed_version={installed_version}");
+    Ok(report)
 }
 
 pub fn win_install_status(settings: &AppSettings) -> WinInstallStatus {
@@ -930,6 +996,8 @@ pub fn win_install_status(settings: &AppSettings) -> WinInstallStatus {
 pub fn win_adopt(settings: &AppSettings) -> Result<WinInstallStatus, AppError> {
     let installed = detect_installed_codex(PathBuf::from(&settings.install_root).as_path())
         .ok_or_else(|| AppError::Internal("no Windows Codex detected to adopt".to_string()))?;
+    let path = &installed.path;
+    log::info!("Windows adopt external install path={path}");
     let mut store = ProvenanceStore::load();
     store.record(
         installed.path.clone(),
@@ -949,6 +1017,8 @@ pub fn launch_codex(settings: &AppSettings) -> Result<(), AppError> {
     let store = ProvenanceStore::load();
     let installed = detect_managed_codex(settings, &store)
         .ok_or_else(|| AppError::Engine("没有可打开的 Codex".to_string()))?;
+    let path = &installed.path;
+    log::info!("Windows launch Codex path={path}");
     codex_win_engine::launch_codex(&installed).map_err(|e| AppError::Engine(e.to_string()))
 }
 
@@ -957,6 +1027,7 @@ pub fn uninstall_windows_codex(
     confirm: bool,
     purge_user_data: bool,
 ) -> Result<WinUninstallReport, AppError> {
+    log::info!("Windows uninstall start purge_user_data={purge_user_data}");
     if !confirm {
         return Err(AppError::Internal(
             "explicit confirmation is required before uninstalling Windows Codex".to_string(),
@@ -986,6 +1057,7 @@ pub fn uninstall_windows_codex(
         &installed_before.path,
         version_key(&installed_before.version),
     ) {
+        log::warn!("Windows uninstall rejected external install");
         return Ok(WinUninstallReport {
             success: false,
             action: "external-not-managed".to_string(),
@@ -1021,7 +1093,7 @@ pub fn uninstall_windows_codex(
                 notes.push("User data was preserved.".to_string());
             }
         }
-        return Ok(WinUninstallReport {
+        let report = WinUninstallReport {
             success: msix.success,
             action: "remove-msix".to_string(),
             message: msix.message.clone(),
@@ -1030,7 +1102,9 @@ pub fn uninstall_windows_codex(
             portable: None,
             purged_user_data,
             notes,
-        });
+        };
+        log::info!("Windows uninstall complete purge_user_data={purge_user_data}");
+        return Ok(report);
     }
 
     let portable = uninstall_portable(
@@ -1042,7 +1116,7 @@ pub fn uninstall_windows_codex(
         store.remove(&installed_before.path);
         store.save()?;
     }
-    Ok(WinUninstallReport {
+    let report = WinUninstallReport {
         success: portable.success,
         action: "remove-portable".to_string(),
         message: portable.message.clone(),
@@ -1051,7 +1125,9 @@ pub fn uninstall_windows_codex(
         purged_user_data: portable.purged_user_data,
         notes: portable.notes.clone(),
         portable: Some(portable),
-    })
+    };
+    log::info!("Windows uninstall complete purge_user_data={purge_user_data}");
+    Ok(report)
 }
 
 #[cfg(test)]

@@ -42,6 +42,10 @@ pub fn plan_update(appcast: &Appcast, current_build: u64) -> Option<UpdatePlan> 
     let full_size = latest.full.length;
 
     if current_build >= latest.build {
+        log::debug!(
+            "macOS plan result strategy=none current_build={current_build} latest_build={} download_size=0 full_size={full_size}",
+            latest.build
+        );
         return Some(UpdatePlan {
             up_to_date: true,
             current_build,
@@ -83,6 +87,15 @@ pub fn plan_update(appcast: &Appcast, current_build: u64) -> Option<UpdatePlan> 
     } else {
         0.0
     };
+
+    let strategy_name = match &strategy {
+        UpdateStrategy::Delta { .. } => "delta",
+        UpdateStrategy::Full => "full",
+    };
+    log::debug!(
+        "macOS plan result strategy={strategy_name} current_build={current_build} latest_build={} download_size={size} full_size={full_size}",
+        latest.build
+    );
 
     Some(UpdatePlan {
         up_to_date: false,

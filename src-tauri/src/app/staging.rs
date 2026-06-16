@@ -46,9 +46,24 @@ pub fn staging_root() -> PathBuf {
 
 pub fn create_unique_staging(prefix: &str) -> Result<StagingDir, AppError> {
     let root = staging_root().join(format!("{prefix}-{}", Uuid::new_v4()));
-    std::fs::create_dir_all(&root)
-        .map_err(|e| AppError::Internal(format!("创建暂存目录失败: {e}")))?;
-    set_owner_only(&root)?;
+    if let Err(err) = std::fs::create_dir_all(&root) {
+        log::error!(
+            "failed to create staging directory path={} prefix={prefix} error={err}",
+            root.display()
+        );
+        return Err(AppError::Internal(format!("创建暂存目录失败: {err}")));
+    }
+    if let Err(err) = set_owner_only(&root) {
+        log::error!(
+            "failed to secure staging directory path={} prefix={prefix} error={err}",
+            root.display()
+        );
+        return Err(err);
+    }
+    log::info!(
+        "created staging directory path={} prefix={prefix}",
+        root.display()
+    );
     Ok(StagingDir { root })
 }
 
@@ -56,11 +71,14 @@ pub fn cleanup_stale_staging(ops: &OperationManager) -> CleanupSummary {
     let mut summary = CleanupSummary::default();
     if ops.is_busy() {
         summary.skipped_busy = true;
+        log::info!("staging cleanup skipped skipped_busy=true");
         return summary;
     }
 
     let root = staging_root();
     let Ok(entries) = std::fs::read_dir(&root) else {
+        let path = root.display();
+        log::debug!("staging cleanup found no root path={path}");
         return summary;
     };
     let now = SystemTime::now();
@@ -78,10 +96,24 @@ pub fn cleanup_stale_staging(ops: &OperationManager) -> CleanupSummary {
             continue;
         }
         match std::fs::remove_dir_all(&path) {
-            Ok(()) => summary.removed += 1,
-            Err(_) => summary.failed += 1,
+            Ok(()) => {
+                summary.removed += 1;
+                let path_display = path.display();
+                log::debug!("staging cleanup removed path={path_display}");
+            }
+            Err(err) => {
+                summary.failed += 1;
+                let path_display = path.display();
+                log::debug!("staging cleanup failed path={path_display} error={err}");
+            }
         }
     }
+    log::info!(
+        "staging cleanup summary scanned={} removed={} failed={}",
+        summary.scanned,
+        summary.removed,
+        summary.failed
+    );
     summary
 }
 

@@ -83,6 +83,13 @@ fn partial_path(dest: &Path) -> PathBuf {
     dest.with_file_name(format!("{file_name}.part"))
 }
 
+fn url_host(url: &str) -> &str {
+    url.split("://")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .unwrap_or("")
+}
+
 fn is_cancelled_error(err: &EngineError) -> bool {
     matches!(err, EngineError::Io(msg) if msg == "download cancelled")
 }
@@ -94,6 +101,7 @@ fn run_curl(
     max_bytes: u64,
     on_progress: &dyn Fn(u64),
 ) -> Result<(), EngineError> {
+    let source = url_host(url);
     let dest_arg = dest.to_string_lossy().into_owned();
     let max_bytes = max_bytes.to_string();
     let mut args = vec![
@@ -135,6 +143,8 @@ fn run_curl(
         if DOWNLOAD_CANCELLED.load(Ordering::SeqCst) {
             let _ = child.kill();
             let _ = child.wait();
+            let downloaded = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+            log::info!("macOS download cancelled source={source} downloaded={downloaded}");
             return Err(EngineError::Io("download cancelled".to_string()));
         }
         match child
@@ -155,6 +165,10 @@ fn run_curl(
                 } else if last_progress.elapsed() >= STALL_TIMEOUT {
                     let _ = child.kill();
                     let _ = child.wait();
+                    let stall_secs = STALL_TIMEOUT.as_secs();
+                    log::warn!(
+                        "macOS download stalled source={source} downloaded={downloaded} stall_secs={stall_secs}"
+                    );
                     return Err(EngineError::Io(format!(
                         "curl download stalled for {} seconds: {url}",
                         STALL_TIMEOUT.as_secs()
@@ -168,6 +182,7 @@ fn run_curl(
 
     let downloaded = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
     on_progress(downloaded);
+    log::info!("macOS curl download completed source={source} bytes={downloaded}");
     Ok(())
 }
 
@@ -185,6 +200,14 @@ pub fn download_to_with_progress_bounded(
 
     let part = partial_path(dest);
     let should_resume = part.metadata().map(|m| m.len() > 0).unwrap_or(false);
+    let source = url_host(url);
+    let dest_name = dest
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("download");
+    log::info!(
+        "macOS download start source={source} dest={dest_name} resume={should_resume} max_bytes={max_bytes}"
+    );
     let download_result = run_curl(url, &part, should_resume, max_bytes, on_progress);
     if let Err(first_err) = download_result {
         if is_cancelled_error(&first_err) {
@@ -195,6 +218,7 @@ pub fn download_to_with_progress_bounded(
         }
         if should_resume {
             let _ = std::fs::remove_file(&part);
+            log::warn!("macOS resume failed; retrying fresh source={source} first_err={first_err}");
             run_curl(url, &part, false, max_bytes, on_progress).map_err(|second_err| {
                 if is_cancelled_error(&second_err) {
                     if DOWNLOAD_DISCARD.load(Ordering::SeqCst) {
@@ -216,6 +240,8 @@ pub fn download_to_with_progress_bounded(
     std::fs::rename(&part, dest).map_err(|e| EngineError::Io(format!("publish download: {e}")))?;
     let meta = std::fs::metadata(dest).map_err(|e| EngineError::Io(e.to_string()))?;
     on_progress(meta.len());
+    let bytes = meta.len();
+    log::info!("macOS download finished source={source} bytes={bytes}");
     Ok(meta.len())
 }
 

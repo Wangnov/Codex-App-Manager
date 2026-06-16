@@ -33,7 +33,18 @@ fn verifying_key_from_b64(b64: &str) -> Result<VerifyingKey, EngineError> {
 
 /// Verify `message` against `ed_signature_b64` using the pinned Sparkle key.
 pub fn verify_sparkle(message: &[u8], ed_signature_b64: &str) -> Result<(), EngineError> {
-    verify_with(&sparkle_pubkey()?, message, ed_signature_b64)
+    let bytes = message.len();
+    log::info!("EdDSA verification start bytes={bytes}");
+    match verify_with(&sparkle_pubkey()?, message, ed_signature_b64) {
+        Ok(()) => {
+            log::info!("EdDSA verification passed");
+            Ok(())
+        }
+        Err(err) => {
+            log::error!("EdDSA verification failed error={err}");
+            Err(err)
+        }
+    }
 }
 
 /// Verify `message` against `ed_signature_b64` using an explicit key.

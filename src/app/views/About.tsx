@@ -1,12 +1,44 @@
 import { useCallback, useState } from "react";
 
 import { errorMessage, managerApi, type ManagerUpdateAvailable } from "../../services/managerApi";
+import type { Diagnostics } from "../../shared/types";
 import { Icon, CodexMark } from "../icons";
 import { useI18n } from "../i18n";
 import { NavBar, Ring } from "../components";
 
 const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? "0.0.0";
 const REPO_URL = "https://github.com/Wangnov/Codex-App-Manager";
+
+function formatDiagnostics(diagnostics: Diagnostics): string {
+  const health = diagnostics.configHealth;
+  const recentErrors = diagnostics.recentErrors.length
+    ? diagnostics.recentErrors.map((line) => `- ${line}`).join("\n")
+    : "- none";
+  return [
+    "# Codex App Manager diagnostics",
+    "",
+    `Generated: ${new Date(diagnostics.generatedAtUnix * 1000).toISOString()}`,
+    `Version: ${diagnostics.appVersion}`,
+    `Platform: ${diagnostics.os}/${diagnostics.arch}`,
+    `Update source: ${diagnostics.updateSource}`,
+    `Custom source host: ${diagnostics.customSourceHost ?? "none"}`,
+    `Windows install mode: ${diagnostics.windowsInstallMode ?? "n/a"}`,
+    `Install status: ${diagnostics.installStatus}`,
+    `Logs dir: ${diagnostics.logsDir ?? "n/a"}`,
+    "",
+    "## Config health",
+    `Settings: ${health.settingsStatus}`,
+    `Provenance: ${health.provenanceStatus}`,
+    `Unknown source: ${health.unknownSource ?? "none"}`,
+    `Detail: ${health.detail ?? "none"}`,
+    "",
+    "## Recent warnings/errors",
+    recentErrors,
+    "",
+    "## Log tail",
+    diagnostics.logTail || "(empty)",
+  ].join("\n");
+}
 
 export function About({ onBack }: { onBack: () => void }) {
   const { t } = useI18n();
@@ -60,6 +92,26 @@ export function About({ onBack }: { onBack: () => void }) {
     }
   }, [pendingUpdate, t]);
 
+  const openLogsDir = useCallback(async () => {
+    setMgrMsg(null);
+    try {
+      await managerApi.openLogsDir();
+    } catch (cause) {
+      setMgrMsg(errorMessage(cause));
+    }
+  }, []);
+
+  const copyDiagnostics = useCallback(async () => {
+    setMgrMsg(null);
+    try {
+      const diagnostics = await managerApi.getDiagnostics();
+      await navigator.clipboard.writeText(formatDiagnostics(diagnostics));
+      setMgrMsg(t("about.diagnosticsCopied"));
+    } catch {
+      setMgrMsg(t("about.diagnosticsFailed"));
+    }
+  }, [t]);
+
   return (
     <div className="pop">
       {/* Block leaving while a self-update is downloading/installing — it
@@ -94,6 +146,20 @@ export function About({ onBack }: { onBack: () => void }) {
               <span className="rsub">{REPO_URL.replace("https://", "")}</span>
             </span>
             <Icon name="external" className="chev" />
+          </button>
+          <button className="row" onClick={openLogsDir}>
+            <Icon name="folder" className="ricon" />
+            <span className="rtext">
+              <span className="rtitle">{t("about.openLogsDir")}</span>
+            </span>
+            <Icon name="chevron" className="chev" />
+          </button>
+          <button className="row" onClick={copyDiagnostics}>
+            <Icon name="copy" className="ricon" />
+            <span className="rtext">
+              <span className="rtitle">{t("about.copyDiagnostics")}</span>
+            </span>
+            <Icon name="chevron" className="chev" />
           </button>
         </div>
       </div>

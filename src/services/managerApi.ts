@@ -5,6 +5,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import type {
   AppSettings,
   CommandError,
+  Diagnostics,
   MacInstallStatus,
   MacPerformReport,
   MacUninstallReport,
@@ -277,6 +278,27 @@ const WIN_FALLBACK_UNINSTALL: WinUninstallReport = {
   notes: ["User data was preserved."],
 };
 
+const FALLBACK_DIAGNOSTICS: Diagnostics = {
+  appVersion: "0.0.0",
+  os: "browser",
+  arch: "unknown",
+  locale: null,
+  updateSource: "auto",
+  customSourceHost: null,
+  windowsInstallMode: null,
+  installStatus: "browser preview",
+  configHealth: {
+    settingsStatus: "ok",
+    provenanceStatus: "ok",
+    unknownSource: null,
+    detail: null,
+  },
+  logsDir: null,
+  recentErrors: [],
+  logTail: "",
+  generatedAtUnix: Math.floor(Date.now() / 1000),
+};
+
 export const managerApi = {
   armDestructive(kind: OperationKind): Promise<OperationToken> {
     if (!hasTauriRuntime()) {
@@ -399,6 +421,21 @@ export const managerApi = {
       return Promise.resolve();
     }
     return invoke<void>("open_url", { url });
+  },
+  getDiagnostics(): Promise<Diagnostics> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve({
+        ...FALLBACK_DIAGNOSTICS,
+        generatedAtUnix: Math.floor(Date.now() / 1000),
+      });
+    }
+    return invoke<Diagnostics>("get_diagnostics");
+  },
+  openLogsDir(): Promise<void> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve();
+    }
+    return invoke<void>("open_logs_dir");
   },
 
   // Settings (update source + general). The backend persists them so the source

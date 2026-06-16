@@ -110,6 +110,29 @@ export interface AppSettings {
   installRoot: string;
 }
 
+export interface ConfigHealth {
+  settingsStatus: string;
+  provenanceStatus: string;
+  unknownSource: string | null;
+  detail: string | null;
+}
+
+export interface Diagnostics {
+  appVersion: string;
+  os: string;
+  arch: string;
+  locale: string | null;
+  updateSource: string;
+  customSourceHost: string | null;
+  windowsInstallMode: string | null;
+  installStatus: string;
+  configHealth: ConfigHealth;
+  logsDir: string | null;
+  recentErrors: string[];
+  logTail: string;
+  generatedAtUnix: number;
+}
+
 export const DEFAULT_SETTINGS: AppSettings = {
   source: "auto",
   customUrl: "",

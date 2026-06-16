@@ -246,6 +246,7 @@ fn detect_managed_installed() -> Option<InstalledCodex> {
 }
 
 pub fn plan_macos_update(simulated_build: Option<u64>) -> Result<MacUpdateReport, AppError> {
+    log::info!("macOS plan start simulated_build={simulated_build:?}");
     let installed = detect_managed_installed();
     let (appcast_url, xml) = fetch_appcast_for_arch(arch_of(&installed))?;
     let appcast = parse_appcast(&xml).map_err(|e| AppError::Engine(e.to_string()))?;
@@ -266,13 +267,24 @@ pub fn plan_macos_update(simulated_build: Option<u64>) -> Result<MacUpdateReport
             .and_then(|it| it.pub_date.clone())
     });
 
-    Ok(MacUpdateReport {
+    let report = MacUpdateReport {
         appcast_url,
         installed,
         simulated_build,
         plan,
         installed_pub_date,
-    })
+    };
+    let installed_build = report.installed.as_ref().map(|installed| installed.build);
+    let latest_build = report.plan.as_ref().map(|plan| plan.latest_build);
+    let strategy = report
+        .plan
+        .as_ref()
+        .map(|plan| strategy_label(&plan.strategy))
+        .unwrap_or_else(|| "none".to_string());
+    log::info!(
+        "macOS plan complete installed_build={installed_build:?} latest_build={latest_build:?} strategy={strategy}"
+    );
+    Ok(report)
 }
 
 fn strategy_label(strategy: &UpdateStrategy) -> String {
@@ -377,6 +389,8 @@ fn download_and_verify(
     signature: &str,
     progress: &dyn Fn(DownloadProgress),
 ) -> Result<PathBuf, AppError> {
+    let source = host_of(url);
+    log::info!("macOS download and verify start source={source}");
     if size > max_size {
         return Err(AppError::Engine(format!(
             "artifact size {size} exceeds {} byte limit",
@@ -412,21 +426,29 @@ fn download_and_verify(
         .map_err(|e| AppError::Engine(e.to_string()))?
         .len();
     if len != size {
-        return Err(AppError::Engine(format!("size mismatch: {len} != {size}")));
+        let err = AppError::Engine(format!("size mismatch: {len} != {size}"));
+        log::error!("macOS download and verify failed error={err}");
+        return Err(err);
     }
     if len > max_size {
-        return Err(AppError::Engine(format!(
+        let err = AppError::Engine(format!(
             "artifact size {len} exceeds {} byte limit",
             max_size
-        )));
+        ));
+        log::error!("macOS download and verify failed error={err}");
+        return Err(err);
     }
 
     let bytes = download::read_file(&dest).map_err(|e| AppError::Engine(e.to_string()))?;
     if let Err(err) = verify_sparkle(&bytes, signature) {
         let _ = std::fs::remove_file(&dest);
-        return Err(AppError::Engine(err.to_string()));
+        let err = AppError::Engine(err.to_string());
+        log::error!("macOS download and verify failed error={err}");
+        return Err(err);
     }
 
+    let path = dest.display();
+    log::info!("macOS download and verify complete path={path}");
     Ok(dest)
 }
 
@@ -438,6 +460,7 @@ fn max_bytes_for_strategy(strategy: &UpdateStrategy) -> u64 {
 }
 
 pub fn stage_macos_update(simulated_build: Option<u64>) -> Result<MacStageReport, AppError> {
+    log::info!("macOS stage start simulated_build={simulated_build:?}");
     let installed = detect_managed_installed();
     let (_, xml) = fetch_appcast_for_arch(arch_of(&installed))?;
     let appcast = parse_appcast(&xml).map_err(|e| AppError::Engine(e.to_string()))?;
@@ -445,6 +468,10 @@ pub fn stage_macos_update(simulated_build: Option<u64>) -> Result<MacStageReport
         .ok_or_else(|| AppError::Engine("appcast had no items".to_string()))?;
 
     if plan.up_to_date {
+        log::info!(
+            "macOS stage complete build={} verified=false",
+            plan.latest_build
+        );
         return Ok(MacStageReport {
             up_to_date: true,
             strategy: "none".to_string(),
@@ -482,12 +509,13 @@ pub fn stage_macos_update(simulated_build: Option<u64>) -> Result<MacStageReport
             dest
         }
         Err(err) => {
+            log::error!("macOS stage failed error={err}");
             staging.discard();
             return Err(err);
         }
     };
 
-    Ok(MacStageReport {
+    let report = MacStageReport {
         up_to_date: false,
         strategy: strategy_label(&plan.strategy),
         latest_build: plan.latest_build,
@@ -497,7 +525,11 @@ pub fn stage_macos_update(simulated_build: Option<u64>) -> Result<MacStageReport
         savings_pct: plan.savings_pct,
         staged_path: Some(dest.to_string_lossy().into_owned()),
         verified: true,
-    })
+    };
+    let build = report.latest_build;
+    let verified = report.verified;
+    log::info!("macOS stage complete build={build} verified={verified}");
+    Ok(report)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -665,17 +697,35 @@ pub fn perform_macos_update(
             "未检测到 Codex（可能已被删除或移动）：请重新检查后再试".to_string(),
         )
     })?;
+    log::info!(
+        "macOS perform start from_build={} to_build={} path={}",
+        expected.from_build,
+        expected.to_build,
+        expected.install_path
+    );
 
     // Consent integrity: the destructive swap must target exactly what the user
     // saw + confirmed. If Codex self-updated (Sparkle), moved, or staging is
     // stale, refuse rather than act on a stale consent.
     if installed.path != expected.install_path {
+        let actual = &installed.path;
+        log::warn!(
+            "macOS perform stale expectation expected_from={} expected_to={} actual_path={actual}",
+            expected.from_build,
+            expected.to_build
+        );
         return Err(AppError::StaleExpectation(format!(
             "安装位置已变化（确认时 {}，现在 {}）：请重新检查后再试",
             expected.install_path, installed.path
         )));
     }
     if installed.build != expected.from_build {
+        let actual = installed.build;
+        log::warn!(
+            "macOS perform stale expectation expected_from={} expected_to={} actual_build={actual}",
+            expected.from_build,
+            expected.to_build
+        );
         return Err(AppError::StaleExpectation(format!(
             "已装版本已变化（确认时 build {}，现在 build {}）：请重新检查后再试",
             expected.from_build, installed.build
@@ -691,6 +741,12 @@ pub fn perform_macos_update(
 
     // The appcast must still point at the build the user confirmed.
     if plan.latest_build != expected.to_build {
+        let actual = plan.latest_build;
+        log::warn!(
+            "macOS perform stale expectation expected_from={} expected_to={} actual_target={actual}",
+            expected.from_build,
+            expected.to_build
+        );
         return Err(AppError::StaleExpectation(format!(
             "更新目标已变化（确认时 build {}，现在 build {}）：请重新检查后再试",
             expected.to_build, plan.latest_build
@@ -763,13 +819,16 @@ pub fn perform_macos_update(
         };
 
         // 3) gate the reconstructed bundle before it touches the install root.
+        log::info!("macOS perform step=gate");
         gate_reconstructed(&out_app)
             .map_err(|e| AppError::Engine(format!("codesign 闸失败（拒绝替换）: {e}")))?;
 
         // 4a) pre-flight the atomic-swap precondition BEFORE quitting Codex, so a
         //     cross-volume staging dir fails fast WITHOUT closing the user's app.
         let install_parent = install_path.parent().unwrap_or(install_path.as_path());
+        log::info!("macOS perform step=same-volume-preflight");
         if !codex_mac_engine::swap::same_volume(&out_app, install_parent) {
+            log::warn!("macOS perform same-volume preflight failed");
             return Err(AppError::Engine(
                 "暂存目录与安装根不在同一卷，无法原子替换：请确保 TMPDIR 与安装根同卷".to_string(),
             ));
@@ -779,15 +838,19 @@ pub fn perform_macos_update(
         //     the swap fails after the quit, swap_in_place has restored the old
         //     bundle in place — bring the user's app back before surfacing the error.
         let was_running = codex_running();
+        log::info!("macOS perform step=quit");
         quit_codex_gracefully()?;
+        log::info!("macOS perform step=swap");
         if let Err(err) = swap_in_place(&install_path, &out_app, &backup) {
             if was_running {
                 let _ = relaunch(&install_path);
             }
+            log::error!("macOS perform swap failed error={err}");
             return Err(AppError::Engine(err.to_string()));
         }
 
         // 6) filesystem health check on the installed root.
+        log::info!("macOS perform step=health");
         let healthy = sys::installed_codex_build_at_path(&installed.path)
             .map(|(_, build)| build == plan.latest_build)
             .unwrap_or(false)
@@ -814,6 +877,7 @@ pub fn perform_macos_update(
                 // backup as a recovery path instead of claiming a clean success. We
                 // do NOT downgrade a healthy, gated install just because auto-launch
                 // failed — the user can launch it manually.
+                log::info!("macOS perform step=relaunch");
                 if let Err(err) = relaunch(&install_path) {
                     keep_staging = true;
                     return Ok(MacPerformReport {
@@ -840,7 +904,7 @@ pub fn perform_macos_update(
 
             // Not running, or relaunched cleanly → the backup is no longer needed.
             let _ = std::fs::remove_dir_all(&backup);
-            Ok(MacPerformReport {
+            let report = MacPerformReport {
                 up_to_date: false,
                 from_build: installed.build,
                 to_build: plan.latest_build,
@@ -852,8 +916,15 @@ pub fn perform_macos_update(
                 rolled_back: false,
                 warning: save_warning,
                 message: format!("已更新 build {} → {}", installed.build, plan.latest_build),
-            })
+            };
+            log::info!(
+                "macOS perform success relaunched={} to_build={}",
+                report.relaunched,
+                report.to_build
+            );
+            Ok(report)
         } else {
+            log::warn!("macOS perform step=rollback");
             rollback(&install_path, &backup)
                 .map_err(|e| AppError::Engine(format!("回滚失败（需人工介入）: {e}")))?;
             let relaunched = was_running && relaunch(&install_path).is_ok();
@@ -882,6 +953,7 @@ pub fn perform_macos_update(
             Ok(report)
         }
         Err(err) => {
+            log::error!("macOS perform failed error={err} rolled_back=false");
             staging.discard();
             Err(err)
         }
@@ -915,6 +987,8 @@ pub fn mac_install_status() -> MacInstallStatus {
 pub fn mac_adopt() -> Result<MacInstallStatus, AppError> {
     let installed = detect_installed()
         .ok_or_else(|| AppError::Internal("no Codex detected to adopt".to_string()))?;
+    let path = &installed.path;
+    log::info!("macOS adopt external install path={path}");
     let mut store = ProvenanceStore::load();
     store.record(installed.path.clone(), installed.build, "adopted-external");
     store.save()?;
@@ -955,6 +1029,7 @@ fn choose_install_dir() -> Result<PathBuf, AppError> {
 /// isn't writable). No delta, no quit (nothing running), no backup (nothing to
 /// replace). Records `manager-installed` provenance and launches the app.
 pub fn install_macos(progress: &dyn Fn(DownloadProgress)) -> Result<MacInstallStatus, AppError> {
+    log::info!("macOS install start");
     if detect_installed().is_some() {
         return Err(AppError::Engine(
             "已检测到 Codex,请使用更新而非安装".to_string(),
@@ -984,10 +1059,13 @@ pub fn install_macos(progress: &dyn Fn(DownloadProgress)) -> Result<MacInstallSt
     match install_result {
         Ok(status) => {
             staging.discard();
+            let build = status.installed.as_ref().map(|installed| installed.build);
+            log::info!("macOS install complete build={build:?}");
             Ok(status)
         }
         Err(err) => {
             staging.discard();
+            log::error!("macOS install failed error={err}");
             Err(err)
         }
     }
@@ -1040,19 +1118,28 @@ fn install_macos_in_staging(
 pub fn launch_codex() -> Result<(), AppError> {
     let installed = detect_managed_installed()
         .ok_or_else(|| AppError::Engine("没有可打开的 Codex".to_string()))?;
+    let path = &installed.path;
+    log::info!("macOS launch Codex path={path}");
     std::process::Command::new(OPEN)
         .arg(&installed.path)
         .spawn()
         .map(|_| ())
-        .map_err(|e| AppError::Engine(format!("打开 Codex 失败: {e}")))
+        .map_err(|e| {
+            log::warn!("macOS launch Codex failed error={e}");
+            AppError::Engine(format!("打开 Codex 失败: {e}"))
+        })
 }
 
 pub fn pause_macos_download() -> bool {
-    download::pause_active_download()
+    let requested = download::pause_active_download();
+    log::info!("macOS pause download requested={requested}");
+    requested
 }
 
 pub fn cancel_macos_download() -> bool {
-    download::cancel_active_download()
+    let requested = download::cancel_active_download();
+    log::info!("macOS cancel download requested={requested}");
+    requested
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1069,6 +1156,7 @@ pub struct MacUninstallReport {
 /// true by default at the UI: the user's `~/.codex` (sign-in, sessions, config)
 /// survives unless they explicitly opt out. Quits Codex first (never force-kills).
 pub fn uninstall_macos(keep_codex_home: bool) -> Result<MacUninstallReport, AppError> {
+    log::info!("macOS uninstall start keep_codex_home={keep_codex_home}");
     let installed = detect_managed_installed()
         .ok_or_else(|| AppError::Engine("no Codex detected to uninstall".to_string()))?;
     let install_path = PathBuf::from(&installed.path);
@@ -1128,11 +1216,16 @@ pub fn uninstall_macos(keep_codex_home: bool) -> Result<MacUninstallReport, AppE
         message.push_str("；托管记录更新失败,请重新检查管理状态");
     }
 
-    Ok(MacUninstallReport {
+    let report = MacUninstallReport {
         removed: true,
         kept_codex_home,
         message,
-    })
+    };
+    log::info!(
+        "macOS uninstall complete keep_codex_home={}",
+        report.kept_codex_home
+    );
+    Ok(report)
 }
 
 #[cfg(test)]

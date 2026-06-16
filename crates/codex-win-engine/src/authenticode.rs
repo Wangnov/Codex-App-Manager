@@ -109,6 +109,7 @@ fn powershell_exe() -> PathBuf {
 
 #[cfg(windows)]
 pub fn verify_openai_authenticode(path: &Path) -> Result<AuthenticodeReport, EngineError> {
+    log::info!("Authenticode verification start");
     let script = format!(
         r#"
 $ErrorActionPreference = 'Stop'
@@ -132,17 +133,32 @@ $sig = Get-AuthenticodeSignature -LiteralPath {path}
         .map_err(|e| EngineError::Authenticode(format!("spawn powershell: {e}")))?;
 
     if !output.status.success() {
-        return Err(EngineError::Authenticode(format!(
+        let err = EngineError::Authenticode(format!(
             "Get-AuthenticodeSignature failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
-        )));
+        ));
+        log::error!("Authenticode verification failed error={err}");
+        return Err(err);
     }
 
-    report_from_json(String::from_utf8_lossy(&output.stdout).trim())
+    let report = report_from_json(String::from_utf8_lossy(&output.stdout).trim())?;
+    if report.is_valid_openai() {
+        let signer = &report.subject;
+        log::info!("Authenticode verification passed signer={signer}");
+    } else {
+        log::error!(
+            "Authenticode verification failed error=status={} subject={}",
+            report.status,
+            report.subject
+        );
+    }
+    Ok(report)
 }
 
 #[cfg(not(windows))]
 pub fn verify_openai_authenticode(_path: &Path) -> Result<AuthenticodeReport, EngineError> {
+    log::info!("Authenticode verification start");
+    log::error!("Authenticode verification failed error=unsupported-platform");
     Ok(AuthenticodeReport {
         trusted: false,
         publisher_is_openai: false,

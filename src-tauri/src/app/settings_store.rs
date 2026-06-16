@@ -200,6 +200,7 @@ impl AppSettings {
 
     pub fn load_with_health() -> (Self, StoreLoadHealth) {
         let Some(path) = store_path() else {
+            log::error!("configuration corrupt which=settings detail=missing-data-dir");
             return (
                 Self::default(),
                 StoreLoadHealth::corrupt("无法定位 settings.json 数据目录".to_string()),
@@ -213,11 +214,17 @@ impl AppSettings {
         let mut health = match outcome {
             LoadOutcome::Ok => StoreLoadHealth::ok(),
             LoadOutcome::RecoveredFromBak => {
+                log::warn!(
+                    "configuration recovered from backup which=settings detail=settings.json"
+                );
                 StoreLoadHealth::recovered("settings.json 已从 .bak 备份恢复".to_string())
             }
-            LoadOutcome::Corrupt => StoreLoadHealth::corrupt(
-                "settings.json 损坏且 .bak 备份不可用，已使用默认配置".to_string(),
-            ),
+            LoadOutcome::Corrupt => {
+                log::error!("configuration corrupt which=settings detail=unrecoverable");
+                StoreLoadHealth::corrupt(
+                    "settings.json 损坏且 .bak 备份不可用，已使用默认配置".to_string(),
+                )
+            }
         };
 
         let mut settings = match raw {
@@ -225,6 +232,7 @@ impl AppSettings {
                 let (settings, unknown_source, newer_schema) = raw.into_settings();
                 if let Some(raw) = unknown_source {
                     health.unknown_source = Some(raw.clone());
+                    log::warn!("settings contains unknown source unknown_source={raw}");
                     append_detail(&mut health, format!("未知更新源 {raw:?} 已归一为 auto"));
                 }
                 if let Some(detail) = newer_schema {
