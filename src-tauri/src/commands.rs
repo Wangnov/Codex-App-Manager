@@ -4,6 +4,8 @@ use tauri::{Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_dialog::DialogExt;
 
+use crate::app::atomic_file;
+use crate::app::config_health::ConfigHealth;
 use crate::app::disk::available_space;
 use crate::app::mac_update::{
     cancel_macos_download, install_macos, pause_macos_download, perform_macos_update,
@@ -11,7 +13,11 @@ use crate::app::mac_update::{
     MacStageReport, MacUninstallReport, MacUpdateReport, PerformExpectation,
 };
 use crate::app::oplock::{OperationError, OperationGuard, OperationKind, OperationToken};
+use crate::app::paths;
+use crate::app::provenance::ProvenanceStore;
 use crate::app::settings_store::AppSettings as PersistedAppSettings;
+use crate::app::settings_store::UpdateSource;
+use crate::app::url_guard::validate_custom_source;
 use crate::app::win_update::{
     auto_stage_windows_update_with_install_mode, cancel_windows_download, pause_windows_download,
     perform_windows_update_with_install_mode, plan_windows_update_with_install_mode,
@@ -50,26 +56,34 @@ fn windows_endpoints_for_settings(
 ) -> Result<crate::domain::manifest::MirrorEndpoints, AppError> {
     let mut saved = PersistedAppSettings::load();
     normalize_settings_for_target(&mut saved, &state.target);
-    match saved.source.as_str() {
-        "custom" => {
-            let base = normalize_windows_source_base(&saved.custom_url)
-                .unwrap_or_else(|| state.settings.mirror_base_url.clone());
+    match saved.source {
+        UpdateSource::Custom => {
+            let base = if saved.custom_url.trim().is_empty() {
+                state.settings.mirror_base_url.clone()
+            } else {
+                let normalized = validate_custom_source(&saved.custom_url)
+                    .map_err(|e| AppError::Engine(e.to_string()))?;
+                normalize_windows_source_base(&normalized)
+                    .unwrap_or_else(|| state.settings.mirror_base_url.clone())
+            };
             Ok(crate::domain::manifest::MirrorEndpoints::from_base_url(&base))
         }
-        "official" => Err(AppError::Engine(
+        UpdateSource::Official => Err(AppError::Engine(
             "Windows official update source is not available yet; choose mirror, auto, or a custom source that serves latest/manifest, latest/checksums, and latest/win.".to_string(),
         )),
         // Windows currently depends on the mirror-style manifest/checksum/MSIX
         // endpoints. `auto` therefore resolves to the known-good mirror until an
         // official source exposes the same contract.
-        "auto" | "mirror" => Ok(state.endpoints.clone()),
-        _ => Ok(state.endpoints.clone()),
+        UpdateSource::Auto | UpdateSource::Mirror => Ok(state.endpoints.clone()),
     }
 }
 
-fn normalize_settings_for_target(settings: &mut PersistedAppSettings, target: &crate::domain::target::Target) {
-    if matches!(target.os, OperatingSystem::Windows) && settings.source == "official" {
-        settings.source = "auto".to_string();
+fn normalize_settings_for_target(
+    settings: &mut PersistedAppSettings,
+    target: &crate::domain::target::Target,
+) {
+    if matches!(target.os, OperatingSystem::Windows) && settings.source == UpdateSource::Official {
+        settings.source = UpdateSource::Auto;
     }
 }
 
@@ -108,6 +122,30 @@ fn begin_guard(state: &ManagerState, kind: OperationKind) -> Result<OperationGua
         .begin(kind)
         .map_err(AppError::from)
         .map_err(Into::into)
+}
+
+fn refresh_config_health(state: &ManagerState) -> ConfigHealth {
+    let (_, settings_health) = PersistedAppSettings::load_with_health();
+    let (_, provenance_health) = ProvenanceStore::load_with_health();
+    let health = ConfigHealth::from_parts(settings_health, provenance_health);
+    let mut slot = state
+        .config_health
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    *slot = health.clone();
+    health
+}
+
+fn config_path(which: &str) -> Result<PathBuf, AppError> {
+    match which {
+        "settings" => paths::settings_path()
+            .ok_or_else(|| AppError::Internal("无法定位 settings.json 数据目录".to_string())),
+        "provenance" => paths::provenance_path()
+            .ok_or_else(|| AppError::Internal("无法定位 provenance.json 数据目录".to_string())),
+        _ => Err(AppError::Internal(
+            "配置类型必须是 settings 或 provenance".to_string(),
+        )),
+    }
 }
 
 fn auto_stage_busy_report(enabled: bool, allow_metered: bool) -> WinAutoStageReport {
@@ -313,7 +351,10 @@ fn resolve_binary_delta(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
         }
     }
     for rel in ["resources/BinaryDelta", "BinaryDelta"] {
-        if let Ok(res) = app.path().resolve(rel, tauri::path::BaseDirectory::Resource) {
+        if let Ok(res) = app
+            .path()
+            .resolve(rel, tauri::path::BaseDirectory::Resource)
+        {
             if res.exists() {
                 return Some(res);
             }
@@ -495,8 +536,79 @@ pub fn set_settings(
     let mut s = settings;
     s.normalize();
     normalize_settings_for_target(&mut s, &state.target);
+    if s.source == UpdateSource::Custom && !s.custom_url.trim().is_empty() {
+        s.custom_url =
+            validate_custom_source(&s.custom_url).map_err(|e| AppError::Engine(e.to_string()))?;
+    }
+    let _op = begin_guard(&state, OperationKind::SetInstallRoot)?;
     s.save()?;
+    refresh_config_health(&state);
     Ok(s)
+}
+
+#[tauri::command]
+pub fn get_config_health(state: State<'_, ManagerState>) -> ConfigHealth {
+    state
+        .config_health
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clone()
+}
+
+#[tauri::command]
+pub fn restore_config_backup(
+    state: State<'_, ManagerState>,
+    which: String,
+) -> Result<ConfigHealth, CommandError> {
+    let _op = begin_guard(&state, OperationKind::SetInstallRoot)?;
+    let path = config_path(which.as_str())?;
+    let backup = atomic_file::backup_path(&path);
+    if !backup.exists() {
+        return Err(AppError::Internal(format!("找不到 {} 的 .bak 备份", which)).into());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| AppError::Internal(format!("create data dir: {e}")))?;
+    }
+    let current_tmp = path.with_extension(format!("restore-current-{}", std::process::id()));
+    if path.exists() {
+        std::fs::rename(&path, &current_tmp)
+            .map_err(|e| AppError::Internal(format!("move current config aside: {e}")))?;
+    }
+    if let Err(err) = std::fs::rename(&backup, &path) {
+        if current_tmp.exists() {
+            let _ = std::fs::rename(&current_tmp, &path);
+        }
+        return Err(AppError::Internal(format!("restore config backup: {err}")).into());
+    }
+    if current_tmp.exists() {
+        let _ = std::fs::remove_file(current_tmp);
+    }
+    Ok(refresh_config_health(&state))
+}
+
+#[tauri::command]
+pub fn reset_config(
+    state: State<'_, ManagerState>,
+    which: String,
+) -> Result<ConfigHealth, CommandError> {
+    let _op = begin_guard(&state, OperationKind::SetInstallRoot)?;
+    match which.as_str() {
+        "settings" => {
+            let mut settings = PersistedAppSettings::default();
+            normalize_settings_for_target(&mut settings, &state.target);
+            settings.save()?;
+        }
+        "provenance" => {
+            ProvenanceStore::default().save()?;
+        }
+        _ => {
+            return Err(
+                AppError::Internal("配置类型必须是 settings 或 provenance".to_string()).into(),
+            )
+        }
+    }
+    Ok(refresh_config_health(&state))
 }
 
 #[tauri::command]
@@ -801,7 +913,10 @@ mod open_url_tests {
             "https://user@example.com/",
             "https://",
         ] {
-            assert!(validate_external_http_url(url).is_err(), "{url} should be rejected");
+            assert!(
+                validate_external_http_url(url).is_err(),
+                "{url} should be rejected"
+            );
         }
     }
 }
@@ -960,10 +1075,9 @@ mod tests {
         fs::write(root.join("notes.txt"), b"not codex").unwrap();
 
         let err = validate_install_root_path(&root.to_string_lossy()).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("安装位置必须是空文件夹，或已有的 Codex 免安装版目录")
-        );
+        assert!(err
+            .to_string()
+            .contains("安装位置必须是空文件夹，或已有的 Codex 免安装版目录"));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -1006,7 +1120,10 @@ mod tests {
         let validated = validate_install_root_path(&root.to_string_lossy()).unwrap();
         assert_eq!(validated, root.to_string_lossy());
         // Validating a fresh location must leave the filesystem untouched.
-        assert!(!root.exists(), "validation must not create the install root");
+        assert!(
+            !root.exists(),
+            "validation must not create the install root"
+        );
 
         let _ = fs::remove_dir_all(root.parent().unwrap());
     }
@@ -1020,9 +1137,8 @@ mod tests {
         let root = std::path::PathBuf::from(program_files).join("Codex");
 
         let err = validate_install_root_path(&root.to_string_lossy()).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("安装位置不能放在系统目录、管理员目录或磁盘根目录")
-        );
+        assert!(err
+            .to_string()
+            .contains("安装位置不能放在系统目录、管理员目录或磁盘根目录"));
     }
 }

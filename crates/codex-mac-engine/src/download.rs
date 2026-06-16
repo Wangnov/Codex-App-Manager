@@ -76,6 +76,10 @@ pub fn download_to_with_progress(
     let mut child = Command::new("curl")
         .args([
             "-fL",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
             "--no-progress-meter",
             "-C",
             "-",

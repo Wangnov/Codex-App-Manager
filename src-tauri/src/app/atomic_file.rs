@@ -84,7 +84,7 @@ fn tmp_path(path: &Path) -> PathBuf {
     path_with_added_extension(path, &format!("tmp-{}-{counter}", std::process::id()))
 }
 
-fn backup_path(path: &Path) -> PathBuf {
+pub fn backup_path(path: &Path) -> PathBuf {
     path_with_added_extension(path, "bak")
 }
 

@@ -92,6 +92,9 @@ pub fn run() {
             commands::mac_uninstall,
             commands::get_settings,
             commands::set_settings,
+            commands::get_config_health,
+            commands::restore_config_backup,
+            commands::reset_config,
             commands::begin_operation,
             commands::end_operation,
             commands::confirm_quit,
@@ -116,7 +119,15 @@ pub fn run() {
         .setup(|app| {
             #[cfg(target_os = "macos")]
             install_macos_menu(app)?;
-            let _ = &app;
+            let health = app
+                .state::<state::ManagerState>()
+                .config_health
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .clone();
+            if !health.is_ok() {
+                let _ = app.emit("app://config-health", health);
+            }
             Ok(())
         })
         // Our custom macOS Quit item lands here (Cmd+Q). Same guard as the

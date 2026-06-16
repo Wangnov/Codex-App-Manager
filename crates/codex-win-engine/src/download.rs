@@ -101,6 +101,10 @@ fn run_curl(url: &str, dest: &Path, resume: bool, on_progress: &dyn Fn(u64)) -> 
     let dest = dest.to_string_lossy().into_owned();
     let mut args = vec![
         "-fL".to_string(),
+        "--proto".to_string(),
+        "=https".to_string(),
+        "--proto-redir".to_string(),
+        "=https".to_string(),
         "--no-progress-meter".to_string(),
         "--connect-timeout".to_string(),
         "20".to_string(),

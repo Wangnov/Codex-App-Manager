@@ -14,7 +14,16 @@ use crate::EngineError;
 /// Fetch a small text resource (the appcast) over HTTPS via system `curl`.
 pub fn fetch_text(url: &str) -> Result<String, EngineError> {
     let output = Command::new("curl")
-        .args(["-fsSL", "--connect-timeout", "20", url])
+        .args([
+            "-fsSL",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "--connect-timeout",
+            "20",
+            url,
+        ])
         .output()
         .map_err(|e| EngineError::Io(format!("spawn curl: {e}")))?;
 
@@ -35,6 +44,10 @@ pub fn fetch_text_timeout(url: &str, max_secs: u64) -> Result<String, EngineErro
     let output = Command::new("curl")
         .args([
             "-fsSL",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
             "--connect-timeout",
             "5",
             "--max-time",

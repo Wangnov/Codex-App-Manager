@@ -21,7 +21,10 @@ use codex_mac_engine::{
     UpdateStrategy,
 };
 
+use crate::app::disk;
 use crate::app::provenance::ProvenanceStore;
+use crate::app::settings_store::UpdateSource;
+use crate::app::url_guard::validate_custom_source;
 use crate::errors::AppError;
 
 #[derive(Debug, Clone, Serialize)]
@@ -121,19 +124,19 @@ fn latest_build_of(xml: &str) -> u64 {
 /// that source (custom falls back to the mirror when its URL is blank).
 fn fetch_appcast_for_arch(arch: &str) -> Result<(String, String), AppError> {
     let settings = crate::app::settings_store::AppSettings::load();
-    match settings.source.as_str() {
-        "official" => fetch_one(official_for_arch(arch).to_string()),
-        "mirror" => fetch_one(appcast_for_arch(arch).to_string()),
-        "custom" => {
+    match settings.source {
+        UpdateSource::Official => fetch_one(official_for_arch(arch).to_string()),
+        UpdateSource::Mirror => fetch_one(appcast_for_arch(arch).to_string()),
+        UpdateSource::Custom => {
             let u = settings.custom_url.trim();
             let url = if u.is_empty() {
                 appcast_for_arch(arch).to_string()
             } else {
-                u.to_string()
+                validate_custom_source(u).map_err(|e| AppError::Engine(e.to_string()))?
             };
             fetch_one(url)
         }
-        _ => {
+        UpdateSource::Auto => {
             // auto: pick the higher build between the CN-reachable mirror and
             // OpenAI official, among whichever sources are reachable. The mirror
             // can lag the official feed by a release; when it does and official
@@ -281,6 +284,49 @@ fn strategy_label(strategy: &UpdateStrategy) -> String {
     }
 }
 
+/// Worst-case temporary disk budget for one macOS update. Even a delta plan may
+/// fall back to the full package, and `ditto` extraction can briefly occupy
+/// several times the zip size, so the budget uses the full archive as the
+/// conservative basis.
+fn mac_space_budget(plan: &UpdatePlan) -> u64 {
+    const HEADROOM: u64 = 512 * 1024 * 1024;
+    plan.download_size
+        .saturating_add(plan.full_size.saturating_mul(3))
+        .saturating_add(HEADROOM)
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    if bytes >= 1024 * 1024 * 1024 {
+        format!("{:.1} GiB", bytes as f64 / GIB)
+    } else {
+        format!("{:.0} MiB", bytes as f64 / MIB)
+    }
+}
+
+fn preflight_mac_disk(plan: &UpdatePlan) -> Result<(), AppError> {
+    preflight_mac_disk_with_available(plan, |path| disk::available_space(path))
+}
+
+fn preflight_mac_disk_with_available<F>(plan: &UpdatePlan, available: F) -> Result<(), AppError>
+where
+    F: Fn(&Path) -> Result<Option<u64>, AppError>,
+{
+    let staging = staging_dir();
+    let need = mac_space_budget(plan);
+    if let Some(free) = available(&staging)? {
+        if free < need {
+            return Err(AppError::Engine(format!(
+                "磁盘可用空间不足：本次更新约需 {}，当前可用 {}。请清理后重试",
+                human_bytes(need),
+                human_bytes(free)
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Download an artifact `(url, size, signature)` into staging, size-gate it, and
 /// verify its EdDSA signature against the pinned Sparkle key. Idempotent: reuses
 /// an already-staged file of the right size. On EdDSA failure the staged file is
@@ -335,7 +381,9 @@ fn download_and_verify(
     let dest = staging_dir().join(file_name);
     let source = host_of(url);
 
-    let already = std::fs::metadata(&dest).map(|m| m.len() == size).unwrap_or(false);
+    let already = std::fs::metadata(&dest)
+        .map(|m| m.len() == size)
+        .unwrap_or(false);
     if already {
         // Cached from a prior stage — report complete so the UI doesn't sit at 0.
         progress(DownloadProgress {
@@ -394,12 +442,18 @@ pub fn stage_macos_update(simulated_build: Option<u64>) -> Result<MacStageReport
     if let Some(latest) = appcast.latest() {
         require_os_supported(latest.minimum_system_version.as_deref())?;
     }
+    preflight_mac_disk(&plan)?;
 
     let signature = plan
         .ed_signature
         .clone()
         .ok_or_else(|| AppError::Engine("appcast enclosure missing edSignature".to_string()))?;
-    let dest = download_and_verify(&plan.download_url, plan.download_size, &signature, &no_progress)?;
+    let dest = download_and_verify(
+        &plan.download_url,
+        plan.download_size,
+        &signature,
+        &no_progress,
+    )?;
 
     Ok(MacStageReport {
         up_to_date: false,
@@ -459,8 +513,7 @@ pub struct PerformExpectation {
 fn unpack_app_zip(zip: &Path, work: &Path, out_app: &Path) -> Result<(), AppError> {
     let extract = work.join("unzip");
     let _ = std::fs::remove_dir_all(&extract);
-    std::fs::create_dir_all(&extract)
-        .map_err(|e| AppError::Engine(format!("mkdir unzip: {e}")))?;
+    std::fs::create_dir_all(&extract).map_err(|e| AppError::Engine(format!("mkdir unzip: {e}")))?;
 
     let status = std::process::Command::new("ditto")
         .args(["-x", "-k"])
@@ -469,7 +522,9 @@ fn unpack_app_zip(zip: &Path, work: &Path, out_app: &Path) -> Result<(), AppErro
         .status()
         .map_err(|e| AppError::Engine(format!("spawn ditto: {e}")))?;
     if !status.success() {
-        return Err(AppError::Engine(format!("ditto unzip exited with {status}")));
+        return Err(AppError::Engine(format!(
+            "ditto unzip exited with {status}"
+        )));
     }
 
     let found = find_dot_app(&extract)
@@ -603,6 +658,7 @@ pub fn perform_macos_update(
     if let Some(latest) = appcast.latest() {
         require_os_supported(latest.minimum_system_version.as_deref())?;
     }
+    preflight_mac_disk(&plan)?;
 
     // 1) Set up same-volume staging for the reconstructed bundle + backup.
     let work = staging_dir();
@@ -678,7 +734,11 @@ pub fn perform_macos_update(
         // update still succeeded — but surface it, since status would otherwise
         // keep classifying this now-manager install as "external".
         let mut store = ProvenanceStore::load();
-        store.record(installed.path.clone(), plan.latest_build, "manager-installed");
+        store.record(
+            installed.path.clone(),
+            plan.latest_build,
+            "manager-installed",
+        );
         let save_warning = match store.save() {
             Ok(()) => None,
             Err(e) => Some(format!("托管记录保存失败（{e}），安装暂仍会被识别为外部")),
@@ -833,6 +893,9 @@ pub fn install_macos(progress: &dyn Fn(DownloadProgress)) -> Result<MacInstallSt
     if let Some(latest) = appcast.latest() {
         require_os_supported(latest.minimum_system_version.as_deref())?;
     }
+    let plan = plan_update(&appcast, 0)
+        .ok_or_else(|| AppError::Engine("appcast had no items".to_string()))?;
+    preflight_mac_disk(&plan)?;
 
     let work = staging_dir();
     let out_app = work.join("Codex.app");
@@ -872,8 +935,8 @@ pub fn install_macos(progress: &dyn Fn(DownloadProgress)) -> Result<MacInstallSt
 /// Open the installed Codex.app — invoked by the UI's explicit 〔打开 Codex〕
 /// action (we no longer auto-launch after a fresh install).
 pub fn launch_codex() -> Result<(), AppError> {
-    let installed =
-        detect_managed_installed().ok_or_else(|| AppError::Engine("没有可打开的 Codex".to_string()))?;
+    let installed = detect_managed_installed()
+        .ok_or_else(|| AppError::Engine("没有可打开的 Codex".to_string()))?;
     std::process::Command::new("open")
         .arg(&installed.path)
         .spawn()
@@ -969,6 +1032,45 @@ pub fn uninstall_macos(keep_codex_home: bool) -> Result<MacUninstallReport, AppE
     })
 }
 
+#[cfg(test)]
+mod disk_preflight_tests {
+    use super::*;
+
+    fn plan(download_size: u64, full_size: u64, strategy: UpdateStrategy) -> UpdatePlan {
+        UpdatePlan {
+            up_to_date: false,
+            current_build: 1,
+            latest_build: 2,
+            latest_short_version: "2.0.0".to_string(),
+            strategy,
+            download_url: "https://example.com/Codex.zip".to_string(),
+            download_size,
+            ed_signature: Some("sig".to_string()),
+            full_size,
+            savings_pct: 0.0,
+        }
+    }
+
+    #[test]
+    fn mac_space_budget_accounts_for_delta_full_fallback_and_headroom() {
+        let p = plan(10, 100, UpdateStrategy::Delta { from_build: 1 });
+        assert_eq!(mac_space_budget(&p), 10 + 300 + 512 * 1024 * 1024);
+
+        let p = plan(u64::MAX, u64::MAX, UpdateStrategy::Full);
+        assert_eq!(mac_space_budget(&p), u64::MAX);
+    }
+
+    #[test]
+    fn preflight_mac_disk_rejects_low_space_and_allows_unknown_space() {
+        let p = plan(100, 200, UpdateStrategy::Full);
+        let err = preflight_mac_disk_with_available(&p, |_| Ok(Some(10))).unwrap_err();
+        assert!(err.to_string().contains("磁盘可用空间不足"));
+
+        assert!(preflight_mac_disk_with_available(&p, |_| Ok(None)).is_ok());
+        assert!(preflight_mac_disk_with_available(&p, |_| Ok(Some(mac_space_budget(&p)))).is_ok());
+    }
+}
+
 // The full-update unpack branch is new logic (the delta/gate/swap tail reuses
 // engine primitives already proven on real /Applications). `ditto` is macOS-only,
 // so these stay gated off the cross-compiled Windows build.
@@ -1025,7 +1127,10 @@ mod tests {
         std::fs::create_dir_all(root.join("Codex.app")).unwrap();
 
         let found = find_dot_app(&root).expect("an .app is found");
-        assert!(found.ends_with("Codex.app"), "prefers Codex.app, got {found:?}");
+        assert!(
+            found.ends_with("Codex.app"),
+            "prefers Codex.app, got {found:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

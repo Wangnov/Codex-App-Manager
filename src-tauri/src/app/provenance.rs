@@ -12,8 +12,16 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::app::atomic_file::{self, LoadOutcome};
+use crate::app::config_health::StoreLoadHealth;
 use crate::app::paths;
 use crate::errors::AppError;
+
+pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+
+fn default_schema_version() -> u32 {
+    CURRENT_SCHEMA_VERSION
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,10 +33,22 @@ pub struct ManagedRecord {
     pub adopted_at_unix: u64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvenanceStore {
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
+    #[serde(default)]
     pub managed: Vec<ManagedRecord>,
+}
+
+impl Default for ProvenanceStore {
+    fn default() -> Self {
+        Self {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            managed: Vec::new(),
+        }
+    }
 }
 
 fn store_path() -> Option<PathBuf> {
@@ -44,24 +64,47 @@ fn now_unix() -> u64 {
 
 impl ProvenanceStore {
     pub fn load() -> Self {
+        Self::load_with_health().0
+    }
+
+    pub fn load_with_health() -> (Self, StoreLoadHealth) {
         let Some(path) = store_path() else {
-            return Self::default();
+            return (
+                Self::default(),
+                StoreLoadHealth::corrupt("无法定位 provenance.json 数据目录".to_string()),
+            );
         };
-        std::fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+        if !path.exists() && !atomic_file::backup_path(&path).exists() {
+            return (Self::default(), StoreLoadHealth::ok());
+        }
+
+        let (store, outcome) = atomic_file::read_with_recovery::<Self>(&path);
+        let mut health = match outcome {
+            LoadOutcome::Ok => StoreLoadHealth::ok(),
+            LoadOutcome::RecoveredFromBak => {
+                StoreLoadHealth::recovered("provenance.json 已从 .bak 备份恢复".to_string())
+            }
+            LoadOutcome::Corrupt => StoreLoadHealth::corrupt(
+                "provenance.json 损坏且 .bak 备份不可用，已使用空托管记录".to_string(),
+            ),
+        };
+
+        let mut store = store.unwrap_or_default();
+        if store.schema_version > CURRENT_SCHEMA_VERSION {
+            health.detail = Some(format!(
+                "provenance.json schema_version={} 高于当前支持版本 {}",
+                store.schema_version, CURRENT_SCHEMA_VERSION
+            ));
+        }
+        store.schema_version = CURRENT_SCHEMA_VERSION;
+        (store, health)
     }
 
     pub fn save(&self) -> Result<(), AppError> {
         let path = store_path().ok_or_else(|| AppError::Internal("no data directory".into()))?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| AppError::Internal(format!("create data dir: {e}")))?;
-        }
         let json = serde_json::to_vec_pretty(self)
             .map_err(|e| AppError::Internal(format!("serialize provenance: {e}")))?;
-        std::fs::write(&path, json)
+        atomic_file::write_atomic(&path, &json)
             .map_err(|e| AppError::Internal(format!("write provenance: {e}")))
     }
 
@@ -74,7 +117,9 @@ impl ProvenanceStore {
     /// official Codex landing where a managed one used to be) and against a stale
     /// record left by a failed save — those won't match the current build.
     pub fn is_managed_build(&self, path: &str, build: u64) -> bool {
-        self.managed.iter().any(|r| r.path == path && r.build == build)
+        self.managed
+            .iter()
+            .any(|r| r.path == path && r.build == build)
     }
 
     pub fn remove(&mut self, path: &str) {
@@ -83,6 +128,7 @@ impl ProvenanceStore {
 
     /// Record (or refresh) a managed install, keyed by path.
     pub fn record(&mut self, path: String, build: u64, source: &str) {
+        self.schema_version = CURRENT_SCHEMA_VERSION;
         self.managed.retain(|r| r.path != path);
         self.managed.push(ManagedRecord {
             path,
@@ -118,5 +164,12 @@ mod tests {
         );
         assert_eq!(store.managed.len(), 1);
         assert_eq!(store.managed[0].build, 3600);
+    }
+
+    #[test]
+    fn old_schema_defaults_schema_version() {
+        let store: ProvenanceStore =
+            serde_json::from_str(r#"{"managed":[]}"#).expect("old provenance parses");
+        assert_eq!(store.schema_version, CURRENT_SCHEMA_VERSION);
     }
 }

@@ -118,7 +118,16 @@ impl MsixDependencyPrecheck {
 
 pub fn fetch_text(url: &str) -> Result<String, EngineError> {
     let output = hidden_command("curl")
-        .args(["-fsSL", "--connect-timeout", "20", url])
+        .args([
+            "-fsSL",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "--connect-timeout",
+            "20",
+            url,
+        ])
         .output()
         .map_err(|e| EngineError::Io(format!("spawn curl: {e}")))?;
 
