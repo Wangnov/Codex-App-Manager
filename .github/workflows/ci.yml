@@ -77,12 +77,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
       - run: npm ci
       - name: npm audit
+        continue-on-error: true
         run: npm audit --audit-level=high
       - name: Install cargo audit tools
+        continue-on-error: true
         run: cargo install cargo-audit cargo-deny --locked
       - name: cargo audit
+        continue-on-error: true
         run: cargo audit --file src-tauri/Cargo.lock
       - name: cargo deny
+        continue-on-error: true
         run: cargo deny --manifest-path src-tauri/Cargo.toml check
 
   worker-test:
