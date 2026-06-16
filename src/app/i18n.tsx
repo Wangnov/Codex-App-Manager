@@ -30,6 +30,7 @@ const ZH = {
   "nav.back": "返回",
   "nav.settings": "设置",
   "nav.config": "Codex 配置管理",
+  "nav.minimize": "最小化",
   "nav.close": "关闭",
 
   "home.checking": "正在检查…",
@@ -191,6 +192,7 @@ const EN: Record<Key, string> = {
   "nav.back": "Back",
   "nav.settings": "Settings",
   "nav.config": "Codex configuration",
+  "nav.minimize": "Minimize",
   "nav.close": "Close",
 
   "home.checking": "Checking…",
@@ -349,6 +351,7 @@ const FR: Record<Key, string> = {
   "nav.back": "Retour",
   "nav.settings": "Réglages",
   "nav.config": "Configuration Codex",
+  "nav.minimize": "Réduire",
   "nav.close": "Fermer",
 
   "home.checking": "Vérification…",
@@ -507,6 +510,7 @@ const ZH_TW: Record<Key, string> = {
   "nav.back": "返回",
   "nav.settings": "設定",
   "nav.config": "Codex 設定管理",
+  "nav.minimize": "最小化",
   "nav.close": "關閉",
 
   "home.checking": "檢查中…",
@@ -676,6 +680,7 @@ const DE: Record<Key, string> = {
   "nav.back": "Zurück",
   "nav.settings": "Einstellungen",
   "nav.config": "Codex-Konfiguration",
+  "nav.minimize": "Minimieren",
   "nav.close": "Schließen",
 
   "home.checking": "Wird geprüft…",
@@ -845,6 +850,7 @@ const KO: Record<Key, string> = {
   "nav.back": "뒤로",
   "nav.settings": "설정",
   "nav.config": "Codex 구성 관리",
+  "nav.minimize": "최소화",
   "nav.close": "닫기",
 
   "home.checking": "확인 중…",
@@ -1012,6 +1018,7 @@ const JA: Record<Key, string> = {
   "nav.back": "戻る",
   "nav.settings": "設定",
   "nav.config": "Codex 設定管理",
+  "nav.minimize": "最小化",
   "nav.close": "閉じる",
   "home.checking": "確認中…",
   "home.idle.title": "Codex インストール済み",
@@ -1161,6 +1168,7 @@ const RU: Record<Key, string> = {
   "nav.back": "Назад",
   "nav.settings": "Настройки",
   "nav.config": "Настройки Codex",
+  "nav.minimize": "Свернуть",
   "nav.close": "Закрыть",
   "home.checking": "Проверка…",
   "home.idle.title": "Codex установлен",
@@ -1310,6 +1318,7 @@ const AR: Record<Key, string> = {
   "nav.back": "رجوع",
   "nav.settings": "الإعدادات",
   "nav.config": "إعدادات Codex",
+  "nav.minimize": "تصغير",
   "nav.close": "إغلاق",
   "home.checking": "جارٍ التحقق…",
   "home.idle.title": "Codex مثبّت",
@@ -1459,6 +1468,7 @@ const ES: Record<Key, string> = {
   "nav.back": "Atrás",
   "nav.settings": "Ajustes",
   "nav.config": "Configuración de Codex",
+  "nav.minimize": "Minimizar",
   "nav.close": "Cerrar",
   "home.checking": "Comprobando…",
   "home.idle.title": "Codex instalado",
@@ -1608,6 +1618,7 @@ const PT_BR: Record<Key, string> = {
   "nav.back": "Voltar",
   "nav.settings": "Configurações",
   "nav.config": "Configuração do Codex",
+  "nav.minimize": "Minimizar",
   "nav.close": "Fechar",
   "home.checking": "Verificando…",
   "home.idle.title": "Codex instalado",

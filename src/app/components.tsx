@@ -39,6 +39,24 @@ function CloseButton() {
   );
 }
 
+/** Self-drawn minimize control, sitting left of the close button (the window is
+ *  frameless, so it's self-drawn too). Only meaningful in the desktop app; the
+ *  browser preview has no window to minimize, so it's a no-op there. */
+function MinimizeButton() {
+  const { t } = useI18n();
+  return (
+    <button
+      className="winmin"
+      title={t("nav.minimize")}
+      onClick={() => {
+        if (isTauri()) void getCurrentWindow().minimize();
+      }}
+    >
+      <Icon name="minimize" />
+    </button>
+  );
+}
+
 /** The one close-confirm dialog. Raised by the backend close/exit guard (which
  *  covers the ✕, Alt+F4 and Cmd+Q alike) via app://confirm-quit, or by the
  *  browser-preview fallback. Mounted once at the app root so it overlays
@@ -101,6 +119,7 @@ export function TopBar({ children }: { children?: ReactNode }) {
       </div>
       <div className="spacer" data-tauri-drag-region />
       {children}
+      <MinimizeButton />
       <CloseButton />
     </div>
   );
@@ -129,6 +148,7 @@ export function NavBar({
       </div>
       <div className="spacer" style={{ flex: 1 }} data-tauri-drag-region />
       {children}
+      <MinimizeButton />
       <CloseButton />
     </div>
   );

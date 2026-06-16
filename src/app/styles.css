@@ -401,6 +401,31 @@ input {
   width: 16px;
   height: 16px;
 }
+/* Self-drawn minimize — sits left of close; neutral hover (close is danger). */
+.winmin {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-faint);
+  display: grid;
+  place-items: center;
+  transition: background 0.18s var(--ease), color 0.18s var(--ease),
+    border-color 0.18s var(--ease), transform 0.08s var(--ease);
+}
+.winmin:hover {
+  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--text);
+}
+.winmin:active {
+  transform: scale(0.94);
+}
+.winmin svg {
+  width: 16px;
+  height: 16px;
+}
 .spinicon {
   animation: spin 0.8s linear infinite;
   transform-box: fill-box;
