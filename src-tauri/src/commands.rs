@@ -12,7 +12,9 @@ use crate::app::mac_update::{
     plan_macos_update, stage_macos_update, uninstall_macos, MacInstallStatus, MacPerformReport,
     MacStageReport, MacUninstallReport, MacUpdateReport, PerformExpectation,
 };
-use crate::app::oplock::{OperationError, OperationGuard, OperationKind, OperationToken};
+use crate::app::oplock::{
+    OperationError, OperationGuard, OperationKind, OperationManager, OperationToken,
+};
 use crate::app::paths;
 use crate::app::provenance::ProvenanceStore;
 use crate::app::settings_store::AppSettings as PersistedAppSettings;
@@ -122,6 +124,42 @@ fn begin_guard(state: &ManagerState, kind: OperationKind) -> Result<OperationGua
         .begin(kind)
         .map_err(AppError::from)
         .map_err(Into::into)
+}
+
+struct DetachedGuard {
+    operations: OperationManager,
+    token: Option<OperationToken>,
+}
+
+impl DetachedGuard {
+    fn validate(state: &ManagerState, token: OperationToken) -> Result<Self, CommandError> {
+        let operations = state.operations.clone();
+        operations
+            .validate(&token)
+            .map_err(destructive_token_error)?;
+        Ok(Self {
+            operations,
+            token: Some(token),
+        })
+    }
+}
+
+impl Drop for DetachedGuard {
+    fn drop(&mut self) {
+        if let Some(token) = self.token.take() {
+            let _ = self.operations.end(token);
+        }
+    }
+}
+
+fn destructive_token_error(err: OperationError) -> CommandError {
+    match err {
+        OperationError::InvalidToken => {
+            AppError::StaleExpectation("操作令牌无效或已过期，请重新检查后再确认".to_string())
+                .into()
+        }
+        other => AppError::from(other).into(),
+    }
 }
 
 fn refresh_config_health(state: &ManagerState) -> ConfigHealth {
@@ -372,6 +410,7 @@ pub async fn mac_perform_update(
     app: tauri::AppHandle,
     state: State<'_, ManagerState>,
     confirm: bool,
+    token: OperationToken,
     expected_from_build: u64,
     expected_to_build: u64,
     expected_path: String,
@@ -384,7 +423,7 @@ pub async fn mac_perform_update(
             AppError::Internal("拒绝执行：破坏性更新必须带显式 confirm".to_string()).into(),
         );
     }
-    let _op = begin_guard(&state, OperationKind::Update)?;
+    let _op = DetachedGuard::validate(&state, token)?;
     // Best-effort: a full-package update needs no delta tool, so don't reject the
     // whole operation when it's absent — only the delta branch requires it.
     let binary_delta = resolve_binary_delta(&app);
@@ -624,6 +663,23 @@ pub fn begin_operation(
 }
 
 #[tauri::command]
+pub fn arm_destructive(
+    state: State<'_, ManagerState>,
+    kind: OperationKind,
+) -> Result<OperationToken, CommandError> {
+    if !matches!(kind, OperationKind::Update | OperationKind::Uninstall) {
+        return Err(
+            AppError::Internal("仅 update/uninstall 操作可使用破坏性令牌".to_string()).into(),
+        );
+    }
+    state
+        .operations
+        .begin_detached(kind)
+        .map_err(AppError::from)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
 pub fn end_operation(
     state: State<'_, ManagerState>,
     token: OperationToken,
@@ -728,6 +784,7 @@ pub fn win_reset_install_root(
 pub async fn mac_uninstall(
     state: State<'_, ManagerState>,
     confirm: bool,
+    token: OperationToken,
     keep_codex_home: bool,
 ) -> Result<MacUninstallReport, CommandError> {
     if !cfg!(target_os = "macos") {
@@ -736,7 +793,7 @@ pub async fn mac_uninstall(
     if !confirm {
         return Err(AppError::Internal("拒绝执行：卸载必须带显式 confirm".to_string()).into());
     }
-    let _op = begin_guard(&state, OperationKind::Uninstall)?;
+    let _op = DetachedGuard::validate(&state, token)?;
     tauri::async_runtime::spawn_blocking(move || uninstall_macos(keep_codex_home))
         .await
         .map_err(|e| AppError::Internal(format!("join: {e}")))?
@@ -960,6 +1017,7 @@ pub async fn win_perform_update(
     app: tauri::AppHandle,
     state: State<'_, ManagerState>,
     confirm: bool,
+    token: OperationToken,
     install_root: Option<String>,
     expected: Option<WinPerformExpectation>,
 ) -> Result<WinPerformReport, CommandError> {
@@ -971,7 +1029,7 @@ pub async fn win_perform_update(
             AppError::Internal("拒绝执行：Windows 更新必须带显式 confirm".to_string()).into(),
         );
     }
-    let _op = begin_guard(&state, OperationKind::Update)?;
+    let _op = DetachedGuard::validate(&state, token)?;
     let endpoints = windows_endpoints_for_settings(&state)?;
     let mut settings = windows_domain_settings_for_persisted(&state);
     // Validate (but don't yet persist) an explicitly chosen install root: it
@@ -1019,6 +1077,7 @@ pub async fn win_perform_update(
 pub async fn win_uninstall(
     state: State<'_, ManagerState>,
     confirm: bool,
+    token: OperationToken,
     purge_user_data: bool,
 ) -> Result<WinUninstallReport, CommandError> {
     if !matches!(state.target.os, OperatingSystem::Windows) {
@@ -1029,7 +1088,7 @@ pub async fn win_uninstall(
             AppError::Internal("拒绝执行：Windows 卸载必须带显式 confirm".to_string()).into(),
         );
     }
-    let _op = begin_guard(&state, OperationKind::Uninstall)?;
+    let _op = DetachedGuard::validate(&state, token)?;
     let settings = windows_domain_settings_for_persisted(&state);
     tauri::async_runtime::spawn_blocking(move || {
         uninstall_windows_codex(&settings, confirm, purge_user_data)

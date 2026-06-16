@@ -9,6 +9,8 @@ import type {
   MacPerformReport,
   MacUninstallReport,
   MacUpdateReport,
+  OperationKind,
+  OperationToken,
   WinInstallStatus,
   WinPerformReport,
   WinStageReport,
@@ -276,6 +278,12 @@ const WIN_FALLBACK_UNINSTALL: WinUninstallReport = {
 };
 
 export const managerApi = {
+  armDestructive(kind: OperationKind): Promise<OperationToken> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve(`browser-dev-token-${kind}`);
+    }
+    return invoke<OperationToken>("arm_destructive", { kind });
+  },
   macPlanUpdate(simulatedBuild?: number): Promise<MacUpdateReport> {
     if (!hasTauriRuntime()) {
       return Promise.resolve({ ...FALLBACK_PLAN, simulatedBuild: simulatedBuild ?? null });
@@ -289,7 +297,7 @@ export const managerApi = {
   // by a UI second confirmation before this is ever called. The expected target
   // (from/to build + install path the user confirmed) is sent so the backend can
   // refuse if reality drifted (appcast refresh / Codex self-update) since confirm.
-  macPerformUpdate(expected: {
+  async macPerformUpdate(expected: {
     fromBuild: number;
     toBuild: number;
     path: string;
@@ -309,8 +317,10 @@ export const managerApi = {
         message: "（浏览器开发态：真实替换仅在桌面 app 内执行）",
       });
     }
+    const token = await managerApi.armDestructive("update");
     return invoke<MacPerformReport>("mac_perform_update", {
       confirm: true,
+      token,
       expectedFromBuild: expected.fromBuild,
       expectedToBuild: expected.toBuild,
       expectedPath: expected.path,
@@ -470,7 +480,7 @@ export const managerApi = {
 
   // Destructive: remove the Codex app. keepCodexHome defaults to true so the
   // user's ~/.codex (sign-in, sessions, config) survives unless they opt out.
-  macUninstall(keepCodexHome: boolean): Promise<MacUninstallReport> {
+  async macUninstall(keepCodexHome: boolean): Promise<MacUninstallReport> {
     if (!hasTauriRuntime()) {
       return Promise.resolve({
         removed: true,
@@ -478,7 +488,8 @@ export const managerApi = {
         message: keepCodexHome ? "（浏览器开发态）已卸载,保留数据" : "（浏览器开发态）已卸载并清除数据",
       });
     }
-    return invoke<MacUninstallReport>("mac_uninstall", { confirm: true, keepCodexHome });
+    const token = await managerApi.armDestructive("uninstall");
+    return invoke<MacUninstallReport>("mac_uninstall", { confirm: true, token, keepCodexHome });
   },
   winPlanUpdate(): Promise<WinUpdateReport> {
     if (!hasTauriRuntime()) {
@@ -498,7 +509,7 @@ export const managerApi = {
     }
     return invoke<boolean>("win_cancel_download");
   },
-  winPerformUpdate(
+  async winPerformUpdate(
     confirm: boolean,
     expected?: {
       currentVersion: string | null;
@@ -513,19 +524,28 @@ export const managerApi = {
         ? Promise.resolve(WIN_FALLBACK_PERFORM)
         : Promise.reject(new Error("explicit confirmation is required"));
     }
+    if (!confirm) {
+      return Promise.reject(new Error("explicit confirmation is required"));
+    }
+    const token = await managerApi.armDestructive("update");
     return invoke<WinPerformReport>("win_perform_update", {
       confirm,
+      token,
       installRoot: installRoot ?? null,
       expected: expected ?? null,
     });
   },
-  winUninstall(confirm: boolean, purgeUserData: boolean): Promise<WinUninstallReport> {
+  async winUninstall(confirm: boolean, purgeUserData: boolean): Promise<WinUninstallReport> {
     if (!hasTauriRuntime()) {
       return confirm
         ? Promise.resolve({ ...WIN_FALLBACK_UNINSTALL, purgedUserData: purgeUserData })
         : Promise.reject(new Error("explicit confirmation is required"));
     }
-    return invoke<WinUninstallReport>("win_uninstall", { confirm, purgeUserData });
+    if (!confirm) {
+      return Promise.reject(new Error("explicit confirmation is required"));
+    }
+    const token = await managerApi.armDestructive("uninstall");
+    return invoke<WinUninstallReport>("win_uninstall", { confirm, token, purgeUserData });
   },
   winStatus(): Promise<WinInstallStatus> {
     if (!hasTauriRuntime()) {

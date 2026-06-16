@@ -1,5 +1,7 @@
 export type OperatingSystem = "windows" | "macos" | "linux" | "unknown";
 export type Architecture = "x64" | "arm64" | "unknown";
+export type OperationKind = "install" | "update" | "uninstall" | "set-install-root" | "adopt";
+export type OperationToken = string;
 
 /**
  * Serialized error returned by failing Tauri commands. Mirrors the backend

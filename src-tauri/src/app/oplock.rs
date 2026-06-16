@@ -47,6 +47,7 @@ pub enum OperationError {
     Lock(String),
 }
 
+#[derive(Clone)]
 pub struct OperationManager {
     inner: Arc<Mutex<Inner>>,
     stale_after_secs: u64,
@@ -159,8 +160,24 @@ impl OperationManager {
         let Ok(mut inner) = self.inner.lock() else {
             return false;
         };
-        let _ = self.reclaim_stale_detached(&mut inner);
-        inner.active.is_some()
+        if self.reclaim_stale_detached(&mut inner).is_err() {
+            return true;
+        }
+        if inner.active.is_some() {
+            return true;
+        }
+        let Ok(lock_file) = Self::lock_file_mut(&mut inner) else {
+            return false;
+        };
+        match lock_file.try_lock_exclusive() {
+            Ok(true) => {
+                let _ = lock_file.unlock();
+                false
+            }
+            Ok(false) => true,
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => true,
+            Err(_) => false,
+        }
     }
 
     fn begin_inner(
@@ -364,6 +381,7 @@ mod tests {
         let _guard = first.begin(OperationKind::Update).unwrap();
         let second = OperationManager::new(path.clone());
 
+        assert!(second.is_busy());
         assert!(matches!(
             second.begin(OperationKind::Install),
             Err(OperationError::BusyOtherProcess)

@@ -506,9 +506,10 @@ fn install_portable_from_msix_inner(
 ) -> Result<PortableInstallReport, EngineError> {
     let install_parent = install_root.parent().unwrap_or(install_root);
     fs::create_dir_all(install_parent).map_err(|e| io_err("create install parent", e))?;
+    let operation_id = uuid::Uuid::new_v4();
     let work_dir = install_parent
         .join(".codex-app-manager-staging")
-        .join(format!("portable-{}", std::process::id()));
+        .join(format!("portable-{operation_id}"));
     if work_dir.exists() {
         fs::remove_dir_all(&work_dir).map_err(|e| io_err("clear portable staging", e))?;
     }
@@ -516,15 +517,11 @@ fn install_portable_from_msix_inner(
 
     let prepared = prepare_portable_payload(msix_path, &work_dir)?;
     let payload = prepared.payload_dir;
-    let backup = install_parent.join("Codex.rollback");
+    let backup = install_parent.join(format!("Codex.rollback-{operation_id}"));
     let mut notes = Vec::new();
 
     if manage_process {
         request_codex_close_for_root(30, install_root)?;
-    }
-
-    if backup.exists() {
-        fs::remove_dir_all(&backup).map_err(|e| io_err("remove stale rollback", e))?;
     }
 
     let had_previous = install_root.exists();
@@ -745,7 +742,13 @@ mod tests {
         let report = install_portable_from_msix_inner(&msix, &install_root, false, false).unwrap();
         assert!(report.success);
         assert!(report.backup_path.is_none());
-        assert!(!root.join("Codex.rollback").exists());
+        assert!(!fs::read_dir(&root)
+            .unwrap()
+            .any(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("Codex.rollback")));
         assert!(!install_root.join("old-marker.txt").exists());
         assert!(install_root.join("resources/app.asar").exists());
 
@@ -761,7 +764,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let install_root = root.join("Codex");
-        let backup = root.join("Codex.rollback");
+        let backup = root.join("Codex.rollback-test");
 
         fs::create_dir_all(&backup).unwrap();
         fs::write(backup.join("old-marker.txt"), b"old").unwrap();

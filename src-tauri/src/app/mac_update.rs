@@ -24,6 +24,7 @@ use codex_mac_engine::{
 use crate::app::disk;
 use crate::app::provenance::ProvenanceStore;
 use crate::app::settings_store::UpdateSource;
+use crate::app::staging::{self, StagingDir};
 use crate::app::url_guard::validate_custom_source;
 use crate::errors::AppError;
 
@@ -274,12 +275,6 @@ pub fn plan_macos_update(simulated_build: Option<u64>) -> Result<MacUpdateReport
     })
 }
 
-fn staging_dir() -> std::path::PathBuf {
-    std::env::temp_dir()
-        .join("codex-app-manager")
-        .join("staging")
-}
-
 fn strategy_label(strategy: &UpdateStrategy) -> String {
     match strategy {
         UpdateStrategy::Delta { from_build } => format!("delta-from-{from_build}"),
@@ -316,7 +311,7 @@ fn preflight_mac_disk_with_available<F>(plan: &UpdatePlan, available: F) -> Resu
 where
     F: Fn(&Path) -> Result<Option<u64>, AppError>,
 {
-    let staging = staging_dir();
+    let staging = staging::staging_root();
     let need = mac_space_budget(plan);
     if let Some(free) = available(&staging)? {
         if free < need {
@@ -375,6 +370,7 @@ fn quit_codex_gracefully() -> Result<(), AppError> {
 }
 
 fn download_and_verify(
+    staging: &Path,
     url: &str,
     size: u64,
     max_size: u64,
@@ -388,7 +384,7 @@ fn download_and_verify(
         )));
     }
     let file_name = url.rsplit('/').next().unwrap_or("payload.bin");
-    let dest = staging_dir().join(file_name);
+    let dest = staging.join(file_name);
     let source = host_of(url);
 
     let already = std::fs::metadata(&dest)
@@ -471,13 +467,25 @@ pub fn stage_macos_update(simulated_build: Option<u64>) -> Result<MacStageReport
         .ed_signature
         .clone()
         .ok_or_else(|| AppError::Engine("appcast enclosure missing edSignature".to_string()))?;
-    let dest = download_and_verify(
+    let staging = staging::create_unique_staging("update")?;
+    let result = download_and_verify(
+        staging.path(),
         &plan.download_url,
         plan.download_size,
         max_bytes_for_strategy(&plan.strategy),
         &signature,
         &no_progress,
-    )?;
+    );
+    let dest = match result {
+        Ok(dest) => {
+            let _ = staging.keep();
+            dest
+        }
+        Err(err) => {
+            staging.discard();
+            return Err(err);
+        }
+    };
 
     Ok(MacStageReport {
         up_to_date: false,
@@ -610,6 +618,7 @@ fn reconstruct_full(
         AppError::Engine("appcast full enclosure missing edSignature".to_string())
     })?;
     let staged = download_and_verify(
+        work,
         &latest.full.url,
         latest.full.length,
         codex_mac_engine::limits::MAX_PACKAGE_BYTES,
@@ -710,154 +719,172 @@ pub fn perform_macos_update(
     preflight_mac_disk(&plan)?;
 
     // 1) Set up same-volume staging for the reconstructed bundle + backup.
-    let work = staging_dir();
+    let staging = staging::create_unique_staging("update")?;
+    let work = staging.path().to_path_buf();
     let out_app = work.join("Codex.app");
     let backup = work.join("backup-Codex.app");
     let _ = std::fs::remove_dir_all(&out_app);
     let _ = std::fs::remove_dir_all(&backup);
-
-    // 2) Reconstruct the new bundle into out_app. Prefer a delta when the tool is
-    //    present; fall back to the appcast's full package when the tool is missing
-    //    OR the delta fails to apply (modified basis, tool/patch version mismatch,
-    //    …). The full enclosure is always present in the same appcast entry and
-    //    needs no tool, so a recoverable delta failure no longer fails the update.
-    let want_delta = matches!(plan.strategy, UpdateStrategy::Delta { .. });
-    let effective_strategy = if want_delta {
-        if let Some(tool) = binary_delta.as_deref() {
-            let sig = plan
-                .ed_signature
-                .clone()
-                .ok_or_else(|| AppError::Engine("appcast delta missing edSignature".to_string()))?;
-            let staged = download_and_verify(
-                &plan.download_url,
-                plan.download_size,
-                codex_mac_engine::limits::MAX_DELTA_BYTES,
-                &sig,
-                progress,
-            )?;
-            match apply_delta(tool, &install_path, &out_app, &staged) {
-                Ok(()) => strategy_label(&plan.strategy),
-                Err(delta_err) => {
-                    reconstruct_full(&appcast, &work, &out_app, progress)?;
-                    format!("full (delta 应用失败回退: {delta_err})")
+    let mut keep_staging = false;
+    let perform_result = (|| -> Result<MacPerformReport, AppError> {
+        // 2) Reconstruct the new bundle into out_app. Prefer a delta when the tool is
+        //    present; fall back to the appcast's full package when the tool is missing
+        //    OR the delta fails to apply (modified basis, tool/patch version mismatch,
+        //    …). The full enclosure is always present in the same appcast entry and
+        //    needs no tool, so a recoverable delta failure no longer fails the update.
+        let want_delta = matches!(plan.strategy, UpdateStrategy::Delta { .. });
+        let effective_strategy = if want_delta {
+            if let Some(tool) = binary_delta.as_deref() {
+                let sig = plan.ed_signature.clone().ok_or_else(|| {
+                    AppError::Engine("appcast delta missing edSignature".to_string())
+                })?;
+                let staged = download_and_verify(
+                    &work,
+                    &plan.download_url,
+                    plan.download_size,
+                    codex_mac_engine::limits::MAX_DELTA_BYTES,
+                    &sig,
+                    progress,
+                )?;
+                match apply_delta(tool, &install_path, &out_app, &staged) {
+                    Ok(()) => strategy_label(&plan.strategy),
+                    Err(delta_err) => {
+                        reconstruct_full(&appcast, &work, &out_app, progress)?;
+                        format!("full (delta 应用失败回退: {delta_err})")
+                    }
                 }
+            } else {
+                reconstruct_full(&appcast, &work, &out_app, progress)?;
+                "full (delta 工具缺失，回退全量)".to_string()
             }
         } else {
             reconstruct_full(&appcast, &work, &out_app, progress)?;
-            "full (delta 工具缺失，回退全量)".to_string()
-        }
-    } else {
-        reconstruct_full(&appcast, &work, &out_app, progress)?;
-        "full".to_string()
-    };
-
-    // 3) gate the reconstructed bundle before it touches the install root.
-    gate_reconstructed(&out_app)
-        .map_err(|e| AppError::Engine(format!("codesign 闸失败（拒绝替换）: {e}")))?;
-
-    // 4a) pre-flight the atomic-swap precondition BEFORE quitting Codex, so a
-    //     cross-volume staging dir fails fast WITHOUT closing the user's app.
-    let install_parent = install_path.parent().unwrap_or(install_path.as_path());
-    if !codex_mac_engine::swap::same_volume(&out_app, install_parent) {
-        return Err(AppError::Engine(
-            "暂存目录与安装根不在同一卷，无法原子替换：请确保 TMPDIR 与安装根同卷".to_string(),
-        ));
-    }
-
-    // 4b) graceful quit (never force-kill), then 5) atomic same-volume swap. If
-    //     the swap fails after the quit, swap_in_place has restored the old
-    //     bundle in place — bring the user's app back before surfacing the error.
-    let was_running = codex_running();
-    quit_codex_gracefully()?;
-    if let Err(err) = swap_in_place(&install_path, &out_app, &backup) {
-        if was_running {
-            let _ = relaunch(&install_path);
-        }
-        return Err(AppError::Engine(err.to_string()));
-    }
-
-    // 6) filesystem health check on the installed root.
-    let healthy = sys::installed_codex_build_at_path(&installed.path)
-        .map(|(_, build)| build == plan.latest_build)
-        .unwrap_or(false)
-        && gate_reconstructed(&install_path).is_ok();
-
-    if healthy {
-        // The new bundle is authentic + correct-version; record provenance. If
-        // the store can't be written (disk full / unwritable data dir), the
-        // update still succeeded — but surface it, since status would otherwise
-        // keep classifying this now-manager install as "external".
-        let mut store = ProvenanceStore::load();
-        store.record(
-            installed.path.clone(),
-            plan.latest_build,
-            "manager-installed",
-        );
-        let save_warning = match store.save() {
-            Ok(()) => None,
-            Err(e) => Some(format!("托管记录保存失败（{e}），安装暂仍会被识别为外部")),
+            "full".to_string()
         };
 
-        if was_running {
-            // Relaunch BEFORE discarding the backup: if `open` fails we keep the
-            // backup as a recovery path instead of claiming a clean success. We
-            // do NOT downgrade a healthy, gated install just because auto-launch
-            // failed — the user can launch it manually.
-            if let Err(err) = relaunch(&install_path) {
-                return Ok(MacPerformReport {
-                    up_to_date: false,
-                    from_build: installed.build,
-                    to_build: plan.latest_build,
-                    strategy: effective_strategy.clone(),
-                    installed_path: installed.path,
-                    verified: true,
-                    relaunched: false,
-                    relaunch_failed: true,
-                    rolled_back: false,
-                    warning: Some(match &save_warning {
-                        Some(note) => format!("旧版本备份暂留于 {}；{note}", backup.display()),
-                        None => format!("旧版本备份暂留于 {}", backup.display()),
-                    }),
-                    message: format!(
-                        "已替换为 build {}，但自动重启失败（{err}）：请手动启动 Codex",
-                        plan.latest_build
-                    ),
-                });
-            }
+        // 3) gate the reconstructed bundle before it touches the install root.
+        gate_reconstructed(&out_app)
+            .map_err(|e| AppError::Engine(format!("codesign 闸失败（拒绝替换）: {e}")))?;
+
+        // 4a) pre-flight the atomic-swap precondition BEFORE quitting Codex, so a
+        //     cross-volume staging dir fails fast WITHOUT closing the user's app.
+        let install_parent = install_path.parent().unwrap_or(install_path.as_path());
+        if !codex_mac_engine::swap::same_volume(&out_app, install_parent) {
+            return Err(AppError::Engine(
+                "暂存目录与安装根不在同一卷，无法原子替换：请确保 TMPDIR 与安装根同卷".to_string(),
+            ));
         }
 
-        // Not running, or relaunched cleanly → the backup is no longer needed.
-        let _ = std::fs::remove_dir_all(&backup);
-        Ok(MacPerformReport {
-            up_to_date: false,
-            from_build: installed.build,
-            to_build: plan.latest_build,
-            strategy: effective_strategy.clone(),
-            installed_path: installed.path,
-            verified: true,
-            relaunched: was_running,
-            relaunch_failed: false,
-            rolled_back: false,
-            warning: save_warning,
-            message: format!("已更新 build {} → {}", installed.build, plan.latest_build),
-        })
-    } else {
-        rollback(&install_path, &backup)
-            .map_err(|e| AppError::Engine(format!("回滚失败（需人工介入）: {e}")))?;
-        let relaunched = was_running && relaunch(&install_path).is_ok();
-        Ok(MacPerformReport {
-            up_to_date: false,
-            from_build: installed.build,
-            to_build: plan.latest_build,
-            strategy: effective_strategy.clone(),
-            installed_path: installed.path,
-            verified: true,
-            relaunched,
-            relaunch_failed: false,
-            rolled_back: true,
-            warning: None,
-            message: "新版本健康检查未通过，已回滚到旧版本".to_string(),
-        })
+        // 4b) graceful quit (never force-kill), then 5) atomic same-volume swap. If
+        //     the swap fails after the quit, swap_in_place has restored the old
+        //     bundle in place — bring the user's app back before surfacing the error.
+        let was_running = codex_running();
+        quit_codex_gracefully()?;
+        if let Err(err) = swap_in_place(&install_path, &out_app, &backup) {
+            if was_running {
+                let _ = relaunch(&install_path);
+            }
+            return Err(AppError::Engine(err.to_string()));
+        }
+
+        // 6) filesystem health check on the installed root.
+        let healthy = sys::installed_codex_build_at_path(&installed.path)
+            .map(|(_, build)| build == plan.latest_build)
+            .unwrap_or(false)
+            && gate_reconstructed(&install_path).is_ok();
+
+        if healthy {
+            // The new bundle is authentic + correct-version; record provenance. If
+            // the store can't be written (disk full / unwritable data dir), the
+            // update still succeeded — but surface it, since status would otherwise
+            // keep classifying this now-manager install as "external".
+            let mut store = ProvenanceStore::load();
+            store.record(
+                installed.path.clone(),
+                plan.latest_build,
+                "manager-installed",
+            );
+            let save_warning = match store.save() {
+                Ok(()) => None,
+                Err(e) => Some(format!("托管记录保存失败（{e}），安装暂仍会被识别为外部")),
+            };
+
+            if was_running {
+                // Relaunch BEFORE discarding the backup: if `open` fails we keep the
+                // backup as a recovery path instead of claiming a clean success. We
+                // do NOT downgrade a healthy, gated install just because auto-launch
+                // failed — the user can launch it manually.
+                if let Err(err) = relaunch(&install_path) {
+                    keep_staging = true;
+                    return Ok(MacPerformReport {
+                        up_to_date: false,
+                        from_build: installed.build,
+                        to_build: plan.latest_build,
+                        strategy: effective_strategy.clone(),
+                        installed_path: installed.path.clone(),
+                        verified: true,
+                        relaunched: false,
+                        relaunch_failed: true,
+                        rolled_back: false,
+                        warning: Some(match &save_warning {
+                            Some(note) => format!("旧版本备份暂留于 {}；{note}", backup.display()),
+                            None => format!("旧版本备份暂留于 {}", backup.display()),
+                        }),
+                        message: format!(
+                            "已替换为 build {}，但自动重启失败（{err}）：请手动启动 Codex",
+                            plan.latest_build
+                        ),
+                    });
+                }
+            }
+
+            // Not running, or relaunched cleanly → the backup is no longer needed.
+            let _ = std::fs::remove_dir_all(&backup);
+            Ok(MacPerformReport {
+                up_to_date: false,
+                from_build: installed.build,
+                to_build: plan.latest_build,
+                strategy: effective_strategy.clone(),
+                installed_path: installed.path.clone(),
+                verified: true,
+                relaunched: was_running,
+                relaunch_failed: false,
+                rolled_back: false,
+                warning: save_warning,
+                message: format!("已更新 build {} → {}", installed.build, plan.latest_build),
+            })
+        } else {
+            rollback(&install_path, &backup)
+                .map_err(|e| AppError::Engine(format!("回滚失败（需人工介入）: {e}")))?;
+            let relaunched = was_running && relaunch(&install_path).is_ok();
+            Ok(MacPerformReport {
+                up_to_date: false,
+                from_build: installed.build,
+                to_build: plan.latest_build,
+                strategy: effective_strategy.clone(),
+                installed_path: installed.path.clone(),
+                verified: true,
+                relaunched,
+                relaunch_failed: false,
+                rolled_back: true,
+                warning: None,
+                message: "新版本健康检查未通过，已回滚到旧版本".to_string(),
+            })
+        }
+    })();
+    match perform_result {
+        Ok(report) => {
+            if keep_staging {
+                let _ = staging.keep();
+            } else {
+                staging.discard();
+            }
+            Ok(report)
+        }
+        Err(err) => {
+            staging.discard();
+            Err(err)
+        }
     }
 }
 
@@ -951,22 +978,44 @@ pub fn install_macos(progress: &dyn Fn(DownloadProgress)) -> Result<MacInstallSt
         .ok_or_else(|| AppError::Engine("appcast had no items".to_string()))?;
     preflight_mac_disk(&plan)?;
 
-    let work = staging_dir();
-    let out_app = work.join("Codex.app");
+    let staging = staging::create_unique_staging("update")?;
+    let install_result =
+        install_macos_in_staging(&appcast, &install_dir, &install_path, &staging, progress);
+    match install_result {
+        Ok(status) => {
+            staging.discard();
+            Ok(status)
+        }
+        Err(err) => {
+            staging.discard();
+            Err(err)
+        }
+    }
+}
+
+fn install_macos_in_staging(
+    appcast: &Appcast,
+    install_dir: &Path,
+    install_path: &Path,
+    staging: &StagingDir,
+    progress: &dyn Fn(DownloadProgress),
+) -> Result<MacInstallStatus, AppError> {
+    let work = staging.path();
+    let out_app = staging.join("Codex.app");
     let _ = std::fs::remove_dir_all(&out_app);
 
     // Full package only — no basis bundle to delta against.
-    reconstruct_full(&appcast, &work, &out_app, progress)?;
+    reconstruct_full(appcast, work, &out_app, progress)?;
     gate_reconstructed(&out_app)
         .map_err(|e| AppError::Engine(format!("codesign 闸失败（拒绝安装）: {e}")))?;
 
-    if !codex_mac_engine::swap::same_volume(&out_app, &install_dir) {
+    if !codex_mac_engine::swap::same_volume(&out_app, install_dir) {
         return Err(AppError::Engine(format!(
             "暂存目录与 {} 不在同一卷,无法安装",
             install_dir.display()
         )));
     }
-    std::fs::rename(&out_app, &install_path)
+    std::fs::rename(&out_app, install_path)
         .map_err(|e| AppError::Engine(format!("写入 {} 失败: {e}", install_dir.display())))?;
 
     if let Some((path, build)) = sys::installed_codex_build() {

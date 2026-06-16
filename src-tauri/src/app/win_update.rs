@@ -24,6 +24,7 @@ use codex_win_engine::{
 };
 
 use crate::app::provenance::ProvenanceStore;
+use crate::app::staging;
 use crate::domain::manifest::MirrorEndpoints;
 use crate::domain::settings::AppSettings;
 use crate::errors::AppError;
@@ -234,14 +235,8 @@ fn read_windows_release(endpoints: &MirrorEndpoints) -> Result<(WindowsRelease, 
     Ok((release, sha256))
 }
 
-fn staging_dir() -> PathBuf {
-    std::env::temp_dir()
-        .join("codex-app-manager")
-        .join("windows-staging")
-}
-
-fn staged_msix_path(release: &WindowsRelease) -> PathBuf {
-    staging_dir().join(format!("{}.msix", release.package_moniker))
+fn staged_msix_path(staging: &std::path::Path, release: &WindowsRelease) -> PathBuf {
+    staging.join(format!("{}.msix", release.package_moniker))
 }
 
 fn route_label(plan: &WindowsUpdatePlan) -> String {
@@ -411,117 +406,130 @@ pub fn stage_windows_update_with_install_mode(
         });
     }
 
-    let dest = staged_msix_path(&report.release);
-    let expected_size = report.release.content_length.unwrap_or(0);
-    if expected_size > MAX_PACKAGE_BYTES {
-        return Err(AppError::Engine(format!(
-            "MSIX content length {expected_size} exceeds {} byte limit",
-            MAX_PACKAGE_BYTES
-        )));
-    }
-    let expected_sha = report.plan.sha256.clone();
-    let source = host_of(&report.package_url);
-
-    let cached_ok = dest.exists()
-        && sha256_file(&dest)
-            .map(|actual| actual.eq_ignore_ascii_case(&expected_sha))
-            .unwrap_or(false);
-    if !cached_ok {
-        if dest.exists() {
-            let _ = std::fs::remove_file(&dest);
-        }
-        download_to_with_progress_bounded(
-            &report.package_url,
-            &dest,
-            MAX_PACKAGE_BYTES,
-            &|downloaded| {
-                progress(DownloadProgress {
-                    downloaded,
-                    total: expected_size,
-                    source: source.clone(),
-                });
-            },
-        )
-        .map_err(engine_err)?;
-    }
-
-    let actual_size = std::fs::metadata(&dest)
-        .map_err(|e| AppError::Engine(format!("read staged MSIX metadata: {e}")))?
-        .len();
-    if expected_size > 0 && actual_size != expected_size {
-        return Err(AppError::Engine(format!(
-            "MSIX size mismatch: {actual_size} != {expected_size}"
-        )));
-    }
-    if actual_size > MAX_PACKAGE_BYTES {
-        return Err(AppError::Engine(format!(
-            "MSIX size {actual_size} exceeds {} byte limit",
-            MAX_PACKAGE_BYTES
-        )));
-    }
-    progress(DownloadProgress {
-        downloaded: actual_size,
-        total: if expected_size > 0 {
-            expected_size
-        } else {
-            actual_size
-        },
-        source,
-    });
-
-    let actual_sha = sha256_file(&dest).map_err(engine_err)?;
-    if !actual_sha.eq_ignore_ascii_case(&expected_sha) {
-        return Err(AppError::Engine(format!(
-            "MSIX sha256 mismatch: {actual_sha} != {expected_sha}"
-        )));
-    }
-
-    let authenticode = verify_openai_authenticode(&dest).map_err(engine_err)?;
-    if !authenticode.is_valid_openai() {
-        return Err(AppError::Engine(format!(
-            "MSIX Authenticode verification failed: status={}, subject={}",
-            authenticode.status, authenticode.subject
-        )));
-    }
-
-    let identity = read_msix_identity(&dest).map_err(engine_err)?;
-    validate_codex_identity(
-        &identity,
-        &report.release.version,
-        report.release.architecture.as_deref(),
-    )
-    .map_err(engine_err)?;
-    if let Some(expected_identity) = report.release.package_identity.as_deref() {
-        if identity.name != expected_identity {
+    let staging = staging::create_unique_staging("update")?;
+    let stage_result = (|| -> Result<WinStageReport, AppError> {
+        let dest = staged_msix_path(staging.path(), &report.release);
+        let expected_size = report.release.content_length.unwrap_or(0);
+        if expected_size > MAX_PACKAGE_BYTES {
             return Err(AppError::Engine(format!(
-                "MSIX identity {} does not match manifest package identity {}",
-                identity.name, expected_identity
+                "MSIX content length {expected_size} exceeds {} byte limit",
+                MAX_PACKAGE_BYTES
             )));
         }
+        let expected_sha = report.plan.sha256.clone();
+        let source = host_of(&report.package_url);
+
+        let cached_ok = dest.exists()
+            && sha256_file(&dest)
+                .map(|actual| actual.eq_ignore_ascii_case(&expected_sha))
+                .unwrap_or(false);
+        if !cached_ok {
+            if dest.exists() {
+                let _ = std::fs::remove_file(&dest);
+            }
+            download_to_with_progress_bounded(
+                &report.package_url,
+                &dest,
+                MAX_PACKAGE_BYTES,
+                &|downloaded| {
+                    progress(DownloadProgress {
+                        downloaded,
+                        total: expected_size,
+                        source: source.clone(),
+                    });
+                },
+            )
+            .map_err(engine_err)?;
+        }
+
+        let actual_size = std::fs::metadata(&dest)
+            .map_err(|e| AppError::Engine(format!("read staged MSIX metadata: {e}")))?
+            .len();
+        if expected_size > 0 && actual_size != expected_size {
+            return Err(AppError::Engine(format!(
+                "MSIX size mismatch: {actual_size} != {expected_size}"
+            )));
+        }
+        if actual_size > MAX_PACKAGE_BYTES {
+            return Err(AppError::Engine(format!(
+                "MSIX size {actual_size} exceeds {} byte limit",
+                MAX_PACKAGE_BYTES
+            )));
+        }
+        progress(DownloadProgress {
+            downloaded: actual_size,
+            total: if expected_size > 0 {
+                expected_size
+            } else {
+                actual_size
+            },
+            source,
+        });
+
+        let actual_sha = sha256_file(&dest).map_err(engine_err)?;
+        if !actual_sha.eq_ignore_ascii_case(&expected_sha) {
+            return Err(AppError::Engine(format!(
+                "MSIX sha256 mismatch: {actual_sha} != {expected_sha}"
+            )));
+        }
+
+        let authenticode = verify_openai_authenticode(&dest).map_err(engine_err)?;
+        if !authenticode.is_valid_openai() {
+            return Err(AppError::Engine(format!(
+                "MSIX Authenticode verification failed: status={}, subject={}",
+                authenticode.status, authenticode.subject
+            )));
+        }
+
+        let identity = read_msix_identity(&dest).map_err(engine_err)?;
+        validate_codex_identity(
+            &identity,
+            &report.release.version,
+            report.release.architecture.as_deref(),
+        )
+        .map_err(engine_err)?;
+        if let Some(expected_identity) = report.release.package_identity.as_deref() {
+            if identity.name != expected_identity {
+                return Err(AppError::Engine(format!(
+                    "MSIX identity {} does not match manifest package identity {}",
+                    identity.name, expected_identity
+                )));
+            }
+        }
+
+        let mut notes = report.plan.warnings.clone();
+        notes.push(
+            "MSIX is staged and verified; install execution will sideload first and fall back transparently to the portable path if sideloading fails."
+                .to_string(),
+        );
+
+        Ok(WinStageReport {
+            up_to_date: false,
+            route,
+            latest_version: report.plan.latest_version,
+            package_moniker: report.plan.package_moniker,
+            download_size: actual_size,
+            staged_path: Some(dest.to_string_lossy().into_owned()),
+            sha256: actual_sha,
+            hash_verified: true,
+            authenticode: Some(authenticode),
+            identity: Some(identity),
+            identity_verified: true,
+            install_ready: true,
+            portable_fallback_ready: report.plan.portable_fallback_ready,
+            notes,
+        })
+    })();
+    match stage_result {
+        Ok(report) => {
+            let _ = staging.keep();
+            Ok(report)
+        }
+        Err(err) => {
+            staging.discard();
+            Err(err)
+        }
     }
-
-    let mut notes = report.plan.warnings.clone();
-    notes.push(
-        "MSIX is staged and verified; install execution will sideload first and fall back transparently to the portable path if sideloading fails."
-            .to_string(),
-    );
-
-    Ok(WinStageReport {
-        up_to_date: false,
-        route,
-        latest_version: report.plan.latest_version,
-        package_moniker: report.plan.package_moniker,
-        download_size: actual_size,
-        staged_path: Some(dest.to_string_lossy().into_owned()),
-        sha256: actual_sha,
-        hash_verified: true,
-        authenticode: Some(authenticode),
-        identity: Some(identity),
-        identity_verified: true,
-        install_ready: true,
-        portable_fallback_ready: report.plan.portable_fallback_ready,
-        notes,
-    })
 }
 
 pub fn auto_stage_windows_update(

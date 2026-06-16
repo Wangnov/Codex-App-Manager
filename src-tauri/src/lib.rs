@@ -96,6 +96,7 @@ pub fn run() {
             commands::restore_config_backup,
             commands::reset_config,
             commands::begin_operation,
+            commands::arm_destructive,
             commands::end_operation,
             commands::confirm_quit,
             commands::win_default_install_root,
@@ -119,6 +120,16 @@ pub fn run() {
         .setup(|app| {
             #[cfg(target_os = "macos")]
             install_macos_menu(app)?;
+            let operations = app.state::<state::ManagerState>().operations.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let summary = crate::app::staging::cleanup_stale_staging(&operations);
+                if summary.failed > 0 {
+                    eprintln!(
+                        "staging cleanup removed {} of {} stale dirs ({} failed)",
+                        summary.removed, summary.scanned, summary.failed
+                    );
+                }
+            });
             let health = app
                 .state::<state::ManagerState>()
                 .config_health
