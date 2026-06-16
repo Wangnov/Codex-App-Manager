@@ -68,7 +68,7 @@
 | 🌏 **国内可达** | 自更新与 payload 下载共用同一条镜像短链,按地域自动选路(国内 IHEP / 海外 R2),对用户透明 |
 | 🎨 **温润材质 UI** | OKLCH 配色、材质质感、明暗双主题精雕,GSAP 编排的入场与转场动效 |
 | 🌐 **11 种语言** | 跟随系统语言自动选择,含阿拉伯语 RTL |
-| 🍎 **已签名公证** | macOS 走 Developer ID 签名 + Apple 公证;Windows updater 产物以更新私钥签名 |
+| 🍎 **签名状态透明** | macOS 走 Developer ID 签名 + Apple 公证;Windows 安装器当前无 Authenticode 代码签名,自更新包有 Tauri updater 签名 |
 
 ## 下载与安装
 
@@ -88,7 +88,19 @@ brew install --cask wangnov/tap/codex-app-manager
 | Intel Mac | `CodexAppManager_x86_64.dmg` | [⤓ 镜像下载](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x86_64.dmg) |
 | Windows x64 | `CodexAppManager_x64-setup.exe` | [⤓ 镜像下载](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x64-setup.exe) |
 
-macOS 版本经 **Developer ID 签名 + Apple 公证**,首次打开不会被 Gatekeeper 拦截。镜像直链恒指向**最新版**——`/manager/latest/` 由 Cloudflare Worker 自动解析到当前发布,无需随版本更新;装好后 Manager 还会通过**应用内自更新**保持最新(见下)。
+macOS 版本经 **Developer ID 签名 + Apple 公证**,首次打开不会被 Gatekeeper 拦截。Windows 安装器(`CodexAppManager_x64-setup.exe`)当前**没有 Authenticode 代码签名**,首次运行可能出现 SmartScreen 提示;应用内自更新使用的 Tauri updater 签名只校验下载字节,不代表 Windows 发行者信任。详情见 [Windows signing and verification](docs/windows-signing.md)。
+
+下载后建议用同一 GitHub Release 的 `SHA256SUMS` 核验文件。Windows 可用 PowerShell,macOS 可用 `shasum`:
+
+```powershell
+Get-FileHash .\CodexAppManager_x64-setup.exe -Algorithm SHA256
+```
+
+```bash
+shasum -a 256 CodexAppManager_aarch64.dmg
+```
+
+镜像直链恒指向**最新版**——`/manager/latest/` 由 Cloudflare Worker 自动解析到当前发布,无需随版本更新;装好后 Manager 还会通过**应用内自更新**保持最新(见下)。
 
 > 安装 Manager 后,真正的 Codex 桌面应用由 Manager 负责安装与更新——你不需要单独去下载 Codex 本体。
 
@@ -185,7 +197,7 @@ npm run tauri:build    # 本地构建(未签名)
 | 🌏 **Reachable in China** | Self-update and payload downloads share one mirror link, auto-routed by region (IHEP in China, R2 elsewhere) — transparent to users |
 | 🎨 **Warm material UI** | OKLCH palette, material depth, polished dark + light themes, GSAP-orchestrated entrances and transitions |
 | 🌐 **11 languages** | Auto-selected from the system locale, including Arabic RTL |
-| 🍎 **Signed & notarized** | macOS Developer ID signing + Apple notarization; the Windows updater artifact is signed with the updater key |
+| 🍎 **Transparent signing status** | macOS Developer ID signing + Apple notarization; the Windows installer is not Authenticode-signed yet, while self-update artifacts carry the Tauri updater signature |
 
 ## Download & install
 
@@ -205,7 +217,19 @@ Grab your platform's file from the [latest GitHub Release](https://github.com/Wa
 | Intel Mac | `CodexAppManager_x86_64.dmg` | [⤓ mirror](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x86_64.dmg) |
 | Windows x64 | `CodexAppManager_x64-setup.exe` | [⤓ mirror](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x64-setup.exe) |
 
-The macOS builds are **Developer ID signed + Apple notarized**, so Gatekeeper won't block first launch. The mirror links always resolve to the **latest** release — `/manager/latest/` is auto-resolved to the current version by the Cloudflare Worker, with no per-release edits; after install, the Manager also keeps **itself** up to date via in-app self-update (below).
+The macOS builds are **Developer ID signed + Apple notarized**, so Gatekeeper won't block first launch. The Windows installer (`CodexAppManager_x64-setup.exe`) is **not Authenticode-signed** yet, so SmartScreen may warn on first run; the Tauri updater signature used for in-app updates verifies bytes only and is not Windows publisher trust. See [Windows signing and verification](docs/windows-signing.md).
+
+After downloading, compare the file with `SHA256SUMS` from the same GitHub Release. Use PowerShell on Windows or `shasum` on macOS:
+
+```powershell
+Get-FileHash .\CodexAppManager_x64-setup.exe -Algorithm SHA256
+```
+
+```bash
+shasum -a 256 CodexAppManager_aarch64.dmg
+```
+
+The mirror links always resolve to the **latest** release — `/manager/latest/` is auto-resolved to the current version by the Cloudflare Worker, with no per-release edits; after install, the Manager also keeps **itself** up to date via in-app self-update (below).
 
 > Once the Manager is installed, it installs and updates the actual Codex desktop app for you — you don't need to download Codex separately.
 

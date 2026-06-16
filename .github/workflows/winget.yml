@@ -1,7 +1,7 @@
 name: Publish to winget
 
 # Submits each stable release to the Windows Package Manager community repo
-# (microsoft/winget-pkgs) so users can `winget install Wangnov.CodexAppManager`.
+# (microsoft/winget-pkgs) after the package has been bootstrapped there.
 #
 # Prerequisites (one-time):
 #   1. Secret WINGET_TOKEN — a *classic* Personal Access Token with the
@@ -24,6 +24,9 @@ on:
         description: "Release tag to publish (e.g. v0.1.10)"
         required: true
 
+permissions:
+  contents: read
+
 jobs:
   winget:
     runs-on: ubuntu-latest
@@ -44,7 +47,7 @@ jobs:
 
       - name: Submit to winget-pkgs
         if: steps.gate.outputs.ok == 'true'
-        uses: vedantmgoyal9/winget-releaser@v2
+        uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e  # v2
         with:
           identifier: Wangnov.CodexAppManager
           installers-regex: '_x64-setup\.exe$'

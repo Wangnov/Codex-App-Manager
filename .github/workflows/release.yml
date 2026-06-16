@@ -40,20 +40,20 @@ jobs:
           - { platform: windows-latest, target: x86_64-pc-windows-msvc, os: windows }
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
         with:
           node-version: 20
           cache: npm
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
         with:
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
         with:
           workspaces: src-tauri -> target
 
@@ -185,7 +185,7 @@ jobs:
           fi
           ls -la "$DST"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: bundle-${{ matrix.target }}
           path: dist-artifacts/*
@@ -199,11 +199,11 @@ jobs:
       actions: write # dispatch winget.yml after publishing (release events from GITHUB_TOKEN don't cascade)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
           persist-credentials: false
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
         with:
           path: dist
           merge-multiple: true
@@ -247,8 +247,20 @@ jobs:
             cp docs/releases/FALLBACK.md "$RUNNER_TEMP/release-notes.md"
           fi
 
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          (
+            cd dist
+            sha256sum * | sort -k2
+          ) > SHA256SUMS
+          if [ ! -f dist/latest.json ]; then
+            sha256sum latest.json >> SHA256SUMS
+          fi
+          cat SHA256SUMS
+
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda  # v3
         with:
           tag_name: ${{ github.ref_name }}
           draft: false
@@ -262,6 +274,7 @@ jobs:
           files: |
             dist/*
             latest.json
+            SHA256SUMS
 
       # The release above is created with GITHUB_TOKEN, which by design does not
       # trigger other workflows — so winget.yml's `on: release` never fires.

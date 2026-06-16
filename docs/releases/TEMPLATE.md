@@ -41,6 +41,12 @@
 | macOS · Intel | [CodexAppManager_x86_64.dmg](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x86_64.dmg) |
 | Windows · x64 | [CodexAppManager_x64-setup.exe](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x64-setup.exe) |
 
+**Windows 签名状态:** `CodexAppManager_x64-setup.exe` 当前没有 Authenticode 代码签名,首次运行可能出现 SmartScreen 提示;`.sig` / `latest.json` 里的 Tauri updater 签名只用于应用内自更新的字节校验,不代表 Windows 发行者信任。详情见 [Windows signing and verification](https://github.com/Wangnov/Codex-App-Manager/blob/main/docs/windows-signing.md)。
+**Windows signing status:** `CodexAppManager_x64-setup.exe` is not Authenticode-signed yet, so SmartScreen may warn on first run; the Tauri updater signature in `.sig` / `latest.json` verifies in-app update bytes only and is not Windows publisher trust. See [Windows signing and verification](https://github.com/Wangnov/Codex-App-Manager/blob/main/docs/windows-signing.md).
+
+**核验下载:** 本页 Assets 带有 `SHA256SUMS`;Windows 用 `Get-FileHash .\CodexAppManager_x64-setup.exe -Algorithm SHA256`,macOS 用 `shasum -a 256 CodexAppManager_aarch64.dmg`,再与 `SHA256SUMS` 比对。
+**Verify downloads:** This release includes `SHA256SUMS` in Assets; on Windows run `Get-FileHash .\CodexAppManager_x64-setup.exe -Algorithm SHA256`, and on macOS run `shasum -a 256 CodexAppManager_aarch64.dmg`, then compare with `SHA256SUMS`.
+
 ```bash
 # macOS · Homebrew
 brew install --cask wangnov/tap/codex-app-manager
