@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use fs4::fs_std::FileExt;
+use fs4::{FileExt as Fs4FileExt, TryLockError};
 
 static TOKEN_COUNTER: AtomicU64 = AtomicU64::new(1);
 const DEFAULT_STALE_AFTER_SECS: u64 = 5 * 60;
@@ -185,14 +185,13 @@ impl OperationManager {
         let Ok(lock_file) = Self::lock_file_mut(&mut inner) else {
             return false;
         };
-        match lock_file.try_lock_exclusive() {
-            Ok(true) => {
-                let _ = lock_file.unlock();
+        match Fs4FileExt::try_lock(lock_file) {
+            Ok(()) => {
+                let _ = Fs4FileExt::unlock(lock_file);
                 false
             }
-            Ok(false) => true,
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock => true,
-            Err(_) => false,
+            Err(TryLockError::WouldBlock) => true,
+            Err(TryLockError::Error(_)) => false,
         }
     }
 
@@ -265,20 +264,16 @@ impl OperationManager {
     }
 
     fn try_lock_file(file: &File) -> Result<(), OperationError> {
-        match file.try_lock_exclusive() {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(OperationError::BusyOtherProcess),
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
-                Err(OperationError::BusyOtherProcess)
-            }
-            Err(err) => Err(OperationError::Lock(err.to_string())),
+        match Fs4FileExt::try_lock(file) {
+            Ok(()) => Ok(()),
+            Err(TryLockError::WouldBlock) => Err(OperationError::BusyOtherProcess),
+            Err(TryLockError::Error(err)) => Err(OperationError::Lock(err.to_string())),
         }
     }
 
     fn unlock_lock_file(inner: &mut Inner) -> Result<(), OperationError> {
         let file = Self::lock_file_mut(inner)?;
-        file.unlock()
-            .map_err(|err| OperationError::Lock(err.to_string()))
+        Fs4FileExt::unlock(file).map_err(|err| OperationError::Lock(err.to_string()))
     }
 
     fn reclaim_stale_detached(&self, inner: &mut Inner) -> Result<(), OperationError> {
