@@ -1,6 +1,7 @@
 use std::sync::atomic::AtomicBool;
 
 use crate::adapters::host;
+use crate::app::oplock::OperationManager;
 use crate::app::settings_store::AppSettings as PersistedAppSettings;
 use crate::domain::manifest::MirrorEndpoints;
 use crate::domain::settings::AppSettings;
@@ -13,6 +14,7 @@ pub struct ManagerState {
     /// Set once the user confirms quitting (or has the guard off) so the close /
     /// exit handlers stop intercepting and let the process go.
     pub force_quit: AtomicBool,
+    pub operations: OperationManager,
 }
 
 impl ManagerState {
@@ -27,12 +29,17 @@ impl ManagerState {
         };
         let settings = AppSettings::new(mirror_base_url.clone(), install_root);
         let endpoints = MirrorEndpoints::from_base_url(&mirror_base_url);
+        let lock_path = crate::app::paths::data_dir()
+            .map(|dir| dir.join("operation.lock"))
+            .unwrap_or_else(|| std::env::temp_dir().join("codex-app-manager-operation.lock"));
+        let operations = OperationManager::new(lock_path);
 
         Self {
             target,
             settings,
             endpoints,
             force_quit: AtomicBool::new(false),
+            operations,
         }
     }
 }

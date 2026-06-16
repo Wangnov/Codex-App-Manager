@@ -4,11 +4,13 @@ use tauri::{Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_dialog::DialogExt;
 
+use crate::app::disk::available_space;
 use crate::app::mac_update::{
     cancel_macos_download, install_macos, pause_macos_download, perform_macos_update,
     plan_macos_update, stage_macos_update, uninstall_macos, MacInstallStatus, MacPerformReport,
     MacStageReport, MacUninstallReport, MacUpdateReport, PerformExpectation,
 };
+use crate::app::oplock::{OperationError, OperationGuard, OperationKind, OperationToken};
 use crate::app::settings_store::AppSettings as PersistedAppSettings;
 use crate::app::win_update::{
     auto_stage_windows_update_with_install_mode, cancel_windows_download, pause_windows_download,
@@ -100,6 +102,30 @@ fn dialog_start_dir(path: &str) -> PathBuf {
 
 const MIN_PORTABLE_FREE_SPACE_BYTES: u64 = 1_073_741_824;
 
+fn begin_guard(state: &ManagerState, kind: OperationKind) -> Result<OperationGuard, CommandError> {
+    state
+        .operations
+        .begin(kind)
+        .map_err(AppError::from)
+        .map_err(Into::into)
+}
+
+fn auto_stage_busy_report(enabled: bool, allow_metered: bool) -> WinAutoStageReport {
+    WinAutoStageReport {
+        enabled,
+        allow_metered,
+        attempted: false,
+        skipped: true,
+        reason: "operation-busy".to_string(),
+        stage: None,
+        capabilities: None,
+        notes: vec![
+            "Automatic Windows pre-download was skipped because another operation is running."
+                .to_string(),
+        ],
+    }
+}
+
 fn path_key(path: &Path) -> String {
     path.to_string_lossy()
         .replace('/', "\\")
@@ -154,38 +180,6 @@ fn directory_is_empty(path: &Path) -> Result<bool, AppError> {
     let mut entries = std::fs::read_dir(path)
         .map_err(|e| AppError::Internal(format!("读取安装位置失败: {e}")))?;
     Ok(entries.next().is_none())
-}
-
-#[cfg(windows)]
-fn available_space(path: &Path) -> Result<Option<u64>, AppError> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
-
-    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
-    wide.push(0);
-    let mut free_to_caller = 0_u64;
-    let mut total = 0_u64;
-    let mut total_free = 0_u64;
-    let ok = unsafe {
-        GetDiskFreeSpaceExW(
-            wide.as_ptr(),
-            &mut free_to_caller,
-            &mut total,
-            &mut total_free,
-        )
-    };
-    if ok == 0 {
-        return Err(AppError::Internal(format!(
-            "读取磁盘剩余空间失败: {}",
-            std::io::Error::last_os_error()
-        )));
-    }
-    Ok(Some(free_to_caller))
-}
-
-#[cfg(not(windows))]
-fn available_space(_path: &Path) -> Result<Option<u64>, AppError> {
-    Ok(None)
 }
 
 fn validate_install_root_path(raw: &str) -> Result<String, AppError> {
@@ -293,11 +287,13 @@ pub async fn mac_plan_update(
 /// (no apply/swap). Runs the blocking download off the main thread.
 #[tauri::command]
 pub async fn mac_stage_update(
+    state: State<'_, ManagerState>,
     simulated_build: Option<u64>,
 ) -> Result<MacStageReport, CommandError> {
     if !cfg!(target_os = "macos") {
         return Err(AppError::UnsupportedPlatform.into());
     }
+    let _op = begin_guard(&state, OperationKind::Update)?;
     tauri::async_runtime::spawn_blocking(move || stage_macos_update(simulated_build))
         .await
         .map_err(|e| AppError::Internal(format!("join: {e}")))?
@@ -333,6 +329,7 @@ fn resolve_binary_delta(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
 #[tauri::command]
 pub async fn mac_perform_update(
     app: tauri::AppHandle,
+    state: State<'_, ManagerState>,
     confirm: bool,
     expected_from_build: u64,
     expected_to_build: u64,
@@ -342,8 +339,11 @@ pub async fn mac_perform_update(
         return Err(AppError::UnsupportedPlatform.into());
     }
     if !confirm {
-        return Err(AppError::Internal("拒绝执行：破坏性更新必须带显式 confirm".to_string()).into());
+        return Err(
+            AppError::Internal("拒绝执行：破坏性更新必须带显式 confirm".to_string()).into(),
+        );
     }
+    let _op = begin_guard(&state, OperationKind::Update)?;
     // Best-effort: a full-package update needs no delta tool, so don't reject the
     // whole operation when it's absent — only the delta branch requires it.
     let binary_delta = resolve_binary_delta(&app);
@@ -382,6 +382,7 @@ pub fn mac_adopt(state: State<'_, ManagerState>) -> Result<MacInstallStatus, Com
     if !matches!(state.target.os, OperatingSystem::Macos) {
         return Err(AppError::UnsupportedPlatform.into());
     }
+    let _op = begin_guard(&state, OperationKind::Adopt)?;
     crate::app::mac_update::mac_adopt().map_err(Into::into)
 }
 
@@ -397,10 +398,14 @@ pub fn mac_launch_codex() -> Result<(), CommandError> {
 /// macOS-only: fresh-install the latest Codex (full package) into /Applications.
 /// Runs the blocking download/verify/install off the main thread.
 #[tauri::command]
-pub async fn mac_install(app: tauri::AppHandle) -> Result<MacInstallStatus, CommandError> {
+pub async fn mac_install(
+    app: tauri::AppHandle,
+    state: State<'_, ManagerState>,
+) -> Result<MacInstallStatus, CommandError> {
     if !cfg!(target_os = "macos") {
         return Err(AppError::UnsupportedPlatform.into());
     }
+    let _op = begin_guard(&state, OperationKind::Install)?;
     tauri::async_runtime::spawn_blocking(move || {
         let report = move |p: crate::app::mac_update::DownloadProgress| {
             let _ = app.emit("mac://download-progress", p);
@@ -461,6 +466,7 @@ pub async fn win_stage_update(
     if !matches!(state.target.os, OperatingSystem::Windows) {
         return Err(AppError::UnsupportedPlatform.into());
     }
+    let _op = begin_guard(&state, OperationKind::Update)?;
     let endpoints = windows_endpoints_for_settings(&state)?;
     let settings = windows_domain_settings_for_persisted(&state);
     let install_mode = windows_install_mode_for_settings();
@@ -491,6 +497,30 @@ pub fn set_settings(
     normalize_settings_for_target(&mut s, &state.target);
     s.save()?;
     Ok(s)
+}
+
+#[tauri::command]
+pub fn begin_operation(
+    state: State<'_, ManagerState>,
+    kind: OperationKind,
+) -> Result<OperationToken, CommandError> {
+    state
+        .operations
+        .begin_detached(kind)
+        .map_err(AppError::from)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn end_operation(
+    state: State<'_, ManagerState>,
+    token: OperationToken,
+) -> Result<(), CommandError> {
+    state
+        .operations
+        .end(token)
+        .map_err(AppError::from)
+        .map_err(Into::into)
 }
 
 /// The user confirmed quitting from the close dialog — flag it and exit so the
@@ -553,6 +583,7 @@ pub fn win_set_install_root(
     if !matches!(state.target.os, OperatingSystem::Windows) {
         return Err(AppError::UnsupportedPlatform.into());
     }
+    let _op = begin_guard(&state, OperationKind::SetInstallRoot)?;
     let install_root = validate_install_root_path(&path)?;
     let mut settings = PersistedAppSettings::load();
     settings.install_root = install_root;
@@ -569,6 +600,7 @@ pub fn win_reset_install_root(
     if !matches!(state.target.os, OperatingSystem::Windows) {
         return Err(AppError::UnsupportedPlatform.into());
     }
+    let _op = begin_guard(&state, OperationKind::SetInstallRoot)?;
     let install_root = validate_install_root_path(&PersistedAppSettings::default().install_root)?;
     let mut settings = PersistedAppSettings::load();
     settings.install_root = install_root;
@@ -582,6 +614,7 @@ pub fn win_reset_install_root(
 /// user opts out. Runs the blocking work off the main thread.
 #[tauri::command]
 pub async fn mac_uninstall(
+    state: State<'_, ManagerState>,
     confirm: bool,
     keep_codex_home: bool,
 ) -> Result<MacUninstallReport, CommandError> {
@@ -591,6 +624,7 @@ pub async fn mac_uninstall(
     if !confirm {
         return Err(AppError::Internal("拒绝执行：卸载必须带显式 confirm".to_string()).into());
     }
+    let _op = begin_guard(&state, OperationKind::Uninstall)?;
     tauri::async_runtime::spawn_blocking(move || uninstall_macos(keep_codex_home))
         .await
         .map_err(|e| AppError::Internal(format!("join: {e}")))?
@@ -608,6 +642,17 @@ pub async fn win_auto_stage_update(
     if !matches!(state.target.os, OperatingSystem::Windows) {
         return Err(AppError::UnsupportedPlatform.into());
     }
+    let _op = if enabled {
+        match state.operations.begin(OperationKind::Update) {
+            Ok(guard) => Some(guard),
+            Err(OperationError::BusySameProcess(_) | OperationError::BusyOtherProcess) => {
+                return Ok(auto_stage_busy_report(enabled, allow_metered));
+            }
+            Err(err) => return Err(AppError::from(err).into()),
+        }
+    } else {
+        None
+    };
     let endpoints = windows_endpoints_for_settings(&state)?;
     let settings = windows_domain_settings_for_persisted(&state);
     let install_mode = windows_install_mode_for_settings();
@@ -777,6 +822,7 @@ pub fn win_adopt(state: State<'_, ManagerState>) -> Result<WinInstallStatus, Com
     if !matches!(state.target.os, OperatingSystem::Windows) {
         return Err(AppError::UnsupportedPlatform.into());
     }
+    let _op = begin_guard(&state, OperationKind::Adopt)?;
     let settings = windows_domain_settings_for_persisted(&state);
     adopt_windows_install(&settings).map_err(Into::into)
 }
@@ -805,6 +851,12 @@ pub async fn win_perform_update(
     if !matches!(state.target.os, OperatingSystem::Windows) {
         return Err(AppError::UnsupportedPlatform.into());
     }
+    if !confirm {
+        return Err(
+            AppError::Internal("拒绝执行：Windows 更新必须带显式 confirm".to_string()).into(),
+        );
+    }
+    let _op = begin_guard(&state, OperationKind::Update)?;
     let endpoints = windows_endpoints_for_settings(&state)?;
     let mut settings = windows_domain_settings_for_persisted(&state);
     // Validate (but don't yet persist) an explicitly chosen install root: it
@@ -857,6 +909,12 @@ pub async fn win_uninstall(
     if !matches!(state.target.os, OperatingSystem::Windows) {
         return Err(AppError::UnsupportedPlatform.into());
     }
+    if !confirm {
+        return Err(
+            AppError::Internal("拒绝执行：Windows 卸载必须带显式 confirm".to_string()).into(),
+        );
+    }
+    let _op = begin_guard(&state, OperationKind::Uninstall)?;
     let settings = windows_domain_settings_for_persisted(&state);
     tauri::async_runtime::spawn_blocking(move || {
         uninstall_windows_codex(&settings, confirm, purge_user_data)

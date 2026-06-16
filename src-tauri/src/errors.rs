@@ -1,6 +1,8 @@
 use serde::Serialize;
 use thiserror::Error;
 
+use crate::app::oplock::OperationError;
+
 #[derive(Debug, Error)]
 pub enum AppError {
     #[error("the current platform is not supported yet")]
@@ -14,6 +16,8 @@ pub enum AppError {
     #[error("{0}")]
     StaleExpectation(String),
     #[error("{0}")]
+    Busy(String),
+    #[error("{0}")]
     Internal(String),
 }
 
@@ -23,8 +27,15 @@ impl AppError {
             Self::UnsupportedPlatform => "unsupported_platform",
             Self::Engine(_) => "engine_error",
             Self::StaleExpectation(_) => "stale_expectation",
+            Self::Busy(_) => "operation_busy",
             Self::Internal(_) => "internal_error",
         }
+    }
+}
+
+impl From<OperationError> for AppError {
+    fn from(value: OperationError) -> Self {
+        Self::Busy(value.to_string())
     }
 }
 

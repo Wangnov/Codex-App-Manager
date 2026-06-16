@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::adapters::host;
+use crate::app::paths;
 use crate::domain::target::Target;
 use crate::errors::AppError;
 
@@ -62,8 +63,7 @@ impl Default for AppSettings {
 }
 
 fn store_path() -> Option<std::path::PathBuf> {
-    directories::ProjectDirs::from("io.github", "wangnov", "codexappmanager")
-        .map(|dirs| dirs.data_dir().join("settings.json"))
+    paths::settings_path()
 }
 
 impl AppSettings {

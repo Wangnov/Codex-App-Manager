@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::app::paths;
 use crate::errors::AppError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,8 +32,7 @@ pub struct ProvenanceStore {
 }
 
 fn store_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("io.github", "wangnov", "codexappmanager")
-        .map(|dirs| dirs.data_dir().join("provenance.json"))
+    paths::provenance_path()
 }
 
 fn now_unix() -> u64 {
