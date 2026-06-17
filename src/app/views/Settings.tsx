@@ -4,7 +4,7 @@ import { errorMessage, managerApi } from "../../services/managerApi";
 import type { AppSettings, UpdateSourceKind, WindowsInstallMode } from "../../shared/types";
 import { DEFAULT_SETTINGS } from "../../shared/types";
 import { Icon } from "../icons";
-import { useI18n, LANGS, type TKey } from "../i18n";
+import { useI18n, LANGS, type TFn, type TKey } from "../i18n";
 import { useTheme, type ThemeMode } from "../theme";
 import { NavBar, Toggle } from "../components";
 import { isWindows } from "../platform";
@@ -30,6 +30,49 @@ const WINDOWS_INSTALL_MODES: { kind: WindowsInstallMode; label: TKey; desc: TKey
     desc: "settings.windows.portableDescDefault",
   },
 ];
+
+const FREQUENCY_PRESETS: { seconds: number; label: TKey }[] = [
+  { seconds: 15 * 60, label: "settings.general.interval15m" },
+  { seconds: 60 * 60, label: "settings.general.interval1h" },
+  { seconds: 6 * 60 * 60, label: "settings.general.interval6h" },
+];
+
+const MIN_CUSTOM_INTERVAL_SECONDS = 60;
+const MAX_CUSTOM_HOURS = 168;
+
+function splitInterval(totalSeconds: number) {
+  const total = Math.max(MIN_CUSTOM_INTERVAL_SECONDS, Math.floor(totalSeconds || 0));
+  return {
+    hours: Math.floor(total / 3600),
+    minutes: Math.floor((total % 3600) / 60),
+    seconds: total % 60,
+  };
+}
+
+function intervalFromParts(parts: { hours: number; minutes: number; seconds: number }) {
+  return Math.max(
+    MIN_CUSTOM_INTERVAL_SECONDS,
+    parts.hours * 3600 + parts.minutes * 60 + parts.seconds,
+  );
+}
+
+function clampPart(value: string, max: number) {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(max, n));
+}
+
+function formatInterval(seconds: number, t: TFn) {
+  const preset = FREQUENCY_PRESETS.find((option) => option.seconds === seconds);
+  if (preset) return t(preset.label);
+  const parts = splitInterval(seconds);
+  const labels = [
+    parts.hours ? `${parts.hours}${t("settings.general.intervalHoursSuffix")}` : "",
+    parts.minutes ? `${parts.minutes}${t("settings.general.intervalMinutesSuffix")}` : "",
+    parts.seconds ? `${parts.seconds}${t("settings.general.intervalSecondsSuffix")}` : "",
+  ].filter(Boolean);
+  return labels.join(" ") || `1${t("settings.general.intervalMinutesSuffix")}`;
+}
 
 function samePath(a: string, b: string): boolean {
   const norm = (value: string) =>
@@ -64,6 +107,7 @@ export function Settings({
   const [autostart, setAutostart] = useState(false);
   const [commandError, setCommandError] = useState<string | null>(null);
   const [langSheet, setLangSheet] = useState(false);
+  const [customIntervalOpen, setCustomIntervalOpen] = useState(false);
   const langTitleId = useId();
 
   useEffect(() => {
@@ -112,6 +156,21 @@ export function Settings({
   const availableSources = SOURCES.filter((src) => !(win && src.kind === "official"));
   const showingSaveError = !commandError && Boolean(saveError);
   const error = commandError ?? saveError;
+  const customInterval = customIntervalOpen || !FREQUENCY_PRESETS.some(
+    (option) => option.seconds === s.periodicCheckIntervalSeconds,
+  );
+  const intervalParts = splitInterval(s.periodicCheckIntervalSeconds);
+  const intervalLabel = formatInterval(s.periodicCheckIntervalSeconds, t);
+
+  const updateIntervalPart = (
+    part: "hours" | "minutes" | "seconds",
+    value: string,
+  ) => {
+    const nextParts = { ...splitInterval(s.periodicCheckIntervalSeconds) };
+    nextParts[part] = clampPart(value, part === "hours" ? MAX_CUSTOM_HOURS : 59);
+    setCommandError(null);
+    update({ ...s, periodicCheckIntervalSeconds: intervalFromParts(nextParts) });
+  };
 
   return (
     <div className="pop">
@@ -254,15 +313,105 @@ export function Settings({
           <div className="list">
             <div className="row">
               <span className="rtext">
-                <span className="rtitle">{t("settings.general.autoCheck")}</span>
+                <span className="rtitle">{t("settings.general.checkOnStartup")}</span>
               </span>
               <Toggle
-                checked={s.autoCheck}
+                checked={s.checkOnStartup}
                 onChange={(v) => {
                   setCommandError(null);
-                  update({ ...s, autoCheck: v });
+                  update({ ...s, checkOnStartup: v });
                 }}
               />
+            </div>
+            <div className="row">
+              <span className="rtext">
+                <span className="rtitle">{t("settings.general.periodicCheck")}</span>
+              </span>
+              <Toggle
+                checked={s.periodicCheck}
+                onChange={(v) => {
+                  setCommandError(null);
+                  update({ ...s, autoCheck: v, periodicCheck: v });
+                }}
+              />
+            </div>
+            <div
+              className={`schedule-panel ${s.periodicCheck ? "open" : ""}`}
+              aria-hidden={!s.periodicCheck}
+              inert={s.periodicCheck ? undefined : true}
+            >
+              <div className="schedule-panel-inner">
+                <div className="schedule-panel-content">
+                  <div className="schedule-head">
+                    <span className="rtitle">{t("settings.general.checkFrequency")}</span>
+                    <span className="tag">{t("settings.general.intervalEvery", { interval: intervalLabel })}</span>
+                  </div>
+                  <div className="seg">
+                    {FREQUENCY_PRESETS.map((option) => (
+                      <button
+                        key={option.seconds}
+                        aria-selected={s.periodicCheckIntervalSeconds === option.seconds}
+                        onClick={() => {
+                          setCommandError(null);
+                          setCustomIntervalOpen(false);
+                          update({ ...s, periodicCheckIntervalSeconds: option.seconds });
+                        }}
+                      >
+                        {t(option.label)}
+                      </button>
+                    ))}
+                    <button
+                      aria-selected={customInterval}
+                      onClick={() => {
+                        setCommandError(null);
+                        setCustomIntervalOpen(true);
+                      }}
+                    >
+                      {t("settings.general.customInterval")}
+                    </button>
+                  </div>
+                  {customInterval ? (
+                    <div className="interval-grid">
+                      <label>
+                        <span>{t("settings.general.intervalHours")}</span>
+                        <input
+                          className="input mono"
+                          type="number"
+                          inputMode="numeric"
+                          min={0}
+                          max={MAX_CUSTOM_HOURS}
+                          value={intervalParts.hours}
+                          onChange={(e) => updateIntervalPart("hours", e.target.value)}
+                        />
+                      </label>
+                      <label>
+                        <span>{t("settings.general.intervalMinutes")}</span>
+                        <input
+                          className="input mono"
+                          type="number"
+                          inputMode="numeric"
+                          min={0}
+                          max={59}
+                          value={intervalParts.minutes}
+                          onChange={(e) => updateIntervalPart("minutes", e.target.value)}
+                        />
+                      </label>
+                      <label>
+                        <span>{t("settings.general.intervalSeconds")}</span>
+                        <input
+                          className="input mono"
+                          type="number"
+                          inputMode="numeric"
+                          min={0}
+                          max={59}
+                          value={intervalParts.seconds}
+                          onChange={(e) => updateIntervalPart("seconds", e.target.value)}
+                        />
+                      </label>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
             </div>
             <div className="row">
               <span className="rtext">

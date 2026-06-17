@@ -7,6 +7,7 @@ import {
   errorMessage,
   isDownloadCancelled,
   managerApi,
+  SETTINGS_CHANGED_EVENT,
 } from "../../services/managerApi";
 import type {
   AppSettings,
@@ -171,12 +172,19 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       const s = await managerApi.getSettings().catch(() => DEFAULT_SETTINGS);
       setSettings(s);
       void refreshStatus();
-      // Honor "自动检查更新": only hit the appcast on open when enabled.
-      if (s.autoCheck) {
+      if (s.checkOnStartup) {
         void check();
       }
     })();
   }, [check, refreshStatus]);
+
+  useEffect(() => {
+    const onSettingsChanged = (event: Event) => {
+      setSettings((event as CustomEvent<AppSettings>).detail);
+    };
+    window.addEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
+    return () => window.removeEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
+  }, []);
 
   // The snapshot/busy values the focus listener (a long-lived subscription)
   // reads — refs so the subscription doesn't tear down on every state change.
@@ -188,6 +196,20 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   useEffect(() => {
     busyRef.current = busy;
   }, [busy]);
+  const checkRef = useRef(check);
+  useEffect(() => {
+    checkRef.current = check;
+  }, [check]);
+
+  useEffect(() => {
+    if (!settings.periodicCheck) return;
+    const intervalMs = Math.max(60_000, settings.periodicCheckIntervalSeconds * 1000);
+    const id = window.setInterval(() => {
+      if (busyRef.current) return;
+      void checkRef.current();
+    }, intervalMs);
+    return () => window.clearInterval(id);
+  }, [settings.periodicCheck, settings.periodicCheckIntervalSeconds]);
 
   // Window focus → silently re-detect the local install (milliseconds, no
   // network). If it no longer matches the snapshot on screen (Codex was

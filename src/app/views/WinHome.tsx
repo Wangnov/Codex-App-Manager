@@ -7,6 +7,7 @@ import {
   errorMessage,
   isDownloadCancelled,
   managerApi,
+  SETTINGS_CHANGED_EVENT,
 } from "../../services/managerApi";
 import type {
   AppSettings,
@@ -156,11 +157,38 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       setSettings(s);
       void managerApi.winDefaultInstallRoot().then(setDefaultInstallRoot).catch(() => undefined);
       void refreshStatus();
-      if (s.autoCheck) {
+      if (s.checkOnStartup) {
         void check();
       }
     })();
   }, [check, refreshStatus]);
+
+  useEffect(() => {
+    const onSettingsChanged = (event: Event) => {
+      setSettings((event as CustomEvent<AppSettings>).detail);
+    };
+    window.addEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
+    return () => window.removeEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
+  }, []);
+
+  const busyRef = useRef(busy);
+  useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
+  const checkRef = useRef(check);
+  useEffect(() => {
+    checkRef.current = check;
+  }, [check]);
+
+  useEffect(() => {
+    if (!settings.periodicCheck) return;
+    const intervalMs = Math.max(60_000, settings.periodicCheckIntervalSeconds * 1000);
+    const id = window.setInterval(() => {
+      if (busyRef.current) return;
+      void checkRef.current();
+    }, intervalMs);
+    return () => window.clearInterval(id);
+  }, [settings.periodicCheck, settings.periodicCheckIntervalSeconds]);
 
   const adopt = useCallback(async () => {
     setBusy("adopt");

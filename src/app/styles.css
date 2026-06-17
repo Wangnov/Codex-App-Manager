@@ -1216,6 +1216,60 @@ button.row.danger:hover {
   box-shadow: var(--elev-1);
 }
 
+.schedule-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: translateY(-6px);
+  border-top: 0 solid transparent;
+  transition: grid-template-rows 0.28s var(--ease-out), opacity 0.2s var(--ease),
+    transform 0.24s var(--ease), border-color 0.18s var(--ease);
+}
+.schedule-panel.open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: translateY(0);
+  border-top-width: 1px;
+  border-top-color: var(--line);
+}
+.schedule-panel-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+.schedule-panel-content {
+  display: grid;
+  gap: var(--space-xs);
+  padding: 12px 14px 14px;
+}
+.schedule-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+}
+.schedule-head .rtitle {
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+.interval-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-xs);
+  animation: risein 0.22s var(--ease-out) both;
+}
+.interval-grid label {
+  display: grid;
+  gap: 5px;
+  color: var(--text-faint);
+  font-size: var(--fs-caption);
+  font-weight: 700;
+}
+.interval-grid .input {
+  height: 36px;
+  padding: 8px 9px;
+  text-align: center;
+}
+
 /* inputs */
 .input {
   width: 100%;

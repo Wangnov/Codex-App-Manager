@@ -14,6 +14,9 @@ use crate::domain::target::Target;
 use crate::errors::AppError;
 
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+const DEFAULT_PERIODIC_CHECK_INTERVAL_SECONDS: u64 = 15 * 60;
+const MIN_PERIODIC_CHECK_INTERVAL_SECONDS: u64 = 60;
+const MAX_PERIODIC_CHECK_INTERVAL_SECONDS: u64 = 7 * 24 * 60 * 60;
 
 fn default_schema_version() -> u32 {
     CURRENT_SCHEMA_VERSION
@@ -65,7 +68,17 @@ pub struct AppSettings {
     #[serde(default = "default_source")]
     pub source: UpdateSource,
     pub custom_url: String,
+    /// Legacy compatibility alias retained for older frontends/settings files.
     pub auto_check: bool,
+    /// Check once when the home view starts.
+    #[serde(default = "default_true")]
+    pub check_on_startup: bool,
+    /// Keep checking while the manager is open.
+    #[serde(default = "default_true")]
+    pub periodic_check: bool,
+    /// Periodic check cadence in seconds. Defaults to 15 minutes.
+    #[serde(default = "default_periodic_check_interval_seconds")]
+    pub periodic_check_interval_seconds: u64,
     pub ask_before: bool,
     /// Always true — surfaced read-only. We never install an unsigned bundle.
     pub signed_only: bool,
@@ -92,8 +105,10 @@ struct RawAppSettings {
     source: String,
     #[serde(default)]
     custom_url: String,
-    #[serde(default = "default_true")]
-    auto_check: bool,
+    auto_check: Option<bool>,
+    check_on_startup: Option<bool>,
+    periodic_check: Option<bool>,
+    periodic_check_interval_seconds: Option<u64>,
     #[serde(default = "default_true")]
     ask_before: bool,
     #[serde(default = "default_true")]
@@ -108,6 +123,10 @@ struct RawAppSettings {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_periodic_check_interval_seconds() -> u64 {
+    DEFAULT_PERIODIC_CHECK_INTERVAL_SECONDS
 }
 
 fn default_windows_install_mode() -> String {
@@ -125,6 +144,9 @@ impl Default for AppSettings {
             source: UpdateSource::Auto,
             custom_url: String::new(),
             auto_check: true,
+            check_on_startup: true,
+            periodic_check: true,
+            periodic_check_interval_seconds: DEFAULT_PERIODIC_CHECK_INTERVAL_SECONDS,
             ask_before: true,
             signed_only: true,
             confirm_close: true,
@@ -150,12 +172,21 @@ impl RawAppSettings {
                 self.schema_version, CURRENT_SCHEMA_VERSION
             )
         });
+        let legacy_auto_check = self.auto_check.unwrap_or(true);
+        let check_on_startup = self.check_on_startup.unwrap_or(legacy_auto_check);
+        let periodic_check = self.periodic_check.unwrap_or(legacy_auto_check);
+        let auto_check = self.auto_check.unwrap_or(periodic_check);
         (
             AppSettings {
                 schema_version: self.schema_version,
                 source,
                 custom_url: self.custom_url,
-                auto_check: self.auto_check,
+                auto_check,
+                check_on_startup,
+                periodic_check,
+                periodic_check_interval_seconds: self
+                    .periodic_check_interval_seconds
+                    .unwrap_or(DEFAULT_PERIODIC_CHECK_INTERVAL_SECONDS),
                 ask_before: self.ask_before,
                 signed_only: self.signed_only,
                 confirm_close: self.confirm_close,
@@ -182,6 +213,10 @@ impl AppSettings {
     pub fn normalize(&mut self) {
         self.schema_version = CURRENT_SCHEMA_VERSION;
         self.signed_only = true; // enforce regardless of what is on disk
+        self.auto_check = self.periodic_check;
+        self.periodic_check_interval_seconds = self
+            .periodic_check_interval_seconds
+            .clamp(MIN_PERIODIC_CHECK_INTERVAL_SECONDS, MAX_PERIODIC_CHECK_INTERVAL_SECONDS);
         if !matches!(self.windows_install_mode.as_str(), "msix" | "portable") {
             self.windows_install_mode = default_windows_install_mode();
         }
@@ -257,7 +292,11 @@ impl AppSettings {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppSettings, RawAppSettings, UpdateSource, CURRENT_SCHEMA_VERSION};
+    use super::{
+        AppSettings, RawAppSettings, UpdateSource, CURRENT_SCHEMA_VERSION,
+        DEFAULT_PERIODIC_CHECK_INTERVAL_SECONDS, MAX_PERIODIC_CHECK_INTERVAL_SECONDS,
+        MIN_PERIODIC_CHECK_INTERVAL_SECONDS,
+    };
 
     #[test]
     fn old_schema_defaults_schema_version() {
@@ -274,8 +313,60 @@ mod tests {
         let (settings, unknown_source, newer_schema) = raw.into_settings();
         assert_eq!(settings.schema_version, CURRENT_SCHEMA_VERSION);
         assert_eq!(settings.source, UpdateSource::Mirror);
+        assert!(settings.auto_check);
+        assert!(settings.check_on_startup);
+        assert!(settings.periodic_check);
+        assert_eq!(
+            settings.periodic_check_interval_seconds,
+            DEFAULT_PERIODIC_CHECK_INTERVAL_SECONDS
+        );
         assert!(unknown_source.is_none());
         assert!(newer_schema.is_none());
+    }
+
+    #[test]
+    fn legacy_auto_check_false_disables_startup_and_periodic_checks() {
+        let raw: RawAppSettings = serde_json::from_str(
+            r#"{
+                "source": "auto",
+                "customUrl": "",
+                "autoCheck": false,
+                "askBefore": true,
+                "signedOnly": true
+            }"#,
+        )
+        .unwrap();
+        let (settings, _, _) = raw.into_settings();
+        assert!(!settings.auto_check);
+        assert!(!settings.check_on_startup);
+        assert!(!settings.periodic_check);
+        assert_eq!(
+            settings.periodic_check_interval_seconds,
+            DEFAULT_PERIODIC_CHECK_INTERVAL_SECONDS
+        );
+    }
+
+    #[test]
+    fn normalizes_periodic_interval_bounds() {
+        let mut too_low = AppSettings {
+            periodic_check_interval_seconds: 0,
+            ..AppSettings::default()
+        };
+        too_low.normalize();
+        assert_eq!(
+            too_low.periodic_check_interval_seconds,
+            MIN_PERIODIC_CHECK_INTERVAL_SECONDS
+        );
+
+        let mut too_high = AppSettings {
+            periodic_check_interval_seconds: MAX_PERIODIC_CHECK_INTERVAL_SECONDS + 1,
+            ..AppSettings::default()
+        };
+        too_high.normalize();
+        assert_eq!(
+            too_high.periodic_check_interval_seconds,
+            MAX_PERIODIC_CHECK_INTERVAL_SECONDS
+        );
     }
 
     #[test]

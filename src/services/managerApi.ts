@@ -21,6 +21,10 @@ import type {
 import { DEFAULT_SETTINGS } from "../shared/types";
 
 const SETTINGS_LS = "cam.settings";
+export const SETTINGS_CHANGED_EVENT = "cam:settings-changed";
+const DEFAULT_PERIODIC_CHECK_INTERVAL_SECONDS = 15 * 60;
+const MIN_PERIODIC_CHECK_INTERVAL_SECONDS = 60;
+const MAX_PERIODIC_CHECK_INTERVAL_SECONDS = 7 * 24 * 60 * 60;
 
 export type ManagerUpdateCheck =
   | { kind: "development" }
@@ -44,10 +48,40 @@ export interface FrontendErrorPayload {
   componentStack: string | null;
 }
 
+function normalizedInterval(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return DEFAULT_PERIODIC_CHECK_INTERVAL_SECONDS;
+  return Math.max(
+    MIN_PERIODIC_CHECK_INTERVAL_SECONDS,
+    Math.min(MAX_PERIODIC_CHECK_INTERVAL_SECONDS, Math.floor(n)),
+  );
+}
+
+function normalizeSettings(raw: Partial<AppSettings>): AppSettings {
+  const legacyAuto = typeof raw.autoCheck === "boolean" ? raw.autoCheck : DEFAULT_SETTINGS.autoCheck;
+  const periodic =
+    typeof raw.periodicCheck === "boolean" ? raw.periodicCheck : legacyAuto;
+  return {
+    ...DEFAULT_SETTINGS,
+    ...raw,
+    autoCheck: periodic,
+    checkOnStartup:
+      typeof raw.checkOnStartup === "boolean" ? raw.checkOnStartup : legacyAuto,
+    periodicCheck: periodic,
+    periodicCheckIntervalSeconds: normalizedInterval(raw.periodicCheckIntervalSeconds),
+    signedOnly: true,
+  };
+}
+
+function emitSettingsChanged(settings: AppSettings) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent<AppSettings>(SETTINGS_CHANGED_EVENT, { detail: settings }));
+}
+
 function localSettings(): AppSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_LS);
-    if (raw) return { ...DEFAULT_SETTINGS, ...JSON.parse(raw), signedOnly: true };
+    if (raw) return normalizeSettings(JSON.parse(raw));
   } catch {
     // ignore
   }
@@ -467,19 +501,21 @@ export const managerApi = {
       return localSettings();
     }
     try {
-      return await invoke<AppSettings>("get_settings");
+      return normalizeSettings(await invoke<AppSettings>("get_settings"));
     } catch {
       return localSettings();
     }
   },
   async setSettings(next: AppSettings): Promise<AppSettings> {
-    const safe = { ...next, signedOnly: true };
+    const safe = normalizeSettings(next);
     if (!hasTauriRuntime()) {
       localStorage.setItem(SETTINGS_LS, JSON.stringify(safe));
+      emitSettingsChanged(safe);
       return safe;
     }
-    const saved = await invoke<AppSettings>("set_settings", { settings: safe });
+    const saved = normalizeSettings(await invoke<AppSettings>("set_settings", { settings: safe }));
     localStorage.setItem(SETTINGS_LS, JSON.stringify(saved));
+    emitSettingsChanged(saved);
     return saved;
   },
   // The user confirmed the close dialog — tell the backend to actually exit
@@ -506,20 +542,24 @@ export const managerApi = {
     if (!hasTauriRuntime()) {
       const saved = { ...localSettings(), installRoot: path };
       localStorage.setItem(SETTINGS_LS, JSON.stringify(saved));
+      emitSettingsChanged(saved);
       return saved;
     }
-    const saved = await invoke<AppSettings>("win_set_install_root", { path });
+    const saved = normalizeSettings(await invoke<AppSettings>("win_set_install_root", { path }));
     localStorage.setItem(SETTINGS_LS, JSON.stringify(saved));
+    emitSettingsChanged(saved);
     return saved;
   },
   async winResetInstallRoot(): Promise<AppSettings> {
     if (!hasTauriRuntime()) {
       const saved = { ...localSettings(), installRoot: DEFAULT_SETTINGS.installRoot };
       localStorage.setItem(SETTINGS_LS, JSON.stringify(saved));
+      emitSettingsChanged(saved);
       return saved;
     }
-    const saved = await invoke<AppSettings>("win_reset_install_root");
+    const saved = normalizeSettings(await invoke<AppSettings>("win_reset_install_root"));
     localStorage.setItem(SETTINGS_LS, JSON.stringify(saved));
+    emitSettingsChanged(saved);
     return saved;
   },
 

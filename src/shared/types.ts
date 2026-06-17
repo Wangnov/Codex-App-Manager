@@ -98,7 +98,14 @@ export type WindowsInstallMode = "msix" | "portable";
 export interface AppSettings {
   source: UpdateSourceKind;
   customUrl: string;
+  /** Legacy compatibility alias for automatic checks. */
   autoCheck: boolean;
+  /** Check once when the manager home screen starts. */
+  checkOnStartup: boolean;
+  /** Keep checking while the manager is open. */
+  periodicCheck: boolean;
+  /** Periodic check cadence, in seconds. Defaults to 15 minutes. */
+  periodicCheckIntervalSeconds: number;
   askBefore: boolean;
   /** Always true at the backend; surfaced read-only in the UI. */
   signedOnly: boolean;
@@ -137,6 +144,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   source: "auto",
   customUrl: "",
   autoCheck: true,
+  checkOnStartup: true,
+  periodicCheck: true,
+  periodicCheckIntervalSeconds: 15 * 60,
   askBefore: true,
   signedOnly: true,
   confirmClose: true,

@@ -1,7 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { isNetworkError, managerApi } from "./managerApi";
+import { DEFAULT_SETTINGS } from "../shared/types";
+import { isNetworkError, managerApi, SETTINGS_CHANGED_EVENT } from "./managerApi";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -12,6 +13,7 @@ const invokeMock = vi.mocked(invoke);
 beforeEach(() => {
   invokeMock.mockReset();
   vi.stubGlobal("window", { open: vi.fn(), __TAURI_INTERNALS__: undefined });
+  localStorage.clear();
 });
 
 describe("isNetworkError", () => {
@@ -41,6 +43,51 @@ describe("isNetworkError", () => {
     ).toBe(false);
     expect(isNetworkError("appcast enclosure missing edSignature")).toBe(false);
     expect(isNetworkError("EdDSA signature does not match")).toBe(false);
+  });
+});
+
+describe("settings API", () => {
+  it("migrates legacy browser settings into startup and periodic checks", async () => {
+    localStorage.setItem(
+      "cam.settings",
+      JSON.stringify({
+        source: "mirror",
+        customUrl: "",
+        autoCheck: false,
+        askBefore: true,
+        signedOnly: true,
+      }),
+    );
+
+    const settings = await managerApi.getSettings();
+
+    expect(settings.source).toBe("mirror");
+    expect(settings.autoCheck).toBe(false);
+    expect(settings.checkOnStartup).toBe(false);
+    expect(settings.periodicCheck).toBe(false);
+    expect(settings.periodicCheckIntervalSeconds).toBe(15 * 60);
+  });
+
+  it("normalizes and broadcasts browser settings writes", async () => {
+    const dispatchEvent = vi.fn();
+    vi.stubGlobal("window", {
+      open: vi.fn(),
+      __TAURI_INTERNALS__: undefined,
+      dispatchEvent,
+    });
+
+    const saved = await managerApi.setSettings({
+      ...DEFAULT_SETTINGS,
+      periodicCheckIntervalSeconds: 0,
+    });
+
+    expect(saved.periodicCheckIntervalSeconds).toBe(60);
+    expect(dispatchEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: SETTINGS_CHANGED_EVENT,
+        detail: saved,
+      }),
+    );
   });
 });
 

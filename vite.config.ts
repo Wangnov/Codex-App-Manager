@@ -1,5 +1,5 @@
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+import { configDefaults, defineConfig } from "vitest/config";
 
 import pkg from "./package.json";
 
@@ -10,6 +10,7 @@ export default defineConfig({
   },
   clearScreen: false,
   test: {
+    exclude: [...configDefaults.exclude, ".claude/**"],
     environment: "jsdom",
     environmentOptions: {
       jsdom: {
