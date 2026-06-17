@@ -205,18 +205,19 @@ fn bind_manifest_checksums(
     package_url: &str,
 ) -> Result<String, AppError> {
     let package_file = package_file_name_from_url(package_url)?;
-    let Some(url_moniker) = msix_stem(&package_file) else {
-        return Err(AppError::Engine(format!(
-            "Windows package URL does not end in .msix: {package_url}"
-        )));
-    };
-    if !url_moniker.eq_ignore_ascii_case(&release.package_moniker) {
-        let err = AppError::Engine(format!(
-            "Windows manifest package moniker {} does not match URL artifact {}",
-            release.package_moniker, package_file
-        ));
-        log::error!("Windows manifest checksums binding mismatch error={err}");
-        return Err(err);
+    if let Some(url_moniker) = msix_stem(&package_file) {
+        if !url_moniker.eq_ignore_ascii_case(&release.package_moniker) {
+            let err = AppError::Engine(format!(
+                "Windows manifest package moniker {} does not match URL artifact {}",
+                release.package_moniker, package_file
+            ));
+            log::error!("Windows manifest checksums binding mismatch error={err}");
+            return Err(err);
+        }
+    } else {
+        log::debug!(
+            "Windows package URL has no direct MSIX artifact name; relying on manifest/checksums binding package_file={package_file}"
+        );
     }
     if let Some(identity) = release.package_identity.as_deref() {
         if identity != codex_win_engine::OPENAI_PACKAGE_IDENTITY {
@@ -1183,6 +1184,19 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  OpenAI.Codex_2
             "https://example.com/OpenAI.Codex_26.602.3474.0_x64__2p2nqsd0c76g0.Msix",
         )
         .unwrap();
+        assert_eq!(
+            sha,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+    }
+
+    #[test]
+    fn accepts_stable_windows_short_url_without_msix_suffix() {
+        let checksums = "\
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  OpenAI.Codex_26.602.3474.0_x64__2p2nqsd0c76g0.Msix
+";
+        let sha = bind_manifest_checksums(&release(), checksums, "https://example.com/latest/win")
+            .unwrap();
         assert_eq!(
             sha,
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
