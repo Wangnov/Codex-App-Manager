@@ -11,6 +11,7 @@ export type IconName =
   | "alert"
   | "arrowUp"
   | "download"
+  | "pause"
   | "loader"
   | "refresh"
   | "gear"
@@ -48,6 +49,12 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M12 3.5v11" />
       <polyline points="7.5 10 12 14.5 16.5 10" />
       <path d="M5 19.5h14" />
+    </>
+  ),
+  pause: (
+    <>
+      <line x1="9.5" y1="6" x2="9.5" y2="18" />
+      <line x1="14.5" y1="6" x2="14.5" y2="18" />
     </>
   ),
   loader: <path d="M12 3.5a8.5 8.5 0 1 0 8.5 8.5" />,

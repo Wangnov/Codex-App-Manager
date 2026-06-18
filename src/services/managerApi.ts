@@ -446,6 +446,13 @@ export const managerApi = {
     }
     return invoke<boolean>("mac_cancel_download");
   },
+  // Discard a PAUSED download's cached partial (paused-state cancel).
+  macDiscardDownload(): Promise<void> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve();
+    }
+    return invoke<void>("mac_discard_download");
+  },
   // Open the installed Codex — explicit user action after install (we no longer
   // auto-launch).
   macLaunch(): Promise<void> {
@@ -607,6 +614,13 @@ export const managerApi = {
       return Promise.resolve(true);
     }
     return invoke<boolean>("win_cancel_download");
+  },
+  // Discard a PAUSED download's cached partial (paused-state cancel).
+  winDiscardDownload(): Promise<void> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve();
+    }
+    return invoke<void>("win_discard_download");
   },
   async winPerformUpdate(
     confirm: boolean,

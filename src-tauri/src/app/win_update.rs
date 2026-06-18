@@ -7,6 +7,7 @@
 //!     verification into staging. Non-destructive; it does not install yet.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -243,10 +244,6 @@ fn read_windows_release(endpoints: &MirrorEndpoints) -> Result<(WindowsRelease, 
     Ok((release, sha256))
 }
 
-fn staged_msix_path(staging: &std::path::Path, release: &WindowsRelease) -> PathBuf {
-    staging.join(format!("{}.msix", release.package_moniker))
-}
-
 fn route_label(plan: &WindowsUpdatePlan) -> String {
     match plan.route {
         codex_win_engine::WinInstallRoute::MsixSideload => "msix-sideload",
@@ -404,7 +401,19 @@ pub fn stage_windows_update_with_install_mode(
     progress: &dyn Fn(DownloadProgress),
 ) -> Result<WinStageReport, AppError> {
     log::info!("Windows stage start install_mode={install_mode}");
+    // Own a guard so EVERY stage caller — `perform` (nested, harmless), background
+    // `auto_stage`, and the standalone `win_stage_update` command — resets the
+    // latch on exit. Without it, a cancelled background/standalone stage would
+    // leave the latch set and make the next user perform abort at its first check.
+    // (Nesting under perform's guard can't lose a reachable cancel: once the
+    // download completes the UI is in the "finishing" state with cancel disabled,
+    // so no cancel lands during stage's post-download verify.)
+    let _abort_guard = WinAbortGuard;
     let report = plan_windows_update_with_install_mode(endpoints, settings, install_mode)?;
+    // The plan above did the manifest/checksums fetch (the Windows "正在准备"
+    // phase). Honor a cancel here — before the up-to-date early-return and the
+    // download below; once curl runs, its own cancel flag takes over.
+    check_win_update_abort()?;
     let route = route_label(&report.plan);
     if report.plan.up_to_date {
         log::info!(
@@ -429,9 +438,15 @@ pub fn stage_windows_update_with_install_mode(
         });
     }
 
-    let staging = staging::create_unique_staging("update")?;
     let stage_result = (|| -> Result<WinStageReport, AppError> {
-        let dest = staged_msix_path(staging.path(), &report.release);
+        // Downloads into the PERSISTENT cache so a paused `.part` survives for the
+        // next resume instead of dying with a per-run staging dir. (A preparing-
+        // phase cancel was already checked right after the plan above; the
+        // transfer itself is interruptible via the download loop's cancel flag.)
+        let dest = staging::download_cache_path(
+            &report.package_url,
+            &format!("{}.msix", report.release.package_moniker),
+        )?;
         let expected_size = report.release.content_length.unwrap_or(0);
         if expected_size > MAX_PACKAGE_BYTES {
             return Err(AppError::Engine(format!(
@@ -464,6 +479,15 @@ pub fn stage_windows_update_with_install_mode(
             )
             .map_err(engine_err)?;
         }
+
+        // A fully-cached MSIX is hash-verified above WITHOUT firing a progress
+        // event, so the UI is still in "正在准备" (cancel enabled) during that
+        // hash — unlike the download path, which fires progress and flips the UI
+        // to the cancel-disabled "finishing" state. Honor a cancel that landed
+        // during the cache hash here, before we commit to the artifact: otherwise
+        // the stage guard (nested under perform) would clear the latch on success
+        // and perform's later checkpoint would never see it.
+        check_win_update_abort()?;
 
         let actual_size = std::fs::metadata(&dest)
             .map_err(|e| AppError::Engine(format!("read staged MSIX metadata: {e}")))?
@@ -549,7 +573,6 @@ pub fn stage_windows_update_with_install_mode(
     })();
     match stage_result {
         Ok(report) => {
-            let _ = staging.keep();
             let route = &report.route;
             let verified = report.hash_verified && report.identity_verified;
             let portable_fallback_ready = report.portable_fallback_ready;
@@ -559,7 +582,6 @@ pub fn stage_windows_update_with_install_mode(
             Ok(report)
         }
         Err(err) => {
-            staging.discard();
             log::error!("Windows stage failed error={err}");
             Err(err)
         }
@@ -677,16 +699,71 @@ pub fn auto_stage_windows_update_with_install_mode(
     })
 }
 
+/// Preparing-phase abort latch (mirrors the macOS one). Covers the gap before
+/// the first byte — manifest/checksums fetch, planning — that the curl-level
+/// cancel flag can't reach. Reset on op end via `WinAbortGuard`, not at entry.
+static WIN_UPDATE_ABORT: AtomicBool = AtomicBool::new(false);
+
+fn clear_win_update_abort() {
+    WIN_UPDATE_ABORT.store(false, Ordering::SeqCst);
+}
+
+/// Resets the latch when the owning operation ends — on every path. Clearing on
+/// DROP (not at entry) keeps the cancel race-free: a cancel landing between the
+/// UI showing its button and the op reaching its first checkpoint isn't wiped, so
+/// the checkpoint observes it; the next op still starts clean. The cancel command
+/// doesn't hold the op lock, so this startup window is real. Owned by both
+/// `perform` and `stage` (so background `auto_stage` and the standalone
+/// `win_stage_update` can't leak a set latch into the next op). The perform→stage
+/// nesting is harmless: clears are idempotent, and the only window the inner clear
+/// could touch (stage's post-download verify) has the UI cancel already disabled.
+struct WinAbortGuard;
+
+impl Drop for WinAbortGuard {
+    fn drop(&mut self) {
+        clear_win_update_abort();
+    }
+}
+
+/// Bail out of the Windows preparing phase on a user cancel. Surfaces the same
+/// "download cancelled" marker the curl-cancel path uses so the UI treats it as
+/// a cancel uniformly.
+fn check_win_update_abort() -> Result<(), AppError> {
+    if WIN_UPDATE_ABORT.load(Ordering::SeqCst) {
+        Err(AppError::Engine("download cancelled".to_string()))
+    } else {
+        Ok(())
+    }
+}
+
 pub fn cancel_windows_download() -> bool {
+    // Latch the preparing-phase abort too, so a cancel pressed before the first
+    // byte (mid manifest-fetch) is honored at the next checkpoint. Report
+    // actionable unconditionally — during preparing the latch IS the cancel.
+    WIN_UPDATE_ABORT.store(true, Ordering::SeqCst);
     let requested = cancel_active_download();
     log::info!("Windows cancel download requested={requested}");
-    requested
+    true
 }
 
 pub fn pause_windows_download() -> bool {
+    // Pause is only offered once bytes flow (UI disables it during preparing),
+    // so it stays a pure download-loop operation — keep the `.part`.
     let requested = pause_active_download();
     log::info!("Windows pause download requested={requested}");
     requested
+}
+
+/// Paused-state cancel: the download already stopped and its `.part` is on disk.
+/// Clear the cache so "继续" can't resume, and drop the abort latch. Surfaces a
+/// removal failure rather than silently reporting a cancel that left the partial
+/// behind (which a later run would resume).
+pub fn discard_windows_download() -> Result<(), AppError> {
+    clear_win_update_abort();
+    staging::clear_download_cache()
+        .map_err(|e| AppError::Engine(format!("清理下载缓存失败: {e}")))?;
+    log::info!("Windows discard download cache");
+    Ok(())
 }
 
 pub fn perform_windows_update(
@@ -713,6 +790,10 @@ pub fn perform_windows_update_with_install_mode(
     progress: &dyn Fn(DownloadProgress),
 ) -> Result<WinPerformReport, AppError> {
     log::info!("Windows perform start install_mode={install_mode}");
+    // Reset the latch when THIS perform ends (not at stage entry) so a cancel
+    // racing the op's startup isn't wiped, and `auto_stage` never clears it. See
+    // WinAbortGuard.
+    let _abort_guard = WinAbortGuard;
     if !confirm {
         return Err(AppError::Internal(
             "explicit confirmation is required before installing Windows Codex".to_string(),
@@ -746,6 +827,11 @@ pub fn perform_windows_update_with_install_mode(
             stage,
         });
     }
+
+    // Point of no return. Honor a cancel one last time BEFORE closing Codex or
+    // sideloading — closes the gap after staging where a fully-cached MSIX skips
+    // the download loop (so its cancel flag never arms) yet still reaches here.
+    check_win_update_abort()?;
 
     if stage.route == "portable-fallback" {
         log::warn!("Windows route changed to portable fallback from_route=msix-sideload to_route=portable-fallback");
@@ -1133,8 +1219,32 @@ pub fn uninstall_windows_codex(
 
 #[cfg(test)]
 mod tests {
-    use super::{bind_manifest_checksums, WinPerformAction};
+    use super::{
+        bind_manifest_checksums, check_win_update_abort, WinAbortGuard, WinPerformAction,
+        WIN_UPDATE_ABORT,
+    };
     use codex_win_engine::WindowsRelease;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn win_abort_guard_preserves_a_startup_race_cancel_and_resets_on_drop() {
+        // Mirrors the macOS guard test: a cancel landing before `perform` reaches
+        // its first checkpoint must survive the guard's creation (no entry-clear)
+        // and still be observed; the guard resets the latch on drop so the next
+        // op — and background auto_stage — start clean.
+        WIN_UPDATE_ABORT.store(true, Ordering::SeqCst);
+        {
+            let _guard = WinAbortGuard;
+            assert!(
+                check_win_update_abort().is_err(),
+                "guard creation must not wipe a pending cancel"
+            );
+        }
+        assert!(
+            check_win_update_abort().is_ok(),
+            "guard drop must reset the latch for the next op"
+        );
+    }
 
     #[test]
     fn serializes_win_perform_actions_as_frontend_contract() {

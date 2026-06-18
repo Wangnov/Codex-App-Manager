@@ -67,6 +67,84 @@ pub fn create_unique_staging(prefix: &str) -> Result<StagingDir, AppError> {
     Ok(StagingDir { root })
 }
 
+/// Root of the persistent download cache — SEPARATE from the per-run `update-*`
+/// staging dirs. A unique staging dir is deleted wholesale on pause/cancel
+/// (`StagingDir::discard`), which is exactly what used to eat a paused
+/// download's `.part` and make "再次更新会继续下载" a lie. Download artifacts
+/// live here instead, so the engine's `.part` (kept on pause, removed on
+/// cancel) survives across perform/install calls and the next run resumes it.
+pub fn download_cache_root() -> PathBuf {
+    staging_root().join("downloads")
+}
+
+/// Stable on-disk path for the artifact at `url`. Keyed by a per-URL hash so a
+/// changed target (new build / different mirror) never resumes onto a stale
+/// partial — a different URL is a different file. The human-readable
+/// `file_name` is preserved (sanitized) as a suffix so the staged artifact is
+/// still recognizable on disk and keeps its extension for downstream tooling.
+pub fn download_cache_path(url: &str, file_name: &str) -> Result<PathBuf, AppError> {
+    let root = download_cache_root();
+    std::fs::create_dir_all(&root)
+        .map_err(|e| AppError::Internal(format!("创建下载缓存目录失败: {e}")))?;
+    set_owner_only(&root)?;
+    Ok(root.join(format!(
+        "{:016x}-{}",
+        fnv1a64(url.as_bytes()),
+        sanitize_file_name(file_name)
+    )))
+}
+
+/// FNV-1a (64-bit). A fixed, toolchain-independent digest so a cached download's
+/// directory name stays identical across manager updates — unlike `DefaultHasher`
+/// (SipHash), whose seed/impl can shift between Rust versions and would orphan
+/// the cache on every upgrade. Collision resistance isn't security-critical: the
+/// artifact's size + EdDSA/SHA-256 verification is the real gate; this only
+/// namespaces per-URL partials so different targets never resume onto each other.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// Drop every cached download. Used when the user cancels from the paused state
+/// (the engine already removed the `.part` on an in-flight cancel, but a paused
+/// `.part` is still on disk) and after a successful update consumes the
+/// artifact. Only one update runs at a time, so clearing the whole dir is safe.
+/// Returns `Ok` if the cache is already gone, `Err` only on a real removal
+/// failure so a paused-state cancel can surface "didn't actually discard".
+pub fn clear_download_cache() -> std::io::Result<()> {
+    match std::fs::remove_dir_all(download_cache_root()) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Keep download cache file names to a safe, path-separator-free charset. The
+/// caller's `file_name` comes from a URL tail or MSIX moniker; this defends
+/// against an upstream path-traversal-ish name escaping the cache dir.
+fn sanitize_file_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim_matches('.');
+    if trimmed.is_empty() {
+        "download.bin".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 pub fn cleanup_stale_staging(ops: &OperationManager) -> CleanupSummary {
     let mut summary = CleanupSummary::default();
     if ops.is_busy() {
@@ -76,38 +154,65 @@ pub fn cleanup_stale_staging(ops: &OperationManager) -> CleanupSummary {
     }
 
     let root = staging_root();
-    let Ok(entries) = std::fs::read_dir(&root) else {
+    let now = SystemTime::now();
+    if let Ok(entries) = std::fs::read_dir(&root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_update_dir = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("update-"));
+            if !is_update_dir || !path.is_dir() {
+                continue;
+            }
+            summary.scanned += 1;
+            if !is_stale(&path, now) {
+                continue;
+            }
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => {
+                    summary.removed += 1;
+                    let path_display = path.display();
+                    log::debug!("staging cleanup removed path={path_display}");
+                }
+                Err(err) => {
+                    summary.failed += 1;
+                    let path_display = path.display();
+                    log::debug!("staging cleanup failed path={path_display} error={err}");
+                }
+            }
+        }
+    } else {
         let path = root.display();
         log::debug!("staging cleanup found no root path={path}");
-        return summary;
-    };
-    let now = SystemTime::now();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let is_update_dir = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("update-"));
-        if !is_update_dir || !path.is_dir() {
-            continue;
-        }
-        summary.scanned += 1;
-        if !is_stale(&path, now) {
-            continue;
-        }
-        match std::fs::remove_dir_all(&path) {
-            Ok(()) => {
-                summary.removed += 1;
-                let path_display = path.display();
-                log::debug!("staging cleanup removed path={path_display}");
+    }
+
+    // Prune stale cached downloads too. A paused `.part` younger than STALE_AFTER
+    // is left intact so a resume still finds it; only abandoned partials/artifacts
+    // are reclaimed. Guarded by the same `is_busy` check above, so an in-flight
+    // download (op active) is never touched.
+    if let Ok(entries) = std::fs::read_dir(download_cache_root()) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() || !is_stale(&path, now) {
+                continue;
             }
-            Err(err) => {
-                summary.failed += 1;
-                let path_display = path.display();
-                log::debug!("staging cleanup failed path={path_display} error={err}");
+            summary.scanned += 1;
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    summary.removed += 1;
+                    let path_display = path.display();
+                    log::debug!("download cache cleanup removed path={path_display}");
+                }
+                Err(err) => {
+                    summary.failed += 1;
+                    let path_display = path.display();
+                    log::debug!("download cache cleanup failed path={path_display} error={err}");
+                }
             }
         }
     }
+
     log::info!(
         "staging cleanup summary scanned={} removed={} failed={}",
         summary.scanned,
@@ -145,7 +250,10 @@ fn set_owner_only(_path: &Path) -> Result<(), AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{cleanup_stale_staging, create_unique_staging};
+    use super::{
+        cleanup_stale_staging, clear_download_cache, create_unique_staging, download_cache_path,
+        download_cache_root,
+    };
     use crate::app::oplock::{OperationKind, OperationManager};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -189,6 +297,35 @@ mod tests {
         let mode = fs::metadata(staging.path()).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
         staging.discard();
+    }
+
+    #[test]
+    fn download_cache_path_is_stable_per_url_and_collision_free() {
+        // Same URL → same path across calls (so a second run resumes the .part).
+        let a1 = download_cache_path("https://m.example/codex-1.zip", "codex-1.zip").unwrap();
+        let a2 = download_cache_path("https://m.example/codex-1.zip", "codex-1.zip").unwrap();
+        assert_eq!(a1, a2);
+        // Different URL → different path (never resume onto a stale partial).
+        let b = download_cache_path("https://m.example/codex-2.zip", "codex-2.zip").unwrap();
+        assert_ne!(a1, b);
+        // The cache dir is the dedicated `downloads` root, not an `update-*` dir.
+        assert_eq!(a1.parent().unwrap(), download_cache_root());
+        // A hostile file name can't escape the cache dir: every path separator
+        // is neutralized, so the result is a single component inside the cache
+        // root (a residual ".." with no separator around it is just text).
+        let evil = download_cache_path("https://m.example/x", "../../etc/passwd").unwrap();
+        assert_eq!(evil.parent().unwrap(), download_cache_root());
+        let evil_name = evil.file_name().unwrap().to_str().unwrap();
+        assert!(!evil_name.contains('/') && !evil_name.contains('\\'));
+    }
+
+    #[test]
+    fn clear_download_cache_removes_the_root() {
+        let p = download_cache_path("https://m.example/clear-me.zip", "clear-me.zip").unwrap();
+        fs::write(&p, b"partial").unwrap();
+        assert!(p.exists());
+        clear_download_cache().unwrap();
+        assert!(!p.exists());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Pause, XCircle } from "lucide-react";
+import { Pause, Play, XCircle } from "lucide-react";
 
 import {
   errorCode,
@@ -61,6 +61,16 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [downloadStop, setDownloadStop] = useState<DownloadStopIntent | null>(null);
   const [downloadStopBusy, setDownloadStopBusy] = useState(false);
   const downloadStopRef = useRef<DownloadStopIntent | null>(null);
+  // Latest live progress, read at pause time to snapshot the paused figures.
+  const dlRef = useRef<DownloadProgress | null>(null);
+  // A paused download: the progress screen stays up (not routed home) offering
+  // 〔继续〕/〔取消〕. `installRoot` is preserved so a paused fresh install
+  // resumes into the same chosen location.
+  const [paused, setPaused] = useState<{
+    kind: "perform" | "install";
+    dl: DownloadProgress | null;
+    installRoot?: string;
+  } | null>(null);
   const scopeRef = useRef<HTMLDivElement>(null);
   const confirmTitleId = useId();
   const confirmBodyId = useId();
@@ -75,6 +85,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const onDlProgress = useCallback((event: { payload: DownloadProgress }) => {
     const p = event.payload;
     setDl(p);
+    dlRef.current = p;
     const now = Date.now();
     const prev = dlSample.current;
     if (!prev) {
@@ -87,6 +98,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   const startDlListen = useCallback(async () => {
     setDl(null);
+    dlRef.current = null;
     setSpeed(0);
     dlSample.current = null;
     try {
@@ -228,6 +240,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       setBusy(mode);
       setActionError(null);
       setNotice(null);
+      setPaused(null);
       // For an in-place update (not a fresh install) capture the human-facing
       // versions before the swap, so the outcome strip can show "X → Y".
       // Prefer the report (one atomic snapshot of installed + plan) so the
@@ -260,8 +273,12 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         setConfirmOpen(false);
         setInstallDirOpen(false);
         const stop = downloadStopRef.current;
-        if (stop && isDownloadCancelled(cause)) {
-          setNotice(t(stop === "pause" ? "progress.paused" : "progress.cancelled"));
+        if (stop === "pause" && isDownloadCancelled(cause)) {
+          // Stay on the progress screen as paused; the cached `.part` lets
+          // 〔继续〕 resume from here (with the same install location).
+          setPaused({ kind: mode, dl: dlRef.current, installRoot });
+        } else if (stop && isDownloadCancelled(cause)) {
+          setNotice(t("progress.cancelled"));
         } else if (errorCode(cause) === "stale_expectation") {
           await refreshStatus();
           if (await check()) {
@@ -281,6 +298,31 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     },
     [status, report, refreshStatus, check, startDlListen, t],
   );
+
+  // 〔继续〕from the paused state — re-run the same operation (same install
+  // location). The backend finds the cached `.part` and resumes via `curl -C -`,
+  // so the bar picks up where it stopped instead of at 0.
+  const resumeDownload = useCallback(() => {
+    const snapshot = paused;
+    setPaused(null);
+    if (!snapshot) return;
+    void runPerform(snapshot.kind, snapshot.installRoot);
+  }, [paused, runPerform]);
+
+  // 〔取消〕from the paused state — the download already stopped, so drop the
+  // cached partial and route home.
+  const cancelPausedDownload = useCallback(async () => {
+    setPaused(null);
+    try {
+      // Only claim "已取消" once the cached partial is actually gone — otherwise
+      // a failed discard would leave a `.part` that the next update silently
+      // resumes, contradicting the cancel.
+      await managerApi.winDiscardDownload();
+      setNotice(t("progress.cancelled"));
+    } catch (cause) {
+      setActionError(errorMessage(cause));
+    }
+  }, [t]);
 
   const freshInstallNeedsLocation = useCallback(async () => {
     if (settings.windowsInstallMode === "portable" || report?.plan?.route === "portable-fallback") {
@@ -406,8 +448,15 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   // is part of the key so a language switch re-splits the headline (otherwise
   // SplitText's aria-label keeps the old language's text for screen readers).
   const progressing = busy === "perform" || busy === "install";
+  // The paused screen is calm (no shimmer): a settled "已暂停", not in-flight.
   const isShimmer = progressing || rechecking || kind === "loading";
-  const scene = `${lang}/${progressing ? `progress-${busy}` : `${kind}${rechecking ? "-checking" : ""}`}`;
+  const scene = `${lang}/${
+    paused
+      ? `paused-${paused.kind}`
+      : progressing
+        ? `progress-${busy}`
+        : `${kind}${rechecking ? "-checking" : ""}`
+  }`;
   const success = !rechecking && kind === "uptodate";
   // A Windows install/update is "clean" only when it actually changed something
   // without a detour — not a stale-plan no-op (stage.upToDate) and not an
@@ -421,22 +470,43 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const splitHeadline = !isShimmer && dirOf(lang) === "ltr";
   useHomeMotion(scopeRef, scene, { splitHeadline, success });
 
-  if (progressing) {
-    const known = Boolean(dl && dl.total > 0);
-    const pct = known ? Math.round(dlPct) : null;
-    const canStopDownload =
-      Boolean(dl && dl.total > 0 && dl.downloaded < dl.total) && !downloadStopBusy;
+  if (progressing || paused) {
+    const installing = paused ? paused.kind === "install" : busy === "install";
+    const snap = paused ? paused.dl : dl;
+    const known = Boolean(snap && snap.total > 0);
+    const snapPct = snap && snap.total > 0 ? Math.min(100, (snap.downloaded / snap.total) * 100) : 0;
+    const pct = known ? Math.round(paused ? snapPct : dlPct) : null;
+    const barPct = paused ? snapPct : dlPct;
+    // Bytes are in → the uninterruptible install phase (sideload / portable
+    // extract). Say so and drop the dead buttons rather than grey them silently.
+    const finishing = !paused && Boolean(snap && snap.total > 0 && snap.downloaded >= snap.total);
+    // Pause only mid-transfer; cancel is the "abandon" out and works through the
+    // preparing phase too (a backend abort checkpoint honors it), but not once
+    // the install has begun.
+    const canPause =
+      !paused && Boolean(dl && dl.total > 0 && dl.downloaded < dl.total) && !downloadStopBusy;
+    const canCancel = !paused && !finishing && !downloadStopBusy;
     return (
       <div className="pop">
         <TopBar />
         <div className="scroll" ref={scopeRef}>
           <div className="hero" style={{ marginTop: 24 }} key={scene}>
-            <Ring icon="loader" spin className="glow" />
-            <div className="headline shimmer">
-              {busy === "install" ? t("progress.installing") : t("progress.title")}
+            <Ring icon={paused ? "pause" : "loader"} spin={!paused} className="glow" />
+            <div className={`headline${paused ? "" : " shimmer"}`}>
+              {paused
+                ? t("progress.paused.title")
+                : installing
+                  ? t("progress.installing")
+                  : t("progress.title")}
             </div>
             <div className="sub">
-              {dl ? t("progress.downloadingFrom", { source: dl.source }) : t("progress.preparing")}
+              {paused
+                ? t("progress.paused.hint")
+                : finishing
+                  ? t("progress.finishing")
+                  : snap
+                    ? t("progress.downloadingFrom", { source: snap.source })
+                    : t("progress.preparing")}
             </div>
             {pct !== null ? (
               <div className="pctbig">
@@ -447,28 +517,38 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             <div className="bar">
               <div
                 className={`bar-fill${pct === null ? " indeterminate" : ""}`}
-                style={pct === null ? undefined : { width: `${dlPct}%` }}
+                style={pct === null ? undefined : { width: `${barPct}%` }}
               />
             </div>
-            {known && dl ? (
+            {known && snap ? (
               <div className="dlmeta">
-                {mib(dlBytes)} / {mib(dl.total)}
-                {dlSpeed > 0 ? ` · ${mib(dlSpeed)}/s` : ""}
+                {mib(paused ? snap.downloaded : dlBytes)} / {mib(snap.total)}
+                {!paused && dlSpeed > 0 ? ` · ${mib(dlSpeed)}/s` : ""}
               </div>
             ) : null}
             <div className="progress-actions">
+              {paused ? (
+                <button className="btn primary" onClick={resumeDownload}>
+                  <Play />
+                  {t("progress.resume")}
+                </button>
+              ) : (
+                <button
+                  className="btn ghost"
+                  onClick={() => void requestDownloadStop("pause")}
+                  disabled={!canPause}
+                >
+                  <Pause />
+                  {downloadStop === "pause" ? t("progress.pausePending") : t("progress.pause")}
+                </button>
+              )}
               <button
-                className="btn ghost"
-                onClick={() => void requestDownloadStop("pause")}
-                disabled={!canStopDownload}
-              >
-                <Pause />
-                {downloadStop === "pause" ? t("progress.pausePending") : t("progress.pause")}
-              </button>
-              <button
-                className="btn ghost"
-                onClick={() => void requestDownloadStop("cancel")}
-                disabled={!canStopDownload}
+                className="btn danger"
+                onClick={() => {
+                  if (paused) cancelPausedDownload();
+                  else void requestDownloadStop("cancel");
+                }}
+                disabled={!paused && !canCancel}
               >
                 <XCircle />
                 {downloadStop === "cancel" ? t("progress.cancelPending") : t("progress.cancel")}

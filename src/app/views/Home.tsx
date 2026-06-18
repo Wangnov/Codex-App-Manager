@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Pause, XCircle } from "lucide-react";
+import { Pause, Play, XCircle } from "lucide-react";
 
 import {
   errorCode,
@@ -69,6 +69,15 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [downloadStop, setDownloadStop] = useState<DownloadStopIntent | null>(null);
   const [downloadStopBusy, setDownloadStopBusy] = useState(false);
   const downloadStopRef = useRef<DownloadStopIntent | null>(null);
+  // Latest live progress, read at pause time to snapshot the paused figures
+  // (the `dl` state is cleared when the perform call unwinds).
+  const dlRef = useRef<DownloadProgress | null>(null);
+  // A paused download: the progress screen stays up (not routed home) offering
+  // 〔继续〕/〔取消〕. `dl` is the byte snapshot captured at the moment of pause.
+  const [paused, setPaused] = useState<{
+    kind: "perform" | "install";
+    dl: DownloadProgress | null;
+  } | null>(null);
   const scopeRef = useRef<HTMLDivElement>(null);
   const confirmTitleId = useId();
   const confirmBodyId = useId();
@@ -81,6 +90,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const onDlProgress = useCallback((e: { payload: DownloadProgress }) => {
     const p = e.payload;
     setDl(p);
+    dlRef.current = p;
     const now = Date.now();
     const prev = dlSample.current;
     if (!prev) {
@@ -93,6 +103,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   const startDlListen = useCallback(async () => {
     setDl(null);
+    dlRef.current = null;
     setSpeed(0);
     dlSample.current = null;
     try {
@@ -282,6 +293,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const runInstall = useCallback(async () => {
     setBusy("install");
     setActionError(null);
+    setPaused(null);
     const un = await startDlListen();
     try {
       setStatus(await managerApi.macInstall());
@@ -289,8 +301,12 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       await check();
     } catch (cause) {
       const stop = downloadStopRef.current;
-      if (stop && isDownloadCancelled(cause)) {
-        setNotice(t(stop === "pause" ? "progress.paused" : "progress.cancelled"));
+      if (stop === "pause" && isDownloadCancelled(cause)) {
+        // Keep the progress screen up in a paused state instead of routing home;
+        // the cached `.part` survives, so 〔继续〕 resumes from here.
+        setPaused({ kind: "install", dl: dlRef.current });
+      } else if (stop && isDownloadCancelled(cause)) {
+        setNotice(t("progress.cancelled"));
       } else {
         setActionError(errorMessage(cause));
       }
@@ -315,6 +331,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     if (!installed || !plan || plan.upToDate) return;
     setBusy("perform");
     setActionError(null);
+    setPaused(null);
     // Capture the human-facing versions BEFORE the swap — afterward a re-check
     // makes installed/latest identical. Fall back to a build number only if a
     // feed omits the short version.
@@ -334,8 +351,12 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     } catch (cause) {
       setConfirmOpen(false);
       const stop = downloadStopRef.current;
-      if (stop && isDownloadCancelled(cause)) {
-        setNotice(t(stop === "pause" ? "progress.paused" : "progress.cancelled"));
+      if (stop === "pause" && isDownloadCancelled(cause)) {
+        // Stay on the progress screen as paused; the cached `.part` lets 〔继续〕
+        // resume from here instead of restarting at 0.
+        setPaused({ kind: "perform", dl: dlRef.current });
+      } else if (stop && isDownloadCancelled(cause)) {
+        setNotice(t("progress.cancelled"));
       } else if (errorCode(cause) === "stale_expectation") {
         // Reality moved between confirm and execute (the backend's TOCTOU
         // guard). Refresh the snapshot and post a NOTICE (not an error) so the
@@ -357,6 +378,32 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       downloadStopRef.current = null;
     }
   }, [report, check, startDlListen, t]);
+
+  // 〔继续〕from the paused state — re-run the same operation. The backend finds
+  // the cached `.part` and resumes via `curl -C -`, so the bar picks up where it
+  // stopped instead of at 0.
+  const resumeDownload = useCallback(() => {
+    const kind = paused?.kind;
+    setPaused(null);
+    if (kind === "install") void runInstall();
+    else void runPerform();
+  }, [paused, runInstall, runPerform]);
+
+  // 〔取消〕from the paused state — the download already stopped, so drop the
+  // cached partial and route home. (An in-flight cancel is handled by
+  // requestDownloadStop instead.)
+  const cancelPausedDownload = useCallback(async () => {
+    setPaused(null);
+    try {
+      // Only claim "已取消" once the cached partial is actually gone — otherwise
+      // a failed discard would leave a `.part` that the next update silently
+      // resumes, contradicting the cancel.
+      await managerApi.macDiscardDownload();
+      setNotice(t("progress.cancelled"));
+    } catch (cause) {
+      setActionError(errorMessage(cause));
+    }
+  }, [t]);
 
   const plan = report?.plan ?? null;
   // The report is one atomic backend snapshot (installed detected together
@@ -420,13 +467,17 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   // the headline and re-splits it — otherwise SplitText's aria-label would keep
   // the old language's text for screen readers.
   const progressing = busy === "perform" || busy === "install";
+  // The paused screen is calm (no shimmer): the headline is a settled "已暂停",
+  // not an in-flight state.
   const isShimmer = progressing || rechecking || kind === "loading";
   const scene = `${lang}/${
-    progressing
-      ? `progress-${busy}`
-      : justInstalled
-        ? "done"
-        : `${kind}${rechecking ? "-checking" : ""}`
+    paused
+      ? `paused-${paused.kind}`
+      : progressing
+        ? `progress-${busy}`
+        : justInstalled
+          ? "done"
+          : `${kind}${rechecking ? "-checking" : ""}`
   }`;
   const success = justInstalled || (!rechecking && kind === "uptodate");
   // Outcome-strip detail + persistence. Surface a relaunch-failure prompt and
@@ -448,23 +499,46 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const splitHeadline = !isShimmer && dirOf(lang) === "ltr";
   useHomeMotion(scopeRef, scene, { splitHeadline, success });
 
-  // ── progress (performing / installing) takes over the whole screen ─────────
-  if (busy === "perform" || busy === "install") {
-    const known = Boolean(dl && dl.total > 0);
-    const pct = known ? Math.round(dlPct) : null;
-    const canStopDownload =
-      Boolean(dl && dl.total > 0 && dl.downloaded < dl.total) && !downloadStopBusy;
+  // ── progress (performing / installing / paused) takes over the whole screen ─
+  if (busy === "perform" || busy === "install" || paused) {
+    const installing = paused ? paused.kind === "install" : busy === "install";
+    // Paused reads from its captured snapshot; live runs from the eased `dl`.
+    const snap = paused ? paused.dl : dl;
+    const known = Boolean(snap && snap.total > 0);
+    const snapPct = snap && snap.total > 0 ? Math.min(100, (snap.downloaded / snap.total) * 100) : 0;
+    const pct = known ? Math.round(paused ? snapPct : dlPct) : null;
+    const barPct = paused ? snapPct : dlPct;
+    // Bytes are in → the uninterruptible install phase (gate/quit/atomic swap).
+    // Say so and drop the dead buttons rather than leave them greyed for no
+    // visible reason.
+    const finishing = !paused && Boolean(snap && snap.total > 0 && snap.downloaded >= snap.total);
+    // Pause only makes sense mid-transfer; cancel is the "abandon" out and works
+    // through the preparing phase too (a backend abort checkpoint honors it), but
+    // not once the install has begun.
+    const canPause =
+      !paused && Boolean(dl && dl.total > 0 && dl.downloaded < dl.total) && !downloadStopBusy;
+    const canCancel = !paused && !finishing && !downloadStopBusy;
     return (
       <div className="pop">
         <TopBar />
         <div className="scroll" ref={scopeRef}>
           <div className="hero" style={{ marginTop: 24 }} key={scene}>
-            <Ring icon="loader" spin className="glow" />
-            <div className="headline shimmer">
-              {busy === "install" ? t("progress.installing") : t("progress.title")}
+            <Ring icon={paused ? "pause" : "loader"} spin={!paused} className="glow" />
+            <div className={`headline${paused ? "" : " shimmer"}`}>
+              {paused
+                ? t("progress.paused.title")
+                : installing
+                  ? t("progress.installing")
+                  : t("progress.title")}
             </div>
             <div className="sub">
-              {dl ? t("progress.downloadingFrom", { source: dl.source }) : t("progress.preparing")}
+              {paused
+                ? t("progress.paused.hint")
+                : finishing
+                  ? t("progress.finishing")
+                  : snap
+                    ? t("progress.downloadingFrom", { source: snap.source })
+                    : t("progress.preparing")}
             </div>
             {pct !== null ? (
               <div className="pctbig">
@@ -475,28 +549,38 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             <div className="bar">
               <div
                 className={`bar-fill${pct === null ? " indeterminate" : ""}`}
-                style={pct === null ? undefined : { width: `${dlPct}%` }}
+                style={pct === null ? undefined : { width: `${barPct}%` }}
               />
             </div>
-            {known && dl ? (
+            {known && snap ? (
               <div className="dlmeta">
-                {mib(dlBytes)} / {mib(dl.total)}
-                {dlSpeed > 0 ? ` · ${mib(dlSpeed)}/s` : ""}
+                {mib(paused ? snap.downloaded : dlBytes)} / {mib(snap.total)}
+                {!paused && dlSpeed > 0 ? ` · ${mib(dlSpeed)}/s` : ""}
               </div>
             ) : null}
             <div className="progress-actions">
+              {paused ? (
+                <button className="btn primary" onClick={resumeDownload}>
+                  <Play />
+                  {t("progress.resume")}
+                </button>
+              ) : (
+                <button
+                  className="btn ghost"
+                  onClick={() => void requestDownloadStop("pause")}
+                  disabled={!canPause}
+                >
+                  <Pause />
+                  {downloadStop === "pause" ? t("progress.pausePending") : t("progress.pause")}
+                </button>
+              )}
               <button
-                className="btn ghost"
-                onClick={() => void requestDownloadStop("pause")}
-                disabled={!canStopDownload}
-              >
-                <Pause />
-                {downloadStop === "pause" ? t("progress.pausePending") : t("progress.pause")}
-              </button>
-              <button
-                className="btn ghost"
-                onClick={() => void requestDownloadStop("cancel")}
-                disabled={!canStopDownload}
+                className="btn danger"
+                onClick={() => {
+                  if (paused) cancelPausedDownload();
+                  else void requestDownloadStop("cancel");
+                }}
+                disabled={!paused && !canCancel}
               >
                 <XCircle />
                 {downloadStop === "cancel" ? t("progress.cancelPending") : t("progress.cancel")}

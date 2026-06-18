@@ -12,6 +12,7 @@
 //! already on the latest build (the user's case during development).
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 
@@ -382,7 +383,6 @@ fn quit_codex_gracefully() -> Result<(), AppError> {
 }
 
 fn download_and_verify(
-    staging: &Path,
     url: &str,
     size: u64,
     max_size: u64,
@@ -398,7 +398,11 @@ fn download_and_verify(
         )));
     }
     let file_name = url.rsplit('/').next().unwrap_or("payload.bin");
-    let dest = staging.join(file_name);
+    // Download into the PERSISTENT cache (not a per-run staging dir): a paused
+    // `.part` survives here, so the next perform/install resumes it instead of
+    // restarting at 0. The artifact is consumed (verified → unpacked/applied)
+    // from here; success clears the cache (see perform/install tails).
+    let dest = staging::download_cache_path(url, file_name)?;
     let source = host_of(url);
 
     let already = std::fs::metadata(&dest)
@@ -461,6 +465,10 @@ fn max_bytes_for_strategy(strategy: &UpdateStrategy) -> u64 {
 
 pub fn stage_macos_update(simulated_build: Option<u64>) -> Result<MacStageReport, AppError> {
     log::info!("macOS stage start simulated_build={simulated_build:?}");
+    // A standalone stage can also be cancelled (its download sets the abort
+    // latch). Own a guard so a cancelled stage can't leave the latch set and
+    // make the NEXT perform/install abort itself at its first checkpoint.
+    let _abort_guard = AbortGuard;
     let installed = detect_managed_installed();
     let (_, xml) = fetch_appcast_for_arch(arch_of(&installed))?;
     let appcast = parse_appcast(&xml).map_err(|e| AppError::Engine(e.to_string()))?;
@@ -494,23 +502,18 @@ pub fn stage_macos_update(simulated_build: Option<u64>) -> Result<MacStageReport
         .ed_signature
         .clone()
         .ok_or_else(|| AppError::Engine("appcast enclosure missing edSignature".to_string()))?;
-    let staging = staging::create_unique_staging("update")?;
-    let result = download_and_verify(
-        staging.path(),
+    // Stages straight into the persistent download cache — no per-run staging dir
+    // to discard, so a paused partial survives for the next resume.
+    let dest = match download_and_verify(
         &plan.download_url,
         plan.download_size,
         max_bytes_for_strategy(&plan.strategy),
         &signature,
         &no_progress,
-    );
-    let dest = match result {
-        Ok(dest) => {
-            let _ = staging.keep();
-            dest
-        }
+    ) {
+        Ok(dest) => dest,
         Err(err) => {
             log::error!("macOS stage failed error={err}");
-            staging.discard();
             return Err(err);
         }
     };
@@ -650,7 +653,6 @@ fn reconstruct_full(
         AppError::Engine("appcast full enclosure missing edSignature".to_string())
     })?;
     let staged = download_and_verify(
-        work,
         &latest.full.url,
         latest.full.length,
         codex_mac_engine::limits::MAX_PACKAGE_BYTES,
@@ -688,6 +690,9 @@ pub fn perform_macos_update(
     expected: PerformExpectation,
     progress: &dyn Fn(DownloadProgress),
 ) -> Result<MacPerformReport, AppError> {
+    // Reset the latch when THIS op ends (not at entry) so a cancel racing the
+    // op's startup isn't wiped. See AbortGuard.
+    let _abort_guard = AbortGuard;
     // A vanished install is itself a stale snapshot: the user confirmed an
     // update against a Codex that is no longer there (deleted / moved between
     // confirm and execute). Route it through StaleExpectation so the UI
@@ -738,6 +743,9 @@ pub fn perform_macos_update(
     let appcast = parse_appcast(&xml).map_err(|e| AppError::Engine(e.to_string()))?;
     let plan = plan_update(&appcast, installed.build)
         .ok_or_else(|| AppError::Engine("appcast had no items".to_string()))?;
+    // The appcast fetch is the slow part of "正在准备" — honor a cancel here,
+    // before the up-to-date / stale early-returns and the destructive work below.
+    check_update_abort()?;
 
     // The appcast must still point at the build the user confirmed.
     if plan.latest_build != expected.to_build {
@@ -773,6 +781,11 @@ pub fn perform_macos_update(
         require_os_supported(latest.minimum_system_version.as_deref())?;
     }
     preflight_mac_disk(&plan)?;
+    // Last cancel checkpoint before the download begins: the preparing phase
+    // (appcast fetch → plan → preflight) is done; once curl starts, the download
+    // loop's own cancel flag takes over. A cancel pressed during "正在准备"
+    // lands here and bails before any destructive prep.
+    check_update_abort()?;
 
     // 1) Set up same-volume staging for the reconstructed bundle + backup.
     let staging = staging::create_unique_staging("update")?;
@@ -795,7 +808,6 @@ pub fn perform_macos_update(
                     AppError::Engine("appcast delta missing edSignature".to_string())
                 })?;
                 let staged = download_and_verify(
-                    &work,
                     &plan.download_url,
                     plan.download_size,
                     codex_mac_engine::limits::MAX_DELTA_BYTES,
@@ -833,6 +845,12 @@ pub fn perform_macos_update(
                 "暂存目录与安装根不在同一卷，无法原子替换：请确保 TMPDIR 与安装根同卷".to_string(),
             ));
         }
+
+        // Point of no return. Honor a cancel one last time BEFORE we touch the
+        // user's running Codex — this also closes the gap after the preparing-
+        // phase checkpoint where a fully-cached artifact skips the download loop
+        // (so its cancel flag never arms) yet reconstruct/gate still ran.
+        check_update_abort()?;
 
         // 4b) graceful quit (never force-kill), then 5) atomic same-volume swap. If
         //     the swap fails after the quit, swap_in_place has restored the old
@@ -950,6 +968,12 @@ pub fn perform_macos_update(
             } else {
                 staging.discard();
             }
+            // The artifact was downloaded, verified, and consumed — drop it so a
+            // later run re-downloads fresh. A FAILED run leaves the cache intact
+            // (the Err arm) so a paused/interrupted download can still resume.
+            // Best-effort: a stale artifact left behind is reclaimed by the stale
+            // cache sweep, so a cleanup failure must not fail a successful update.
+            let _ = staging::clear_download_cache();
             Ok(report)
         }
         Err(err) => {
@@ -1030,6 +1054,8 @@ fn choose_install_dir() -> Result<PathBuf, AppError> {
 /// replace). Records `manager-installed` provenance and launches the app.
 pub fn install_macos(progress: &dyn Fn(DownloadProgress)) -> Result<MacInstallStatus, AppError> {
     log::info!("macOS install start");
+    // Reset on op end, not entry — race-free cancel (see AbortGuard).
+    let _abort_guard = AbortGuard;
     if detect_installed().is_some() {
         return Err(AppError::Engine(
             "已检测到 Codex,请使用更新而非安装".to_string(),
@@ -1052,6 +1078,9 @@ pub fn install_macos(progress: &dyn Fn(DownloadProgress)) -> Result<MacInstallSt
     let plan = plan_update(&appcast, 0)
         .ok_or_else(|| AppError::Engine("appcast had no items".to_string()))?;
     preflight_mac_disk(&plan)?;
+    // Cancel checkpoint before bytes flow (mirrors perform) — makes a fresh
+    // install's "正在准备" cancellable too.
+    check_update_abort()?;
 
     let staging = staging::create_unique_staging("update")?;
     let install_result =
@@ -1059,6 +1088,10 @@ pub fn install_macos(progress: &dyn Fn(DownloadProgress)) -> Result<MacInstallSt
     match install_result {
         Ok(status) => {
             staging.discard();
+            // Consumed on success — clear it (best-effort; the stale sweep
+            // reclaims any leftover). A failed install keeps the cached partial
+            // (Err arm) so the next attempt resumes instead of restarting.
+            let _ = staging::clear_download_cache();
             let build = status.installed.as_ref().map(|installed| installed.build);
             log::info!("macOS install complete build={build:?}");
             Ok(status)
@@ -1093,6 +1126,9 @@ fn install_macos_in_staging(
             install_dir.display()
         )));
     }
+    // Point of no return. Last cancel check before writing into the install
+    // location — covers a cached-artifact path that skipped the download loop.
+    check_update_abort()?;
     std::fs::rename(&out_app, install_path)
         .map_err(|e| AppError::Engine(format!("写入 {} 失败: {e}", install_dir.display())))?;
 
@@ -1130,16 +1166,72 @@ pub fn launch_codex() -> Result<(), AppError> {
         })
 }
 
+/// Preparing-phase abort latch. The download loop has its own cancel flag once
+/// curl is running, but everything BEFORE the first byte — appcast fetch,
+/// planning, disk preflight — used to be an uncancellable wait. This latch lets
+/// a cancel pressed during "正在准备" be honored at the next checkpoint.
+static UPDATE_ABORT: AtomicBool = AtomicBool::new(false);
+
+fn clear_update_abort() {
+    UPDATE_ABORT.store(false, Ordering::SeqCst);
+}
+
+/// Resets the abort latch when the operation that owns it ends — on EVERY path
+/// (success, error, early return, panic). Clearing on DROP (not at entry) is what
+/// makes the latch race-free: a cancel that lands in the window between the UI
+/// showing its cancel button and this operation reaching its first checkpoint is
+/// NOT wiped by an entry-clear, so the checkpoint still observes it; the latch is
+/// reset only once this operation is done, leaving the next one clean. The cancel
+/// command does not hold the op lock, so this startup window is real — hence the
+/// guard instead of an entry reset.
+struct AbortGuard;
+
+impl Drop for AbortGuard {
+    fn drop(&mut self) {
+        clear_update_abort();
+    }
+}
+
+/// Bail out of the preparing phase when the user cancelled. Surfaces the same
+/// "download cancelled" marker the curl-cancel path uses, so the UI treats it
+/// as a cancel (routes home + cancelled notice) uniformly.
+fn check_update_abort() -> Result<(), AppError> {
+    if UPDATE_ABORT.load(Ordering::SeqCst) {
+        Err(AppError::Engine("download cancelled".to_string()))
+    } else {
+        Ok(())
+    }
+}
+
 pub fn pause_macos_download() -> bool {
+    // Pause is only offered once bytes are flowing (UI disables it during
+    // preparing), so it stays a pure download-loop operation — keep the `.part`.
     let requested = download::pause_active_download();
     log::info!("macOS pause download requested={requested}");
     requested
 }
 
 pub fn cancel_macos_download() -> bool {
+    // Latch the preparing-phase abort too: a cancel pressed before the first
+    // byte (or mid appcast-fetch) is honored at the next checkpoint, not just an
+    // already-running curl. Report actionable unconditionally — during preparing
+    // the latch IS the cancel mechanism, so the UI must not say "不能取消".
+    UPDATE_ABORT.store(true, Ordering::SeqCst);
     let requested = download::cancel_active_download();
     log::info!("macOS cancel download requested={requested}");
-    requested
+    true
+}
+
+/// Paused-state cancel: the download already stopped and its `.part` is on disk.
+/// Clear the cache so "继续" can't resume, and drop the abort latch. Surfaces a
+/// removal failure (vs. silently reporting a cancel that left the partial behind,
+/// which a later run would then resume).
+pub fn discard_macos_download() -> Result<(), AppError> {
+    clear_update_abort();
+    staging::clear_download_cache()
+        .map_err(|e| AppError::Internal(format!("清理下载缓存失败: {e}")))?;
+    log::info!("macOS discard download cache");
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1273,6 +1365,29 @@ mod disk_preflight_tests {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn abort_guard_preserves_a_startup_race_cancel_and_resets_on_drop() {
+        // The race a reviewer flagged: a cancel can land BEFORE perform reaches
+        // its first checkpoint — the cancel command holds no op lock, and the UI
+        // shows the cancel button the moment it enters the progress state, before
+        // the backend call returns. Clearing the latch at op ENTRY would wipe that
+        // cancel; AbortGuard clears on DROP instead, so a pending cancel survives
+        // the guard's creation and is still observed, while the next op starts
+        // clean. (Only this test touches UPDATE_ABORT, so it can't race others.)
+        UPDATE_ABORT.store(true, Ordering::SeqCst); // a cancel that beat the op
+        {
+            let _guard = AbortGuard;
+            assert!(
+                check_update_abort().is_err(),
+                "guard creation must not wipe a pending cancel"
+            );
+        }
+        assert!(
+            check_update_abort().is_ok(),
+            "guard drop must reset the latch for the next op"
+        );
+    }
 
     fn ditto(args: &[&str]) {
         let status = std::process::Command::new(DITTO)

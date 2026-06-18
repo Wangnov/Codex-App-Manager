@@ -11,9 +11,9 @@ use crate::app::diagnostics::Diagnostics;
 use crate::app::disk::available_space;
 use crate::app::logging::redact_url;
 use crate::app::mac_update::{
-    cancel_macos_download, install_macos, pause_macos_download, perform_macos_update,
-    plan_macos_update, stage_macos_update, uninstall_macos, MacInstallStatus, MacPerformReport,
-    MacStageReport, MacUninstallReport, MacUpdateReport, PerformExpectation,
+    cancel_macos_download, discard_macos_download, install_macos, pause_macos_download,
+    perform_macos_update, plan_macos_update, stage_macos_update, uninstall_macos, MacInstallStatus,
+    MacPerformReport, MacStageReport, MacUninstallReport, MacUpdateReport, PerformExpectation,
 };
 use crate::app::oplock::{
     OperationError, OperationGuard, OperationKind, OperationManager, OperationToken,
@@ -24,10 +24,10 @@ use crate::app::settings_store::AppSettings as PersistedAppSettings;
 use crate::app::settings_store::UpdateSource;
 use crate::app::url_guard::validate_custom_source;
 use crate::app::win_update::{
-    auto_stage_windows_update_with_install_mode, cancel_windows_download, pause_windows_download,
-    perform_windows_update_with_install_mode, plan_windows_update_with_install_mode,
-    stage_windows_update_with_install_mode, uninstall_windows_codex,
-    win_adopt as adopt_windows_install, win_install_status,
+    auto_stage_windows_update_with_install_mode, cancel_windows_download, discard_windows_download,
+    pause_windows_download, perform_windows_update_with_install_mode,
+    plan_windows_update_with_install_mode, stage_windows_update_with_install_mode,
+    uninstall_windows_codex, win_adopt as adopt_windows_install, win_install_status,
     DownloadProgress as WinDownloadProgress, WinAutoStageReport, WinInstallStatus,
     WinPerformExpectation, WinPerformReport, WinStageReport, WinUninstallReport, WinUpdateReport,
 };
@@ -542,6 +542,17 @@ pub fn mac_cancel_download() -> Result<bool, CommandError> {
     Ok(cancel_macos_download())
 }
 
+/// macOS-only: discard a PAUSED download. After a pause the curl process is gone
+/// but its `.part` is still cached for resume; this drops it when the user
+/// cancels from the paused state instead of resuming.
+#[tauri::command]
+pub fn mac_discard_download() -> Result<(), CommandError> {
+    if !cfg!(target_os = "macos") {
+        return Err(AppError::UnsupportedPlatform.into());
+    }
+    discard_macos_download().map_err(Into::into)
+}
+
 /// Windows-only: detect installed Codex, read mirror manifest/checksums, probe
 /// sideload capabilities, and return the preferred update path. Read-only.
 #[tauri::command]
@@ -910,6 +921,16 @@ pub fn win_cancel_download(state: State<'_, ManagerState>) -> Result<bool, Comma
     Ok(cancel_windows_download())
 }
 
+/// Windows-only: discard a PAUSED download. Drops the cached `.part` left for
+/// resume when the user cancels from the paused state instead of resuming.
+#[tauri::command]
+pub fn win_discard_download(state: State<'_, ManagerState>) -> Result<(), CommandError> {
+    if !matches!(state.target.os, OperatingSystem::Windows) {
+        return Err(AppError::UnsupportedPlatform.into());
+    }
+    discard_windows_download().map_err(Into::into)
+}
+
 /// Whether "launch at login" is currently enabled (off by default).
 #[tauri::command]
 pub fn get_autostart(app: tauri::AppHandle) -> Result<bool, CommandError> {
@@ -1215,6 +1236,15 @@ pub async fn win_perform_update(
             saved.normalize();
             saved.save()?;
         }
+    }
+    if report.success {
+        // The staged MSIX was consumed by the install — drop the cache. A failed
+        // or cancelled perform leaves it so the next run (or a resume) reuses the
+        // partial/full artifact instead of re-downloading. `stage`/`auto_stage`
+        // never clear it: they're pre-downloads whose whole point is to be reused.
+        // Best-effort: the stale sweep reclaims a leftover, so a cleanup failure
+        // must not turn a successful install into an error.
+        let _ = crate::app::staging::clear_download_cache();
     }
     Ok(report)
 }
