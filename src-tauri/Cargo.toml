@@ -6,7 +6,7 @@ name = "codex-app-manager"
 # would otherwise ride along in the production app. default-run is kept
 # defensively to pin `cargo run` to the app should another src/bin/* be added.
 default-run = "codex-app-manager"
-version = "0.1.20"
+version = "0.1.21"
 description = "A cross-platform manager for installing and updating mirrored official Codex desktop app packages."
 authors = ["Wangnov"]
 edition = "2021"
