@@ -15,6 +15,32 @@ static DOWNLOAD_ACTIVE: AtomicBool = AtomicBool::new(false);
 static DOWNLOAD_CANCELLED: AtomicBool = AtomicBool::new(false);
 static DOWNLOAD_DISCARD: AtomicBool = AtomicBool::new(false);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProgressMode {
+    NoProgressMeter,
+    SilentWithErrors,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum CurlAttemptError {
+    Cancelled,
+    Curl {
+        exit_code: Option<i32>,
+        stderr: String,
+    },
+    Other(String),
+}
+
+impl CurlAttemptError {
+    fn into_message(self, url: &str) -> String {
+        match self {
+            Self::Cancelled => "download cancelled".to_string(),
+            Self::Curl { exit_code, stderr } => curl_failure_message(url, exit_code, &stderr),
+            Self::Other(message) => message,
+        }
+    }
+}
+
 struct DownloadGuard;
 
 impl DownloadGuard {
@@ -101,6 +127,94 @@ fn curl_failure_message(url: &str, exit_code: Option<i32>, stderr: &str) -> Stri
     )
 }
 
+fn curl_args(
+    url: &str,
+    dest: &str,
+    resume: bool,
+    max_bytes: &str,
+    progress_mode: ProgressMode,
+) -> Vec<String> {
+    let mut args = vec![
+        "-fL".to_string(),
+        "--proto".to_string(),
+        "=https".to_string(),
+        "--proto-redir".to_string(),
+        "=https".to_string(),
+    ];
+    match progress_mode {
+        ProgressMode::NoProgressMeter => args.push("--no-progress-meter".to_string()),
+        ProgressMode::SilentWithErrors => args.push("-sS".to_string()),
+    }
+    args.extend([
+        "--connect-timeout".to_string(),
+        "20".to_string(),
+        "--max-filesize".to_string(),
+        max_bytes.to_string(),
+        "--retry".to_string(),
+        "2".to_string(),
+    ]);
+    if resume {
+        args.extend(["-C".to_string(), "-".to_string()]);
+    }
+    args.extend(["-o".to_string(), dest.to_string(), url.to_string()]);
+    args
+}
+
+fn is_no_progress_meter_unsupported(exit_code: Option<i32>, stderr: &str) -> bool {
+    exit_code == Some(2)
+        && stderr.contains("--no-progress-meter")
+        && (stderr.contains("is unknown") || stderr.contains("unknown option"))
+}
+
+fn run_curl_once(
+    source: &str,
+    dest: &str,
+    args: Vec<String>,
+    on_progress: &dyn Fn(u64),
+) -> Result<(), CurlAttemptError> {
+    let mut child = hidden_command(curl_exe())
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| CurlAttemptError::Other(format!("spawn curl: {e}")))?;
+
+    loop {
+        if DOWNLOAD_CANCELLED.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let downloaded = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+            log::info!("Windows download cancelled source={source} downloaded={downloaded}");
+            return Err(CurlAttemptError::Cancelled);
+        }
+        let downloaded = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+        on_progress(downloaded);
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => thread::sleep(Duration::from_millis(200)),
+            Err(err) => {
+                let _ = child.kill();
+                return Err(CurlAttemptError::Other(format!("wait for curl: {err}")));
+            }
+        }
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|err| CurlAttemptError::Other(format!("collect curl output: {err}")))?;
+
+    if !output.status.success() {
+        return Err(CurlAttemptError::Curl {
+            exit_code: output.status.code(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        });
+    }
+    let downloaded = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+    on_progress(downloaded);
+    log::info!("Windows curl download completed source={source} bytes={downloaded}");
+    Ok(())
+}
+
 fn run_curl(
     url: &str,
     dest: &Path,
@@ -111,67 +225,22 @@ fn run_curl(
     let source = url_host(url);
     let dest = dest.to_string_lossy().into_owned();
     let max_bytes = max_bytes.to_string();
-    let mut args = vec![
-        "-fL".to_string(),
-        "--proto".to_string(),
-        "=https".to_string(),
-        "--proto-redir".to_string(),
-        "=https".to_string(),
-        "--no-progress-meter".to_string(),
-        "--connect-timeout".to_string(),
-        "20".to_string(),
-        "--max-filesize".to_string(),
-        max_bytes,
-        "--retry".to_string(),
-        "2".to_string(),
-    ];
-    if resume {
-        args.extend(["-C".to_string(), "-".to_string()]);
-    }
-    args.extend(["-o".to_string(), dest.clone(), url.to_string()]);
 
-    let mut child = hidden_command(curl_exe())
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("spawn curl: {e}"))?;
-
-    loop {
-        if DOWNLOAD_CANCELLED.load(Ordering::SeqCst) {
-            let _ = child.kill();
-            let _ = child.wait();
-            let downloaded = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-            log::info!("Windows download cancelled source={source} downloaded={downloaded}");
-            return Err("download cancelled".to_string());
-        }
-        let downloaded = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-        on_progress(downloaded);
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) => thread::sleep(Duration::from_millis(200)),
-            Err(err) => {
-                let _ = child.kill();
-                return Err(format!("wait for curl: {err}"));
+    let modern_args = curl_args(url, &dest, resume, &max_bytes, ProgressMode::NoProgressMeter);
+    if let Err(first_err) = run_curl_once(source, &dest, modern_args, on_progress) {
+        if let CurlAttemptError::Curl { exit_code, stderr } = &first_err {
+            if is_no_progress_meter_unsupported(*exit_code, stderr) {
+                log::warn!(
+                    "Windows curl does not support --no-progress-meter; retrying with -sS source={source}"
+                );
+                let compat_args =
+                    curl_args(url, &dest, resume, &max_bytes, ProgressMode::SilentWithErrors);
+                return run_curl_once(source, &dest, compat_args, on_progress)
+                    .map_err(|err| err.into_message(url));
             }
         }
+        return Err(first_err.into_message(url));
     }
-
-    let output = match child.wait_with_output() {
-        Ok(output) => output,
-        Err(err) => return Err(format!("collect curl output: {err}")),
-    };
-
-    if !output.status.success() {
-        return Err(curl_failure_message(
-            url,
-            output.status.code(),
-            &String::from_utf8_lossy(&output.stderr),
-        ));
-    }
-    let downloaded = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-    on_progress(downloaded);
-    log::info!("Windows curl download completed source={source} bytes={downloaded}");
     Ok(())
 }
 
@@ -292,6 +361,44 @@ mod tests {
         assert!(DownloadGuard::acquire().is_err());
         drop(guard);
         assert!(!cancel_active_download());
+    }
+
+    #[test]
+    fn curl_args_keep_modern_progress_flag_by_default() {
+        let args = curl_args(
+            "https://example.test/Codex.msix",
+            "Codex.msix.part",
+            false,
+            "123",
+            ProgressMode::NoProgressMeter,
+        );
+
+        assert!(args.contains(&"--no-progress-meter".to_string()));
+        assert!(!args.contains(&"-sS".to_string()));
+    }
+
+    #[test]
+    fn curl_args_can_fall_back_to_legacy_silent_mode() {
+        let args = curl_args(
+            "https://example.test/Codex.msix",
+            "Codex.msix.part",
+            true,
+            "123",
+            ProgressMode::SilentWithErrors,
+        );
+
+        assert!(args.contains(&"-sS".to_string()));
+        assert!(!args.contains(&"--no-progress-meter".to_string()));
+        assert!(args.windows(2).any(|pair| pair == ["-C", "-"]));
+    }
+
+    #[test]
+    fn detects_old_curl_without_no_progress_meter() {
+        let stderr = "curl: option --no-progress-meter: is unknown\ncurl: try 'curl --help' for more information";
+
+        assert!(is_no_progress_meter_unsupported(Some(2), stderr));
+        assert!(!is_no_progress_meter_unsupported(Some(22), stderr));
+        assert!(!is_no_progress_meter_unsupported(Some(2), "curl: (6) Could not resolve host"));
     }
 
     #[test]
