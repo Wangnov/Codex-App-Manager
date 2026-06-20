@@ -499,15 +499,15 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
                   ? t("progress.installing")
                   : t("progress.title")}
             </div>
-            <div className="sub">
-              {paused
-                ? t("progress.paused.hint")
-                : finishing
+            {!paused ? (
+              <div className="sub">
+                {finishing
                   ? t("progress.finishing")
                   : snap
                     ? t("progress.downloadingFrom", { source: snap.source })
                     : t("progress.preparing")}
-            </div>
+              </div>
+            ) : null}
             {pct !== null ? (
               <div className="pctbig">
                 {pct}
