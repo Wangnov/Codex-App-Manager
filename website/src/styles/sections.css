@@ -1423,7 +1423,7 @@ body[data-lang="en"] .hero-title {
 
 .dl-cards {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 20px;
   margin-top: clamp(44px, 6vh, 72px);
 }
@@ -1709,6 +1709,10 @@ body[data-lang="en"] .hero-title {
 
   .verify-card {
     order: -1;
+  }
+
+  .dl-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

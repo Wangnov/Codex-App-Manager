@@ -24,7 +24,8 @@ export default {
     }
 
     // /manager/latest/<file> → rewrite to the current immutable versioned key
-    // (latest/CodexAppManager_aarch64.dmg → 0.1.12/CodexAppManager_aarch64.dmg)
+    // (latest/CodexAppManager_aarch64.dmg → 0.1.12/CodexAppManager_aarch64.dmg;
+    // latest/CodexAppManager_arm64-setup.exe → 0.1.12/CodexAppManager_0.1.12_arm64-setup.exe)
     // so the README can link a permanent URL that never needs a version bump.
     // The rewrite is IN-PLACE (no redirect): still ONE Worker invocation, and
     // the resolved versioned object keeps its hard cache. Cost is one cheap R2
@@ -132,9 +133,8 @@ async function currentVersion(env) {
 // pass straight through; the Windows NSIS .exe embeds the version in its file
 // name, so insert it so a stable "latest" link resolves to the real object.
 function withVersion(file, version) {
-  return file === "CodexAppManager_x64-setup.exe"
-    ? `CodexAppManager_${version}_x64-setup.exe`
-    : file;
+  const match = /^CodexAppManager_(x64|arm64)-setup\.exe$/.exec(file);
+  return match ? `CodexAppManager_${version}_${match[1]}-setup.exe` : file;
 }
 
 // ── AWS SigV4 presigner (GET/HEAD), identical scheme to codex-app-mirror ─────

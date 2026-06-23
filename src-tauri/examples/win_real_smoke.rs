@@ -85,6 +85,7 @@ fn old_release() -> WindowsRelease {
         version: OLD_MSIX_VERSION.to_string(),
         package_moniker: OLD_MSIX_MONIKER.to_string(),
         architecture: Some("x64".to_string()),
+        download_architecture: None,
         content_length: Some(OLD_MSIX_SIZE),
         etag: None,
         store_product_id: Some("9PLM9XGG6VKS".to_string()),
@@ -166,6 +167,7 @@ fn prefetch_verified_msix(endpoints: &MirrorEndpoints) -> Result<PrefetchReport,
     let release = parse_manifest(&manifest_text).map_err(|e| e.to_string())?;
     let expected_sha =
         find_msix_sha256(&checksums_text, &release.package_moniker).map_err(|e| e.to_string())?;
+    let package_url = endpoints.windows_msix_url_for_arch(release.download_architecture.as_deref());
     let dest = staged_msix_path(&release);
 
     let cached_ok = dest.exists()
@@ -178,7 +180,7 @@ fn prefetch_verified_msix(endpoints: &MirrorEndpoints) -> Result<PrefetchReport,
             std::fs::remove_file(&dest)
                 .map_err(|e| format!("remove stale staged MSIX {}: {e}", dest.display()))?;
         }
-        download_to(&endpoints.windows_msix_url, &dest).map_err(|e| e.to_string())?;
+        download_to(package_url, &dest).map_err(|e| e.to_string())?;
         downloaded = true;
     }
 

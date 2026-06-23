@@ -1,19 +1,20 @@
 name: Publish to winget
 
 # Submits each stable release to the Windows Package Manager community repo
-# (microsoft/winget-pkgs) after the package has been bootstrapped there.
+# (microsoft/winget-pkgs). The package is already bootstrapped, so workflow
+# failures after the release normally mean the generated PR needs attention.
 #
 # Prerequisites (one-time):
 #   1. Secret WINGET_TOKEN — a *classic* Personal Access Token with the
 #      `public_repo` scope (the action forks winget-pkgs and opens a PR under
 #      your account). Fine-grained tokens do not work.
-#   2. First submission: winget-releaser updates an existing package; the very
-#      first version of a brand-new package usually has to be bootstrapped once
-#      (e.g. `wingetcreate new` on Windows, or a hand-authored winget-pkgs PR).
-#      After that initial PR is merged, this workflow auto-submits every release.
+#   2. If the package ever needs to be recreated, winget-releaser updates an
+#      existing package; the first version of a brand-new package usually has
+#      to be bootstrapped once (e.g. `wingetcreate new` on Windows, or a
+#      hand-authored winget-pkgs PR).
 #
-# The installer is an unsigned NSIS setup.exe — winget accepts it, but a new
-# publisher's first PR may get extra manual review on the winget-pkgs side.
+# The installers are unsigned NSIS setup.exe files — winget accepts them, but
+# new architectures or publisher metadata changes may still get manual review.
 
 on:
   release:
@@ -50,6 +51,6 @@ jobs:
         uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e  # v2
         with:
           identifier: Wangnov.CodexAppManager
-          installers-regex: '_x64-setup\.exe$'
+          installers-regex: '_(x64|arm64)-setup\.exe$'
           release-tag: ${{ inputs.release-tag || github.event.release.tag_name }}
           token: ${{ secrets.WINGET_TOKEN }}

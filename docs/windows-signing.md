@@ -10,7 +10,7 @@ can verify the bytes they downloaded.
 ### 当前状态
 
 - macOS 构建已经使用 Developer ID 签名并完成 Apple 公证。
-- Windows 安装器 `CodexAppManager_x64-setup.exe` 当前没有 Authenticode 代码签名。
+- Windows 安装器 `CodexAppManager_x64-setup.exe` / `CodexAppManager_arm64-setup.exe` 当前没有 Authenticode 代码签名。
 - Windows 应用内自更新包带有 Tauri updater 签名,用于校验下载字节没有被篡改。
 - Windows 首次手动运行安装器时可能出现 SmartScreen 提示;这是预期风险,不是更新器签名失效。
 
@@ -32,6 +32,7 @@ Windows PowerShell:
 
 ```powershell
 Get-FileHash .\CodexAppManager_x64-setup.exe -Algorithm SHA256
+Get-FileHash .\CodexAppManager_arm64-setup.exe -Algorithm SHA256
 ```
 
 macOS:
@@ -47,7 +48,7 @@ shasum -a 256 CodexAppManager_x86_64.dmg
 
 **GitHub Releases + agentsmirror + SHA256SUMS:** 这是当前主渠道。优点是透明、可回溯、可独立核验;缺点是 Windows 无 Authenticode 时仍可能触发 SmartScreen。
 
-**winget:** 仓库已有自动提交流程,但 `Wangnov.CodexAppManager` 只有在 microsoft/winget-pkgs 的首包 PR 合并后才真正可用。在那之前,文档不应提供 winget 安装命令。winget 可接受未签名 NSIS 安装器,但新发布者首包通常会有额外人工审查。
+**winget:** `Wangnov.CodexAppManager` 已在 microsoft/winget-pkgs 中可用,本仓库会在稳定版发布后自动提交新版本。winget 可接受未签名 NSIS 安装器,但新增架构或元数据变化仍可能触发人工审查。
 
 **Microsoft Store / Partner Center:** 这是中期可选路径,需要开发者账号、MSIX 打包和商店审核。优点是用户信任更强,缺点是流程和维护成本更高。
 
@@ -64,7 +65,7 @@ shasum -a 256 CodexAppManager_x86_64.dmg
 ### Current status
 
 - macOS builds are Developer ID signed and Apple notarized.
-- The Windows installer `CodexAppManager_x64-setup.exe` is not Authenticode-signed yet.
+- The Windows installers `CodexAppManager_x64-setup.exe` / `CodexAppManager_arm64-setup.exe` are not Authenticode-signed yet.
 - Windows in-app update artifacts carry the Tauri updater signature, which verifies the downloaded bytes.
 - SmartScreen may warn when users manually run the Windows installer for the first time; that is the known distribution risk, not an updater-signature failure.
 
@@ -86,6 +87,7 @@ Windows PowerShell:
 
 ```powershell
 Get-FileHash .\CodexAppManager_x64-setup.exe -Algorithm SHA256
+Get-FileHash .\CodexAppManager_arm64-setup.exe -Algorithm SHA256
 ```
 
 macOS:
@@ -102,7 +104,7 @@ issue with the source URL and filename.
 
 **GitHub Releases + agentsmirror + SHA256SUMS:** This is the current primary channel. It is transparent, traceable, and independently verifiable, but the unsigned Windows installer can still trigger SmartScreen.
 
-**winget:** The repository has an automated submission workflow, but `Wangnov.CodexAppManager` only exists after the first package PR is merged in microsoft/winget-pkgs. Until then, the docs should not publish a Windows Package Manager install command. winget accepts unsigned NSIS installers, but a new publisher's first package usually receives extra manual review.
+**winget:** `Wangnov.CodexAppManager` is available in microsoft/winget-pkgs, and this repository auto-submits new stable releases. winget accepts unsigned NSIS installers, but a new architecture or metadata change can still receive manual review.
 
 **Microsoft Store / Partner Center:** This is a medium-term option. It requires a developer account, MSIX packaging, and Store review. It improves user trust but adds process and maintenance cost.
 

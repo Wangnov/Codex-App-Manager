@@ -258,6 +258,11 @@ export default {
         label: "下载 .exe",
         note: "永久链接,始终最新 · 无需 Microsoft Store",
       },
+      {
+        platform: "Windows · ARM64",
+        label: "下载 .exe",
+        note: "永久链接,始终最新 · Windows on Arm 原生",
+      },
     ],
     github: {
       title: "GitHub",

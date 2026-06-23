@@ -12,6 +12,10 @@ const latestManifest = JSON.stringify({
       signature: "win-sig",
       url: "https://codexapp.agentsmirror.com/manager/0.1.18/CodexAppManager_0.1.18_x64-setup.exe",
     },
+    "windows-aarch64": {
+      signature: "win-arm64-sig",
+      url: "https://codexapp.agentsmirror.com/manager/0.1.18/CodexAppManager_0.1.18_arm64-setup.exe",
+    },
   },
 });
 
@@ -76,6 +80,25 @@ describe("manager download router", () => {
     expect(res.status).toBe(200);
     expect(await res.text()).toBe("installer");
     expect(calls).toEqual(["latest.json", "0.1.18/CodexAppManager_0.1.18_x64-setup.exe"]);
+  });
+
+  it("rewrites latest Windows ARM64 links to the current versioned installer key", async () => {
+    const calls = [];
+    const env = {
+      BUCKET: bucket(
+        {
+          "latest.json": r2Object(latestManifest, { contentType: "application/json" }),
+          "0.1.18/CodexAppManager_0.1.18_arm64-setup.exe": r2Object("arm64 installer"),
+        },
+        calls,
+      ),
+    };
+
+    const res = await worker.fetch(request("/manager/latest/CodexAppManager_arm64-setup.exe"), env);
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("arm64 installer");
+    expect(calls).toEqual(["latest.json", "0.1.18/CodexAppManager_0.1.18_arm64-setup.exe"]);
   });
 
   it("rewrites latest macOS links without injecting a version into the filename", async () => {

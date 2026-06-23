@@ -29,6 +29,7 @@ const MATCHERS = [
   ["darwin-aarch64", /aarch64.*\.app\.tar\.gz\.sig$/],
   ["darwin-x86_64", /x86_64.*\.app\.tar\.gz\.sig$/],
   ["windows-x86_64", /(?:x64|x86_64).*-setup\.(?:exe|nsis\.zip)\.sig$/],
+  ["windows-aarch64", /(?:arm64|aarch64).*-setup\.(?:exe|nsis\.zip)\.sig$/],
 ];
 const REQUIRED_PLATFORMS = MATCHERS.map(([key]) => key);
 const allowPartialRelease = process.env.ALLOW_PARTIAL_RELEASE === "1";

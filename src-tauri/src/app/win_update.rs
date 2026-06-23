@@ -236,12 +236,17 @@ fn bind_manifest_checksums(
     })
 }
 
-fn read_windows_release(endpoints: &MirrorEndpoints) -> Result<(WindowsRelease, String), AppError> {
+fn read_windows_release(
+    endpoints: &MirrorEndpoints,
+) -> Result<(WindowsRelease, String, String), AppError> {
     let manifest_text = fetch_text(&endpoints.manifest_url).map_err(engine_err)?;
     let checksums_text = fetch_text(&endpoints.checksums_url).map_err(engine_err)?;
     let release = parse_manifest(&manifest_text).map_err(engine_err)?;
-    let sha256 = bind_manifest_checksums(&release, &checksums_text, &endpoints.windows_msix_url)?;
-    Ok((release, sha256))
+    let package_url = endpoints
+        .windows_msix_url_for_arch(release.download_architecture.as_deref())
+        .to_string();
+    let sha256 = bind_manifest_checksums(&release, &checksums_text, &package_url)?;
+    Ok((release, sha256, package_url))
 }
 
 fn route_label(plan: &WindowsUpdatePlan) -> String {
@@ -349,13 +354,13 @@ pub fn plan_windows_update_with_install_mode(
     install_mode: &str,
 ) -> Result<WinUpdateReport, AppError> {
     log::info!("Windows plan start install_mode={install_mode}");
-    let (release, sha256) = read_windows_release(endpoints)?;
+    let (release, sha256, package_url) = read_windows_release(endpoints)?;
     let installed = detect_managed_codex(settings, &ProvenanceStore::load());
     let capabilities = probe_capabilities();
     let mut plan = plan_update(
         &release,
         &sha256,
-        &endpoints.windows_msix_url,
+        &package_url,
         &installed,
         &capabilities,
         portable_fallback_ready(endpoints),
@@ -372,7 +377,7 @@ pub fn plan_windows_update_with_install_mode(
     let report = WinUpdateReport {
         manifest_url: endpoints.manifest_url.clone(),
         checksums_url: endpoints.checksums_url.clone(),
-        package_url: endpoints.windows_msix_url.clone(),
+        package_url,
         release,
         installed,
         capabilities,
@@ -1276,6 +1281,7 @@ mod tests {
             version: "26.602.3474.0".to_string(),
             package_moniker: "OpenAI.Codex_26.602.3474.0_x64__2p2nqsd0c76g0".to_string(),
             architecture: Some("x64".to_string()),
+            download_architecture: None,
             content_length: Some(566_504_666),
             etag: None,
             store_product_id: Some("9PLM9XGG6VKS".to_string()),

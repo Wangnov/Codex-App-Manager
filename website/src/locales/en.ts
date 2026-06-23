@@ -254,6 +254,11 @@ export default {
         label: "Download .exe",
         note: "Always-latest permalink · no Microsoft Store needed",
       },
+      {
+        platform: "Windows · ARM64",
+        label: "Download .exe",
+        note: "Always-latest permalink · native for Windows on Arm",
+      },
     ],
     github: {
       title: "On GitHub",

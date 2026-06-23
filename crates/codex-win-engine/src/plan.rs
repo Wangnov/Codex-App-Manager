@@ -75,6 +75,7 @@ mod tests {
             version: "26.602.3474.0".to_string(),
             package_moniker: "OpenAI.Codex_26.602.3474.0_x64__2p2nqsd0c76g0".to_string(),
             architecture: Some("x64".to_string()),
+            download_architecture: None,
             content_length: Some(10),
             etag: None,
             store_product_id: Some("9PLM9XGG6VKS".to_string()),

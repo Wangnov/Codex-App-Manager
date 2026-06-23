@@ -45,6 +45,8 @@ fn normalize_windows_source_base(raw: &str) -> Option<String> {
         "/latest/manifest",
         "/latest/checksums",
         "/latest/win-unpacked",
+        "/latest/win-arm64",
+        "/latest/win-x64",
         "/latest/win",
         "/latest",
     ] {
@@ -1295,6 +1297,14 @@ mod tests {
         );
         assert_eq!(
             normalize_windows_source_base("https://example.test/latest/win/").as_deref(),
+            Some("https://example.test")
+        );
+        assert_eq!(
+            normalize_windows_source_base("https://example.test/latest/win-arm64").as_deref(),
+            Some("https://example.test")
+        );
+        assert_eq!(
+            normalize_windows_source_base("https://example.test/latest/win-x64").as_deref(),
             Some("https://example.test")
         );
         assert_eq!(

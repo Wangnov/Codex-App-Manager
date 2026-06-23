@@ -87,13 +87,16 @@ brew install --cask wangnov/tap/codex-app-manager
 | Apple Silicon Mac | `CodexAppManager_aarch64.dmg` | [⤓ 镜像下载](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_aarch64.dmg) |
 | Intel Mac | `CodexAppManager_x86_64.dmg` | [⤓ 镜像下载](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x86_64.dmg) |
 | Windows x64 | `CodexAppManager_x64-setup.exe` | [⤓ 镜像下载](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x64-setup.exe) |
+| Windows ARM64 | `CodexAppManager_arm64-setup.exe` | [⤓ 镜像下载](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_arm64-setup.exe) |
 
-macOS 版本经 **Developer ID 签名 + Apple 公证**,首次打开不会被 Gatekeeper 拦截。Windows 安装器(`CodexAppManager_x64-setup.exe`)当前**没有 Authenticode 代码签名**,首次运行可能出现 SmartScreen 提示;应用内自更新使用的 Tauri updater 签名只校验下载字节,不代表 Windows 发行者信任。详情见 [Windows signing and verification](docs/windows-signing.md)。
+macOS 版本经 **Developer ID 签名 + Apple 公证**,首次打开不会被 Gatekeeper 拦截。Windows 安装器(`CodexAppManager_x64-setup.exe` / `CodexAppManager_arm64-setup.exe`)当前**没有 Authenticode 代码签名**,首次运行可能出现 SmartScreen 提示;应用内自更新使用的 Tauri updater 签名只校验下载字节,不代表 Windows 发行者信任。详情见 [Windows signing and verification](docs/windows-signing.md)。
 
 下载后建议用同一 GitHub Release 的 `SHA256SUMS` 核验文件。Windows 可用 PowerShell,macOS 可用 `shasum`:
 
 ```powershell
 Get-FileHash .\CodexAppManager_x64-setup.exe -Algorithm SHA256
+# 或 ARM64:
+Get-FileHash .\CodexAppManager_arm64-setup.exe -Algorithm SHA256
 ```
 
 ```bash
@@ -132,7 +135,7 @@ Manager 通过上游镜像管理 Codex 桌面应用本体:
 
 ### 发布流水线
 
-打 `v*` tag 触发 `release.yml`:三平台构建(瞬时下载失败自动重试)→ macOS inside-out Developer ID 签名 + 公证 + 重打 updater 包 → Windows updater 产物签名 → 发布 GitHub Release → 自动同步到 R2 + IHEP 镜像。
+打 `v*` tag 触发 `release.yml`:四平台构建(瞬时下载失败自动重试)→ macOS inside-out Developer ID 签名 + 公证 + 重打 updater 包 → Windows updater 产物签名 → 发布 GitHub Release → 自动同步到 R2 + IHEP 镜像。
 
 ### 生态:codex-app-mirror
 
@@ -216,13 +219,16 @@ Grab your platform's file from the [latest GitHub Release](https://github.com/Wa
 | Apple Silicon Mac | `CodexAppManager_aarch64.dmg` | [⤓ mirror](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_aarch64.dmg) |
 | Intel Mac | `CodexAppManager_x86_64.dmg` | [⤓ mirror](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x86_64.dmg) |
 | Windows x64 | `CodexAppManager_x64-setup.exe` | [⤓ mirror](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x64-setup.exe) |
+| Windows ARM64 | `CodexAppManager_arm64-setup.exe` | [⤓ mirror](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_arm64-setup.exe) |
 
-The macOS builds are **Developer ID signed + Apple notarized**, so Gatekeeper won't block first launch. The Windows installer (`CodexAppManager_x64-setup.exe`) is **not Authenticode-signed** yet, so SmartScreen may warn on first run; the Tauri updater signature used for in-app updates verifies bytes only and is not Windows publisher trust. See [Windows signing and verification](docs/windows-signing.md).
+The macOS builds are **Developer ID signed + Apple notarized**, so Gatekeeper won't block first launch. The Windows installers (`CodexAppManager_x64-setup.exe` / `CodexAppManager_arm64-setup.exe`) are **not Authenticode-signed** yet, so SmartScreen may warn on first run; the Tauri updater signature used for in-app updates verifies bytes only and is not Windows publisher trust. See [Windows signing and verification](docs/windows-signing.md).
 
 After downloading, compare the file with `SHA256SUMS` from the same GitHub Release. Use PowerShell on Windows or `shasum` on macOS:
 
 ```powershell
 Get-FileHash .\CodexAppManager_x64-setup.exe -Algorithm SHA256
+# Or ARM64:
+Get-FileHash .\CodexAppManager_arm64-setup.exe -Algorithm SHA256
 ```
 
 ```bash
@@ -261,7 +267,7 @@ Self-update and payload downloads share the `codexapp.agentsmirror.com` link, fr
 
 ### Release pipeline
 
-Pushing a `v*` tag triggers `release.yml`: three-platform build (with automatic retry on transient download hiccups) → macOS inside-out Developer ID signing + notarization + updater repackage → Windows updater artifact signing → publish the GitHub Release → auto-sync to the R2 + IHEP mirror.
+Pushing a `v*` tag triggers `release.yml`: four-platform build (with automatic retry on transient download hiccups) → macOS inside-out Developer ID signing + notarization + updater repackage → Windows updater artifact signing → publish the GitHub Release → auto-sync to the R2 + IHEP mirror.
 
 ### Ecosystem: codex-app-mirror
 

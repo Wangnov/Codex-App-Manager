@@ -41,6 +41,7 @@ jobs:
           # 2025-12; macos-15-intel is the last Intel image (until ~2027-08).
           - { platform: macos-15-intel, target: x86_64-apple-darwin, os: macos }
           - { platform: windows-latest, target: x86_64-pc-windows-msvc, os: windows }
+          - { platform: windows-latest, target: aarch64-pc-windows-msvc, os: windows }
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
@@ -139,9 +140,9 @@ jobs:
       #    no `.sig`. In Tauri 2 the Windows updater ships the `-setup.exe`
       #    itself, so signing it here with the updater key — exactly what
       #    finalize-macos.sh does for the .app.tar.gz — is equivalent to
-      #    `createUpdaterArtifacts` and is what gets windows-x86_64 into
-      #    latest.json. Without it the manifest has macOS platforms only and
-      #    Windows in-app self-update never sees new versions.
+      #    `createUpdaterArtifacts` and is what gets windows-x86_64 and
+      #    windows-aarch64 into latest.json. Without it the manifest has macOS
+      #    platforms only and Windows in-app self-update never sees new versions.
       - name: Sign Windows updater artifact
         if: matrix.os == 'windows'
         shell: bash
