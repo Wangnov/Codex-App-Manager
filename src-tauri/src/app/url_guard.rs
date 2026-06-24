@@ -20,6 +20,20 @@ pub enum UrlRejectReason {
     Empty,
 }
 
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ProxyRejectReason {
+    #[error("代理不能为空")]
+    Empty,
+    #[error("代理地址无法解析")]
+    Unparsable,
+    #[error("代理协议必须是 http、https、socks5 或 socks5h")]
+    UnsupportedScheme,
+    #[error("代理地址缺少有效主机名")]
+    MissingHost,
+    #[error("代理地址不能包含用户名/密码")]
+    HasUserinfo,
+}
+
 pub fn validate_custom_source(raw: &str) -> Result<String, UrlRejectReason> {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -74,6 +88,31 @@ pub fn validate_custom_source(raw: &str) -> Result<String, UrlRejectReason> {
     Ok(url.to_string())
 }
 
+pub fn validate_custom_proxy(raw: &str) -> Result<String, ProxyRejectReason> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err(ProxyRejectReason::Empty);
+    }
+    if raw
+        .chars()
+        .any(|ch| ch.is_control() || ch.is_whitespace() || ch == '\\')
+    {
+        return Err(ProxyRejectReason::Unparsable);
+    }
+    let url = Url::parse(raw).map_err(|_| ProxyRejectReason::Unparsable)?;
+    match url.scheme().to_ascii_lowercase().as_str() {
+        "http" | "https" | "socks5" | "socks5h" => {}
+        _ => return Err(ProxyRejectReason::UnsupportedScheme),
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(ProxyRejectReason::HasUserinfo);
+    }
+    if url.host().is_none() {
+        return Err(ProxyRejectReason::MissingHost);
+    }
+    Ok(url.to_string())
+}
+
 fn validate_domain(domain: &str) -> Result<(), UrlRejectReason> {
     let domain = domain.trim_end_matches('.').to_ascii_lowercase();
     if domain.is_empty() {
@@ -111,7 +150,9 @@ fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_custom_source, UrlRejectReason};
+    use super::{
+        validate_custom_proxy, validate_custom_source, ProxyRejectReason, UrlRejectReason,
+    };
 
     #[test]
     fn accepts_https_domain_sources() {
@@ -218,5 +259,34 @@ mod tests {
         for raw in ["https://8.8.8.8/", "https://[2001:4860:4860::8888]/"] {
             assert_eq!(validate_custom_source(raw), Err(UrlRejectReason::BareIp));
         }
+    }
+
+    #[test]
+    fn accepts_common_proxy_schemes_and_local_hosts() {
+        for raw in [
+            "http://127.0.0.1:7890",
+            "https://proxy.example.com:8443",
+            "socks5://127.0.0.1:1080",
+            "socks5h://127.0.0.1:1080",
+        ] {
+            assert!(validate_custom_proxy(raw).is_ok(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_or_credentialed_proxy_urls() {
+        assert_eq!(validate_custom_proxy(""), Err(ProxyRejectReason::Empty));
+        assert_eq!(
+            validate_custom_proxy("ftp://proxy.example.com"),
+            Err(ProxyRejectReason::UnsupportedScheme)
+        );
+        assert_eq!(
+            validate_custom_proxy("socks5://user:pw@127.0.0.1:1080"),
+            Err(ProxyRejectReason::HasUserinfo)
+        );
+        assert!(matches!(
+            validate_custom_proxy("socks5://"),
+            Err(ProxyRejectReason::Unparsable | ProxyRejectReason::MissingHost)
+        ));
     }
 }

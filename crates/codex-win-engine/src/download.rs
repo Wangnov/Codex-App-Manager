@@ -8,6 +8,7 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 
 use crate::limits::MAX_PACKAGE_BYTES;
+use crate::network::NetworkConfig;
 use crate::process::{curl_exe, hidden_command};
 use crate::EngineError;
 
@@ -133,14 +134,16 @@ fn curl_args(
     resume: bool,
     max_bytes: &str,
     progress_mode: ProgressMode,
+    network: &NetworkConfig,
 ) -> Vec<String> {
-    let mut args = vec![
+    let mut args = network.curl_args();
+    args.extend([
         "-fL".to_string(),
         "--proto".to_string(),
         "=https".to_string(),
         "--proto-redir".to_string(),
         "=https".to_string(),
-    ];
+    ]);
     match progress_mode {
         ProgressMode::NoProgressMeter => args.push("--no-progress-meter".to_string()),
         ProgressMode::SilentWithErrors => args.push("-sS".to_string()),
@@ -221,20 +224,34 @@ fn run_curl(
     resume: bool,
     max_bytes: u64,
     on_progress: &dyn Fn(u64),
+    network: &NetworkConfig,
 ) -> Result<(), String> {
     let source = url_host(url);
     let dest = dest.to_string_lossy().into_owned();
     let max_bytes = max_bytes.to_string();
 
-    let modern_args = curl_args(url, &dest, resume, &max_bytes, ProgressMode::NoProgressMeter);
+    let modern_args = curl_args(
+        url,
+        &dest,
+        resume,
+        &max_bytes,
+        ProgressMode::NoProgressMeter,
+        network,
+    );
     if let Err(first_err) = run_curl_once(source, &dest, modern_args, on_progress) {
         if let CurlAttemptError::Curl { exit_code, stderr } = &first_err {
             if is_no_progress_meter_unsupported(*exit_code, stderr) {
                 log::warn!(
                     "Windows curl does not support --no-progress-meter; retrying with -sS source={source}"
                 );
-                let compat_args =
-                    curl_args(url, &dest, resume, &max_bytes, ProgressMode::SilentWithErrors);
+                let compat_args = curl_args(
+                    url,
+                    &dest,
+                    resume,
+                    &max_bytes,
+                    ProgressMode::SilentWithErrors,
+                    network,
+                );
                 return run_curl_once(source, &dest, compat_args, on_progress)
                     .map_err(|err| err.into_message(url));
             }
@@ -248,12 +265,41 @@ pub fn download_to(url: &str, dest: &Path) -> Result<(), EngineError> {
     download_to_with_progress(url, dest, &|_| {})
 }
 
+pub fn download_to_with_network(
+    url: &str,
+    dest: &Path,
+    network: &NetworkConfig,
+) -> Result<(), EngineError> {
+    download_to_with_progress_with_network(url, dest, &|_| {}, network)
+}
+
 pub fn download_to_with_progress(
     url: &str,
     dest: &Path,
     on_progress: &dyn Fn(u64),
 ) -> Result<(), EngineError> {
-    download_to_with_progress_bounded(url, dest, MAX_PACKAGE_BYTES, on_progress)
+    download_to_with_progress_bounded_with_network(
+        url,
+        dest,
+        MAX_PACKAGE_BYTES,
+        on_progress,
+        &NetworkConfig::system(),
+    )
+}
+
+pub fn download_to_with_progress_with_network(
+    url: &str,
+    dest: &Path,
+    on_progress: &dyn Fn(u64),
+    network: &NetworkConfig,
+) -> Result<(), EngineError> {
+    download_to_with_progress_bounded_with_network(
+        url,
+        dest,
+        MAX_PACKAGE_BYTES,
+        on_progress,
+        network,
+    )
 }
 
 pub fn download_to_with_progress_bounded(
@@ -261,6 +307,22 @@ pub fn download_to_with_progress_bounded(
     dest: &Path,
     max_bytes: u64,
     on_progress: &dyn Fn(u64),
+) -> Result<(), EngineError> {
+    download_to_with_progress_bounded_with_network(
+        url,
+        dest,
+        max_bytes,
+        on_progress,
+        &NetworkConfig::system(),
+    )
+}
+
+pub fn download_to_with_progress_bounded_with_network(
+    url: &str,
+    dest: &Path,
+    max_bytes: u64,
+    on_progress: &dyn Fn(u64),
+    network: &NetworkConfig,
 ) -> Result<(), EngineError> {
     // The manager has one Windows package staging slot. Serialize downloads so
     // auto-stage and manual-stage cannot reset each other's cancel flag.
@@ -281,7 +343,7 @@ pub fn download_to_with_progress_bounded(
     log::info!(
         "Windows download start source={source} dest={dest_name} resume={should_resume} max_bytes={max_bytes}"
     );
-    let download_result = run_curl(url, &part, should_resume, max_bytes, on_progress);
+    let download_result = run_curl(url, &part, should_resume, max_bytes, on_progress, network);
     if let Err(first_err) = download_result {
         if is_cancelled_error(&first_err) {
             if DOWNLOAD_DISCARD.load(Ordering::SeqCst) {
@@ -291,8 +353,10 @@ pub fn download_to_with_progress_bounded(
         }
         if should_resume {
             let _ = std::fs::remove_file(&part);
-            log::warn!("Windows resume failed; retrying fresh source={source} first_err={first_err}");
-            run_curl(url, &part, false, max_bytes, on_progress).map_err(|second_err| {
+            log::warn!(
+                "Windows resume failed; retrying fresh source={source} first_err={first_err}"
+            );
+            run_curl(url, &part, false, max_bytes, on_progress, network).map_err(|second_err| {
                 if is_cancelled_error(&second_err) {
                     if DOWNLOAD_DISCARD.load(Ordering::SeqCst) {
                         let _ = std::fs::remove_file(&part);
@@ -371,6 +435,7 @@ mod tests {
             false,
             "123",
             ProgressMode::NoProgressMeter,
+            &NetworkConfig::system(),
         );
 
         assert!(args.contains(&"--no-progress-meter".to_string()));
@@ -385,6 +450,7 @@ mod tests {
             true,
             "123",
             ProgressMode::SilentWithErrors,
+            &NetworkConfig::system(),
         );
 
         assert!(args.contains(&"-sS".to_string()));
@@ -393,12 +459,33 @@ mod tests {
     }
 
     #[test]
+    fn curl_args_include_custom_proxy_before_transfer_options() {
+        let args = curl_args(
+            "https://example.test/Codex.msix",
+            "Codex.msix.part",
+            false,
+            "123",
+            ProgressMode::NoProgressMeter,
+            &NetworkConfig::custom("socks5h://127.0.0.1:7890"),
+        );
+
+        assert_eq!(args.get(0).map(String::as_str), Some("--proxy"));
+        assert_eq!(
+            args.get(1).map(String::as_str),
+            Some("socks5h://127.0.0.1:7890")
+        );
+    }
+
+    #[test]
     fn detects_old_curl_without_no_progress_meter() {
         let stderr = "curl: option --no-progress-meter: is unknown\ncurl: try 'curl --help' for more information";
 
         assert!(is_no_progress_meter_unsupported(Some(2), stderr));
         assert!(!is_no_progress_meter_unsupported(Some(22), stderr));
-        assert!(!is_no_progress_meter_unsupported(Some(2), "curl: (6) Could not resolve host"));
+        assert!(!is_no_progress_meter_unsupported(
+            Some(2),
+            "curl: (6) Could not resolve host"
+        ));
     }
 
     #[test]

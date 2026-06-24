@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::limits::MAX_PACKAGE_BYTES;
+use crate::network::NetworkConfig;
 use crate::EngineError;
 
 const CURL: &str = "/usr/bin/curl";
@@ -64,6 +65,14 @@ pub fn download_to(url: &str, dest: &Path) -> Result<u64, EngineError> {
     download_to_with_progress(url, dest, &|_| {})
 }
 
+pub fn download_to_with_network(
+    url: &str,
+    dest: &Path,
+    network: &NetworkConfig,
+) -> Result<u64, EngineError> {
+    download_to_with_progress_with_network(url, dest, &|_| {}, network)
+}
+
 /// Download with periodic progress callbacks. Spawns `curl` and polls the
 /// destination file size (curl writes incrementally) every ~300ms, invoking
 /// `on_progress(downloaded_bytes)`; resumes a partial file like `download_to`.
@@ -72,7 +81,28 @@ pub fn download_to_with_progress(
     dest: &Path,
     on_progress: &dyn Fn(u64),
 ) -> Result<u64, EngineError> {
-    download_to_with_progress_bounded(url, dest, MAX_PACKAGE_BYTES, on_progress)
+    download_to_with_progress_bounded_with_network(
+        url,
+        dest,
+        MAX_PACKAGE_BYTES,
+        on_progress,
+        &NetworkConfig::system(),
+    )
+}
+
+pub fn download_to_with_progress_with_network(
+    url: &str,
+    dest: &Path,
+    on_progress: &dyn Fn(u64),
+    network: &NetworkConfig,
+) -> Result<u64, EngineError> {
+    download_to_with_progress_bounded_with_network(
+        url,
+        dest,
+        MAX_PACKAGE_BYTES,
+        on_progress,
+        network,
+    )
 }
 
 fn partial_path(dest: &Path) -> PathBuf {
@@ -100,6 +130,7 @@ fn run_curl(
     resume: bool,
     max_bytes: u64,
     on_progress: &dyn Fn(u64),
+    network: &NetworkConfig,
 ) -> Result<(), EngineError> {
     let source = url_host(url);
     let dest_arg = dest.to_string_lossy().into_owned();
@@ -130,7 +161,9 @@ fn run_curl(
         url.to_string(),
     ]);
 
-    let mut child = Command::new(CURL)
+    let mut command = Command::new(CURL);
+    network.apply_to_command(&mut command);
+    let mut child = command
         .args(args)
         .spawn()
         .map_err(|e| EngineError::Io(format!("spawn curl: {e}")))?;
@@ -192,6 +225,22 @@ pub fn download_to_with_progress_bounded(
     max_bytes: u64,
     on_progress: &dyn Fn(u64),
 ) -> Result<u64, EngineError> {
+    download_to_with_progress_bounded_with_network(
+        url,
+        dest,
+        max_bytes,
+        on_progress,
+        &NetworkConfig::system(),
+    )
+}
+
+pub fn download_to_with_progress_bounded_with_network(
+    url: &str,
+    dest: &Path,
+    max_bytes: u64,
+    on_progress: &dyn Fn(u64),
+    network: &NetworkConfig,
+) -> Result<u64, EngineError> {
     let _guard = DownloadGuard::acquire()?;
 
     if let Some(parent) = dest.parent() {
@@ -208,7 +257,7 @@ pub fn download_to_with_progress_bounded(
     log::info!(
         "macOS download start source={source} dest={dest_name} resume={should_resume} max_bytes={max_bytes}"
     );
-    let download_result = run_curl(url, &part, should_resume, max_bytes, on_progress);
+    let download_result = run_curl(url, &part, should_resume, max_bytes, on_progress, network);
     if let Err(first_err) = download_result {
         if is_cancelled_error(&first_err) {
             if DOWNLOAD_DISCARD.load(Ordering::SeqCst) {
@@ -219,7 +268,7 @@ pub fn download_to_with_progress_bounded(
         if should_resume {
             let _ = std::fs::remove_file(&part);
             log::warn!("macOS resume failed; retrying fresh source={source} first_err={first_err}");
-            run_curl(url, &part, false, max_bytes, on_progress).map_err(|second_err| {
+            run_curl(url, &part, false, max_bytes, on_progress, network).map_err(|second_err| {
                 if is_cancelled_error(&second_err) {
                     if DOWNLOAD_DISCARD.load(Ordering::SeqCst) {
                         let _ = std::fs::remove_file(&part);

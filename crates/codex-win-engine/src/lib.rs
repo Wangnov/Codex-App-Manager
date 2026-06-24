@@ -18,6 +18,7 @@ pub mod download;
 pub mod limits;
 pub mod manifest;
 pub mod msix;
+pub mod network;
 pub mod plan;
 pub mod portable;
 mod process;
@@ -32,8 +33,9 @@ pub use capability::{
 };
 pub use checksums::{find_msix_sha256, parse_checksums, ChecksumEntry};
 pub use download::{
-    cancel_active_download, download_to, download_to_with_progress,
-    download_to_with_progress_bounded, pause_active_download, read_file, sha256_file,
+    cancel_active_download, download_to, download_to_with_network, download_to_with_progress,
+    download_to_with_progress_bounded, download_to_with_progress_bounded_with_network,
+    download_to_with_progress_with_network, pause_active_download, read_file, sha256_file,
 };
 pub use manifest::{parse_manifest, WindowsRelease};
 pub use msix::{
@@ -41,14 +43,15 @@ pub use msix::{
     parse_appx_manifest_xml, read_msix_dependencies, read_msix_identity, validate_codex_identity,
     MsixIdentity, MsixPackageDependency,
 };
+pub use network::NetworkConfig;
 pub use plan::{plan_update, WinInstallRoute, WindowsUpdatePlan};
 pub use portable::{
     close_codex_gracefully, close_codex_gracefully_for_root, install_portable_from_msix,
     purge_codex_user_data, uninstall_portable, PortableInstallReport, PortableUninstallReport,
 };
 pub use sys::{
-    detect_installed_codex, detect_portable_install, fetch_text, launch_codex, probe_capabilities,
-    remove_msix_package, InstalledWindowsCodex, MsixRemoveReport,
+    detect_installed_codex, detect_portable_install, fetch_text, fetch_text_with_network,
+    launch_codex, probe_capabilities, remove_msix_package, InstalledWindowsCodex, MsixRemoveReport,
 };
 pub use sys::{
     install_msix_sideload, precheck_msix_dependencies, verify_msix_health, MsixDependencyPrecheck,

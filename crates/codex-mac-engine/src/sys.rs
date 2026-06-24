@@ -10,6 +10,7 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::limits::MAX_TEXT_BYTES;
+use crate::network::NetworkConfig;
 use crate::EngineError;
 
 const CURL: &str = "/usr/bin/curl";
@@ -33,8 +34,14 @@ fn text_from_curl(url: &str, output: std::process::Output) -> Result<String, Eng
 
 /// Fetch a small text resource (the appcast) over HTTPS via system `curl`.
 pub fn fetch_text(url: &str) -> Result<String, EngineError> {
+    fetch_text_with_network(url, &NetworkConfig::system())
+}
+
+pub fn fetch_text_with_network(url: &str, network: &NetworkConfig) -> Result<String, EngineError> {
     let max_text = MAX_TEXT_BYTES.to_string();
-    let output = Command::new(CURL)
+    let mut command = Command::new(CURL);
+    network.apply_to_command(&mut command);
+    let output = command
         .args([
             "-fsSL",
             "--proto",
@@ -59,8 +66,18 @@ pub fn fetch_text(url: &str) -> Result<String, EngineError> {
 /// possibly-unreachable source (e.g. OpenAI's official appcast for users behind
 /// a block) without stalling on the default long connect timeout.
 pub fn fetch_text_timeout(url: &str, max_secs: u64) -> Result<String, EngineError> {
+    fetch_text_timeout_with_network(url, max_secs, &NetworkConfig::system())
+}
+
+pub fn fetch_text_timeout_with_network(
+    url: &str,
+    max_secs: u64,
+    network: &NetworkConfig,
+) -> Result<String, EngineError> {
     let max_text = MAX_TEXT_BYTES.to_string();
-    let output = Command::new(CURL)
+    let mut command = Command::new(CURL);
+    network.apply_to_command(&mut command);
+    let output = command
         .args([
             "-fsSL",
             "--proto",

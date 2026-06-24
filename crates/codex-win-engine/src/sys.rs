@@ -9,6 +9,7 @@ use crate::capability::WinCapabilityReport;
 use crate::capability::{CapabilityCheck, CapabilityState};
 use crate::limits::MAX_TEXT_BYTES;
 use crate::msix::parse_appx_manifest_xml;
+use crate::network::NetworkConfig;
 use crate::process::{curl_exe, hidden_command};
 use crate::EngineError;
 
@@ -118,10 +119,16 @@ impl MsixDependencyPrecheck {
 }
 
 pub fn fetch_text(url: &str) -> Result<String, EngineError> {
+    fetch_text_with_network(url, &NetworkConfig::system())
+}
+
+pub fn fetch_text_with_network(url: &str, network: &NetworkConfig) -> Result<String, EngineError> {
     let source = url_host(url);
     log::debug!("fetch Windows text source={source}");
     let max_text = MAX_TEXT_BYTES.to_string();
-    let output = hidden_command(curl_exe())
+    let mut command = hidden_command(curl_exe());
+    network.apply_to_command(&mut command);
+    let output = command
         .args([
             "-fsSL",
             "--proto",
@@ -150,10 +157,7 @@ pub fn fetch_text(url: &str) -> Result<String, EngineError> {
     }
 
     if output.stdout.len() > MAX_TEXT_BYTES as usize {
-        let err = EngineError::Io(format!(
-            "text response exceeded {} bytes",
-            MAX_TEXT_BYTES
-        ));
+        let err = EngineError::Io(format!("text response exceeded {} bytes", MAX_TEXT_BYTES));
         log::warn!("fetch Windows text failed source={source} error={err}");
         return Err(err);
     }
@@ -571,9 +575,7 @@ pub fn remove_msix_package() -> Result<MsixRemoveReport, EngineError> {
     } else {
         let package = crate::OPENAI_PACKAGE_IDENTITY;
         let error = &report.message;
-        log::error!(
-            "remove MSIX package failed package={package} error={error}"
-        );
+        log::error!("remove MSIX package failed package={package} error={error}");
     }
     Ok(report)
 }

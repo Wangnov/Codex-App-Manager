@@ -31,6 +31,33 @@ pub enum UpdateSource {
     Custom,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProxyMode {
+    System,
+    Direct,
+    Custom,
+}
+
+impl ProxyMode {
+    pub fn from_raw(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "system" => Ok(Self::System),
+            "direct" => Ok(Self::Direct),
+            "custom" => Ok(Self::Custom),
+            _ => Err(raw.to_string()),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Direct => "direct",
+            Self::Custom => "custom",
+        }
+    }
+}
+
 impl UpdateSource {
     pub fn from_raw(raw: &str) -> Result<Self, String> {
         match raw.trim().to_ascii_lowercase().as_str() {
@@ -58,6 +85,14 @@ fn default_source() -> UpdateSource {
 
 fn default_source_string() -> String {
     UpdateSource::Auto.as_str().to_string()
+}
+
+fn default_proxy_mode() -> ProxyMode {
+    ProxyMode::System
+}
+
+fn default_proxy_mode_string() -> String {
+    ProxyMode::System.as_str().to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +129,12 @@ pub struct AppSettings {
     /// portable install can default to the user's last chosen location.
     #[serde(default = "default_install_root")]
     pub install_root: String,
+    /// Network proxy behavior for checks and package downloads.
+    #[serde(default = "default_proxy_mode")]
+    pub proxy_mode: ProxyMode,
+    /// Proxy URL used when proxy_mode is custom.
+    #[serde(default)]
+    pub custom_proxy_url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -119,6 +160,10 @@ struct RawAppSettings {
     windows_install_mode: String,
     #[serde(default = "default_install_root")]
     install_root: String,
+    #[serde(default = "default_proxy_mode_string")]
+    proxy_mode: String,
+    #[serde(default)]
+    custom_proxy_url: String,
 }
 
 fn default_true() -> bool {
@@ -152,6 +197,8 @@ impl Default for AppSettings {
             confirm_close: true,
             windows_install_mode: default_windows_install_mode(),
             install_root: default_install_root(),
+            proxy_mode: ProxyMode::System,
+            custom_proxy_url: String::new(),
         }
     }
 }
@@ -166,6 +213,7 @@ impl RawAppSettings {
             Ok(source) => (source, None),
             Err(raw) => (UpdateSource::Auto, Some(raw)),
         };
+        let proxy_mode = ProxyMode::from_raw(&self.proxy_mode).unwrap_or(ProxyMode::System);
         let newer_schema = (self.schema_version > CURRENT_SCHEMA_VERSION).then(|| {
             format!(
                 "settings.json schema_version={} 高于当前支持版本 {}",
@@ -192,6 +240,8 @@ impl RawAppSettings {
                 confirm_close: self.confirm_close,
                 windows_install_mode: self.windows_install_mode,
                 install_root: self.install_root,
+                proxy_mode,
+                custom_proxy_url: self.custom_proxy_url,
             },
             unknown_source,
             newer_schema,
@@ -214,9 +264,10 @@ impl AppSettings {
         self.schema_version = CURRENT_SCHEMA_VERSION;
         self.signed_only = true; // enforce regardless of what is on disk
         self.auto_check = self.periodic_check;
-        self.periodic_check_interval_seconds = self
-            .periodic_check_interval_seconds
-            .clamp(MIN_PERIODIC_CHECK_INTERVAL_SECONDS, MAX_PERIODIC_CHECK_INTERVAL_SECONDS);
+        self.periodic_check_interval_seconds = self.periodic_check_interval_seconds.clamp(
+            MIN_PERIODIC_CHECK_INTERVAL_SECONDS,
+            MAX_PERIODIC_CHECK_INTERVAL_SECONDS,
+        );
         if !matches!(self.windows_install_mode.as_str(), "msix" | "portable") {
             self.windows_install_mode = default_windows_install_mode();
         }
@@ -227,6 +278,7 @@ impl AppSettings {
         } else {
             self.install_root = self.install_root.trim().to_string();
         }
+        self.custom_proxy_url = self.custom_proxy_url.trim().to_string();
     }
 
     pub fn load() -> Self {
@@ -293,7 +345,7 @@ impl AppSettings {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppSettings, RawAppSettings, UpdateSource, CURRENT_SCHEMA_VERSION,
+        AppSettings, ProxyMode, RawAppSettings, UpdateSource, CURRENT_SCHEMA_VERSION,
         DEFAULT_PERIODIC_CHECK_INTERVAL_SECONDS, MAX_PERIODIC_CHECK_INTERVAL_SECONDS,
         MIN_PERIODIC_CHECK_INTERVAL_SECONDS,
     };
@@ -320,6 +372,8 @@ mod tests {
             settings.periodic_check_interval_seconds,
             DEFAULT_PERIODIC_CHECK_INTERVAL_SECONDS
         );
+        assert_eq!(settings.proxy_mode, ProxyMode::System);
+        assert_eq!(settings.custom_proxy_url, "");
         assert!(unknown_source.is_none());
         assert!(newer_schema.is_none());
     }
@@ -386,6 +440,27 @@ mod tests {
         settings.normalize();
         assert_eq!(settings.source, UpdateSource::Auto);
         assert_eq!(unknown_source.as_deref(), Some("surprise"));
+    }
+
+    #[test]
+    fn normalizes_unknown_proxy_mode_to_system() {
+        let raw: RawAppSettings = serde_json::from_str(
+            r#"{
+                "schemaVersion": 1,
+                "source": "auto",
+                "customUrl": "",
+                "proxyMode": "surprise",
+                "customProxyUrl": " socks5h://127.0.0.1:7890 ",
+                "autoCheck": true,
+                "askBefore": true,
+                "signedOnly": true
+            }"#,
+        )
+        .unwrap();
+        let (mut settings, _, _) = raw.into_settings();
+        settings.normalize();
+        assert_eq!(settings.proxy_mode, ProxyMode::System);
+        assert_eq!(settings.custom_proxy_url, "socks5h://127.0.0.1:7890");
     }
 
     #[test]

@@ -18,8 +18,8 @@ use serde::Serialize;
 
 use codex_mac_engine::{
     apply_delta, download, gate_reconstructed, parse_appcast, plan_update, quit_codex, relaunch,
-    rollback, swap::codex_running, swap_in_place, sys, verify_sparkle, Appcast, UpdatePlan,
-    UpdateStrategy,
+    rollback, swap::codex_running, swap_in_place, sys, verify_sparkle, Appcast, NetworkConfig,
+    UpdatePlan, UpdateStrategy,
 };
 
 use crate::app::disk;
@@ -110,8 +110,9 @@ fn arch_of(installed: &Option<InstalledCodex>) -> &str {
         .unwrap_or(std::env::consts::ARCH)
 }
 
-fn fetch_one(url: String) -> Result<(String, String), AppError> {
-    let xml = sys::fetch_text(&url).map_err(|e| AppError::Engine(e.to_string()))?;
+fn fetch_one(url: String, network: &NetworkConfig) -> Result<(String, String), AppError> {
+    let xml =
+        sys::fetch_text_with_network(&url, network).map_err(|e| AppError::Engine(e.to_string()))?;
     Ok((url, xml))
 }
 
@@ -127,11 +128,14 @@ fn latest_build_of(xml: &str) -> u64 {
 /// `auto` tries the CN-reachable mirror first and falls back to OpenAI official
 /// when the mirror is unreachable; `mirror` / `official` / `custom` use exactly
 /// that source (custom falls back to the mirror when its URL is blank).
-fn fetch_appcast_for_arch(arch: &str) -> Result<(String, String), AppError> {
+fn fetch_appcast_for_arch(
+    arch: &str,
+    network: &NetworkConfig,
+) -> Result<(String, String), AppError> {
     let settings = crate::app::settings_store::AppSettings::load();
     match settings.source {
-        UpdateSource::Official => fetch_one(official_for_arch(arch).to_string()),
-        UpdateSource::Mirror => fetch_one(appcast_for_arch(arch).to_string()),
+        UpdateSource::Official => fetch_one(official_for_arch(arch).to_string(), network),
+        UpdateSource::Mirror => fetch_one(appcast_for_arch(arch).to_string(), network),
         UpdateSource::Custom => {
             let u = settings.custom_url.trim();
             let url = if u.is_empty() {
@@ -139,7 +143,7 @@ fn fetch_appcast_for_arch(arch: &str) -> Result<(String, String), AppError> {
             } else {
                 validate_custom_source(u).map_err(|e| AppError::Engine(e.to_string()))?
             };
-            fetch_one(url)
+            fetch_one(url, network)
         }
         UpdateSource::Auto => {
             // auto: pick the higher build between the CN-reachable mirror and
@@ -151,8 +155,8 @@ fn fetch_appcast_for_arch(arch: &str) -> Result<(String, String), AppError> {
             // If only one is reachable, use it; if neither, error.
             let mirror_url = appcast_for_arch(arch).to_string();
             let official_url = official_for_arch(arch).to_string();
-            let mirror = sys::fetch_text(&mirror_url).ok();
-            let official = sys::fetch_text_timeout(&official_url, 8).ok();
+            let mirror = sys::fetch_text_with_network(&mirror_url, network).ok();
+            let official = sys::fetch_text_timeout_with_network(&official_url, 8, network).ok();
             match (mirror, official) {
                 (Some(m), Some(o)) => {
                     if latest_build_of(&o) > latest_build_of(&m) {
@@ -247,9 +251,16 @@ fn detect_managed_installed() -> Option<InstalledCodex> {
 }
 
 pub fn plan_macos_update(simulated_build: Option<u64>) -> Result<MacUpdateReport, AppError> {
+    plan_macos_update_with_network(simulated_build, &NetworkConfig::system())
+}
+
+pub fn plan_macos_update_with_network(
+    simulated_build: Option<u64>,
+    network: &NetworkConfig,
+) -> Result<MacUpdateReport, AppError> {
     log::info!("macOS plan start simulated_build={simulated_build:?}");
     let installed = detect_managed_installed();
-    let (appcast_url, xml) = fetch_appcast_for_arch(arch_of(&installed))?;
+    let (appcast_url, xml) = fetch_appcast_for_arch(arch_of(&installed), network)?;
     let appcast = parse_appcast(&xml).map_err(|e| AppError::Engine(e.to_string()))?;
     let plan = plan_update(&appcast, effective_build(simulated_build, &installed));
 
@@ -388,6 +399,7 @@ fn download_and_verify(
     max_size: u64,
     signature: &str,
     progress: &dyn Fn(DownloadProgress),
+    network: &NetworkConfig,
 ) -> Result<PathBuf, AppError> {
     let source = host_of(url);
     log::info!("macOS download and verify start source={source}");
@@ -416,13 +428,19 @@ fn download_and_verify(
             source,
         });
     } else {
-        download::download_to_with_progress_bounded(url, &dest, max_size, &|downloaded| {
-            progress(DownloadProgress {
-                downloaded,
-                total: size,
-                source: source.clone(),
-            });
-        })
+        download::download_to_with_progress_bounded_with_network(
+            url,
+            &dest,
+            max_size,
+            &|downloaded| {
+                progress(DownloadProgress {
+                    downloaded,
+                    total: size,
+                    source: source.clone(),
+                });
+            },
+            network,
+        )
         .map_err(|e| AppError::Engine(e.to_string()))?;
     }
 
@@ -464,13 +482,20 @@ fn max_bytes_for_strategy(strategy: &UpdateStrategy) -> u64 {
 }
 
 pub fn stage_macos_update(simulated_build: Option<u64>) -> Result<MacStageReport, AppError> {
+    stage_macos_update_with_network(simulated_build, &NetworkConfig::system())
+}
+
+pub fn stage_macos_update_with_network(
+    simulated_build: Option<u64>,
+    network: &NetworkConfig,
+) -> Result<MacStageReport, AppError> {
     log::info!("macOS stage start simulated_build={simulated_build:?}");
     // A standalone stage can also be cancelled (its download sets the abort
     // latch). Own a guard so a cancelled stage can't leave the latch set and
     // make the NEXT perform/install abort itself at its first checkpoint.
     let _abort_guard = AbortGuard;
     let installed = detect_managed_installed();
-    let (_, xml) = fetch_appcast_for_arch(arch_of(&installed))?;
+    let (_, xml) = fetch_appcast_for_arch(arch_of(&installed), network)?;
     let appcast = parse_appcast(&xml).map_err(|e| AppError::Engine(e.to_string()))?;
     let plan = plan_update(&appcast, effective_build(simulated_build, &installed))
         .ok_or_else(|| AppError::Engine("appcast had no items".to_string()))?;
@@ -510,6 +535,7 @@ pub fn stage_macos_update(simulated_build: Option<u64>) -> Result<MacStageReport
         max_bytes_for_strategy(&plan.strategy),
         &signature,
         &no_progress,
+        network,
     ) {
         Ok(dest) => dest,
         Err(err) => {
@@ -645,6 +671,7 @@ fn reconstruct_full(
     work: &Path,
     out_app: &Path,
     progress: &dyn Fn(DownloadProgress),
+    network: &NetworkConfig,
 ) -> Result<(), AppError> {
     let latest = appcast
         .latest()
@@ -658,6 +685,7 @@ fn reconstruct_full(
         codex_mac_engine::limits::MAX_PACKAGE_BYTES,
         &sig,
         progress,
+        network,
     )?;
     unpack_app_zip(&staged, work, out_app)
 }
@@ -689,6 +717,15 @@ pub fn perform_macos_update(
     binary_delta: Option<PathBuf>,
     expected: PerformExpectation,
     progress: &dyn Fn(DownloadProgress),
+) -> Result<MacPerformReport, AppError> {
+    perform_macos_update_with_network(binary_delta, expected, progress, &NetworkConfig::system())
+}
+
+pub fn perform_macos_update_with_network(
+    binary_delta: Option<PathBuf>,
+    expected: PerformExpectation,
+    progress: &dyn Fn(DownloadProgress),
+    network: &NetworkConfig,
 ) -> Result<MacPerformReport, AppError> {
     // Reset the latch when THIS op ends (not at entry) so a cancel racing the
     // op's startup isn't wiped. See AbortGuard.
@@ -739,7 +776,7 @@ pub fn perform_macos_update(
 
     let install_path = PathBuf::from(&installed.path);
 
-    let (_, xml) = fetch_appcast_for_arch(&installed.arch)?;
+    let (_, xml) = fetch_appcast_for_arch(&installed.arch, network)?;
     let appcast = parse_appcast(&xml).map_err(|e| AppError::Engine(e.to_string()))?;
     let plan = plan_update(&appcast, installed.build)
         .ok_or_else(|| AppError::Engine("appcast had no items".to_string()))?;
@@ -813,20 +850,21 @@ pub fn perform_macos_update(
                     codex_mac_engine::limits::MAX_DELTA_BYTES,
                     &sig,
                     progress,
+                    network,
                 )?;
                 match apply_delta(tool, &install_path, &out_app, &staged) {
                     Ok(()) => strategy_label(&plan.strategy),
                     Err(delta_err) => {
-                        reconstruct_full(&appcast, &work, &out_app, progress)?;
+                        reconstruct_full(&appcast, &work, &out_app, progress, network)?;
                         format!("full (delta 应用失败回退: {delta_err})")
                     }
                 }
             } else {
-                reconstruct_full(&appcast, &work, &out_app, progress)?;
+                reconstruct_full(&appcast, &work, &out_app, progress, network)?;
                 "full (delta 工具缺失，回退全量)".to_string()
             }
         } else {
-            reconstruct_full(&appcast, &work, &out_app, progress)?;
+            reconstruct_full(&appcast, &work, &out_app, progress, network)?;
             "full".to_string()
         };
 
@@ -1053,6 +1091,13 @@ fn choose_install_dir() -> Result<PathBuf, AppError> {
 /// isn't writable). No delta, no quit (nothing running), no backup (nothing to
 /// replace). Records `manager-installed` provenance and launches the app.
 pub fn install_macos(progress: &dyn Fn(DownloadProgress)) -> Result<MacInstallStatus, AppError> {
+    install_macos_with_network(progress, &NetworkConfig::system())
+}
+
+pub fn install_macos_with_network(
+    progress: &dyn Fn(DownloadProgress),
+    network: &NetworkConfig,
+) -> Result<MacInstallStatus, AppError> {
     log::info!("macOS install start");
     // Reset on op end, not entry — race-free cancel (see AbortGuard).
     let _abort_guard = AbortGuard;
@@ -1070,7 +1115,7 @@ pub fn install_macos(progress: &dyn Fn(DownloadProgress)) -> Result<MacInstallSt
     } else {
         "x86_64"
     };
-    let (_, xml) = fetch_appcast_for_arch(arch)?;
+    let (_, xml) = fetch_appcast_for_arch(arch, network)?;
     let appcast = parse_appcast(&xml).map_err(|e| AppError::Engine(e.to_string()))?;
     if let Some(latest) = appcast.latest() {
         require_os_supported(latest.minimum_system_version.as_deref())?;
@@ -1083,8 +1128,14 @@ pub fn install_macos(progress: &dyn Fn(DownloadProgress)) -> Result<MacInstallSt
     check_update_abort()?;
 
     let staging = staging::create_unique_staging("update")?;
-    let install_result =
-        install_macos_in_staging(&appcast, &install_dir, &install_path, &staging, progress);
+    let install_result = install_macos_in_staging(
+        &appcast,
+        &install_dir,
+        &install_path,
+        &staging,
+        progress,
+        network,
+    );
     match install_result {
         Ok(status) => {
             staging.discard();
@@ -1110,13 +1161,14 @@ fn install_macos_in_staging(
     install_path: &Path,
     staging: &StagingDir,
     progress: &dyn Fn(DownloadProgress),
+    network: &NetworkConfig,
 ) -> Result<MacInstallStatus, AppError> {
     let work = staging.path();
     let out_app = staging.join("Codex.app");
     let _ = std::fs::remove_dir_all(&out_app);
 
     // Full package only — no basis bundle to delta against.
-    reconstruct_full(appcast, work, &out_app, progress)?;
+    reconstruct_full(appcast, work, &out_app, progress, network)?;
     gate_reconstructed(&out_app)
         .map_err(|e| AppError::Engine(format!("codesign 闸失败（拒绝安装）: {e}")))?;
 

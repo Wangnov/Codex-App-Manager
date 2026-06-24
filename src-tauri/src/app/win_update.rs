@@ -13,15 +13,15 @@ use serde::{Deserialize, Serialize};
 
 use codex_win_engine::{
     cancel_active_download, close_codex_gracefully_for_root, detect_installed_codex,
-    detect_portable_install, download_to_with_progress_bounded, fetch_text, find_msix_sha256,
-    install_msix_sideload, install_portable_from_msix, limits::MAX_PACKAGE_BYTES, parse_manifest,
-    pause_active_download, plan_update, precheck_msix_dependencies, probe_capabilities,
-    purge_codex_user_data, read_msix_identity, remove_msix_package, sha256_file,
-    uninstall_portable, validate_codex_identity, verify_msix_health, verify_openai_authenticode,
-    version_key, AuthenticodeReport, CapabilityState, InstalledWindowsCodex, MsixHealthReport,
-    MsixIdentity, MsixRemoveReport, MsixSideloadReport, PortableInstallReport,
-    PortableUninstallReport, WinCapabilityReport, WinInstallRoute, WindowsRelease,
-    WindowsUpdatePlan,
+    detect_portable_install, download_to_with_progress_bounded_with_network,
+    fetch_text_with_network, find_msix_sha256, install_msix_sideload, install_portable_from_msix,
+    limits::MAX_PACKAGE_BYTES, parse_manifest, pause_active_download, plan_update,
+    precheck_msix_dependencies, probe_capabilities, purge_codex_user_data, read_msix_identity,
+    remove_msix_package, sha256_file, uninstall_portable, validate_codex_identity,
+    verify_msix_health, verify_openai_authenticode, version_key, AuthenticodeReport,
+    CapabilityState, InstalledWindowsCodex, MsixHealthReport, MsixIdentity, MsixRemoveReport,
+    MsixSideloadReport, NetworkConfig, PortableInstallReport, PortableUninstallReport,
+    WinCapabilityReport, WinInstallRoute, WindowsRelease, WindowsUpdatePlan,
 };
 
 use crate::app::provenance::ProvenanceStore;
@@ -238,9 +238,12 @@ fn bind_manifest_checksums(
 
 fn read_windows_release(
     endpoints: &MirrorEndpoints,
+    network: &NetworkConfig,
 ) -> Result<(WindowsRelease, String, String), AppError> {
-    let manifest_text = fetch_text(&endpoints.manifest_url).map_err(engine_err)?;
-    let checksums_text = fetch_text(&endpoints.checksums_url).map_err(engine_err)?;
+    let manifest_text =
+        fetch_text_with_network(&endpoints.manifest_url, network).map_err(engine_err)?;
+    let checksums_text =
+        fetch_text_with_network(&endpoints.checksums_url, network).map_err(engine_err)?;
     let release = parse_manifest(&manifest_text).map_err(engine_err)?;
     let package_url = endpoints
         .windows_msix_url_for_arch(release.download_architecture.as_deref())
@@ -353,8 +356,22 @@ pub fn plan_windows_update_with_install_mode(
     settings: &AppSettings,
     install_mode: &str,
 ) -> Result<WinUpdateReport, AppError> {
+    plan_windows_update_with_install_mode_and_network(
+        endpoints,
+        settings,
+        install_mode,
+        &NetworkConfig::system(),
+    )
+}
+
+pub fn plan_windows_update_with_install_mode_and_network(
+    endpoints: &MirrorEndpoints,
+    settings: &AppSettings,
+    install_mode: &str,
+    network: &NetworkConfig,
+) -> Result<WinUpdateReport, AppError> {
     log::info!("Windows plan start install_mode={install_mode}");
-    let (release, sha256, package_url) = read_windows_release(endpoints)?;
+    let (release, sha256, package_url) = read_windows_release(endpoints, network)?;
     let installed = detect_managed_codex(settings, &ProvenanceStore::load());
     let capabilities = probe_capabilities();
     let mut plan = plan_update(
@@ -405,6 +422,22 @@ pub fn stage_windows_update_with_install_mode(
     install_mode: &str,
     progress: &dyn Fn(DownloadProgress),
 ) -> Result<WinStageReport, AppError> {
+    stage_windows_update_with_install_mode_and_network(
+        endpoints,
+        settings,
+        install_mode,
+        progress,
+        &NetworkConfig::system(),
+    )
+}
+
+pub fn stage_windows_update_with_install_mode_and_network(
+    endpoints: &MirrorEndpoints,
+    settings: &AppSettings,
+    install_mode: &str,
+    progress: &dyn Fn(DownloadProgress),
+    network: &NetworkConfig,
+) -> Result<WinStageReport, AppError> {
     log::info!("Windows stage start install_mode={install_mode}");
     // Own a guard so EVERY stage caller — `perform` (nested, harmless), background
     // `auto_stage`, and the standalone `win_stage_update` command — resets the
@@ -414,7 +447,12 @@ pub fn stage_windows_update_with_install_mode(
     // download completes the UI is in the "finishing" state with cancel disabled,
     // so no cancel lands during stage's post-download verify.)
     let _abort_guard = WinAbortGuard;
-    let report = plan_windows_update_with_install_mode(endpoints, settings, install_mode)?;
+    let report = plan_windows_update_with_install_mode_and_network(
+        endpoints,
+        settings,
+        install_mode,
+        network,
+    )?;
     // The plan above did the manifest/checksums fetch (the Windows "正在准备"
     // phase). Honor a cancel here — before the up-to-date early-return and the
     // download below; once curl runs, its own cancel flag takes over.
@@ -470,7 +508,7 @@ pub fn stage_windows_update_with_install_mode(
             if dest.exists() {
                 let _ = std::fs::remove_file(&dest);
             }
-            download_to_with_progress_bounded(
+            download_to_with_progress_bounded_with_network(
                 &report.package_url,
                 &dest,
                 MAX_PACKAGE_BYTES,
@@ -481,6 +519,7 @@ pub fn stage_windows_update_with_install_mode(
                         source: source.clone(),
                     });
                 },
+                network,
             )
             .map_err(engine_err)?;
         }
@@ -609,6 +648,24 @@ pub fn auto_stage_windows_update_with_install_mode(
     allow_metered: bool,
     install_mode: &str,
 ) -> Result<WinAutoStageReport, AppError> {
+    auto_stage_windows_update_with_install_mode_and_network(
+        endpoints,
+        settings,
+        enabled,
+        allow_metered,
+        install_mode,
+        &NetworkConfig::system(),
+    )
+}
+
+pub fn auto_stage_windows_update_with_install_mode_and_network(
+    endpoints: &MirrorEndpoints,
+    settings: &AppSettings,
+    enabled: bool,
+    allow_metered: bool,
+    install_mode: &str,
+    network: &NetworkConfig,
+) -> Result<WinAutoStageReport, AppError> {
     log::info!("Windows auto-stage decision enabled={enabled} allow_metered={allow_metered}");
     if !enabled {
         return Ok(WinAutoStageReport {
@@ -623,7 +680,12 @@ pub fn auto_stage_windows_update_with_install_mode(
         });
     }
 
-    let report = plan_windows_update_with_install_mode(endpoints, settings, install_mode)?;
+    let report = plan_windows_update_with_install_mode_and_network(
+        endpoints,
+        settings,
+        install_mode,
+        network,
+    )?;
     let capabilities = report.capabilities.clone();
     if report.plan.up_to_date {
         return Ok(WinAutoStageReport {
@@ -684,8 +746,13 @@ pub fn auto_stage_windows_update_with_install_mode(
         }
     }
 
-    let stage =
-        stage_windows_update_with_install_mode(endpoints, settings, install_mode, &no_progress)?;
+    let stage = stage_windows_update_with_install_mode_and_network(
+        endpoints,
+        settings,
+        install_mode,
+        &no_progress,
+        network,
+    )?;
     let notes = if stage.install_ready {
         vec!["Windows package is staged and ready for user-confirmed installation.".to_string()]
     } else {
@@ -794,6 +861,26 @@ pub fn perform_windows_update_with_install_mode(
     expected: Option<WinPerformExpectation>,
     progress: &dyn Fn(DownloadProgress),
 ) -> Result<WinPerformReport, AppError> {
+    perform_windows_update_with_install_mode_and_network(
+        endpoints,
+        settings,
+        confirm,
+        install_mode,
+        expected,
+        progress,
+        &NetworkConfig::system(),
+    )
+}
+
+pub fn perform_windows_update_with_install_mode_and_network(
+    endpoints: &MirrorEndpoints,
+    settings: &AppSettings,
+    confirm: bool,
+    install_mode: &str,
+    expected: Option<WinPerformExpectation>,
+    progress: &dyn Fn(DownloadProgress),
+    network: &NetworkConfig,
+) -> Result<WinPerformReport, AppError> {
     log::info!("Windows perform start install_mode={install_mode}");
     // Reset the latch when THIS perform ends (not at stage entry) so a cancel
     // racing the op's startup isn't wiped, and `auto_stage` never clears it. See
@@ -805,8 +892,13 @@ pub fn perform_windows_update_with_install_mode(
         ));
     }
 
-    let stage =
-        stage_windows_update_with_install_mode(endpoints, settings, install_mode, progress)?;
+    let stage = stage_windows_update_with_install_mode_and_network(
+        endpoints,
+        settings,
+        install_mode,
+        progress,
+        network,
+    )?;
     // Staging can take long enough for Codex to self-update, be uninstalled, or
     // move between the user's confirmation and our destructive work. Re-detect
     // after staging and use this fresh snapshot for both consent validation and

@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
-use tauri::{Emitter, Manager, State};
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_updater::UpdaterExt;
 
 use crate::app::atomic_file;
 use crate::app::config_health::ConfigHealth;
@@ -11,9 +12,10 @@ use crate::app::diagnostics::Diagnostics;
 use crate::app::disk::available_space;
 use crate::app::logging::redact_url;
 use crate::app::mac_update::{
-    cancel_macos_download, discard_macos_download, install_macos, pause_macos_download,
-    perform_macos_update, plan_macos_update, stage_macos_update, uninstall_macos, MacInstallStatus,
-    MacPerformReport, MacStageReport, MacUninstallReport, MacUpdateReport, PerformExpectation,
+    cancel_macos_download, discard_macos_download, install_macos_with_network,
+    pause_macos_download, perform_macos_update_with_network, plan_macos_update_with_network,
+    stage_macos_update_with_network, uninstall_macos, MacInstallStatus, MacPerformReport,
+    MacStageReport, MacUninstallReport, MacUpdateReport, PerformExpectation,
 };
 use crate::app::oplock::{
     OperationError, OperationGuard, OperationKind, OperationManager, OperationToken,
@@ -21,13 +23,15 @@ use crate::app::oplock::{
 use crate::app::paths;
 use crate::app::provenance::ProvenanceStore;
 use crate::app::settings_store::AppSettings as PersistedAppSettings;
-use crate::app::settings_store::UpdateSource;
-use crate::app::url_guard::validate_custom_source;
+use crate::app::settings_store::{ProxyMode, UpdateSource};
+use crate::app::url_guard::{validate_custom_proxy, validate_custom_source};
 use crate::app::win_update::{
-    auto_stage_windows_update_with_install_mode, cancel_windows_download, discard_windows_download,
-    pause_windows_download, perform_windows_update_with_install_mode,
-    plan_windows_update_with_install_mode, stage_windows_update_with_install_mode,
-    uninstall_windows_codex, win_adopt as adopt_windows_install, win_install_status,
+    auto_stage_windows_update_with_install_mode_and_network, cancel_windows_download,
+    discard_windows_download, pause_windows_download,
+    perform_windows_update_with_install_mode_and_network,
+    plan_windows_update_with_install_mode_and_network,
+    stage_windows_update_with_install_mode_and_network, uninstall_windows_codex,
+    win_adopt as adopt_windows_install, win_install_status,
     DownloadProgress as WinDownloadProgress, WinAutoStageReport, WinInstallStatus,
     WinPerformExpectation, WinPerformReport, WinStageReport, WinUninstallReport, WinUpdateReport,
 };
@@ -104,6 +108,126 @@ fn windows_install_mode_for_settings() -> String {
     } else {
         "msix".to_string()
     }
+}
+
+fn validated_custom_proxy_for_settings(raw: &str, context: &str) -> Result<String, AppError> {
+    validate_custom_proxy(raw).map_err(|e| {
+        log::warn!("url_guard rejected {context} proxy reason={e}");
+        AppError::Engine(e.to_string())
+    })
+}
+
+fn mac_network_config_for_settings() -> Result<codex_mac_engine::NetworkConfig, AppError> {
+    let saved = PersistedAppSettings::load();
+    match saved.proxy_mode {
+        ProxyMode::System => Ok(codex_mac_engine::NetworkConfig::system()),
+        ProxyMode::Direct => Ok(codex_mac_engine::NetworkConfig::direct()),
+        ProxyMode::Custom => {
+            let proxy = validated_custom_proxy_for_settings(&saved.custom_proxy_url, "mac update")?;
+            Ok(codex_mac_engine::NetworkConfig::custom(proxy))
+        }
+    }
+}
+
+fn win_network_config_for_settings() -> Result<codex_win_engine::NetworkConfig, AppError> {
+    let saved = PersistedAppSettings::load();
+    match saved.proxy_mode {
+        ProxyMode::System => Ok(codex_win_engine::NetworkConfig::system()),
+        ProxyMode::Direct => Ok(codex_win_engine::NetworkConfig::direct()),
+        ProxyMode::Custom => {
+            let proxy =
+                validated_custom_proxy_for_settings(&saved.custom_proxy_url, "Windows update")?;
+            Ok(codex_win_engine::NetworkConfig::custom(proxy))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagerUpdateMetadata {
+    pub version: String,
+    pub current_version: String,
+    pub body: Option<String>,
+}
+
+fn manager_updater_builder(
+    app: &AppHandle,
+) -> Result<tauri_plugin_updater::UpdaterBuilder, AppError> {
+    let saved = PersistedAppSettings::load();
+    let mut builder = app.updater_builder();
+    match saved.proxy_mode {
+        ProxyMode::System => {}
+        ProxyMode::Direct => {
+            builder = builder.no_proxy();
+        }
+        ProxyMode::Custom => {
+            let normalized =
+                validated_custom_proxy_for_settings(&saved.custom_proxy_url, "manager updater")?;
+            let proxy = url::Url::parse(&normalized)
+                .map_err(|e| AppError::Engine(format!("invalid proxy URL: {e}")))?;
+            builder = builder.proxy(proxy);
+        }
+    }
+    Ok(builder)
+}
+
+fn manager_update_matches_confirmation(
+    latest_version: &str,
+    current_version: &str,
+    expected_version: &str,
+    expected_current_version: &str,
+) -> bool {
+    latest_version == expected_version.trim() && current_version == expected_current_version.trim()
+}
+
+#[tauri::command]
+pub async fn manager_check_update(
+    app: AppHandle,
+) -> Result<Option<ManagerUpdateMetadata>, CommandError> {
+    let updater = manager_updater_builder(&app)?
+        .build()
+        .map_err(|e| AppError::Engine(format!("build manager updater: {e}")))?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| AppError::Engine(format!("check manager update: {e}")))?;
+    Ok(update.map(|update| ManagerUpdateMetadata {
+        version: update.version,
+        current_version: update.current_version,
+        body: update.body,
+    }))
+}
+
+#[tauri::command]
+pub async fn manager_install_update(
+    app: AppHandle,
+    expected_version: String,
+    expected_current_version: String,
+) -> Result<(), CommandError> {
+    let updater = manager_updater_builder(&app)?
+        .build()
+        .map_err(|e| AppError::Engine(format!("build manager updater: {e}")))?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| AppError::Engine(format!("check manager update before install: {e}")))?
+        .ok_or_else(|| AppError::Engine("No manager update is available.".to_string()))?;
+    if !manager_update_matches_confirmation(
+        &update.version,
+        &update.current_version,
+        &expected_version,
+        &expected_current_version,
+    ) {
+        return Err(AppError::StaleExpectation(
+            "管理器更新内容已变化，请重新检查后再确认。".to_string(),
+        )
+        .into());
+    }
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| AppError::Engine(format!("install manager update: {e}")))?;
+    Ok(())
 }
 
 fn windows_domain_settings_for_persisted(state: &ManagerState) -> DomainAppSettings {
@@ -380,10 +504,13 @@ pub async fn mac_plan_update(
     // Off the main thread: the appcast fetch (plus the auto-source official
     // probe) is network IO — running it inline froze the webview, so the
     // re-check spinner never animated ("卡一下没动画").
-    tauri::async_runtime::spawn_blocking(move || plan_macos_update(simulated_build))
-        .await
-        .map_err(|e| AppError::Internal(format!("join: {e}")))?
-        .map_err(Into::into)
+    let network = mac_network_config_for_settings()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        plan_macos_update_with_network(simulated_build, &network)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("join: {e}")))?
+    .map_err(Into::into)
 }
 
 /// macOS-only: plan + download + size/EdDSA verify into staging. Non-destructive
@@ -397,10 +524,13 @@ pub async fn mac_stage_update(
         return Err(AppError::UnsupportedPlatform.into());
     }
     let _op = begin_guard(&state, OperationKind::Update)?;
-    tauri::async_runtime::spawn_blocking(move || stage_macos_update(simulated_build))
-        .await
-        .map_err(|e| AppError::Internal(format!("join: {e}")))?
-        .map_err(Into::into)
+    let network = mac_network_config_for_settings()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        stage_macos_update_with_network(simulated_build, &network)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("join: {e}")))?
+    .map_err(Into::into)
 }
 
 /// Locate the vendored Sparkle `BinaryDelta` tool, if present: an explicit
@@ -463,11 +593,12 @@ pub async fn mac_perform_update(
         install_path: expected_path,
     };
     let progress_app = app.clone();
+    let network = mac_network_config_for_settings()?;
     tauri::async_runtime::spawn_blocking(move || {
         let report = move |p: crate::app::mac_update::DownloadProgress| {
             let _ = progress_app.emit("mac://download-progress", p);
         };
-        perform_macos_update(binary_delta, expected, &report)
+        perform_macos_update_with_network(binary_delta, expected, &report, &network)
     })
     .await
     .map_err(|e| AppError::Internal(format!("join: {e}")))?
@@ -513,11 +644,12 @@ pub async fn mac_install(
         return Err(AppError::UnsupportedPlatform.into());
     }
     let _op = begin_guard(&state, OperationKind::Install)?;
+    let network = mac_network_config_for_settings()?;
     tauri::async_runtime::spawn_blocking(move || {
         let report = move |p: crate::app::mac_update::DownloadProgress| {
             let _ = app.emit("mac://download-progress", p);
         };
-        install_macos(&report)
+        install_macos_with_network(&report, &network)
     })
     .await
     .map_err(|e| AppError::Internal(format!("join: {e}")))?
@@ -567,8 +699,14 @@ pub async fn win_plan_update(
     let endpoints = windows_endpoints_for_settings(&state)?;
     let settings = windows_domain_settings_for_persisted(&state);
     let install_mode = windows_install_mode_for_settings();
+    let network = win_network_config_for_settings()?;
     tauri::async_runtime::spawn_blocking(move || {
-        plan_windows_update_with_install_mode(&endpoints, &settings, &install_mode)
+        plan_windows_update_with_install_mode_and_network(
+            &endpoints,
+            &settings,
+            &install_mode,
+            &network,
+        )
     })
     .await
     .map_err(|e| AppError::Internal(format!("join: {e}")))?
@@ -588,8 +726,15 @@ pub async fn win_stage_update(
     let endpoints = windows_endpoints_for_settings(&state)?;
     let settings = windows_domain_settings_for_persisted(&state);
     let install_mode = windows_install_mode_for_settings();
+    let network = win_network_config_for_settings()?;
     tauri::async_runtime::spawn_blocking(move || {
-        stage_windows_update_with_install_mode(&endpoints, &settings, &install_mode, &|_| {})
+        stage_windows_update_with_install_mode_and_network(
+            &endpoints,
+            &settings,
+            &install_mode,
+            &|_| {},
+            &network,
+        )
     })
     .await
     .map_err(|e| AppError::Internal(format!("join: {e}")))?
@@ -620,13 +765,17 @@ pub fn set_settings(
             AppError::Engine(e.to_string())
         })?;
     }
+    if s.proxy_mode == ProxyMode::Custom {
+        s.custom_proxy_url = validated_custom_proxy_for_settings(&s.custom_proxy_url, "settings")?;
+    }
     let _op = begin_guard(&state, OperationKind::SetInstallRoot)?;
     s.save()?;
     refresh_config_health(&state);
     log::info!(
-        "saved settings source={} windows_install_mode={}",
+        "saved settings source={} windows_install_mode={} proxy_mode={}",
         s.source.as_str(),
-        s.windows_install_mode
+        s.windows_install_mode,
+        s.proxy_mode.as_str()
     );
     Ok(s)
 }
@@ -889,13 +1038,15 @@ pub async fn win_auto_stage_update(
     let endpoints = windows_endpoints_for_settings(&state)?;
     let settings = windows_domain_settings_for_persisted(&state);
     let install_mode = windows_install_mode_for_settings();
+    let network = win_network_config_for_settings()?;
     tauri::async_runtime::spawn_blocking(move || {
-        auto_stage_windows_update_with_install_mode(
+        auto_stage_windows_update_with_install_mode_and_network(
             &endpoints,
             &settings,
             enabled,
             allow_metered,
             &install_mode,
+            &network,
         )
     })
     .await
@@ -1215,18 +1366,20 @@ pub async fn win_perform_update(
         None => None,
     };
     let install_mode = windows_install_mode_for_settings();
+    let network = win_network_config_for_settings()?;
     let progress_app = app.clone();
     let report = tauri::async_runtime::spawn_blocking(move || {
         let report = move |p: WinDownloadProgress| {
             let _ = progress_app.emit("win://download-progress", p);
         };
-        perform_windows_update_with_install_mode(
+        perform_windows_update_with_install_mode_and_network(
             &endpoints,
             &settings,
             confirm,
             &install_mode,
             expected,
             &report,
+            &network,
         )
     })
     .await
@@ -1281,7 +1434,9 @@ pub async fn win_uninstall(
 #[cfg(test)]
 mod tests {
     use super::{
-        install_root_from_picked_dir, normalize_windows_source_base, validate_install_root_path,
+        install_root_from_picked_dir, manager_update_matches_confirmation,
+        normalize_windows_source_base, validate_install_root_path,
+        validated_custom_proxy_for_settings,
     };
     use std::fs;
 
@@ -1312,6 +1467,29 @@ mod tests {
             Some("https://example.test/custom")
         );
         assert!(normalize_windows_source_base("   ").is_none());
+    }
+
+    #[test]
+    fn settings_custom_proxy_requires_a_url() {
+        let err = validated_custom_proxy_for_settings("  ", "settings").unwrap_err();
+        assert!(err.to_string().contains("代理不能为空"));
+        assert_eq!(
+            validated_custom_proxy_for_settings("socks5h://127.0.0.1:1080", "settings").unwrap(),
+            "socks5h://127.0.0.1:1080"
+        );
+    }
+
+    #[test]
+    fn manager_self_update_confirmation_must_match_latest_check() {
+        assert!(manager_update_matches_confirmation(
+            "0.2.1", "0.2.0", "0.2.1", "0.2.0"
+        ));
+        assert!(!manager_update_matches_confirmation(
+            "0.2.2", "0.2.0", "0.2.1", "0.2.0"
+        ));
+        assert!(!manager_update_matches_confirmation(
+            "0.2.1", "0.2.1", "0.2.1", "0.2.0"
+        ));
     }
 
     #[test]

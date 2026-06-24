@@ -121,6 +121,8 @@ pub fn run() {
             commands::mac_discard_download,
             commands::mac_launch_codex,
             commands::mac_uninstall,
+            commands::manager_check_update,
+            commands::manager_install_update,
             commands::get_settings,
             commands::set_settings,
             commands::get_config_health,
