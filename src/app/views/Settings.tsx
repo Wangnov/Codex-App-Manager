@@ -1,7 +1,7 @@
 import { useEffect, useId, useState } from "react";
 
 import { errorMessage, managerApi } from "../../services/managerApi";
-import type { AppSettings, UpdateSourceKind, WindowsInstallMode } from "../../shared/types";
+import type { AppSettings, ProxyMode, UpdateSourceKind, WindowsInstallMode } from "../../shared/types";
 import { DEFAULT_SETTINGS } from "../../shared/types";
 import { Icon } from "../icons";
 import { useI18n, LANGS, type TFn, type TKey } from "../i18n";
@@ -35,6 +35,12 @@ const FREQUENCY_PRESETS: { seconds: number; label: TKey }[] = [
   { seconds: 15 * 60, label: "settings.general.interval15m" },
   { seconds: 60 * 60, label: "settings.general.interval1h" },
   { seconds: 6 * 60 * 60, label: "settings.general.interval6h" },
+];
+
+const PROXY_MODES: { kind: ProxyMode; label: TKey }[] = [
+  { kind: "system", label: "settings.network.proxySystem" },
+  { kind: "direct", label: "settings.network.proxyDirect" },
+  { kind: "custom", label: "settings.network.proxyCustom" },
 ];
 
 const MIN_CUSTOM_INTERVAL_SECONDS = 60;
@@ -474,6 +480,51 @@ export function Settings({
               <span className="rval">{LANGS.find((l) => l.code === lang)?.native ?? lang}</span>
               <Icon name="chevron" className="chev" />
             </button>
+          </div>
+        </div>
+
+        {/* 网络 */}
+        <div className="group">
+          <div className="group-h">{t("settings.network.header")}</div>
+          <div className="list">
+            <div className="row" style={{ display: "block" }}>
+              <div className="rtitle" style={{ marginBottom: 8 }}>
+                {t("settings.network.proxy")}
+              </div>
+              <div className="seg">
+                {PROXY_MODES.map((mode) => (
+                  <button
+                    key={mode.kind}
+                    aria-selected={s.proxyMode === mode.kind}
+                    onClick={() => {
+                      setCommandError(null);
+                      const next = { ...s, proxyMode: mode.kind };
+                      if (mode.kind === "custom" && !s.customProxyUrl.trim()) {
+                        setDraft(next);
+                        return;
+                      }
+                      update(next);
+                    }}
+                  >
+                    {t(mode.label)}
+                  </button>
+                ))}
+              </div>
+              {s.proxyMode === "custom" ? (
+                <div style={{ marginTop: 10 }}>
+                  <input
+                    className="input mono"
+                    value={s.customProxyUrl}
+                    placeholder={t("settings.network.proxyPlaceholder")}
+                    onChange={(e) => setDraft({ ...s, customProxyUrl: e.target.value })}
+                    onBlur={(e) => {
+                      setCommandError(null);
+                      update({ ...s, customProxyUrl: e.currentTarget.value });
+                    }}
+                  />
+                </div>
+              ) : null}
+            </div>
           </div>
         </div>
 

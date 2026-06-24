@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { check, type Update } from "@tauri-apps/plugin-updater";
 
 import type {
   AppSettings,
@@ -41,6 +40,12 @@ export interface ManagerUpdateAvailable {
   discard: () => Promise<void>;
 }
 
+interface ManagerUpdateMetadata {
+  version: string;
+  currentVersion: string;
+  body?: string;
+}
+
 export interface FrontendErrorPayload {
   kind: string;
   message: string;
@@ -57,6 +62,10 @@ function normalizedInterval(value: unknown): number {
   );
 }
 
+function normalizedProxyMode(value: unknown): AppSettings["proxyMode"] {
+  return value === "direct" || value === "custom" || value === "system" ? value : "system";
+}
+
 function normalizeSettings(raw: Partial<AppSettings>): AppSettings {
   const legacyAuto = typeof raw.autoCheck === "boolean" ? raw.autoCheck : DEFAULT_SETTINGS.autoCheck;
   const periodic =
@@ -70,6 +79,9 @@ function normalizeSettings(raw: Partial<AppSettings>): AppSettings {
     periodicCheck: periodic,
     periodicCheckIntervalSeconds: normalizedInterval(raw.periodicCheckIntervalSeconds),
     signedOnly: true,
+    proxyMode: normalizedProxyMode(raw.proxyMode),
+    customProxyUrl:
+      typeof raw.customProxyUrl === "string" ? raw.customProxyUrl.trim() : "",
   };
 }
 
@@ -397,7 +409,9 @@ export const managerApi = {
     }
     // A routine check shouldn't surface a scary error when the release feed
     // isn't published yet or is unreachable.
-    const update = await check().catch(() => undefined);
+    const update = await invoke<ManagerUpdateMetadata | null>("manager_check_update").catch(
+      () => undefined,
+    );
     if (update === undefined) {
       return { kind: "unavailable" };
     }
@@ -681,18 +695,19 @@ export const managerApi = {
   },
 };
 
-function managerUpdateAvailable(update: Update): ManagerUpdateAvailable {
+function managerUpdateAvailable(update: ManagerUpdateMetadata): ManagerUpdateAvailable {
   return {
     kind: "available",
     version: update.version,
     currentVersion: update.currentVersion,
     body: update.body,
     installAndRelaunch: async () => {
-      await update.downloadAndInstall();
+      await invoke<void>("manager_install_update", {
+        expectedVersion: update.version,
+        expectedCurrentVersion: update.currentVersion,
+      });
       await relaunch();
     },
-    discard: async () => {
-      await update.close().catch(() => undefined);
-    },
+    discard: async () => {},
   };
 }

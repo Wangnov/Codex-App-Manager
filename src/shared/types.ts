@@ -94,6 +94,7 @@ export interface MacInstallStatus {
 
 export type UpdateSourceKind = "auto" | "mirror" | "official" | "custom";
 export type WindowsInstallMode = "msix" | "portable";
+export type ProxyMode = "system" | "direct" | "custom";
 
 export interface AppSettings {
   source: UpdateSourceKind;
@@ -115,6 +116,10 @@ export interface AppSettings {
   windowsInstallMode: WindowsInstallMode;
   /** Remembered portable install root for Windows. */
   installRoot: string;
+  /** Network proxy behavior for update checks and downloads. */
+  proxyMode: ProxyMode;
+  /** Proxy URL used when proxyMode is custom. */
+  customProxyUrl: string;
 }
 
 export interface ConfigHealth {
@@ -152,6 +157,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   confirmClose: true,
   windowsInstallMode: "msix",
   installRoot: "%LOCALAPPDATA%\\Programs\\Codex",
+  proxyMode: "system",
+  customProxyUrl: "",
 };
 
 export interface MacUninstallReport {
