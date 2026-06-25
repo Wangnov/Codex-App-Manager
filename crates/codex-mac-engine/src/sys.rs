@@ -18,8 +18,15 @@ const LIPO: &str = "/usr/bin/lipo";
 
 fn text_from_curl(url: &str, output: std::process::Output) -> Result<String, EngineError> {
     if !output.status.success() {
+        // Keep the exit code in the message so the app-layer classifier can tell
+        // a connect / timeout / TLS failure apart (mirrors the Windows engine).
         return Err(EngineError::Io(format!(
-            "curl failed for {url}: {}",
+            "curl failed for {url} exit={}: stderr='{}'",
+            output
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".to_string()),
             String::from_utf8_lossy(&output.stderr).trim()
         )));
     }

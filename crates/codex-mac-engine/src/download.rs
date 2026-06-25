@@ -186,7 +186,16 @@ fn run_curl(
         {
             Some(status) => {
                 if !status.success() {
-                    return Err(EngineError::Io(format!("curl download failed: {url}")));
+                    // Carry the curl exit code so the app-layer classifier can
+                    // tell a connect / timeout / write failure apart (stderr is
+                    // not piped for the streamed download).
+                    return Err(EngineError::Io(format!(
+                        "curl download failed exit={} url={url}",
+                        status
+                            .code()
+                            .map(|c| c.to_string())
+                            .unwrap_or_else(|| "signal".to_string()),
+                    )));
                 }
                 break;
             }

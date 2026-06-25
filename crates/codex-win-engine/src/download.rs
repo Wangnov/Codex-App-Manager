@@ -117,14 +117,27 @@ fn proxy_env_summary() -> String {
 }
 
 fn curl_failure_message(url: &str, exit_code: Option<i32>, stderr: &str) -> String {
-    format!(
-        "curl failed for host={} exit={}: stderr='{}'; {}",
+    let base = format!(
+        "curl failed for host={} exit={}: stderr='{}'",
         url_host(url),
         exit_code
             .map(|code| code.to_string())
             .unwrap_or_else(|| "signal".to_string()),
         stderr.trim(),
-        proxy_env_summary(),
+    );
+    // Append the proxy diagnostic only for connectivity failures — pasting it
+    // onto write / disk / HTTP errors (e.g. exit 23) only misleads.
+    if is_connectivity_exit(exit_code) {
+        format!("{base}; {}", proxy_env_summary())
+    } else {
+        base
+    }
+}
+
+fn is_connectivity_exit(exit_code: Option<i32>) -> bool {
+    matches!(
+        exit_code,
+        Some(5 | 6 | 7 | 28 | 35 | 52 | 53 | 54 | 55 | 56 | 58 | 59 | 60 | 67 | 77 | 80 | 82 | 83 | 91)
     )
 }
 
