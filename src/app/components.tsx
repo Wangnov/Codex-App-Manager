@@ -1,4 +1,12 @@
-import { useEffect, useId, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 
@@ -208,7 +216,17 @@ export function ErrorHero({ message }: { message: string | null }) {
           >
             {t("home.error.details")}
           </button>
-          {showDetails ? <pre className="errdetails">{message}</pre> : null}
+          {/* Grow the raw diagnostic in via grid-rows (same accordion technique
+              as .schedule-panel) instead of letting it pop in/out. */}
+          <div
+            className={`errdetails-panel${showDetails ? " open" : ""}`}
+            aria-hidden={!showDetails}
+            inert={showDetails ? undefined : true}
+          >
+            <div className="errdetails-panel-inner">
+              <pre className="errdetails">{message}</pre>
+            </div>
+          </div>
         </>
       ) : null}
     </>
@@ -268,6 +286,91 @@ export function ResultBanner({
           <Icon name="close" />
         </button>
       </div>
+    </div>
+  );
+}
+
+export interface SegmentedItem {
+  key: string;
+  label: ReactNode;
+}
+
+/** Segmented control whose selection is a single pill that *slides* between
+ *  options instead of blinking in place. The pill carries the chrome (gradient +
+ *  border + elevation) the selected button used to paint; JS writes the active
+ *  button's offsetLeft / offsetWidth onto it and CSS owns the travel. Shared by
+ *  the theme, check-frequency and proxy choosers. */
+export function Segmented({
+  items,
+  value,
+  onChange,
+  ariaLabel,
+}: {
+  items: SegmentedItem[];
+  value: string;
+  onChange: (key: string) => void;
+  ariaLabel?: string;
+}) {
+  const barRef = useRef<HTMLDivElement>(null);
+  const pillRef = useRef<HTMLSpanElement>(null);
+  // The pill snaps (no slide) into place on first paint; only a *selection*
+  // change should animate. Tracks whether we've positioned it at least once.
+  const placed = useRef(false);
+
+  const place = useCallback((animate: boolean) => {
+    const bar = barRef.current;
+    const pill = pillRef.current;
+    if (!bar || !pill) return;
+    const active = bar.querySelector<HTMLElement>('[aria-selected="true"]');
+    // offsetWidth is 0 while collapsed (e.g. inside a closed schedule panel) or
+    // under jsdom — skip so we don't pin the pill to a zero-width ghost.
+    if (!active || active.offsetWidth === 0) return;
+    const write = () => {
+      pill.style.transform = `translateX(${active.offsetLeft}px)`;
+      pill.style.width = `${active.offsetWidth}px`;
+    };
+    if (animate) {
+      write();
+    } else {
+      // Suspend the transition, write, force a reflow, restore — so the pill
+      // lands at the new position before any tween can run.
+      const prev = pill.style.transition;
+      pill.style.transition = "none";
+      write();
+      void pill.offsetWidth;
+      pill.style.transition = prev;
+    }
+  }, []);
+
+  // Slide on selection change; snap the very first time.
+  useLayoutEffect(() => {
+    place(placed.current);
+    placed.current = true;
+  }, [value, place]);
+
+  // Re-snap (no slide) when the bar's box changes — a language switch rewrites
+  // every label's width, and the frequency segment is revealed from a collapsed
+  // panel. ResizeObserver catches both without animating a non-selection move.
+  useEffect(() => {
+    const bar = barRef.current;
+    if (!bar || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => place(false));
+    ro.observe(bar);
+    return () => ro.disconnect();
+  }, [place]);
+
+  return (
+    <div className="seg" ref={barRef} aria-label={ariaLabel}>
+      <span className="seg-pill" aria-hidden="true" ref={pillRef} />
+      {items.map((item) => (
+        <button
+          key={item.key}
+          aria-selected={value === item.key}
+          onClick={() => onChange(item.key)}
+        >
+          {item.label}
+        </button>
+      ))}
     </div>
   );
 }

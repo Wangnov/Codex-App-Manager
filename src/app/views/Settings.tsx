@@ -6,7 +6,7 @@ import { DEFAULT_SETTINGS } from "../../shared/types";
 import { Icon } from "../icons";
 import { useI18n, LANGS, type TFn, type TKey } from "../i18n";
 import { useTheme, type ThemeMode } from "../theme";
-import { NavBar, Toggle } from "../components";
+import { NavBar, Segmented, Toggle } from "../components";
 import { isWindows } from "../platform";
 import { Sheet } from "../Sheet";
 import { useSettingsSaver } from "./useSettingsSaver";
@@ -352,30 +352,26 @@ export function Settings({
                     <span className="rtitle">{t("settings.general.checkFrequency")}</span>
                     <span className="tag">{t("settings.general.intervalEvery", { interval: intervalLabel })}</span>
                   </div>
-                  <div className="seg">
-                    {FREQUENCY_PRESETS.map((option) => (
-                      <button
-                        key={option.seconds}
-                        aria-selected={s.periodicCheckIntervalSeconds === option.seconds}
-                        onClick={() => {
-                          setCommandError(null);
-                          setCustomIntervalOpen(false);
-                          update({ ...s, periodicCheckIntervalSeconds: option.seconds });
-                        }}
-                      >
-                        {t(option.label)}
-                      </button>
-                    ))}
-                    <button
-                      aria-selected={customInterval}
-                      onClick={() => {
-                        setCommandError(null);
+                  <Segmented
+                    ariaLabel={t("settings.general.checkFrequency")}
+                    value={customInterval ? "custom" : String(s.periodicCheckIntervalSeconds)}
+                    items={[
+                      ...FREQUENCY_PRESETS.map((option) => ({
+                        key: String(option.seconds),
+                        label: t(option.label),
+                      })),
+                      { key: "custom", label: t("settings.general.customInterval") },
+                    ]}
+                    onChange={(key) => {
+                      setCommandError(null);
+                      if (key === "custom") {
                         setCustomIntervalOpen(true);
-                      }}
-                    >
-                      {t("settings.general.customInterval")}
-                    </button>
-                  </div>
+                        return;
+                      }
+                      setCustomIntervalOpen(false);
+                      update({ ...s, periodicCheckIntervalSeconds: Number(key) });
+                    }}
+                  />
                   {customInterval ? (
                     <div className="interval-grid">
                       <label>
@@ -461,17 +457,12 @@ export function Settings({
               <div className="rtitle" style={{ marginBottom: 8 }}>
                 {t("settings.appearance.theme")}
               </div>
-              <div className="seg">
-                {themes.map((th) => (
-                  <button
-                    key={th.v}
-                    aria-selected={mode === th.v}
-                    onClick={() => setMode(th.v)}
-                  >
-                    {t(th.k)}
-                  </button>
-                ))}
-              </div>
+              <Segmented
+                ariaLabel={t("settings.appearance.theme")}
+                value={mode}
+                items={themes.map((th) => ({ key: th.v, label: t(th.k) }))}
+                onChange={(key) => setMode(key as ThemeMode)}
+              />
             </div>
             <button className="row" onClick={() => setLangSheet(true)}>
               <span className="rtext">
@@ -491,25 +482,20 @@ export function Settings({
               <div className="rtitle" style={{ marginBottom: 8 }}>
                 {t("settings.network.proxy")}
               </div>
-              <div className="seg">
-                {PROXY_MODES.map((mode) => (
-                  <button
-                    key={mode.kind}
-                    aria-selected={s.proxyMode === mode.kind}
-                    onClick={() => {
-                      setCommandError(null);
-                      const next = { ...s, proxyMode: mode.kind };
-                      if (mode.kind === "custom" && !s.customProxyUrl.trim()) {
-                        setDraft(next);
-                        return;
-                      }
-                      update(next);
-                    }}
-                  >
-                    {t(mode.label)}
-                  </button>
-                ))}
-              </div>
+              <Segmented
+                ariaLabel={t("settings.network.proxy")}
+                value={s.proxyMode}
+                items={PROXY_MODES.map((mode) => ({ key: mode.kind, label: t(mode.label) }))}
+                onChange={(key) => {
+                  setCommandError(null);
+                  const next = { ...s, proxyMode: key as ProxyMode };
+                  if (key === "custom" && !s.customProxyUrl.trim()) {
+                    setDraft(next);
+                    return;
+                  }
+                  update(next);
+                }}
+              />
               {s.proxyMode === "custom" ? (
                 <div style={{ marginTop: 10 }}>
                   <input

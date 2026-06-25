@@ -42,11 +42,16 @@ export function useFocusTrap(
   opts: {
     onEsc?: () => void;
     initialFocus?: "first" | "primary" | "dismiss" | "container";
+    /** When false the trap is inert: it grabs no focus and, on the transition
+     *  to false, restores focus to the opener. Lets a dialog keep playing an
+     *  exit animation (still mounted) without holding focus. Defaults to true. */
+    active?: boolean;
   },
 ) {
+  const active = opts.active ?? true;
   useEffect(() => {
     const node = ref.current;
-    if (!node) {
+    if (!node || !active) {
       return;
     }
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -89,5 +94,5 @@ export function useFocusTrap(
         opener.focus();
       }
     };
-  }, [ref, opts.onEsc, opts.initialFocus]);
+  }, [ref, opts.onEsc, opts.initialFocus, active]);
 }

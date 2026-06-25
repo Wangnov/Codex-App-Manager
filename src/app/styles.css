@@ -683,6 +683,28 @@ input {
   border-radius: var(--r-md);
   padding: 10px 12px;
 }
+/* Grow the diagnostic body in via grid-rows (same accordion technique as
+   .schedule-panel) so 查看详情 expands smoothly instead of popping in/out.
+   Padding/margin live on the clipped content, never on the 0fr track. */
+.errdetails-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 0.28s var(--ease-out), opacity 0.2s var(--ease);
+}
+.errdetails-panel.open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.errdetails-panel-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+@media (prefers-reduced-motion: reduce) {
+  .errdetails-panel {
+    transition: none;
+  }
+}
 
 /* ── Buttons ─────────────────────────────────────────────────────────────── */
 .actions {
@@ -1184,8 +1206,11 @@ button.row.danger:hover {
   transform: scale(1);
 }
 
-/* segmented control (theme) */
+/* segmented control (theme / frequency / proxy) — the selection is a single
+   pill that *slides* between options (see <Segmented>), not a per-button
+   background that blinks on/off. */
 .seg {
+  position: relative; /* offset parent for the absolutely-positioned pill */
   display: flex;
   gap: 4px;
   background: var(--surface-2);
@@ -1194,7 +1219,31 @@ button.row.danger:hover {
   padding: 3px;
   box-shadow: inset 0 1px 2px var(--shadow-1);
 }
+/* The travelling pill carries the chrome the selected button used to paint. Its
+   transform + width are written inline by <Segmented> from the active button's
+   offsetLeft/offsetWidth; top/bottom:3px match the bar's padding so its height
+   tracks the buttons automatically. The transform settles with a restrained
+   overshoot (the app's selection-moment spring, shared with the toggle/radio);
+   width eases straight so it never bounces wider than the target. */
+.seg-pill {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 0;
+  width: 0;
+  border-radius: var(--r-sm);
+  background: linear-gradient(180deg, var(--surface-3-top), var(--surface-3));
+  border: 1px solid var(--line-2);
+  box-shadow: var(--elev-1);
+  transform: translateX(0);
+  transition: transform 0.3s var(--ease-spring), width 0.26s var(--ease);
+  will-change: transform, width;
+  pointer-events: none;
+  z-index: 0;
+}
 .seg button {
+  position: relative;
+  z-index: 1; /* labels read above the pill */
   flex: 1;
   border: 1px solid transparent;
   background: transparent;
@@ -1203,17 +1252,18 @@ button.row.danger:hover {
   font-weight: 600;
   padding: 7px 8px;
   border-radius: var(--r-sm);
-  transition: background 0.18s var(--ease), color 0.18s var(--ease),
-    box-shadow 0.18s var(--ease), border-color 0.18s var(--ease);
+  transition: color 0.18s var(--ease);
 }
 .seg button:hover:not([aria-selected="true"]) {
   color: var(--text);
 }
 .seg button[aria-selected="true"] {
-  background: linear-gradient(180deg, var(--surface-3-top), var(--surface-3));
   color: var(--text);
-  border-color: var(--line-2);
-  box-shadow: var(--elev-1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .seg-pill {
+    transition: none;
+  }
 }
 
 .schedule-panel {
@@ -1552,6 +1602,41 @@ button.row.danger:hover {
   from {
     transform: translateY(24px);
     opacity: 0;
+  }
+}
+/* Exit — the reverse of the entrances: the scrim fades and the sheet sinks back
+   down. Driven by an animation (not a transition) so it fires reliably the
+   instant `.is-closing` lands — the resting `.sheet`/`.scrim` carry no
+   transition to interpolate from, so a same-frame transition wouldn't tween. The
+   Sheet component holds the node mounted for the duration (CLOSE_MS) before
+   unmounting, so dismiss no longer hard-cuts. */
+@keyframes scrim-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes sheet-sink {
+  to {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+}
+.scrim.is-closing,
+.quit-scrim.is-closing {
+  animation: scrim-out 0.2s var(--ease) forwards;
+}
+.sheet.is-closing {
+  animation: sheet-sink 0.24s var(--ease-out) forwards;
+}
+/* Reduced-motion: no enter/exit movement (the component also unmounts at once). */
+@media (prefers-reduced-motion: reduce) {
+  .scrim,
+  .quit-scrim,
+  .sheet,
+  .scrim.is-closing,
+  .quit-scrim.is-closing,
+  .sheet.is-closing {
+    animation: none;
   }
 }
 .sheet .ring {
