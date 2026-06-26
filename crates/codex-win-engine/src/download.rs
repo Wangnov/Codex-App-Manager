@@ -482,7 +482,7 @@ mod tests {
             &NetworkConfig::custom("socks5h://127.0.0.1:7890"),
         );
 
-        assert_eq!(args.get(0).map(String::as_str), Some("--proxy"));
+        assert_eq!(args.first().map(String::as_str), Some("--proxy"));
         assert_eq!(
             args.get(1).map(String::as_str),
             Some("socks5h://127.0.0.1:7890")

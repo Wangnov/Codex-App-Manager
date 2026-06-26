@@ -798,7 +798,7 @@ pub fn restore_config_backup(
     let path = config_path(which.as_str())?;
     let backup = atomic_file::backup_path(&path);
     if !backup.exists() {
-        return Err(AppError::Internal(format!("找不到 {} 的 .bak 备份", which)).into());
+        return Err(AppError::Internal(format!("找不到 {which} 的 .bak 备份")).into());
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)

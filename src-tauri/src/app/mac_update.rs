@@ -405,8 +405,7 @@ fn download_and_verify(
     log::info!("macOS download and verify start source={source}");
     if size > max_size {
         return Err(AppError::Engine(format!(
-            "artifact size {size} exceeds {} byte limit",
-            max_size
+            "artifact size {size} exceeds {max_size} byte limit"
         )));
     }
     let file_name = url.rsplit('/').next().unwrap_or("payload.bin");
@@ -454,8 +453,7 @@ fn download_and_verify(
     }
     if len > max_size {
         let err = AppError::Engine(format!(
-            "artifact size {len} exceeds {} byte limit",
-            max_size
+            "artifact size {len} exceeds {max_size} byte limit"
         ));
         log::error!("macOS download and verify failed error={err}");
         return Err(err);

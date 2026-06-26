@@ -493,8 +493,7 @@ pub fn stage_windows_update_with_install_mode_and_network(
         let expected_size = report.release.content_length.unwrap_or(0);
         if expected_size > MAX_PACKAGE_BYTES {
             return Err(AppError::Engine(format!(
-                "MSIX content length {expected_size} exceeds {} byte limit",
-                MAX_PACKAGE_BYTES
+                "MSIX content length {expected_size} exceeds {MAX_PACKAGE_BYTES} byte limit"
             )));
         }
         let expected_sha = report.plan.sha256.clone();
@@ -543,8 +542,7 @@ pub fn stage_windows_update_with_install_mode_and_network(
         }
         if actual_size > MAX_PACKAGE_BYTES {
             return Err(AppError::Engine(format!(
-                "MSIX size {actual_size} exceeds {} byte limit",
-                MAX_PACKAGE_BYTES
+                "MSIX size {actual_size} exceeds {MAX_PACKAGE_BYTES} byte limit"
             )));
         }
         progress(DownloadProgress {

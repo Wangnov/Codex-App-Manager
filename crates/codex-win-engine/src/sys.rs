@@ -157,7 +157,7 @@ pub fn fetch_text_with_network(url: &str, network: &NetworkConfig) -> Result<Str
     }
 
     if output.stdout.len() > MAX_TEXT_BYTES as usize {
-        let err = EngineError::Io(format!("text response exceeded {} bytes", MAX_TEXT_BYTES));
+        let err = EngineError::Io(format!("text response exceeded {MAX_TEXT_BYTES} bytes"));
         log::warn!("fetch Windows text failed source={source} error={err}");
         return Err(err);
     }
@@ -396,8 +396,8 @@ pub fn precheck_msix_dependencies(path: &Path) -> MsixDependencyPrecheck {
     let script = format!(
         r#"
 	$ErrorActionPreference = 'SilentlyContinue'
-	$deps = @({deps})
-	$mainArch = {package_arch}
+	$deps = @({deps_literal})
+	$mainArch = {package_arch_literal}
 	$missing = @()
 	function Convert-ToVersion($value) {{
 	  try {{
@@ -456,8 +456,6 @@ pub fn precheck_msix_dependencies(path: &Path) -> MsixDependencyPrecheck {
 	  missing = ($missing -join ', ')
 	}} | ConvertTo-Json -Compress
 	"#,
-        deps = deps_literal,
-        package_arch = package_arch_literal,
     );
 
     let parsed = run_powershell_json(&script)
