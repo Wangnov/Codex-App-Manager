@@ -435,8 +435,10 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   // A re-check (or the first auto-check) while an app is already known: the hero
   // morphs to the checking state so the status visibly reacts, then settles back.
   const rechecking = busy === "plan" && Boolean(installed);
-  // Windows has no Sparkle feed, so the date is the on-disk install time.
-  const installedDate = fmtDateTime(installed?.installedAt ?? null, lang);
+  // Windows release time is shown only when it describes the installed/current
+  // version. If the manifest omits it, skip the date row rather than showing an
+  // install timestamp.
+  const releaseDate = plan?.upToDate ? fmtDateTime(report?.release.releasedAt ?? null, lang) : null;
   const onLaunch = () => {
     // Surface a failed open (PowerShell/AUMID or portable-exe error) via the
     // error banner like every other action, not an unhandled rejection.
@@ -609,14 +611,11 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
 
         <section className="hero" key={scene}>
           {rechecking ? (
-            // Mirror the settled hero's line count (ring + headline + sub +
-            // status line) so nothing below shifts while the check runs.
+            // Mirror the settled hero's line count (ring + headline + status
+            // line) so nothing below shifts while the check runs.
             <>
               <Ring icon="loader" spin className="glow" />
               <div className="headline shimmer">{t("home.checking")}</div>
-              <div className="sub">
-                {version ? t("home.uptodate.sub", { version }) : " "}
-              </div>
               <div className="microcue" style={{ visibility: "hidden" }} aria-hidden="true">
                 <Icon name="shield" />
                 {t("home.official")}
@@ -639,7 +638,6 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             <>
               <Ring icon="shield" variant="muted" />
               <div className="headline">{t("home.idle.title")}</div>
-              <div className="sub">{t("win.installSub", { version })}</div>
               <div className="prov">
                 <span className={`dot ${isManaged ? "managed" : "external"}`} />
                 {isManaged ? t("prov.managed") : t("prov.external")}
@@ -670,7 +668,6 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             <>
               <Ring icon="shield" variant="amber" />
               <div className="headline">{t("home.external.title")}</div>
-              <div className="sub">{t("win.installSub", { version })}</div>
               <div className="prov">
                 <span className="dot external" />
                 {t("prov.external")}
@@ -681,7 +678,6 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             <>
               <Ring icon="check" variant="success" />
               <div className="headline">{t("home.uptodate.title")}</div>
-              <div className="sub">{t("home.uptodate.sub", { version })}</div>
               <div className="microcue">
                 <Icon name="shield" />
                 {t("home.official")} · {t("home.checkedJustNow")}
@@ -690,15 +686,23 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           )}
         </section>
 
-        {/* Installed-version details — on-disk install time + where it lives. */}
+        {/* Installed-version details — the version/date/path share one hierarchy. */}
         {installed && (rechecking || kind !== "loading") ? (
           <div className="list meta">
-            {installedDate ? (
+            {version ? (
               <div className="row">
                 <span className="rtext">
-                  <span className="rtitle">{t("home.installedDate")}</span>
+                  <span className="rtitle">{t("home.currentVersion")}</span>
                 </span>
-                <span className="rval">{installedDate}</span>
+                <span className="rval version">{version}</span>
+              </div>
+            ) : null}
+            {releaseDate ? (
+              <div className="row">
+                <span className="rtext">
+                  <span className="rtitle">{t("home.releaseDate")}</span>
+                </span>
+                <span className="rval">{releaseDate}</span>
               </div>
             ) : null}
             <div className="row">

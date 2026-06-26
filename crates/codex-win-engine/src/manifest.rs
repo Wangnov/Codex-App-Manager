@@ -8,6 +8,7 @@ use crate::EngineError;
 #[serde(rename_all = "camelCase")]
 pub struct WindowsRelease {
     pub version: String,
+    pub released_at: Option<String>,
     pub package_moniker: String,
     pub architecture: Option<String>,
     #[serde(skip)]
@@ -37,6 +38,7 @@ struct WindowsSource {
     package_moniker: Option<String>,
     architecture: Option<String>,
     content_length: Option<u64>,
+    last_modified: Option<String>,
     etag: Option<String>,
     product_id: Option<String>,
     update_manifest: Option<WindowsUpdateManifest>,
@@ -51,6 +53,7 @@ struct WindowsArchitectureSource {
     package_moniker: Option<String>,
     architecture: Option<String>,
     content_length: Option<u64>,
+    last_modified: Option<String>,
     etag: Option<String>,
     #[serde(default)]
     downloadable: Option<bool>,
@@ -113,9 +116,14 @@ pub fn parse_manifest_for_arch(
         Some((_, source)) => source.etag.clone(),
         None => windows.etag,
     };
+    let released_at = match selected_architecture.as_ref() {
+        Some((_, source)) => source.last_modified.clone().or(windows.last_modified),
+        None => windows.last_modified,
+    };
 
     let release = WindowsRelease {
         version,
+        released_at,
         package_moniker,
         architecture,
         download_architecture: selected_architecture.as_ref().map(|(arch, _)| arch.clone()),
@@ -224,6 +232,7 @@ mod tests {
               "version": "26.602.3474.0",
               "packageMoniker": "OpenAI.Codex_26.602.3474.0_x64__2p2nqsd0c76g0",
               "contentLength": 566504666,
+              "lastModified": "Fri, 26 Jun 2026 05:10:43 GMT",
               "etag": "\"abc\"",
               "updateManifest": {
                 "storeProductId": "9PLM9XGG6VKS",
@@ -237,6 +246,10 @@ mod tests {
         assert_eq!(release.version, "26.602.3474.0");
         assert_eq!(release.package_identity.as_deref(), Some("OpenAI.Codex"));
         assert_eq!(release.content_length, Some(566_504_666));
+        assert_eq!(
+            release.released_at.as_deref(),
+            Some("Fri, 26 Jun 2026 05:10:43 GMT")
+        );
         assert_eq!(release.download_architecture, None);
     }
 
@@ -250,6 +263,7 @@ mod tests {
               "version": "26.616.9593.0",
               "packageMoniker": "OpenAI.Codex_26.616.9593.0_x64__2p2nqsd0c76g0",
               "contentLength": 667793718,
+              "lastModified": "Fri, 26 Jun 2026 04:00:00 GMT",
               "architectures": {
                 "x64": {
                   "architecture": "x64",
@@ -258,6 +272,7 @@ mod tests {
                   "version": "26.616.9593.0",
                   "packageMoniker": "OpenAI.Codex_26.616.9593.0_x64__2p2nqsd0c76g0",
                   "contentLength": 667793718,
+                  "lastModified": "Fri, 26 Jun 2026 05:00:00 GMT",
                   "etag": "\"x64\""
                 },
                 "arm64": {
@@ -267,6 +282,7 @@ mod tests {
                   "version": "26.616.9593.0",
                   "packageMoniker": "OpenAI.Codex_26.616.9593.0_arm64__2p2nqsd0c76g0",
                   "contentLength": 667217153,
+                  "lastModified": "Fri, 26 Jun 2026 05:10:43 GMT",
                   "etag": "\"arm64\""
                 }
               },
@@ -286,6 +302,10 @@ mod tests {
             "OpenAI.Codex_26.616.9593.0_arm64__2p2nqsd0c76g0"
         );
         assert_eq!(release.content_length, Some(667_217_153));
+        assert_eq!(
+            release.released_at.as_deref(),
+            Some("Fri, 26 Jun 2026 05:10:43 GMT")
+        );
         assert_eq!(release.etag.as_deref(), Some("\"arm64\""));
         assert_eq!(release.download_architecture.as_deref(), Some("arm64"));
     }

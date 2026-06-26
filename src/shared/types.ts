@@ -179,6 +179,8 @@ export interface InstalledWindowsCodex {
 
 export interface WindowsRelease {
   version: string;
+  /** Release/publish timestamp for this Windows package, when the manifest provides it. */
+  releasedAt?: string | null;
   packageMoniker: string;
   architecture: string | null;
   contentLength: number | null;

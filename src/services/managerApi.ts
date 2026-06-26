@@ -210,20 +210,30 @@ const FALLBACK_PLAN: MacUpdateReport = {
   },
 };
 
+const WIN_FALLBACK_INSTALLED = {
+  path: "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.623.4041.0_x64__2p2nqsd0c76g0",
+  version: "26.623.4041.0",
+  arch: "x64",
+  source: "msix",
+  packageFamilyName: "OpenAI.Codex_2p2nqsd0c76g0",
+  installedAt: 1_782_489_000,
+};
+
 const WIN_FALLBACK_PLAN: WinUpdateReport = {
   manifestUrl: "https://codexapp.agentsmirror.com/latest/manifest",
   checksumsUrl: "https://codexapp.agentsmirror.com/latest/checksums",
   packageUrl: "https://codexapp.agentsmirror.com/latest/win",
   release: {
-    version: "26.602.3474.0",
-    packageMoniker: "OpenAI.Codex_26.602.3474.0_x64__2p2nqsd0c76g0",
+    version: "26.623.4041.0",
+    releasedAt: "Fri, 26 Jun 2026 10:10:00 GMT",
+    packageMoniker: "OpenAI.Codex_26.623.4041.0_x64__2p2nqsd0c76g0",
     architecture: "x64",
     contentLength: 566504666,
     etag: '"4XJflSyTxVc59Sr2FfA4HAqFCD0="',
     storeProductId: "9PLM9XGG6VKS",
     packageIdentity: "OpenAI.Codex",
   },
-  installed: null,
+  installed: WIN_FALLBACK_INSTALLED,
   capabilities: {
     addAppxPackage: { state: "available", detail: "browser-dev mock" },
     appxService: { state: "available", detail: "browser-dev mock" },
@@ -235,10 +245,10 @@ const WIN_FALLBACK_PLAN: WinUpdateReport = {
     notes: ["Certificate trust is verified after the MSIX is staged."],
   },
   plan: {
-    upToDate: false,
-    currentVersion: null,
-    latestVersion: "26.602.3474.0",
-    packageMoniker: "OpenAI.Codex_26.602.3474.0_x64__2p2nqsd0c76g0",
+    upToDate: true,
+    currentVersion: "26.623.4041.0",
+    latestVersion: "26.623.4041.0",
+    packageMoniker: "OpenAI.Codex_26.623.4041.0_x64__2p2nqsd0c76g0",
     packageUrl: "https://codexapp.agentsmirror.com/latest/win",
     downloadSize: 566504666,
     sha256: "6dc2e05ac2b760bbc77ce3f8a992efdb327363512c9c4744b9a146c41bc4d55a",
@@ -676,7 +686,7 @@ export const managerApi = {
   },
   winStatus(): Promise<WinInstallStatus> {
     if (!hasTauriRuntime()) {
-      return Promise.resolve({ installed: null, status: "none" });
+      return Promise.resolve({ installed: WIN_FALLBACK_INSTALLED, status: "managed" });
     }
     return invoke<WinInstallStatus>("win_status");
   },

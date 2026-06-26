@@ -930,10 +930,10 @@ button.row.danger:hover {
   background: var(--danger-tint);
 }
 
-/* metadata list — quiet label / value rows (release date, install location).
+/* metadata list — quiet label / value rows (version, release date, install location).
    The label is softer than an interactive row title; the value sits trailing. */
 .list.meta .row {
-  padding: 11px 14px;
+  padding: 9px 14px;
   gap: var(--space-sm);
 }
 .list.meta .rtitle {
@@ -947,11 +947,15 @@ button.row.danger:hover {
   color: var(--text);
   font-variant-numeric: tabular-nums;
 }
+.list.meta .rval.version {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
 /* a filesystem path: keep on one line, ellipsis the middle-ish end, stay LTR */
 .list.meta .rval.path {
   font-family: var(--mono);
   font-size: 11.5px;
-  max-width: 64%;
+  max-width: 70%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

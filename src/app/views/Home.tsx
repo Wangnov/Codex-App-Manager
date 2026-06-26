@@ -450,10 +450,9 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   // A re-check (or the first auto-check) while an app is already known: the hero
   // morphs to the checking state so "已是最新" visibly reacts, then settles back.
   const rechecking = busy === "plan" && Boolean(installed);
-  // Prefer the appcast's release time for the installed build; fall back to the
-  // bundle's on-disk timestamp so a time is shown even when the feed omits one.
+  // Prefer the appcast's release time for the installed build. If the feed
+  // omits it, skip the date row rather than showing an install timestamp.
   const releaseDate = fmtDateTime(report?.installedPubDate ?? null, lang);
-  const installedDate = releaseDate ? null : fmtDateTime(installed?.installedAt ?? null, lang);
   const onLaunch = () => {
     // Surface a failed open (stale path / backend error) via the error banner
     // like every other action, instead of an unhandled rejection with no feedback.
@@ -669,14 +668,11 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
 
         <section className="hero" key={scene}>
           {rechecking ? (
-            // Mirror the settled hero's line count (ring + headline + sub +
-            // status line) so nothing below shifts while the check runs.
+            // Mirror the settled hero's line count (ring + headline + status
+            // line) so nothing below shifts while the check runs.
             <>
               <Ring icon="loader" spin className="glow" />
               <div className="headline shimmer">{t("home.checking")}</div>
-              <div className="sub">
-                {installedVersion ? t("home.uptodate.sub", { version: installedVersion }) : " "}
-              </div>
               <div className="microcue" style={{ visibility: "hidden" }} aria-hidden="true">
                 <Icon name="shield" />
                 {t("home.official")}
@@ -699,9 +695,6 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             <>
               <Ring icon="shield" variant="muted" />
               <div className="headline">{t("home.idle.title")}</div>
-              <div className="sub">
-                {installed ? t("home.idle.sub", { version: installedVersion }) : ""}
-              </div>
               <div className="prov">
                 <span className={`dot ${isManaged ? "managed" : "external"}`} />
                 {isManaged ? t("prov.managed") : t("prov.external")}
@@ -723,11 +716,6 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             <>
               <Ring icon="shield" variant="amber" />
               <div className="headline">{t("home.external.title")}</div>
-              {/* Show the INSTALLED build here, not plan.latestShortVersion —
-                  the latest version belongs to the update / up-to-date states. */}
-              <div className="sub">
-                {installed ? t("home.idle.sub", { version: installedVersion }) : ""}
-              </div>
               <div className="prov">
                 <span className="dot external" />
                 {t("prov.external")}
@@ -738,7 +726,6 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             <>
               <Ring icon="check" variant="success" />
               <div className="headline">{t("home.uptodate.title")}</div>
-              <div className="sub">{t("home.uptodate.sub", { version: installedVersion })}</div>
               <div className="microcue">
                 <Icon name="shield" />
                 {t("home.official")} · {t("home.checkedJustNow")}
@@ -747,23 +734,23 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           )}
         </section>
 
-        {/* Installed-version details — release date (or on-disk date) + where it
-            lives. Fills the calm states with genuinely useful, glanceable info. */}
+        {/* Installed-version details — the version/date/path share one hierarchy. */}
         {installed && (rechecking || kind !== "loading") ? (
           <div className="list meta">
+            {installedVersion ? (
+              <div className="row">
+                <span className="rtext">
+                  <span className="rtitle">{t("home.currentVersion")}</span>
+                </span>
+                <span className="rval version">{installedVersion}</span>
+              </div>
+            ) : null}
             {releaseDate ? (
               <div className="row">
                 <span className="rtext">
                   <span className="rtitle">{t("home.releaseDate")}</span>
                 </span>
                 <span className="rval">{releaseDate}</span>
-              </div>
-            ) : installedDate ? (
-              <div className="row">
-                <span className="rtext">
-                  <span className="rtitle">{t("home.installedDate")}</span>
-                </span>
-                <span className="rval">{installedDate}</span>
               </div>
             ) : null}
             <div className="row">
