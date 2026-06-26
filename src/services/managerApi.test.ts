@@ -66,6 +66,7 @@ describe("settings API", () => {
     expect(settings.checkOnStartup).toBe(false);
     expect(settings.periodicCheck).toBe(false);
     expect(settings.periodicCheckIntervalSeconds).toBe(15 * 60);
+    expect(settings.disableCodexSelfUpdates).toBe(false);
   });
 
   it("normalizes and broadcasts browser settings writes", async () => {
@@ -79,9 +80,11 @@ describe("settings API", () => {
     const saved = await managerApi.setSettings({
       ...DEFAULT_SETTINGS,
       periodicCheckIntervalSeconds: 0,
+      disableCodexSelfUpdates: true,
     });
 
     expect(saved.periodicCheckIntervalSeconds).toBe(60);
+    expect(saved.disableCodexSelfUpdates).toBe(true);
     expect(dispatchEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         type: SETTINGS_CHANGED_EVENT,

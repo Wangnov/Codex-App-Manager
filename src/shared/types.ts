@@ -120,6 +120,8 @@ export interface AppSettings {
   proxyMode: ProxyMode;
   /** Proxy URL used when proxyMode is custom. */
   customProxyUrl: string;
+  /** Disable Codex App's own embedded update checks and silent downloads. */
+  disableCodexSelfUpdates: boolean;
 }
 
 export interface ConfigHealth {
@@ -159,6 +161,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   installRoot: "%LOCALAPPDATA%\\Programs\\Codex",
   proxyMode: "system",
   customProxyUrl: "",
+  disableCodexSelfUpdates: false,
 };
 
 export interface MacUninstallReport {

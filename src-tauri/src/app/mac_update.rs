@@ -1206,9 +1206,18 @@ fn install_macos_in_staging(
 pub fn launch_codex() -> Result<(), AppError> {
     let installed = detect_managed_installed()
         .ok_or_else(|| AppError::Engine("没有可打开的 Codex".to_string()))?;
+    let settings = crate::app::settings_store::AppSettings::load();
+    if settings.disable_codex_self_updates {
+        crate::app::codex_self_update::sync_setting(true)?;
+    }
     let path = &installed.path;
     log::info!("macOS launch Codex path={path}");
-    std::process::Command::new(OPEN)
+    let mut command = std::process::Command::new(OPEN);
+    crate::app::codex_self_update::apply_to_command(
+        &mut command,
+        settings.disable_codex_self_updates,
+    );
+    command
         .arg(&installed.path)
         .spawn()
         .map(|_| ())

@@ -1201,9 +1201,18 @@ pub fn launch_codex(settings: &AppSettings) -> Result<(), AppError> {
     let store = ProvenanceStore::load();
     let installed = detect_managed_codex(settings, &store)
         .ok_or_else(|| AppError::Engine("没有可打开的 Codex".to_string()))?;
+    if settings.disable_codex_self_updates {
+        crate::app::codex_self_update::sync_setting(true)?;
+    }
     let path = &installed.path;
     log::info!("Windows launch Codex path={path}");
-    codex_win_engine::launch_codex(&installed).map_err(|e| AppError::Engine(e.to_string()))
+    codex_win_engine::launch_codex_with_options(
+        &installed,
+        codex_win_engine::LaunchOptions {
+            disable_codex_self_updates: settings.disable_codex_self_updates,
+        },
+    )
+    .map_err(|e| AppError::Engine(e.to_string()))
 }
 
 pub fn uninstall_windows_codex(

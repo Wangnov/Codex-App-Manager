@@ -82,6 +82,10 @@ function normalizeSettings(raw: Partial<AppSettings>): AppSettings {
     proxyMode: normalizedProxyMode(raw.proxyMode),
     customProxyUrl:
       typeof raw.customProxyUrl === "string" ? raw.customProxyUrl.trim() : "",
+    disableCodexSelfUpdates:
+      typeof raw.disableCodexSelfUpdates === "boolean"
+        ? raw.disableCodexSelfUpdates
+        : DEFAULT_SETTINGS.disableCodexSelfUpdates,
   };
 }
 

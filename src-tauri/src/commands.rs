@@ -234,6 +234,7 @@ fn windows_domain_settings_for_persisted(state: &ManagerState) -> DomainAppSetti
     let saved = PersistedAppSettings::load();
     let mut settings = state.settings.clone();
     settings.install_root = saved.install_root;
+    settings.disable_codex_self_updates = saved.disable_codex_self_updates;
     settings
 }
 
@@ -768,14 +769,19 @@ pub fn set_settings(
     if s.proxy_mode == ProxyMode::Custom {
         s.custom_proxy_url = validated_custom_proxy_for_settings(&s.custom_proxy_url, "settings")?;
     }
+    let previous = PersistedAppSettings::load();
     let _op = begin_guard(&state, OperationKind::SetInstallRoot)?;
+    if previous.disable_codex_self_updates != s.disable_codex_self_updates {
+        crate::app::codex_self_update::sync_setting(s.disable_codex_self_updates)?;
+    }
     s.save()?;
     refresh_config_health(&state);
     log::info!(
-        "saved settings source={} windows_install_mode={} proxy_mode={}",
+        "saved settings source={} windows_install_mode={} proxy_mode={} disable_codex_self_updates={}",
         s.source.as_str(),
         s.windows_install_mode,
-        s.proxy_mode.as_str()
+        s.proxy_mode.as_str(),
+        s.disable_codex_self_updates
     );
     Ok(s)
 }
@@ -832,6 +838,7 @@ pub fn reset_config(
         "settings" => {
             let mut settings = PersistedAppSettings::default();
             normalize_settings_for_target(&mut settings, &state.target);
+            crate::app::codex_self_update::sync_setting(settings.disable_codex_self_updates)?;
             settings.save()?;
         }
         "provenance" => {

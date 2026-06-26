@@ -135,6 +135,9 @@ pub struct AppSettings {
     /// Proxy URL used when proxy_mode is custom.
     #[serde(default)]
     pub custom_proxy_url: String,
+    /// Disable Codex App's own embedded updater checks/downloads.
+    #[serde(default)]
+    pub disable_codex_self_updates: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -164,6 +167,8 @@ struct RawAppSettings {
     proxy_mode: String,
     #[serde(default)]
     custom_proxy_url: String,
+    #[serde(default)]
+    disable_codex_self_updates: bool,
 }
 
 fn default_true() -> bool {
@@ -199,6 +204,7 @@ impl Default for AppSettings {
             install_root: default_install_root(),
             proxy_mode: ProxyMode::System,
             custom_proxy_url: String::new(),
+            disable_codex_self_updates: false,
         }
     }
 }
@@ -242,6 +248,7 @@ impl RawAppSettings {
                 install_root: self.install_root,
                 proxy_mode,
                 custom_proxy_url: self.custom_proxy_url,
+                disable_codex_self_updates: self.disable_codex_self_updates,
             },
             unknown_source,
             newer_schema,
@@ -374,6 +381,7 @@ mod tests {
         );
         assert_eq!(settings.proxy_mode, ProxyMode::System);
         assert_eq!(settings.custom_proxy_url, "");
+        assert!(!settings.disable_codex_self_updates);
         assert!(unknown_source.is_none());
         assert!(newer_schema.is_none());
     }

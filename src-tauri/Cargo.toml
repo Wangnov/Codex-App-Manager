@@ -39,7 +39,7 @@ tauri-plugin-updater = "2"
 thiserror = "2.0"
 url = "2.5"
 uuid = { version = "1", features = ["v4"] }
-windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

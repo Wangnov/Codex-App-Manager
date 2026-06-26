@@ -429,6 +429,19 @@ export function Settings({
             </div>
             <div className="row">
               <span className="rtext">
+                <span className="rtitle">{t("settings.general.disableCodexSelfUpdates")}</span>
+                <span className="rsub">{t("settings.general.disableCodexSelfUpdatesNote")}</span>
+              </span>
+              <Toggle
+                checked={s.disableCodexSelfUpdates}
+                onChange={(v) => {
+                  setCommandError(null);
+                  update({ ...s, disableCodexSelfUpdates: v });
+                }}
+              />
+            </div>
+            <div className="row">
+              <span className="rtext">
                 <span className="rtitle">{t("settings.general.autostart")}</span>
                 <span className="rsub">{t("settings.general.autostartNote")}</span>
               </span>

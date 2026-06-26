@@ -28,6 +28,14 @@ pub struct InstalledWindowsCodex {
     pub installed_at: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LaunchOptions {
+    pub disable_codex_self_updates: bool,
+}
+
+const CODEX_SELF_UPDATE_ENV_KEY: &str = "CODEX_SPARKLE_ENABLED";
+const CODEX_SELF_UPDATE_ENV_DISABLED: &str = "false";
+
 /// Filesystem mtime of `path` as Unix seconds, best-effort (None if unreadable).
 fn path_mtime_secs(path: &str) -> Option<u64> {
     std::fs::metadata(path)
@@ -859,14 +867,30 @@ pub fn detect_portable_install(portable_root: &Path) -> Option<InstalledWindowsC
 /// Open the installed Codex: run the portable `Codex.exe`, or hand the MSIX
 /// app's resolved AUMID to the Windows shell.
 pub fn launch_codex(installed: &InstalledWindowsCodex) -> Result<(), EngineError> {
+    launch_codex_with_options(installed, LaunchOptions::default())
+}
+
+pub fn launch_codex_with_options(
+    installed: &InstalledWindowsCodex,
+    options: LaunchOptions,
+) -> Result<(), EngineError> {
     if installed.source == "portable" {
         let exe = Path::new(&installed.path).join("Codex.exe");
         // CREATE_NO_WINDOW only suppresses a console flash; the GUI still shows.
-        hidden_command(exe)
+        let mut command = hidden_command(exe);
+        if options.disable_codex_self_updates {
+            command.env(CODEX_SELF_UPDATE_ENV_KEY, CODEX_SELF_UPDATE_ENV_DISABLED);
+        }
+        command
             .spawn()
             .map(|_| ())
             .map_err(|e| EngineError::Io(format!("launch Codex: {e}")))
     } else {
+        if options.disable_codex_self_updates {
+            log::debug!(
+                "launching MSIX Codex with updater disabled via persisted user environment"
+            );
+        }
         launch_msix_app()
     }
 }
