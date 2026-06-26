@@ -210,9 +210,11 @@ body {
 }
 /* Transparent gutter so the frameless popover casts a soft shadow + rounds.
    The shadow must fade out within the gutter — a large shadow gets clipped at
-   the (transparent) window rect and reads as a faint rectangle. */
+   the (transparent) window rect and reads as a faint rectangle. The primary
+   shell shadow reaches about 22px below the card (6px offset + 16px blur), so the
+   bottom gutter is slightly larger than the sides. */
 #root {
-  padding: 14px;
+  padding: 14px 14px 24px;
 }
 button {
   font-family: inherit;
@@ -249,7 +251,7 @@ input {
   background-image: var(--ambient);
   border: 1px solid var(--line-2);
   border-radius: var(--r-lg);
-  /* tight shadow that fades within the 14px gutter (no clipped-rectangle edge)
+  /* tight shadow that fades within the transparent gutter
      + a hairline inner top highlight so the whole window reads as a lit object */
   box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.06), 0 6px 16px var(--shadow-2),
     0 1px 3px var(--shadow-1);
