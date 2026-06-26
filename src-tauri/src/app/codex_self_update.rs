@@ -154,14 +154,10 @@ fn remove_macos_launch_agent() -> Result<(), AppError> {
 fn set_windows_user_env(disabled: bool) -> Result<(), AppError> {
     let script = if disabled {
         format!(
-            "[Environment]::SetEnvironmentVariable('{}','{}','User')",
-            DISABLE_ENV_KEY, DISABLE_ENV_VALUE
+            "[Environment]::SetEnvironmentVariable('{DISABLE_ENV_KEY}','{DISABLE_ENV_VALUE}','User')"
         )
     } else {
-        format!(
-            "[Environment]::SetEnvironmentVariable('{}',$null,'User')",
-            DISABLE_ENV_KEY
-        )
+        format!("[Environment]::SetEnvironmentVariable('{DISABLE_ENV_KEY}',$null,'User')")
     };
     let output = hidden_command(powershell_exe())
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])

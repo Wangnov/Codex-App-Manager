@@ -26,6 +26,7 @@ import { useCountUp } from "../useCountUp";
 import { mib, fmtDateTime } from "../format";
 import { useHomeMotion } from "../motion";
 import { Sheet } from "../Sheet";
+import { macSkippedUpdateCandidate, skippedUpdateMatches } from "../skippedUpdate";
 
 type Kind = "loading" | "error" | "none" | "idle" | "update" | "external" | "uptodate";
 type DownloadStopIntent = "pause" | "cancel";
@@ -413,7 +414,9 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   // managed/external badge.
   const installed = (report ? report.installed : status?.installed) ?? null;
   const isManaged = status?.status === "managed";
-  const updateAvailable = Boolean(plan) && !plan?.upToDate;
+  const skippedCandidate = useMemo(() => macSkippedUpdateCandidate(report), [report]);
+  const updateSuppressed = skippedUpdateMatches(settings.skippedCodexUpdate, skippedCandidate);
+  const updateAvailable = Boolean(plan) && !plan?.upToDate && !updateSuppressed;
 
   const kind: Kind = useMemo(() => {
     if (!installed) {
@@ -435,9 +438,20 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     if (busy === "plan" && !report) return "loading";
     if (checkError && !report) return "error";
     if (!report) return "idle";
+    if (updateSuppressed) return "idle";
     if (updateAvailable) return "update";
     return "uptodate";
-  }, [busy, report, checkError, installed, updateAvailable, status, statusLoaded, statusFailed]);
+  }, [
+    busy,
+    report,
+    checkError,
+    installed,
+    updateSuppressed,
+    updateAvailable,
+    status,
+    statusLoaded,
+    statusFailed,
+  ]);
 
   // Always show the LOCAL installed version (CFBundleShortVersionString), never
   // the source's latest — they differ when the mirror lags or Codex was updated
@@ -453,6 +467,25 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   // Prefer the appcast's release time for the installed build. If the feed
   // omits it, skip the date row rather than showing an install timestamp.
   const releaseDate = fmtDateTime(report?.installedPubDate ?? null, lang);
+  const latestReleaseDate = updateAvailable
+    ? fmtDateTime(report?.latestPubDate ?? null, lang)
+    : null;
+  const updateSize =
+    updateAvailable && plan ? t("home.update.size", { size: mib(plan.downloadSize) }) : null;
+  const skipCurrentUpdate = useCallback(async () => {
+    if (!skippedCandidate) return;
+    setActionError(null);
+    try {
+      const saved = await managerApi.setSettings({
+        ...settings,
+        skippedCodexUpdate: { ...skippedCandidate, skippedAt: Date.now() },
+      });
+      setSettings(saved);
+      setNotice(t("home.skip.toast", { version: skippedCandidate.version }));
+    } catch (cause) {
+      setActionError(errorMessage(cause));
+    }
+  }, [settings, skippedCandidate, t]);
   const onLaunch = () => {
     // Surface a failed open (stale path / backend error) via the error banner
     // like every other action, instead of an unhandled rejection with no feedback.
@@ -704,13 +737,6 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             <>
               <Ring icon="arrowUp" className="glow" />
               <div className="headline">{t("home.update.title")}</div>
-              <div className="sub">
-                <span className="ver">{latestVersion}</span>
-              </div>
-              <div className="flow">
-                {t("home.update.flow", { from: installedVersion, to: latestVersion })}
-                {plan ? ` · ${t("home.update.size", { size: mib(plan.downloadSize) })}` : ""}
-              </div>
             </>
           ) : kind === "external" ? (
             <>
@@ -737,6 +763,30 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         {/* Installed-version details — the version/date/path share one hierarchy. */}
         {installed && (rechecking || kind !== "loading") ? (
           <div className="list meta">
+            {updateAvailable && latestVersion ? (
+              <div className="row update-meta">
+                <span className="rtext">
+                  <span className="rtitle">{t("home.update.title")}</span>
+                </span>
+                <span className="rval version latest">{latestVersion}</span>
+              </div>
+            ) : null}
+            {updateAvailable && latestReleaseDate ? (
+              <div className="row update-meta">
+                <span className="rtext">
+                  <span className="rtitle">{t("home.releaseDate")}</span>
+                </span>
+                <span className="rval latest">{latestReleaseDate}</span>
+              </div>
+            ) : null}
+            {updateAvailable && updateSize ? (
+              <div className="row update-meta">
+                <span className="rtext">
+                  <span className="rtitle">{t("home.updateSize")}</span>
+                </span>
+                <span className="rval latest">{updateSize}</span>
+              </div>
+            ) : null}
             {installedVersion ? (
               <div className="row">
                 <span className="rtext">
@@ -764,7 +814,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           </div>
         ) : null}
 
-        <div className="actions">
+        <div className={`actions${!rechecking && kind === "update" ? " update-actions" : ""}`}>
           {/* While a check runs we keep a STABLE pair of buttons (launch +
               the spinning re-check) so nothing reflows under the hero. */}
           {rechecking ? (
@@ -781,6 +831,10 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           ) : null}
           {!rechecking && kind === "update" ? (
             <>
+              <button className="btn ghost big" onClick={check} disabled={busy !== null}>
+                <Icon name="refresh" />
+                {t("home.recheck")}
+              </button>
               <button
                 className="btn primary big"
                 onClick={() => (settings.askBefore ? setConfirmOpen(true) : void runPerform())}
@@ -788,10 +842,6 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
               >
                 <Icon name="download" />
                 {t("home.update.cta")}
-              </button>
-              <button className="btn ghost" onClick={onLaunch} disabled={busy !== null}>
-                <CodexGlyph />
-                {t("home.launch")}
               </button>
             </>
           ) : null}
@@ -859,6 +909,15 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             )
           ) : null}
         </div>
+
+        {!rechecking && kind === "update" && skippedCandidate ? (
+          <div className="update-skip">
+            <button className="linkbtn subtle" onClick={skipCurrentUpdate} disabled={busy !== null}>
+              {t("home.skipCurrent")}
+            </button>
+            <span>{t("home.skipCurrent.detail", { version: skippedCandidate.version })}</span>
+          </div>
+        ) : null}
 
         {installed ? (
           <div className="foot">

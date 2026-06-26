@@ -97,6 +97,15 @@ fn default_proxy_mode_string() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SkippedCodexUpdate {
+    pub platform: String,
+    pub target: String,
+    pub version: String,
+    pub skipped_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
@@ -138,6 +147,9 @@ pub struct AppSettings {
     /// Disable Codex App's own embedded updater checks/downloads.
     #[serde(default)]
     pub disable_codex_self_updates: bool,
+    /// One exact Codex app update the user chose not to be reminded about.
+    #[serde(default)]
+    pub skipped_codex_update: Option<SkippedCodexUpdate>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -169,6 +181,8 @@ struct RawAppSettings {
     custom_proxy_url: String,
     #[serde(default)]
     disable_codex_self_updates: bool,
+    #[serde(default)]
+    skipped_codex_update: Option<SkippedCodexUpdate>,
 }
 
 fn default_true() -> bool {
@@ -205,6 +219,7 @@ impl Default for AppSettings {
             proxy_mode: ProxyMode::System,
             custom_proxy_url: String::new(),
             disable_codex_self_updates: false,
+            skipped_codex_update: None,
         }
     }
 }
@@ -249,6 +264,7 @@ impl RawAppSettings {
                 proxy_mode,
                 custom_proxy_url: self.custom_proxy_url,
                 disable_codex_self_updates: self.disable_codex_self_updates,
+                skipped_codex_update: self.skipped_codex_update,
             },
             unknown_source,
             newer_schema,
@@ -286,6 +302,17 @@ impl AppSettings {
             self.install_root = self.install_root.trim().to_string();
         }
         self.custom_proxy_url = self.custom_proxy_url.trim().to_string();
+        if let Some(skipped) = &mut self.skipped_codex_update {
+            skipped.platform = skipped.platform.trim().to_ascii_lowercase();
+            skipped.target = skipped.target.trim().to_string();
+            skipped.version = skipped.version.trim().to_string();
+            if !matches!(skipped.platform.as_str(), "macos" | "windows")
+                || skipped.target.is_empty()
+                || skipped.version.is_empty()
+            {
+                self.skipped_codex_update = None;
+            }
+        }
     }
 
     pub fn load() -> Self {

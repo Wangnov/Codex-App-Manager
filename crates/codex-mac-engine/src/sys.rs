@@ -32,8 +32,7 @@ fn text_from_curl(url: &str, output: std::process::Output) -> Result<String, Eng
     }
     if output.stdout.len() > MAX_TEXT_BYTES as usize {
         return Err(EngineError::Io(format!(
-            "text response exceeded {} bytes",
-            MAX_TEXT_BYTES
+            "text response exceeded {MAX_TEXT_BYTES} bytes"
         )));
     }
     String::from_utf8(output.stdout).map_err(|e| EngineError::Io(e.to_string()))

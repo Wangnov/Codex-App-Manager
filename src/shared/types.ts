@@ -63,6 +63,8 @@ export interface MacUpdateReport {
   /** Sparkle <pubDate> of the appcast item matching the INSTALLED build (the
    *  true release date of the running version), when the feed publishes it. */
   installedPubDate?: string | null;
+  /** Sparkle <pubDate> of the latest appcast item, used for update metadata. */
+  latestPubDate?: string | null;
 }
 
 export interface MacPerformReport {
@@ -95,6 +97,17 @@ export interface MacInstallStatus {
 export type UpdateSourceKind = "auto" | "mirror" | "official" | "custom";
 export type WindowsInstallMode = "msix" | "portable";
 export type ProxyMode = "system" | "direct" | "custom";
+export type CodexUpdatePlatform = "macos" | "windows";
+
+export interface SkippedCodexUpdate {
+  platform: CodexUpdatePlatform;
+  /** Stable per-release target: macOS build or Windows package moniker. */
+  target: string;
+  /** Human-facing version shown in Settings. */
+  version: string;
+  /** Unix timestamp in milliseconds. */
+  skippedAt: number;
+}
 
 export interface AppSettings {
   source: UpdateSourceKind;
@@ -122,6 +135,8 @@ export interface AppSettings {
   customProxyUrl: string;
   /** Disable Codex App's own embedded update checks and silent downloads. */
   disableCodexSelfUpdates: boolean;
+  /** One exact Codex app update the user chose not to be reminded about. */
+  skippedCodexUpdate: SkippedCodexUpdate | null;
 }
 
 export interface ConfigHealth {
@@ -162,6 +177,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   proxyMode: "system",
   customProxyUrl: "",
   disableCodexSelfUpdates: false,
+  skippedCodexUpdate: null,
 };
 
 export interface MacUninstallReport {

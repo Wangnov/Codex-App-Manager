@@ -4,6 +4,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import type {
   AppSettings,
   CommandError,
+  CodexUpdatePlatform,
   Diagnostics,
   MacInstallStatus,
   MacPerformReport,
@@ -14,6 +15,7 @@ import type {
   WinInstallStatus,
   WinPerformReport,
   WinStageReport,
+  SkippedCodexUpdate,
   WinUninstallReport,
   WinUpdateReport,
 } from "../shared/types";
@@ -66,6 +68,25 @@ function normalizedProxyMode(value: unknown): AppSettings["proxyMode"] {
   return value === "direct" || value === "custom" || value === "system" ? value : "system";
 }
 
+function normalizedSkippedCodexUpdate(value: unknown): SkippedCodexUpdate | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Partial<Record<keyof SkippedCodexUpdate, unknown>>;
+  const platform = raw.platform;
+  const target = typeof raw.target === "string" ? raw.target.trim() : "";
+  const version = typeof raw.version === "string" ? raw.version.trim() : "";
+  const skippedAt = Number(raw.skippedAt);
+  const validPlatform = platform === "macos" || platform === "windows";
+  if (!validPlatform || !target || !version || !Number.isFinite(skippedAt)) {
+    return null;
+  }
+  return {
+    platform: platform as CodexUpdatePlatform,
+    target,
+    version,
+    skippedAt: Math.max(0, Math.floor(skippedAt)),
+  };
+}
+
 function normalizeSettings(raw: Partial<AppSettings>): AppSettings {
   const legacyAuto = typeof raw.autoCheck === "boolean" ? raw.autoCheck : DEFAULT_SETTINGS.autoCheck;
   const periodic =
@@ -86,6 +107,7 @@ function normalizeSettings(raw: Partial<AppSettings>): AppSettings {
       typeof raw.disableCodexSelfUpdates === "boolean"
         ? raw.disableCodexSelfUpdates
         : DEFAULT_SETTINGS.disableCodexSelfUpdates,
+    skippedCodexUpdate: normalizedSkippedCodexUpdate(raw.skippedCodexUpdate),
   };
 }
 
@@ -200,6 +222,7 @@ const FALLBACK_PLAN: MacUpdateReport = {
   appcastUrl: "https://persistent.oaistatic.com/codex-app-prod/appcast.xml",
   installed: null,
   simulatedBuild: 3511,
+  latestPubDate: "Fri, 26 Jun 2026 10:10:00 GMT",
   plan: {
     upToDate: false,
     currentBuild: 3511,

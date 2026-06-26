@@ -714,6 +714,15 @@ input {
   flex-direction: column;
   gap: var(--space-xs);
 }
+.actions.update-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.actions.update-actions .btn.big {
+  padding: 11px 14px;
+  border-radius: var(--r-md);
+  font-size: var(--fs-body);
+}
 .btn {
   appearance: none;
   border: 1px solid var(--line-2);
@@ -821,6 +830,28 @@ input {
 .btn.ghost:hover:not(:disabled) {
   background: var(--surface-2);
   box-shadow: var(--elev-1);
+}
+.linkbtn {
+  appearance: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-soft);
+  font: inherit;
+  font-size: var(--fs-label);
+  font-weight: 700;
+  cursor: pointer;
+}
+.linkbtn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-2);
+}
+.linkbtn:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+.linkbtn.subtle {
+  padding: 4px 8px;
 }
 
 /* ── Cards / panels / rows ───────────────────────────────────────────────── */
@@ -951,6 +982,15 @@ button.row.danger:hover {
   font-family: var(--mono);
   font-size: 12.5px;
 }
+.list.meta .rval.latest {
+  font-weight: 750;
+}
+.list.meta .rval.version.latest {
+  font-size: 13px;
+}
+.list.meta .row.update-meta + .row:not(.update-meta) {
+  border-top-color: var(--line-2);
+}
 /* a filesystem path: keep on one line, ellipsis the middle-ish end, stay LTR */
 .list.meta .rval.path {
   font-family: var(--mono);
@@ -1029,6 +1069,11 @@ button.row.danger:hover {
   justify-content: flex-end;
   margin-top: var(--space-xs);
 }
+.settings-row-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 14px 12px;
+}
 .mini-action {
   display: inline-flex;
   align-items: center;
@@ -1059,6 +1104,22 @@ button.row.danger:hover {
 .mini-action svg {
   width: 14px;
   height: 14px;
+}
+.update-skip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 28px;
+  margin-top: -4px;
+  color: var(--text-faint);
+  font-size: var(--fs-label);
+}
+.update-skip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tag {

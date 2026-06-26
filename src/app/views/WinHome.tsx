@@ -24,6 +24,7 @@ import { useCountUp } from "../useCountUp";
 import { mib, fmtDateTime } from "../format";
 import { useHomeMotion } from "../motion";
 import { Sheet } from "../Sheet";
+import { skippedUpdateMatches, winSkippedUpdateCandidate } from "../skippedUpdate";
 
 function samePath(a: string, b: string): boolean {
   const norm = (value: string) =>
@@ -392,7 +393,9 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       installed.version === status.installed.version,
   );
   const isManaged = statusMatchesInstalled && status?.status === "managed";
-  const updateAvailable = Boolean(plan) && !plan?.upToDate;
+  const skippedCandidate = useMemo(() => winSkippedUpdateCandidate(plan), [plan]);
+  const updateSuppressed = skippedUpdateMatches(settings.skippedCodexUpdate, skippedCandidate);
+  const updateAvailable = Boolean(plan) && !plan?.upToDate && !updateSuppressed;
   const routeNote =
     plan?.route === "portable-fallback" ? t("win.route.portable") : t("win.route.msix");
   // MSIX is the planned route, yet the Desktop App Installer wasn't detected —
@@ -414,6 +417,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     if (busy === "plan" && !report) return "loading";
     if (checkError && !report) return "error";
     if (!report) return "idle";
+    if (updateSuppressed) return "idle";
     if (updateAvailable) return "update";
     return "uptodate";
   }, [
@@ -421,6 +425,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     report,
     checkError,
     installed,
+    updateSuppressed,
     updateAvailable,
     status,
     statusMatchesInstalled,
@@ -438,7 +443,27 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   // Windows release time is shown only when it describes the installed/current
   // version. If the manifest omits it, skip the date row rather than showing an
   // install timestamp.
-  const releaseDate = plan?.upToDate ? fmtDateTime(report?.release.releasedAt ?? null, lang) : null;
+  const packageReleaseDate = fmtDateTime(report?.release.releasedAt ?? null, lang);
+  const latestReleaseDate = updateAvailable ? packageReleaseDate : null;
+  const releaseDate = plan?.upToDate ? packageReleaseDate : null;
+  const updateSize =
+    updateAvailable && plan?.downloadSize != null
+      ? t("home.update.size", { size: mib(plan.downloadSize) })
+      : null;
+  const skipCurrentUpdate = useCallback(async () => {
+    if (!skippedCandidate) return;
+    setActionError(null);
+    try {
+      const saved = await managerApi.setSettings({
+        ...settings,
+        skippedCodexUpdate: { ...skippedCandidate, skippedAt: Date.now() },
+      });
+      setSettings(saved);
+      setNotice(t("home.skip.toast", { version: skippedCandidate.version }));
+    } catch (cause) {
+      setActionError(errorMessage(cause));
+    }
+  }, [settings, skippedCandidate, t]);
   const onLaunch = () => {
     // Surface a failed open (PowerShell/AUMID or portable-exe error) via the
     // error banner like every other action, not an unhandled rejection.
@@ -647,22 +672,6 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             <>
               <Ring icon="arrowUp" className="glow" />
               <div className="headline">{t("home.update.title")}</div>
-              <div className="sub">
-                <span className="ver">{plan?.latestVersion}</span>
-              </div>
-              <div className="flow">
-                {t("home.update.flow", {
-                  from: plan?.currentVersion ?? version,
-                  to: plan?.latestVersion ?? "",
-                })}
-                {plan?.downloadSize
-                  ? ` · ${t("home.update.size", { size: mib(plan.downloadSize) })}`
-                  : ""}
-              </div>
-              <div className="microcue">
-                <Icon name="shield" />
-                {routeNote}
-              </div>
             </>
           ) : kind === "external" ? (
             <>
@@ -689,6 +698,30 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         {/* Installed-version details — the version/date/path share one hierarchy. */}
         {installed && (rechecking || kind !== "loading") ? (
           <div className="list meta">
+            {updateAvailable && plan?.latestVersion ? (
+              <div className="row update-meta">
+                <span className="rtext">
+                  <span className="rtitle">{t("home.update.title")}</span>
+                </span>
+                <span className="rval version latest">{plan.latestVersion}</span>
+              </div>
+            ) : null}
+            {updateAvailable && latestReleaseDate ? (
+              <div className="row update-meta">
+                <span className="rtext">
+                  <span className="rtitle">{t("home.releaseDate")}</span>
+                </span>
+                <span className="rval latest">{latestReleaseDate}</span>
+              </div>
+            ) : null}
+            {updateAvailable && updateSize ? (
+              <div className="row update-meta">
+                <span className="rtext">
+                  <span className="rtitle">{t("home.updateSize")}</span>
+                </span>
+                <span className="rval latest">{updateSize}</span>
+              </div>
+            ) : null}
             {version ? (
               <div className="row">
                 <span className="rtext">
@@ -726,7 +759,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           </div>
         ) : null}
 
-        <div className="actions">
+        <div className={`actions${!rechecking && kind === "update" ? " update-actions" : ""}`}>
           {/* While a check runs we keep a STABLE pair of buttons so nothing
               reflows under the hero. */}
           {rechecking ? (
@@ -743,6 +776,10 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           ) : null}
           {!rechecking && kind === "update" ? (
             <>
+              <button className="btn ghost big" onClick={check} disabled={busy !== null}>
+                <Icon name="refresh" />
+                {t("home.recheck")}
+              </button>
               <button
                 className="btn primary big"
                 onClick={() => (settings.askBefore ? setConfirmOpen(true) : void runPerform("perform"))}
@@ -750,10 +787,6 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
               >
                 <Icon name="download" />
                 {t("home.update.cta")}
-              </button>
-              <button className="btn ghost" onClick={onLaunch} disabled={busy !== null}>
-                <CodexGlyph />
-                {t("home.launch")}
               </button>
             </>
           ) : null}
@@ -821,6 +854,15 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             )
           ) : null}
         </div>
+
+        {!rechecking && kind === "update" && skippedCandidate ? (
+          <div className="update-skip">
+            <button className="linkbtn subtle" onClick={skipCurrentUpdate} disabled={busy !== null}>
+              {t("home.skipCurrent")}
+            </button>
+            <span>{t("home.skipCurrent.detail", { version: skippedCandidate.version })}</span>
+          </div>
+        ) : null}
 
         {installed ? (
           <div className="foot">

@@ -43,10 +43,7 @@ fn main() {
     let basis = Path::new(BASIS);
     let out = Path::new(OUT);
     if !basis.exists() || !out.exists() {
-        eprintln!(
-            "缺少素材：需要 {} 和 {}（先跑 BinaryDelta 证明步骤生成）",
-            BASIS, OUT
-        );
+        eprintln!("缺少素材：需要 {BASIS} 和 {OUT}（先跑 BinaryDelta 证明步骤生成）");
         std::process::exit(2);
     }
 

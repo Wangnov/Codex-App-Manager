@@ -57,6 +57,9 @@ pub struct MacUpdateReport {
     /// `<pubDate>` of the appcast item matching the INSTALLED build — the true
     /// release date of the running version, when the feed publishes it.
     pub installed_pub_date: Option<String>,
+    /// `<pubDate>` of the latest appcast item — the release date of the update
+    /// target, when the feed publishes it.
+    pub latest_pub_date: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -264,9 +267,11 @@ pub fn plan_macos_update_with_network(
     let appcast = parse_appcast(&xml).map_err(|e| AppError::Engine(e.to_string()))?;
     let plan = plan_update(&appcast, effective_build(simulated_build, &installed));
 
-    if let Some(latest) = appcast.latest() {
+    let latest = appcast.latest();
+    if let Some(latest) = latest {
         require_os_supported(latest.minimum_system_version.as_deref())?;
     }
+    let latest_pub_date = latest.and_then(|latest| latest.pub_date.clone());
 
     // Release date of the *installed* build (its own appcast item), so it stays
     // correct even when a newer version is available. None when the feed omits
@@ -285,6 +290,7 @@ pub fn plan_macos_update_with_network(
         simulated_build,
         plan,
         installed_pub_date,
+        latest_pub_date,
     };
     let installed_build = report.installed.as_ref().map(|installed| installed.build);
     let latest_build = report.plan.as_ref().map(|plan| plan.latest_build);

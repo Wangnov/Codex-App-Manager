@@ -150,6 +150,11 @@ export function Settings({
     void managerApi.setAutostart(v).catch(() => setAutostart(!v));
   };
 
+  const restoreSkippedUpdate = () => {
+    setCommandError(null);
+    update({ ...s, skippedCodexUpdate: null });
+  };
+
   const themes: { v: ThemeMode; k: "settings.appearance.system" | "settings.appearance.light" | "settings.appearance.dark" }[] = [
     { v: "system", k: "settings.appearance.system" },
     { v: "light", k: "settings.appearance.light" },
@@ -162,6 +167,7 @@ export function Settings({
   const availableSources = SOURCES.filter((src) => !(win && src.kind === "official"));
   const showingSaveError = !commandError && Boolean(saveError);
   const error = commandError ?? saveError;
+  const skippedUpdate = s.skippedCodexUpdate;
   const customInterval = customIntervalOpen || !FREQUENCY_PRESETS.some(
     (option) => option.seconds === s.periodicCheckIntervalSeconds,
   );
@@ -312,6 +318,37 @@ export function Settings({
             </div>
           </div>
         ) : null}
+
+        <div className="group">
+          <div className="group-h">{t("settings.updateReminder.header")}</div>
+          <div className="list">
+            {skippedUpdate ? (
+              <>
+                <div className="row">
+                  <Icon name="info" className="ricon" />
+                  <span className="rtext">
+                    <span className="rtitle">{t("settings.updateReminder.skippedVersion")}</span>
+                    <span className="rsub">{t("settings.updateReminder.quiet")}</span>
+                  </span>
+                  <span className="rval mono">{skippedUpdate.version}</span>
+                </div>
+                <div className="settings-row-actions">
+                  <button className="mini-action" onClick={restoreSkippedUpdate}>
+                    <Icon name="refresh" />
+                    {t("settings.updateReminder.restore")}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="row">
+                <Icon name="info" className="ricon" />
+                <span className="rtext">
+                  <span className="rtitle">{t("settings.updateReminder.none")}</span>
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
 
         {/* 通用 */}
         <div className="group">
