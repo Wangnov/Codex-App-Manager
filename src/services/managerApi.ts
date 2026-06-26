@@ -189,8 +189,9 @@ export function isNetworkError(message: string): boolean {
   return NETWORK_ERROR_MARKERS.some((marker) => m.includes(marker));
 }
 
-// Browser-dev fallbacks (no Tauri runtime) — a simulated "one version behind"
-// so the UI renders meaningfully outside the desktop shell.
+// Browser-dev fallbacks (no Tauri runtime) so the UI renders meaningfully
+// outside the desktop shell. macOS simulates an update; Windows simulates the
+// up-to-date metadata view.
 const FALLBACK_PLAN: MacUpdateReport = {
   appcastUrl: "https://persistent.oaistatic.com/codex-app-prod/appcast.xml",
   installed: null,
