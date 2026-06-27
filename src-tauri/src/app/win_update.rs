@@ -6,7 +6,7 @@
 //!   - `stage_windows_update` — download MSIX + SHA256 + Authenticode + identity
 //!     verification into staging. Non-destructive; it does not install yet.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -334,7 +334,7 @@ fn detect_managed_codex(
             return Some(portable);
         }
     }
-    for record in &store.managed {
+    for record in store.managed.iter().rev() {
         if let Some(portable) = detect_portable_install(PathBuf::from(&record.path).as_path()) {
             if store.is_managed(&portable.path) {
                 return Some(portable);
@@ -1190,6 +1190,44 @@ pub fn win_adopt(settings: &AppSettings) -> Result<WinInstallStatus, AppError> {
     Ok(win_install_status(settings))
 }
 
+pub fn detect_existing_windows_install_at_path(
+    path: &Path,
+) -> Result<InstalledWindowsCodex, AppError> {
+    if !path.exists() {
+        return Err(AppError::Internal(
+            "所选位置不存在，请选择已安装的 Codex 文件夹".to_string(),
+        ));
+    }
+    if !path.is_dir() {
+        return Err(AppError::Internal(
+            "所选位置必须是 Codex 安装文件夹".to_string(),
+        ));
+    }
+    let installed = detect_portable_install(path).ok_or_else(|| {
+        AppError::Internal("未在所选位置找到 Codex.exe，请选择 Codex 安装文件夹".to_string())
+    })?;
+    if installed.version.trim().is_empty() || installed.version == "0.0.0.0" {
+        return Err(AppError::Internal(
+            "无法读取所选 Codex 的版本信息，请确认这是完整的 Codex 安装目录".to_string(),
+        ));
+    }
+    Ok(installed)
+}
+
+pub fn win_adopt_path(settings: &AppSettings, path: &Path) -> Result<WinInstallStatus, AppError> {
+    let installed = detect_existing_windows_install_at_path(path)?;
+    let install_path = &installed.path;
+    log::info!("Windows adopt selected install path={install_path}");
+    let mut store = ProvenanceStore::load();
+    store.record(
+        installed.path.clone(),
+        version_key(&installed.version),
+        "adopted-external",
+    );
+    store.save()?;
+    Ok(win_install_status(settings))
+}
+
 /// Open the installed Codex (MSIX or portable). Uses the SAME managed-aware
 /// detection as status/planning (`detect_managed_codex`) — not raw MSIX-first
 /// `detect_installed_codex` — so we launch exactly the build the UI is showing,
@@ -1324,11 +1362,34 @@ pub fn uninstall_windows_codex(
 #[cfg(test)]
 mod tests {
     use super::{
-        bind_manifest_checksums, check_win_update_abort, WinAbortGuard, WinPerformAction,
-        WIN_UPDATE_ABORT,
+        bind_manifest_checksums, check_win_update_abort, detect_existing_windows_install_at_path,
+        detect_managed_codex, WinAbortGuard, WinPerformAction, WIN_UPDATE_ABORT,
     };
+    use crate::app::provenance::ProvenanceStore;
+    use crate::domain::settings::AppSettings;
     use codex_win_engine::WindowsRelease;
+    use std::path::PathBuf;
     use std::sync::atomic::Ordering;
+
+    fn temp_test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("codex-manager-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_fake_portable_install(dir: &std::path::Path, version: &str) {
+        std::fs::write(dir.join("Codex.exe"), b"").unwrap();
+        std::fs::write(
+            dir.join("AppxManifest.xml"),
+            format!(
+                r#"<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">
+  <Identity Name="OpenAI.Codex" Publisher="CN=OpenAI OpCo, LLC" Version="{version}" ProcessorArchitecture="x64" />
+</Package>"#
+            ),
+        )
+        .unwrap();
+    }
 
     #[test]
     fn win_abort_guard_preserves_a_startup_race_cancel_and_resets_on_drop() {
@@ -1373,6 +1434,62 @@ mod tests {
         for (action, expected) in cases {
             assert_eq!(serde_json::to_string(&action).unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn detects_user_selected_portable_install() {
+        let dir = temp_test_dir("manual-existing-portable");
+        write_fake_portable_install(&dir, "26.623.31921.0");
+
+        let installed = detect_existing_windows_install_at_path(&dir).unwrap();
+        assert_eq!(installed.path, dir.to_string_lossy());
+        assert_eq!(installed.version, "26.623.31921.0");
+        assert_eq!(installed.arch.as_deref(), Some("x64"));
+        assert_eq!(installed.source, "portable");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rejects_user_selected_non_codex_folder() {
+        let dir = temp_test_dir("manual-existing-empty");
+        let err = detect_existing_windows_install_at_path(&dir).unwrap_err();
+        assert!(err.to_string().contains("Codex.exe"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn managed_detection_prefers_latest_provenance_record() {
+        let old_dir = temp_test_dir("managed-old-portable");
+        let new_dir = temp_test_dir("managed-new-portable");
+        write_fake_portable_install(&old_dir, "26.623.31921.0");
+        write_fake_portable_install(&new_dir, "26.623.42026.0");
+
+        let mut store = ProvenanceStore::default();
+        store.record(
+            old_dir.to_string_lossy().into_owned(),
+            codex_win_engine::version_key("26.623.31921.0"),
+            "adopted-external",
+        );
+        store.record(
+            new_dir.to_string_lossy().into_owned(),
+            codex_win_engine::version_key("26.623.42026.0"),
+            "adopted-external",
+        );
+        let settings = AppSettings::new(
+            "https://codexapp.agentsmirror.com".to_string(),
+            temp_test_dir("managed-missing-root")
+                .join("missing")
+                .to_string_lossy()
+                .into_owned(),
+        );
+
+        let installed = detect_managed_codex(&settings, &store).unwrap();
+        assert_eq!(installed.path, new_dir.to_string_lossy());
+        assert_eq!(installed.version, "26.623.42026.0");
+
+        let _ = std::fs::remove_dir_all(&old_dir);
+        let _ = std::fs::remove_dir_all(&new_dir);
     }
 
     fn release() -> WindowsRelease {

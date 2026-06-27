@@ -854,6 +854,25 @@ input {
   padding: 4px 8px;
 }
 
+.manual-existing-entry {
+  margin-top: 10px;
+  text-align: center;
+}
+.manual-existing-entry .linkbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--text-faint);
+}
+.manual-existing-entry .linkbtn svg {
+  width: 14px;
+  height: 14px;
+}
+.manual-existing-entry .linkbtn:hover:not(:disabled) {
+  color: var(--text);
+}
+
 /* ── Cards / panels / rows ───────────────────────────────────────────────── */
 .card {
   background: linear-gradient(180deg, var(--surface-top), var(--surface));
@@ -1739,6 +1758,55 @@ button.row.danger:hover {
   word-break: break-all;
   text-align: left;
   box-shadow: inset 0 1px 2px var(--shadow-1);
+}
+.manual-existing-sheet .ring {
+  margin-inline: auto;
+}
+.manual-existing-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 8px;
+  margin-top: var(--space-sm);
+}
+.manual-existing-picker .sheet-path {
+  margin-top: 0;
+  display: flex;
+  align-items: center;
+}
+.manual-existing-picker .btn {
+  padding-inline: 12px;
+}
+.manual-existing-meta {
+  margin-top: 10px;
+  text-align: start;
+}
+.manual-existing-meta .row {
+  padding: 9px 12px;
+}
+.manual-existing-error {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-top: 10px;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in oklch, var(--danger) 38%, transparent);
+  border-radius: var(--r-md);
+  background: var(--danger-tint);
+  color: var(--danger);
+  font-size: var(--fs-label);
+  line-height: 1.45;
+  text-align: start;
+}
+.manual-existing-error svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.manual-existing-hint {
+  color: var(--text-faint) !important;
+  font-size: 11.5px !important;
 }
 .sheet .row2 {
   display: flex;

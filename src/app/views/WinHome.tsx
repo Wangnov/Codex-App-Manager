@@ -17,6 +17,7 @@ import type {
   WinUpdateReport,
 } from "../../shared/types";
 import { DEFAULT_SETTINGS } from "../../shared/types";
+import { userErrorMessage } from "../errorCopy";
 import { Icon, CodexGlyph } from "../icons";
 import { useI18n, dirOf, type TKey } from "../i18n";
 import { Ring, TopBar, ResultBanner, ErrorHero } from "../components";
@@ -25,6 +26,10 @@ import { mib, fmtDateTime } from "../format";
 import { useHomeMotion } from "../motion";
 import { Sheet } from "../Sheet";
 import { skippedUpdateMatches, winSkippedUpdateCandidate } from "../skippedUpdate";
+import {
+  ManualExistingInstallSheet,
+  type ManualExistingCandidate,
+} from "./ManualExistingInstall";
 
 function samePath(a: string, b: string): boolean {
   const norm = (value: string) =>
@@ -54,6 +59,11 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [installDirOpen, setInstallDirOpen] = useState(false);
   const [installDirBusy, setInstallDirBusy] = useState(false);
+  const [manualExistingOpen, setManualExistingOpen] = useState(false);
+  const [manualExistingCandidate, setManualExistingCandidate] =
+    useState<ManualExistingCandidate | null>(null);
+  const [manualExistingBusy, setManualExistingBusy] = useState<"pick" | "adopt" | null>(null);
+  const [manualExistingError, setManualExistingError] = useState<string | null>(null);
   const [statusLoaded, setStatusLoaded] = useState(false);
   const [statusFailed, setStatusFailed] = useState(false);
   const [dl, setDl] = useState<DownloadProgress | null>(null);
@@ -77,6 +87,8 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const confirmBodyId = useId();
   const installDirTitleId = useId();
   const installDirBodyId = useId();
+  const manualExistingTitleId = useId();
+  const manualExistingBodyId = useId();
   // Smoothly roll the live download figures instead of snapping per event.
   const dlPctTarget = dl && dl.total > 0 ? Math.min(100, (dl.downloaded / dl.total) * 100) : 0;
   const dlPct = useCountUp(dlPctTarget);
@@ -130,7 +142,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         downloadStopRef.current = null;
         setDownloadStop(null);
         setDownloadStopBusy(false);
-        setActionError(errorMessage(cause));
+        setActionError(userErrorMessage(cause, t));
       }
     },
     [t],
@@ -211,11 +223,11 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     try {
       setStatus(await managerApi.winAdopt());
     } catch (cause) {
-      setActionError(errorMessage(cause));
+      setActionError(userErrorMessage(cause, t));
     } finally {
       setBusy(null);
     }
-  }, []);
+  }, [t]);
 
   // The probe recommended MSIX, but this PC looks like it's missing the Store /
   // App Installer components — the MSIX can install yet fail to launch (the very
@@ -228,11 +240,11 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       const next: AppSettings = { ...settings, windowsInstallMode: "portable" };
       setSettings(await managerApi.setSettings(next));
     } catch (cause) {
-      setActionError(errorMessage(cause));
+      setActionError(userErrorMessage(cause, t));
       return;
     }
     await check();
-  }, [settings, check]);
+  }, [settings, check, t]);
 
   // Windows install + update both go through win_perform_update (the route —
   // MSIX sideload or portable fallback — is decided by the backend plan).
@@ -286,7 +298,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             setNotice(t("home.stale.rechecked"));
           }
         } else {
-          setActionError(errorMessage(cause));
+          setActionError(userErrorMessage(cause, t));
         }
       } finally {
         unlisten();
@@ -321,7 +333,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       await managerApi.winDiscardDownload();
       setNotice(t("progress.cancelled"));
     } catch (cause) {
-      setActionError(errorMessage(cause));
+      setActionError(userErrorMessage(cause, t));
     }
   }, [t]);
 
@@ -377,12 +389,12 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       const refreshed = await managerApi.getSettings().catch(() => null);
       if (refreshed) setSettings(refreshed);
     } catch (cause) {
-      setActionError(errorMessage(cause));
+      setActionError(userErrorMessage(cause, t));
       setInstallDirOpen(false);
     } finally {
       setInstallDirBusy(false);
     }
-  }, [runPerform]);
+  }, [runPerform, t]);
 
   const plan = report?.plan ?? null;
   const installed = report ? report.installed : status?.installed ?? null;
@@ -450,6 +462,56 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     updateAvailable && plan?.downloadSize != null
       ? t("home.update.size", { size: mib(plan.downloadSize) })
       : null;
+
+  const openManualExisting = useCallback(() => {
+    setManualExistingError(null);
+    setManualExistingOpen(true);
+  }, []);
+
+  const closeManualExisting = useCallback(() => {
+    if (manualExistingBusy) return;
+    setManualExistingOpen(false);
+    setManualExistingError(null);
+  }, [manualExistingBusy]);
+
+  const pickManualExisting = useCallback(async () => {
+    setManualExistingBusy("pick");
+    setManualExistingError(null);
+    try {
+      const selected = await managerApi.winPickExistingInstall();
+      if (selected) {
+        setManualExistingCandidate({
+          path: selected.path,
+          version: selected.version,
+          releaseDate: releaseDate ?? null,
+        });
+      }
+    } catch (cause) {
+      setManualExistingError(errorMessage(cause));
+    } finally {
+      setManualExistingBusy(null);
+    }
+  }, [releaseDate]);
+
+  const adoptManualExisting = useCallback(async () => {
+    if (!manualExistingCandidate) return;
+    setManualExistingBusy("adopt");
+    setManualExistingError(null);
+    try {
+      const next = await managerApi.winAdoptPath(manualExistingCandidate.path);
+      setStatus(next);
+      setStatusLoaded(true);
+      setStatusFailed(false);
+      setManualExistingOpen(false);
+      setManualExistingCandidate(null);
+      await check();
+    } catch (cause) {
+      setManualExistingError(errorMessage(cause));
+    } finally {
+      setManualExistingBusy(null);
+    }
+  }, [check, manualExistingCandidate]);
+
   const skipCurrentUpdate = useCallback(async () => {
     if (!skippedCandidate) return;
     setActionError(null);
@@ -461,14 +523,14 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       setSettings(saved);
       setNotice(t("home.skip.toast", { version: skippedCandidate.version }));
     } catch (cause) {
-      setActionError(errorMessage(cause));
+      setActionError(userErrorMessage(cause, t));
     }
   }, [settings, skippedCandidate, t]);
   const onLaunch = () => {
     // Surface a failed open (PowerShell/AUMID or portable-exe error) via the
     // error banner like every other action, not an unhandled rejection.
     setActionError(null);
-    void managerApi.winLaunch().catch((cause) => setActionError(errorMessage(cause)));
+    void managerApi.winLaunch().catch((cause) => setActionError(userErrorMessage(cause, t)));
   };
 
   // Scene id; on change the hero remounts and GSAP replays the entrance. `lang`
@@ -598,7 +660,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       <div
         className="scroll"
         ref={scopeRef}
-        inert={confirmOpen || installDirOpen ? true : undefined}
+        inert={confirmOpen || installDirOpen || manualExistingOpen ? true : undefined}
       >
         {perform ? (
           <ResultBanner
@@ -855,6 +917,19 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           ) : null}
         </div>
 
+        {!rechecking && kind === "none" ? (
+          <div className="manual-existing-entry">
+            <button
+              className="linkbtn subtle"
+              onClick={openManualExisting}
+              disabled={busy !== null || manualExistingBusy !== null}
+            >
+              <Icon name="folder" />
+              {t("home.manualExisting")}
+            </button>
+          </div>
+        ) : null}
+
         {!rechecking && kind === "update" && skippedCandidate ? (
           <div className="update-skip">
             <button className="linkbtn subtle" onClick={skipCurrentUpdate} disabled={busy !== null}>
@@ -924,6 +999,18 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           </button>
         </div>
       </Sheet>
+
+      <ManualExistingInstallSheet
+        open={manualExistingOpen}
+        candidate={manualExistingCandidate}
+        error={manualExistingError}
+        busy={manualExistingBusy !== null}
+        labelledBy={manualExistingTitleId}
+        describedBy={manualExistingBodyId}
+        onDismiss={closeManualExisting}
+        onPick={pickManualExisting}
+        onAdopt={adoptManualExisting}
+      />
     </div>
   );
 }

@@ -17,6 +17,7 @@ import type {
   MacUpdateReport,
 } from "../../shared/types";
 import { DEFAULT_SETTINGS } from "../../shared/types";
+import { userErrorMessage } from "../errorCopy";
 import { Icon, CodexGlyph } from "../icons";
 import { useI18n, dirOf, type TKey } from "../i18n";
 import { Ring, TopBar, ResultBanner, ErrorHero } from "../components";
@@ -27,6 +28,10 @@ import { mib, fmtDateTime } from "../format";
 import { useHomeMotion } from "../motion";
 import { Sheet } from "../Sheet";
 import { macSkippedUpdateCandidate, skippedUpdateMatches } from "../skippedUpdate";
+import {
+  ManualExistingInstallSheet,
+  type ManualExistingCandidate,
+} from "./ManualExistingInstall";
 
 type Kind = "loading" | "error" | "none" | "idle" | "update" | "external" | "uptodate";
 type DownloadStopIntent = "pause" | "cancel";
@@ -54,6 +59,11 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   // would strand a now-uninstalled user on an error screen with no install CTA.
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [manualExistingOpen, setManualExistingOpen] = useState(false);
+  const [manualExistingCandidate, setManualExistingCandidate] =
+    useState<ManualExistingCandidate | null>(null);
+  const [manualExistingBusy, setManualExistingBusy] = useState<"pick" | "adopt" | null>(null);
+  const [manualExistingError, setManualExistingError] = useState<string | null>(null);
   // Whether the status request has finished (success OR failure) — distinct from
   // the value, so a failed macStatus doesn't leave the home stuck on "loading".
   const [statusLoaded, setStatusLoaded] = useState(false);
@@ -82,6 +92,8 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const scopeRef = useRef<HTMLDivElement>(null);
   const confirmTitleId = useId();
   const confirmBodyId = useId();
+  const manualExistingTitleId = useId();
+  const manualExistingBodyId = useId();
   // Smoothly roll the live download figures instead of snapping per event.
   const dlPctTarget = dl && dl.total > 0 ? Math.min(100, (dl.downloaded / dl.total) * 100) : 0;
   const dlPct = useCountUp(dlPctTarget);
@@ -136,7 +148,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         downloadStopRef.current = null;
         setDownloadStop(null);
         setDownloadStopBusy(false);
-        setActionError(errorMessage(cause));
+        setActionError(userErrorMessage(cause, t));
       }
     },
     [t],
@@ -285,11 +297,11 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     try {
       setStatus(await managerApi.macAdopt());
     } catch (cause) {
-      setActionError(errorMessage(cause));
+      setActionError(userErrorMessage(cause, t));
     } finally {
       setBusy(null);
     }
-  }, []);
+  }, [t]);
 
   const runInstall = useCallback(async () => {
     setBusy("install");
@@ -309,7 +321,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       } else if (stop && isDownloadCancelled(cause)) {
         setNotice(t("progress.cancelled"));
       } else {
-        setActionError(errorMessage(cause));
+        setActionError(userErrorMessage(cause, t));
       }
     } finally {
       un();
@@ -368,7 +380,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           setNotice(t("home.stale.rechecked"));
         }
       } else {
-        setActionError(errorMessage(cause));
+        setActionError(userErrorMessage(cause, t));
       }
     } finally {
       un();
@@ -402,7 +414,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       await managerApi.macDiscardDownload();
       setNotice(t("progress.cancelled"));
     } catch (cause) {
-      setActionError(errorMessage(cause));
+      setActionError(userErrorMessage(cause, t));
     }
   }, [t]);
 
@@ -472,6 +484,56 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     : null;
   const updateSize =
     updateAvailable && plan ? t("home.update.size", { size: mib(plan.downloadSize) }) : null;
+
+  const openManualExisting = useCallback(() => {
+    setManualExistingError(null);
+    setManualExistingOpen(true);
+  }, []);
+
+  const closeManualExisting = useCallback(() => {
+    if (manualExistingBusy) return;
+    setManualExistingOpen(false);
+    setManualExistingError(null);
+  }, [manualExistingBusy]);
+
+  const pickManualExisting = useCallback(async () => {
+    setManualExistingBusy("pick");
+    setManualExistingError(null);
+    try {
+      const selected = await managerApi.macPickExistingInstall();
+      if (selected) {
+        setManualExistingCandidate({
+          path: selected.path,
+          version: selected.shortVersion || `build ${selected.build}`,
+          releaseDate: null,
+        });
+      }
+    } catch (cause) {
+      setManualExistingError(errorMessage(cause));
+    } finally {
+      setManualExistingBusy(null);
+    }
+  }, []);
+
+  const adoptManualExisting = useCallback(async () => {
+    if (!manualExistingCandidate) return;
+    setManualExistingBusy("adopt");
+    setManualExistingError(null);
+    try {
+      const next = await managerApi.macAdoptPath(manualExistingCandidate.path);
+      setStatus(next);
+      setStatusLoaded(true);
+      setStatusFailed(false);
+      setManualExistingOpen(false);
+      setManualExistingCandidate(null);
+      await check();
+    } catch (cause) {
+      setManualExistingError(errorMessage(cause));
+    } finally {
+      setManualExistingBusy(null);
+    }
+  }, [check, manualExistingCandidate]);
+
   const skipCurrentUpdate = useCallback(async () => {
     if (!skippedCandidate) return;
     setActionError(null);
@@ -483,14 +545,14 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       setSettings(saved);
       setNotice(t("home.skip.toast", { version: skippedCandidate.version }));
     } catch (cause) {
-      setActionError(errorMessage(cause));
+      setActionError(userErrorMessage(cause, t));
     }
   }, [settings, skippedCandidate, t]);
   const onLaunch = () => {
     // Surface a failed open (stale path / backend error) via the error banner
     // like every other action, instead of an unhandled rejection with no feedback.
     setActionError(null);
-    void managerApi.macLaunch().catch((cause) => setActionError(errorMessage(cause)));
+    void managerApi.macLaunch().catch((cause) => setActionError(userErrorMessage(cause, t)));
   };
 
   // One string identifying the visible "scene"; when it changes the hero
@@ -665,7 +727,11 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         </button>
       </TopBar>
 
-      <div className="scroll" ref={scopeRef} inert={confirmOpen ? true : undefined}>
+      <div
+        className="scroll"
+        ref={scopeRef}
+        inert={confirmOpen || manualExistingOpen ? true : undefined}
+      >
         {perform ? (
           <ResultBanner
             tone={perform.rolledBack ? "err" : "ok"}
@@ -910,6 +976,19 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           ) : null}
         </div>
 
+        {!rechecking && kind === "none" ? (
+          <div className="manual-existing-entry">
+            <button
+              className="linkbtn subtle"
+              onClick={openManualExisting}
+              disabled={busy !== null || manualExistingBusy !== null}
+            >
+              <Icon name="folder" />
+              {t("home.manualExisting")}
+            </button>
+          </div>
+        ) : null}
+
         {!rechecking && kind === "update" && skippedCandidate ? (
           <div className="update-skip">
             <button className="linkbtn subtle" onClick={skipCurrentUpdate} disabled={busy !== null}>
@@ -949,6 +1028,18 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           </button>
         </div>
       </Sheet>
+
+      <ManualExistingInstallSheet
+        open={manualExistingOpen}
+        candidate={manualExistingCandidate}
+        error={manualExistingError}
+        busy={manualExistingBusy !== null}
+        labelledBy={manualExistingTitleId}
+        describedBy={manualExistingBodyId}
+        onDismiss={closeManualExisting}
+        onPick={pickManualExisting}
+        onAdopt={adoptManualExisting}
+      />
     </div>
   );
 }

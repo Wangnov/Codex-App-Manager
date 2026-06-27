@@ -248,11 +248,32 @@ while ((Get-Date) -lt $deadline) {{
     exit 0
   }}
 }}
+$forceIds = @($remaining | ForEach-Object {{ $_.Id }})
+foreach ($id in $forceIds) {{
+  try {{ Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }} catch {{}}
+}}
+$forceDeadline = (Get-Date).AddSeconds(5)
+while ((Get-Date) -lt $forceDeadline) {{
+  Start-Sleep -Milliseconds 250
+  $remaining = @()
+  foreach ($id in $forceIds) {{
+    $p = Get-Process -Id $id -ErrorAction SilentlyContinue
+    if ($null -ne $p) {{ $remaining += $p }}
+  }}
+  if ($remaining.Count -eq 0) {{
+    'force-closed:' + ($forceIds -join ',')
+    exit 0
+  }}
+}}
 'running:' + (($remaining | ForEach-Object {{ $_.Id }}) -join ',')
 "#
     );
     let result = run_powershell(&script)?;
-    if result.trim().ends_with("closed") || result.trim().ends_with("no-targets") {
+    let trimmed = result.trim();
+    if trimmed.ends_with("closed") || trimmed.ends_with("no-targets") {
+        Ok(())
+    } else if trimmed.starts_with("force-closed:") {
+        log::warn!("target Codex processes required forced close result={trimmed}");
         Ok(())
     } else {
         Err(EngineError::Install(
@@ -287,10 +308,7 @@ pub fn close_codex_gracefully(timeout_secs: u64) -> Result<(), EngineError> {
     request_codex_close(timeout_secs)
 }
 
-pub fn close_codex_gracefully_for_root(
-    timeout_secs: u64,
-    root: &Path,
-) -> Result<(), EngineError> {
+pub fn close_codex_gracefully_for_root(timeout_secs: u64, root: &Path) -> Result<(), EngineError> {
     request_codex_close_for_root(timeout_secs, root)
 }
 
@@ -453,7 +471,8 @@ fn restore_previous_install(
     had_previous: bool,
 ) -> Result<(), EngineError> {
     if install_root.exists() {
-        fs::remove_dir_all(install_root).map_err(|e| io_err("remove failed portable install", e))?;
+        fs::remove_dir_all(install_root)
+            .map_err(|e| io_err("remove failed portable install", e))?;
     }
     if had_previous && backup.exists() {
         fs::rename(backup, install_root)
@@ -470,7 +489,9 @@ fn rollback_install_error(
 ) -> EngineError {
     match restore_previous_install(install_root, backup, had_previous) {
         Ok(()) => EngineError::Install(format!("{err}; previous install was restored")),
-        Err(rollback_err) => EngineError::Install(format!("{err}; rollback failed: {rollback_err}")),
+        Err(rollback_err) => {
+            EngineError::Install(format!("{err}; rollback failed: {rollback_err}"))
+        }
     }
 }
 
@@ -554,19 +575,18 @@ fn install_portable_from_msix_inner(
         }
     }
 
-    let relaunched =
-        match health_check_portable_install(install_root, manage_process && relaunch) {
-            Ok(relaunched) => relaunched,
-            Err(err) => {
-                let _ = fs::remove_dir_all(&work_dir);
-                return Err(rollback_install_error(
-                    install_root,
-                    &backup,
-                    had_previous,
-                    err,
-                ));
-            }
-        };
+    let relaunched = match health_check_portable_install(install_root, manage_process && relaunch) {
+        Ok(relaunched) => relaunched,
+        Err(err) => {
+            let _ = fs::remove_dir_all(&work_dir);
+            return Err(rollback_install_error(
+                install_root,
+                &backup,
+                had_previous,
+                err,
+            ));
+        }
+    };
 
     let shortcut_created = match create_start_menu_shortcut(install_root) {
         Ok(created) => created,
@@ -629,9 +649,7 @@ fn install_portable_from_msix_inner(
 /// to delete), while an IO failure removing an existing directory propagates.
 pub fn purge_codex_user_data(notes: &mut Vec<String>) -> Result<bool, EngineError> {
     let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) else {
-        notes.push(
-            "User data purge requested but home directory was not available.".to_string(),
-        );
+        notes.push("User data purge requested but home directory was not available.".to_string());
         return Ok(false);
     };
     let user_data = PathBuf::from(home).join(".codex");
@@ -671,7 +689,9 @@ pub fn uninstall_portable(
     let removed_uninstall_entry = match remove_uninstall_entry() {
         Ok(removed) => removed,
         Err(err) => {
-            notes.push(format!("Apps & Features uninstall entry cleanup failed: {err}"));
+            notes.push(format!(
+                "Apps & Features uninstall entry cleanup failed: {err}"
+            ));
             false
         }
     };
@@ -680,9 +700,7 @@ pub fn uninstall_portable(
     } else {
         false
     };
-    let partial = notes
-        .iter()
-        .any(|note| note.contains("cleanup failed"));
+    let partial = notes.iter().any(|note| note.contains("cleanup failed"));
 
     let report = PortableUninstallReport {
         success: true,
@@ -768,13 +786,11 @@ mod tests {
         let report = install_portable_from_msix_inner(&msix, &install_root, false, false).unwrap();
         assert!(report.success);
         assert!(report.backup_path.is_none());
-        assert!(!fs::read_dir(&root)
+        assert!(!fs::read_dir(&root).unwrap().any(|entry| entry
             .unwrap()
-            .any(|entry| entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with("Codex.rollback")));
+            .file_name()
+            .to_string_lossy()
+            .starts_with("Codex.rollback")));
         assert!(!install_root.join("old-marker.txt").exists());
         assert!(install_root.join("resources/app.asar").exists());
 

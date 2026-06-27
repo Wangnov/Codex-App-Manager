@@ -471,6 +471,31 @@ export const managerApi = {
     }
     return invoke<MacInstallStatus>("mac_adopt");
   },
+  macPickExistingInstall(): Promise<MacInstallStatus["installed"] | null> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve({
+        path: "/Users/example/Desktop/Codex.app",
+        build: 4041,
+        shortVersion: "26.623.31443",
+        arch: "arm64",
+      });
+    }
+    return invoke<MacInstallStatus["installed"] | null>("mac_pick_existing_install");
+  },
+  macAdoptPath(path: string): Promise<MacInstallStatus> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve({
+        installed: {
+          path,
+          build: 4041,
+          shortVersion: "26.623.31443",
+          arch: "arm64",
+        },
+        status: "managed",
+      });
+    }
+    return invoke<MacInstallStatus>("mac_adopt_path", { path });
+  },
 
   // Fresh-install the latest Codex (full package) into /Applications.
   macInstall(): Promise<MacInstallStatus> {
@@ -724,6 +749,35 @@ export const managerApi = {
       return Promise.resolve({ installed: WIN_FALLBACK_PLAN.installed, status: "managed" });
     }
     return invoke<WinInstallStatus>("win_adopt");
+  },
+  winPickExistingInstall(): Promise<WinInstallStatus["installed"] | null> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve({
+        path: "E:\\Tools\\Codex",
+        version: "26.623.31921",
+        arch: "x64",
+        source: "portable",
+        packageFamilyName: null,
+        installedAt: Math.floor(Date.now() / 1000),
+      });
+    }
+    return invoke<WinInstallStatus["installed"] | null>("win_pick_existing_install");
+  },
+  winAdoptPath(path: string): Promise<WinInstallStatus> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve({
+        installed: {
+          path,
+          version: "26.623.31921",
+          arch: "x64",
+          source: "portable",
+          packageFamilyName: null,
+          installedAt: Math.floor(Date.now() / 1000),
+        },
+        status: "managed",
+      });
+    }
+    return invoke<WinInstallStatus>("win_adopt_path", { path });
   },
   // Open the installed Codex — explicit user action (mirrors macLaunch).
   winLaunch(): Promise<void> {

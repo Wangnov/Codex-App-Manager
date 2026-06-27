@@ -241,6 +241,26 @@ fn detect_installed() -> Option<InstalledCodex> {
     sys::installed_codex_build().map(|(path, build)| installed_from_path_build(path, build))
 }
 
+pub fn detect_existing_install_at_path(path: &Path) -> Result<InstalledCodex, AppError> {
+    if !path.exists() {
+        return Err(AppError::Internal(
+            "所选位置不存在，请选择已安装的 Codex.app".to_string(),
+        ));
+    }
+    if !path.is_dir() {
+        return Err(AppError::Internal("所选位置必须是 Codex.app".to_string()));
+    }
+    if path.file_name().and_then(|name| name.to_str()) != Some("Codex.app") {
+        return Err(AppError::Internal(
+            "请选择 Codex.app，而不是它的上级文件夹".to_string(),
+        ));
+    }
+    let raw = path.to_string_lossy();
+    let (detected_path, build) = sys::installed_codex_build_at_path(&raw)
+        .ok_or_else(|| AppError::Internal("无法读取所选 Codex.app 的版本信息".to_string()))?;
+    Ok(installed_from_path_build(detected_path, build))
+}
+
 fn detect_managed_installed() -> Option<InstalledCodex> {
     let store = ProvenanceStore::load();
     for record in store.managed.iter().rev() {
@@ -458,9 +478,7 @@ fn download_and_verify(
         return Err(err);
     }
     if len > max_size {
-        let err = AppError::Engine(format!(
-            "artifact size {len} exceeds {max_size} byte limit"
-        ));
+        let err = AppError::Engine(format!("artifact size {len} exceeds {max_size} byte limit"));
         log::error!("macOS download and verify failed error={err}");
         return Err(err);
     }
@@ -1055,6 +1073,16 @@ pub fn mac_adopt() -> Result<MacInstallStatus, AppError> {
         .ok_or_else(|| AppError::Internal("no Codex detected to adopt".to_string()))?;
     let path = &installed.path;
     log::info!("macOS adopt external install path={path}");
+    let mut store = ProvenanceStore::load();
+    store.record(installed.path.clone(), installed.build, "adopted-external");
+    store.save()?;
+    Ok(mac_install_status())
+}
+
+pub fn mac_adopt_path(path: &Path) -> Result<MacInstallStatus, AppError> {
+    let installed = detect_existing_install_at_path(path)?;
+    let install_path = &installed.path;
+    log::info!("macOS adopt selected install path={install_path}");
     let mut store = ProvenanceStore::load();
     store.record(installed.path.clone(), installed.build, "adopted-external");
     store.save()?;

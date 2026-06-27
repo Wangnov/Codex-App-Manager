@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use codex_win_engine::InstalledWindowsCodex;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
@@ -12,10 +13,11 @@ use crate::app::diagnostics::Diagnostics;
 use crate::app::disk::available_space;
 use crate::app::logging::redact_url;
 use crate::app::mac_update::{
-    cancel_macos_download, discard_macos_download, install_macos_with_network,
+    cancel_macos_download, detect_existing_install_at_path as detect_macos_install_at_path,
+    discard_macos_download, install_macos_with_network, mac_adopt_path as adopt_macos_path,
     pause_macos_download, perform_macos_update_with_network, plan_macos_update_with_network,
-    stage_macos_update_with_network, uninstall_macos, MacInstallStatus, MacPerformReport,
-    MacStageReport, MacUninstallReport, MacUpdateReport, PerformExpectation,
+    stage_macos_update_with_network, uninstall_macos, InstalledCodex, MacInstallStatus,
+    MacPerformReport, MacStageReport, MacUninstallReport, MacUpdateReport, PerformExpectation,
 };
 use crate::app::oplock::{
     OperationError, OperationGuard, OperationKind, OperationManager, OperationToken,
@@ -27,11 +29,12 @@ use crate::app::settings_store::{ProxyMode, UpdateSource};
 use crate::app::url_guard::{validate_custom_proxy, validate_custom_source};
 use crate::app::win_update::{
     auto_stage_windows_update_with_install_mode_and_network, cancel_windows_download,
+    detect_existing_windows_install_at_path as detect_windows_install_at_path,
     discard_windows_download, pause_windows_download,
     perform_windows_update_with_install_mode_and_network,
     plan_windows_update_with_install_mode_and_network,
     stage_windows_update_with_install_mode_and_network, uninstall_windows_codex,
-    win_adopt as adopt_windows_install, win_install_status,
+    win_adopt as adopt_windows_install, win_adopt_path as adopt_windows_path, win_install_status,
     DownloadProgress as WinDownloadProgress, WinAutoStageReport, WinInstallStatus,
     WinPerformExpectation, WinPerformReport, WinStageReport, WinUninstallReport, WinUpdateReport,
 };
@@ -247,6 +250,20 @@ fn dialog_start_dir(path: &str) -> PathBuf {
         .filter(|parent| parent.is_dir())
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from(PersistedAppSettings::load().install_root))
+}
+
+fn mac_existing_install_start_dir() -> PathBuf {
+    let system = PathBuf::from("/Applications");
+    if system.is_dir() {
+        return system;
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let user_apps = PathBuf::from(home).join("Applications");
+        if user_apps.is_dir() {
+            return user_apps;
+        }
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
 }
 
 const MIN_PORTABLE_FREE_SPACE_BYTES: u64 = 1_073_741_824;
@@ -625,6 +642,51 @@ pub fn mac_adopt(state: State<'_, ManagerState>) -> Result<MacInstallStatus, Com
     crate::app::mac_update::mac_adopt().map_err(Into::into)
 }
 
+/// macOS-only: let the user pick an existing Codex.app and validate it.
+#[tauri::command]
+pub async fn mac_pick_existing_install(
+    app: tauri::AppHandle,
+    state: State<'_, ManagerState>,
+) -> Result<Option<InstalledCodex>, CommandError> {
+    if !matches!(state.target.os, OperatingSystem::Macos) {
+        return Err(AppError::UnsupportedPlatform.into());
+    }
+    let start_dir = mac_existing_install_start_dir();
+    let selected = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("选择 Codex.app")
+            .set_directory(start_dir)
+            .blocking_pick_file()
+            .map(|path| {
+                path.into_path()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .map_err(|e| AppError::Internal(format!("读取选择的应用失败: {e}")))
+            })
+            .transpose()
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("join: {e}")))??;
+    selected
+        .as_deref()
+        .map(|path| detect_macos_install_at_path(Path::new(path)))
+        .transpose()
+        .map_err(Into::into)
+}
+
+/// macOS-only: adopt the user-selected Codex.app path.
+#[tauri::command]
+pub fn mac_adopt_path(
+    state: State<'_, ManagerState>,
+    path: String,
+) -> Result<MacInstallStatus, CommandError> {
+    if !matches!(state.target.os, OperatingSystem::Macos) {
+        return Err(AppError::UnsupportedPlatform.into());
+    }
+    let _op = begin_guard(&state, OperationKind::Adopt)?;
+    adopt_macos_path(Path::new(&path)).map_err(Into::into)
+}
+
 /// macOS-only: open the installed Codex.app (explicit 〔打开 Codex〕 action).
 #[tauri::command]
 pub fn mac_launch_codex() -> Result<(), CommandError> {
@@ -956,6 +1018,52 @@ pub async fn win_pick_install_dir(
         .map(install_root_from_picked_dir)
         .transpose()
         .map_err(Into::into)
+}
+
+/// Windows-only: let the user pick an existing portable/self-extracted Codex directory.
+#[tauri::command]
+pub async fn win_pick_existing_install(
+    app: tauri::AppHandle,
+    state: State<'_, ManagerState>,
+) -> Result<Option<InstalledWindowsCodex>, CommandError> {
+    if !matches!(state.target.os, OperatingSystem::Windows) {
+        return Err(AppError::UnsupportedPlatform.into());
+    }
+    let start_dir = dialog_start_dir(&PersistedAppSettings::load().install_root);
+    let selected = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("选择已安装的 Codex 位置")
+            .set_directory(start_dir)
+            .blocking_pick_folder()
+            .map(|path| {
+                path.into_path()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .map_err(|e| AppError::Internal(format!("读取选择的文件夹失败: {e}")))
+            })
+            .transpose()
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("join: {e}")))??;
+    selected
+        .as_deref()
+        .map(|path| detect_windows_install_at_path(Path::new(path)))
+        .transpose()
+        .map_err(Into::into)
+}
+
+/// Windows-only: adopt the user-selected Codex directory.
+#[tauri::command]
+pub fn win_adopt_path(
+    state: State<'_, ManagerState>,
+    path: String,
+) -> Result<WinInstallStatus, CommandError> {
+    if !matches!(state.target.os, OperatingSystem::Windows) {
+        return Err(AppError::UnsupportedPlatform.into());
+    }
+    let _op = begin_guard(&state, OperationKind::Adopt)?;
+    let settings = windows_domain_settings_for_persisted(&state);
+    adopt_windows_path(&settings, Path::new(&path)).map_err(Into::into)
 }
 
 /// Windows-only: persist a validated portable install root.
