@@ -239,8 +239,8 @@ const FALLBACK_PLAN: MacUpdateReport = {
 };
 
 const WIN_FALLBACK_INSTALLED = {
-  path: "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.623.4041.0_x64__2p2nqsd0c76g0",
-  version: "26.623.4041.0",
+  path: "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.623.5546.0_x64__2p2nqsd0c76g0",
+  version: "26.623.42026",
   arch: "x64",
   source: "msix",
   packageFamilyName: "OpenAI.Codex_2p2nqsd0c76g0",
@@ -252,11 +252,12 @@ const WIN_FALLBACK_PLAN: WinUpdateReport = {
   checksumsUrl: "https://codexapp.agentsmirror.com/latest/checksums",
   packageUrl: "https://codexapp.agentsmirror.com/latest/win",
   release: {
-    version: "26.623.4041.0",
-    releasedAt: "Fri, 26 Jun 2026 10:10:00 GMT",
-    packageMoniker: "OpenAI.Codex_26.623.4041.0_x64__2p2nqsd0c76g0",
+    version: "26.623.42026",
+    packageVersion: "26.623.5546.0",
+    releasedAt: "Sat, 27 Jun 2026 05:28:48 GMT",
+    packageMoniker: "OpenAI.Codex_26.623.5546.0_x64__2p2nqsd0c76g0",
     architecture: "x64",
-    contentLength: 566504666,
+    contentLength: 671037642,
     etag: '"4XJflSyTxVc59Sr2FfA4HAqFCD0="',
     storeProductId: "9PLM9XGG6VKS",
     packageIdentity: "OpenAI.Codex",
@@ -274,11 +275,11 @@ const WIN_FALLBACK_PLAN: WinUpdateReport = {
   },
   plan: {
     upToDate: true,
-    currentVersion: "26.623.4041.0",
-    latestVersion: "26.623.4041.0",
-    packageMoniker: "OpenAI.Codex_26.623.4041.0_x64__2p2nqsd0c76g0",
+    currentVersion: "26.623.42026",
+    latestVersion: "26.623.42026",
+    packageMoniker: "OpenAI.Codex_26.623.5546.0_x64__2p2nqsd0c76g0",
     packageUrl: "https://codexapp.agentsmirror.com/latest/win",
-    downloadSize: 566504666,
+    downloadSize: 671037642,
     sha256: "6dc2e05ac2b760bbc77ce3f8a992efdb327363512c9c4744b9a146c41bc4d55a",
     route: "msix-sideload",
     portableFallbackReady: true,

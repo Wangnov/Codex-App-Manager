@@ -11,6 +11,7 @@
 //!   - treat OpenAI Authenticode as the Windows trust anchor;
 //!   - fall back to portable only when the MSIX route is unavailable or fails.
 
+pub mod app_version;
 pub mod authenticode;
 pub mod capability;
 pub mod checksums;
@@ -25,6 +26,9 @@ mod process;
 pub mod sys;
 pub mod version;
 
+pub use app_version::{
+    read_codex_app_version_from_asar, read_codex_app_version_from_install_root,
+};
 pub use authenticode::{
     verify_openai_authenticode, AuthenticodeReport, OPENAI_MARKETPLACE_PUBLISHER_SUBJECT,
 };

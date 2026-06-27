@@ -188,6 +188,7 @@ export interface MacUninstallReport {
 
 export interface InstalledWindowsCodex {
   path: string;
+  /** Human-facing Codex app version; falls back to the MSIX package version when unreadable. */
   version: string;
   arch: string | null;
   source: "msix" | "portable" | string;
@@ -197,7 +198,10 @@ export interface InstalledWindowsCodex {
 }
 
 export interface WindowsRelease {
+  /** Human-facing Codex app version, e.g. 26.623.42026. */
   version: string;
+  /** Four-part Windows MSIX package version, e.g. 26.623.5546.0. */
+  packageVersion: string;
   /** Release/publish timestamp for this Windows package, when the manifest provides it. */
   releasedAt?: string | null;
   packageMoniker: string;

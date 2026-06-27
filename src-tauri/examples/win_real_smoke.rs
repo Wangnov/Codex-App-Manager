@@ -83,6 +83,7 @@ fn staged_msix_path(release: &WindowsRelease) -> PathBuf {
 fn old_release() -> WindowsRelease {
     WindowsRelease {
         version: OLD_MSIX_VERSION.to_string(),
+        package_version: OLD_MSIX_VERSION.to_string(),
         released_at: None,
         package_moniker: OLD_MSIX_MONIKER.to_string(),
         architecture: Some("x64".to_string()),

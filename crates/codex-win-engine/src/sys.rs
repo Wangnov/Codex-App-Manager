@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::app_version::read_codex_app_version_from_install_root;
 use crate::capability::WinCapabilityReport;
 #[cfg(windows)]
 use crate::capability::{CapabilityCheck, CapabilityState};
@@ -17,6 +18,8 @@ use crate::EngineError;
 #[serde(rename_all = "camelCase")]
 pub struct InstalledWindowsCodex {
     pub path: String,
+    /// Human-facing Codex app version read from app.asar/package.json when available.
+    /// Falls back to the Windows package version if the app payload is unreadable.
     pub version: String,
     pub arch: Option<String>,
     /// "msix" | "portable"
@@ -43,6 +46,13 @@ fn path_mtime_secs(path: &str) -> Option<u64> {
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
+}
+
+fn prefer_codex_app_version(mut codex: InstalledWindowsCodex) -> InstalledWindowsCodex {
+    if let Some(version) = read_codex_app_version_from_install_root(Path::new(&codex.path)) {
+        codex.version = version;
+    }
+    codex
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -321,8 +331,11 @@ try {{
     );
     let json = run_powershell_json(&script)
         .map_err(|e| EngineError::Install(format!("run Add-AppxPackage: {e}")))?;
-    let report: MsixSideloadReport = serde_json::from_str(&json)
+    let mut report: MsixSideloadReport = serde_json::from_str(&json)
         .map_err(|e| EngineError::Install(format!("parse Add-AppxPackage result: {e}")))?;
+    if let Some(installed) = report.installed.take() {
+        report.installed = Some(prefer_codex_app_version(installed));
+    }
     if report.success {
         let path_display = path.display();
         log::info!("MSIX sideload completed path={path_display}");
@@ -829,7 +842,7 @@ if ($null -ne $p) {{
     }
     let mut codex: InstalledWindowsCodex = serde_json::from_str(&json).ok()?;
     codex.installed_at = path_mtime_secs(&codex.path);
-    Some(codex)
+    Some(prefer_codex_app_version(codex))
 }
 
 #[cfg(not(windows))]
@@ -857,6 +870,7 @@ pub fn detect_portable_install(portable_root: &Path) -> Option<InstalledWindowsC
         package_family_name: None,
         installed_at: path_mtime_secs(&exe.to_string_lossy()),
     };
+    let installed = prefer_codex_app_version(installed);
     let path = &installed.path;
     log::debug!("detected portable install path={path}");
     Some(installed)

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::app_version::read_codex_app_version_from_install_root;
 use crate::msix::{parse_appx_manifest_xml, MsixIdentity};
 use crate::process::hidden_command;
 use crate::EngineError;
@@ -604,11 +605,14 @@ fn install_portable_from_msix_inner(
 
     let _ = fs::remove_dir_all(&work_dir);
 
+    let version = read_codex_app_version_from_install_root(install_root)
+        .unwrap_or_else(|| prepared.identity.version.clone());
+
     Ok(PortableInstallReport {
         success: true,
         install_root: install_root.to_string_lossy().into_owned(),
         executable_path: exe.exists().then(|| exe.to_string_lossy().into_owned()),
-        version: prepared.identity.version,
+        version,
         backup_path,
         shortcut_created,
         uninstall_entry_created,

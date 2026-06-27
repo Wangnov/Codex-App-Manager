@@ -7,7 +7,10 @@ use crate::EngineError;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowsRelease {
+    /// Human-facing Codex app version read from the app payload, e.g. 26.623.42026.
     pub version: String,
+    /// Four-part Windows MSIX package version, e.g. 26.623.5546.0.
+    pub package_version: String,
     pub released_at: Option<String>,
     pub package_moniker: String,
     pub architecture: Option<String>,
@@ -23,6 +26,8 @@ pub struct WindowsRelease {
 #[serde(rename_all = "camelCase")]
 struct MirrorManifest {
     schema_version: u64,
+    codex_version: Option<String>,
+    published_at: Option<String>,
     sources: Sources,
 }
 
@@ -35,6 +40,7 @@ struct Sources {
 #[serde(rename_all = "camelCase")]
 struct WindowsSource {
     version: Option<String>,
+    app_version: Option<String>,
     package_moniker: Option<String>,
     architecture: Option<String>,
     content_length: Option<u64>,
@@ -50,6 +56,7 @@ struct WindowsSource {
 #[serde(rename_all = "camelCase")]
 struct WindowsArchitectureSource {
     version: Option<String>,
+    app_version: Option<String>,
     package_moniker: Option<String>,
     architecture: Option<String>,
     content_length: Option<u64>,
@@ -89,16 +96,24 @@ pub fn parse_manifest_for_arch(
         return Err(err);
     }
 
+    let root_codex_version = manifest.codex_version.clone();
+    let root_published_at = manifest.published_at.clone();
     let windows = manifest.sources.windows;
-    let selected_architecture = preferred_architecture
-        .and_then(|arch| select_architecture(&windows.architectures, arch))
-        .or_else(|| select_architecture(&windows.architectures, "x64"));
+    let requested_architecture = preferred_architecture.and_then(normalize_architecture);
+    let selected_architecture =
+        select_architecture(&windows.architectures, requested_architecture.as_deref())?;
 
-    let version = selected_architecture
+    let package_version = selected_architecture
         .as_ref()
         .and_then(|(_, source)| source.version.clone())
         .or_else(|| windows.version.clone())
         .ok_or_else(|| EngineError::Manifest("missing Windows version".to_string()))?;
+    let version = selected_architecture
+        .as_ref()
+        .and_then(|(_, source)| source.app_version.clone())
+        .or_else(|| windows.app_version.clone())
+        .or(root_codex_version)
+        .unwrap_or_else(|| package_version.clone());
     let package_moniker = match selected_architecture.as_ref() {
         Some((_, source)) => source.package_moniker.clone(),
         None => windows.package_moniker.clone(),
@@ -117,12 +132,17 @@ pub fn parse_manifest_for_arch(
         None => windows.etag,
     };
     let released_at = match selected_architecture.as_ref() {
-        Some((_, source)) => source.last_modified.clone().or(windows.last_modified),
-        None => windows.last_modified,
+        Some((_, source)) => source
+            .last_modified
+            .clone()
+            .or(windows.last_modified)
+            .or(root_published_at),
+        None => windows.last_modified.or(root_published_at),
     };
 
     let release = WindowsRelease {
         version,
+        package_version,
         released_at,
         package_moniker,
         architecture,
@@ -138,8 +158,9 @@ pub fn parse_manifest_for_arch(
     };
     let arch = release.architecture.as_deref().unwrap_or("unknown");
     log::debug!(
-        "parse Windows manifest succeeded version={} package_moniker={} arch={arch}",
+        "parse Windows manifest succeeded version={} package_version={} package_moniker={} arch={arch}",
         release.version,
+        release.package_version,
         release.package_moniker
     );
     Ok(release)
@@ -147,16 +168,30 @@ pub fn parse_manifest_for_arch(
 
 fn select_architecture<'a>(
     architectures: &'a BTreeMap<String, WindowsArchitectureSource>,
-    requested_architecture: &str,
-) -> Option<(String, &'a WindowsArchitectureSource)> {
-    let requested = normalize_architecture(requested_architecture)?;
-    architectures
+    requested_architecture: Option<&str>,
+) -> Result<Option<(String, &'a WindowsArchitectureSource)>, EngineError> {
+    let Some(requested) = requested_architecture.or(Some("x64")) else {
+        return Ok(None);
+    };
+    if architectures.is_empty() {
+        return Ok(None);
+    }
+
+    let matching = architectures
         .iter()
-        .find(|(arch, source)| {
-            normalize_architecture(arch).as_deref() == Some(requested.as_str())
-                && source.downloadable.unwrap_or(true)
-        })
-        .map(|(_, source)| (requested, source))
+        .find(|(arch, _)| normalize_architecture(arch).as_deref() == Some(requested));
+    match matching {
+        Some((_, source)) if source.downloadable.unwrap_or(true) => {
+            Ok(Some((requested.to_string(), source)))
+        }
+        Some((_, _)) => Err(EngineError::Manifest(format!(
+            "Windows {requested} package is not available in the current mirror manifest"
+        ))),
+        None if requested == "arm64" => Err(EngineError::Manifest(
+            "Windows arm64 package is not available in the current mirror manifest".to_string(),
+        )),
+        None => Ok(None),
+    }
 }
 
 fn normalize_architecture(architecture: &str) -> Option<String> {
@@ -244,6 +279,7 @@ mod tests {
 
         let release = parse_manifest(json).unwrap();
         assert_eq!(release.version, "26.602.3474.0");
+        assert_eq!(release.package_version, "26.602.3474.0");
         assert_eq!(release.package_identity.as_deref(), Some("OpenAI.Codex"));
         assert_eq!(release.content_length, Some(566_504_666));
         assert_eq!(
@@ -251,6 +287,51 @@ mod tests {
             Some("Fri, 26 Jun 2026 05:10:43 GMT")
         );
         assert_eq!(release.download_architecture, None);
+    }
+
+    #[test]
+    fn parses_schema_v3_codex_app_version_separately_from_package_version() {
+        let json = r#"{
+          "schemaVersion": 3,
+          "codexVersion": "26.623.42026",
+          "publishedAt": "Sat, 27 Jun 2026 07:19:49 GMT",
+          "sources": {
+            "windows": {
+              "productId": "9PLM9XGG6VKS",
+              "version": "26.623.5546.0",
+              "appVersion": "26.623.42026",
+              "packageMoniker": "OpenAI.Codex_26.623.5546.0_x64__2p2nqsd0c76g0",
+              "contentLength": 671037642,
+              "lastModified": "Sat, 27 Jun 2026 05:28:48 GMT",
+              "architectures": {
+                "x64": {
+                  "architecture": "x64",
+                  "status": "downloadable",
+                  "downloadable": true,
+                  "version": "26.623.5546.0",
+                  "appVersion": "26.623.42026",
+                  "packageMoniker": "OpenAI.Codex_26.623.5546.0_x64__2p2nqsd0c76g0",
+                  "contentLength": 671037642,
+                  "lastModified": "Sat, 27 Jun 2026 05:28:48 GMT",
+                  "etag": "\"x64\""
+                }
+              },
+              "updateManifest": {
+                "storeProductId": "9PLM9XGG6VKS",
+                "packageIdentity": "OpenAI.Codex"
+              }
+            }
+          }
+        }"#;
+
+        let release = parse_manifest_for_arch(json, Some("x64")).unwrap();
+
+        assert_eq!(release.version, "26.623.42026");
+        assert_eq!(release.package_version, "26.623.5546.0");
+        assert_eq!(
+            release.package_moniker,
+            "OpenAI.Codex_26.623.5546.0_x64__2p2nqsd0c76g0"
+        );
     }
 
     #[test]
@@ -296,6 +377,8 @@ mod tests {
 
         let release = parse_manifest_for_arch(json, Some("arm64")).unwrap();
 
+        assert_eq!(release.version, "26.616.9593.0");
+        assert_eq!(release.package_version, "26.616.9593.0");
         assert_eq!(release.architecture.as_deref(), Some("arm64"));
         assert_eq!(
             release.package_moniker,
@@ -311,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_x64_when_requested_architecture_is_not_downloadable() {
+    fn rejects_requested_architecture_when_not_downloadable() {
         let json = r#"{
           "schemaVersion": 2,
           "sources": {
@@ -337,14 +420,11 @@ mod tests {
           }
         }"#;
 
-        let release = parse_manifest_for_arch(json, Some("arm64")).unwrap();
+        let err = parse_manifest_for_arch(json, Some("arm64")).unwrap_err();
 
-        assert_eq!(release.architecture.as_deref(), Some("x64"));
-        assert_eq!(
-            release.package_moniker,
-            "OpenAI.Codex_26.616.9593.0_x64__2p2nqsd0c76g0"
-        );
-        assert_eq!(release.download_architecture.as_deref(), Some("x64"));
+        assert!(err
+            .to_string()
+            .contains("Windows arm64 package is not available"));
     }
 
     #[test]

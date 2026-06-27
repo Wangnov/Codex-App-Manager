@@ -575,7 +575,7 @@ pub fn stage_windows_update_with_install_mode_and_network(
         let identity = read_msix_identity(&dest).map_err(engine_err)?;
         validate_codex_identity(
             &identity,
-            &report.release.version,
+            &report.release.package_version,
             report.release.architecture.as_deref(),
         )
         .map_err(engine_err)?;
@@ -1378,6 +1378,7 @@ mod tests {
     fn release() -> WindowsRelease {
         WindowsRelease {
             version: "26.602.3474.0".to_string(),
+            package_version: "26.602.3474.0".to_string(),
             released_at: None,
             package_moniker: "OpenAI.Codex_26.602.3474.0_x64__2p2nqsd0c76g0".to_string(),
             architecture: Some("x64".to_string()),

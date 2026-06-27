@@ -38,7 +38,10 @@ pub fn plan_update(
     let current_version = installed.as_ref().map(|i| i.version.clone());
     let up_to_date = current_version
         .as_ref()
-        .map(|current| compare_versions(current, &release.version).is_ge())
+        .map(|current| {
+            compare_versions(current, &release.version).is_ge()
+                || current.eq_ignore_ascii_case(&release.package_version)
+        })
         .unwrap_or(false);
 
     let route = match capabilities.recommendation {
@@ -73,6 +76,7 @@ mod tests {
     fn release() -> WindowsRelease {
         WindowsRelease {
             version: "26.602.3474.0".to_string(),
+            package_version: "26.602.3474.0".to_string(),
             released_at: None,
             package_moniker: "OpenAI.Codex_26.602.3474.0_x64__2p2nqsd0c76g0".to_string(),
             architecture: Some("x64".to_string()),
@@ -136,5 +140,83 @@ mod tests {
         );
         assert_eq!(plan.route, WinInstallRoute::PortableFallback);
         assert!(!plan.portable_fallback_ready);
+    }
+
+    #[test]
+    fn compares_codex_app_versions_not_msix_package_versions() {
+        let mut release = release();
+        release.version = "26.623.42026".to_string();
+        release.package_version = "26.623.5546.0".to_string();
+        release.package_moniker = "OpenAI.Codex_26.623.5546.0_x64__2p2nqsd0c76g0".to_string();
+        let capabilities = WinCapabilityReport::from_checks(
+            CapabilityCheck::available("present"),
+            CapabilityCheck::available("running"),
+            CapabilityCheck::available("AllowAllTrustedApps=1"),
+            CapabilityCheck::available("installed"),
+            CapabilityCheck::available("PackageManager activates"),
+            CapabilityCheck::unknown("not probed"),
+            vec![],
+        );
+        let installed = Some(InstalledWindowsCodex {
+            path: "C:/Program Files/WindowsApps/OpenAI.Codex".to_string(),
+            version: "26.623.42026".to_string(),
+            arch: Some("x64".to_string()),
+            source: "msix".to_string(),
+            package_family_name: Some("OpenAI.Codex_2p2nqsd0c76g0".to_string()),
+            installed_at: None,
+        });
+
+        let plan = plan_update(
+            &release,
+            "a".repeat(64).as_str(),
+            "https://example/win-x64",
+            &installed,
+            &capabilities,
+            true,
+        );
+
+        assert!(plan.up_to_date);
+        assert_eq!(plan.latest_version, "26.623.42026");
+        assert_eq!(
+            plan.package_moniker,
+            "OpenAI.Codex_26.623.5546.0_x64__2p2nqsd0c76g0"
+        );
+    }
+
+    #[test]
+    fn treats_matching_msix_package_version_as_current_when_app_version_is_unreadable() {
+        let mut release = release();
+        release.version = "26.623.42026".to_string();
+        release.package_version = "26.623.5546.0".to_string();
+        let capabilities = WinCapabilityReport::from_checks(
+            CapabilityCheck::available("present"),
+            CapabilityCheck::available("running"),
+            CapabilityCheck::available("AllowAllTrustedApps=1"),
+            CapabilityCheck::available("installed"),
+            CapabilityCheck::available("PackageManager activates"),
+            CapabilityCheck::unknown("not probed"),
+            vec![],
+        );
+        let installed = Some(InstalledWindowsCodex {
+            path: "C:/Program Files/WindowsApps/OpenAI.Codex".to_string(),
+            version: "26.623.5546.0".to_string(),
+            arch: Some("x64".to_string()),
+            source: "msix".to_string(),
+            package_family_name: Some("OpenAI.Codex_2p2nqsd0c76g0".to_string()),
+            installed_at: None,
+        });
+
+        let plan = plan_update(
+            &release,
+            "a".repeat(64).as_str(),
+            "https://example/win-x64",
+            &installed,
+            &capabilities,
+            true,
+        );
+
+        assert!(plan.up_to_date);
+        assert_eq!(plan.current_version.as_deref(), Some("26.623.5546.0"));
+        assert_eq!(plan.latest_version, "26.623.42026");
     }
 }
