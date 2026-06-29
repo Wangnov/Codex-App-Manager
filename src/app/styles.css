@@ -54,6 +54,13 @@
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1); /* quint-ish, for entrances */
   --ease-spring: cubic-bezier(0.34, 1.32, 0.5, 1); /* restrained overshoot */
+  --ease-sheet: cubic-bezier(0, 0, 0.2, 1);
+  --sheet-slide-distance: 28px;
+  --sheet-bottom-skirt: calc(var(--sheet-slide-distance) + 4px);
+
+  --window-gutter-x: 14px;
+  --window-gutter-top: 14px;
+  --window-gutter-bottom: 24px;
 
   --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
 }
@@ -214,7 +221,7 @@ body {
    shell shadow reaches about 22px below the card (6px offset + 16px blur), so the
    bottom gutter is slightly larger than the sides. */
 #root {
-  padding: 14px 14px 24px;
+  padding: var(--window-gutter-top) var(--window-gutter-x) var(--window-gutter-bottom);
 }
 button {
   font-family: inherit;
@@ -1572,11 +1579,11 @@ button.row.danger:hover {
 }
 /* Global quit-confirm overlay — raised by the backend close/exit guard so the
    ✕, Alt+F4 and Cmd+Q share one dialog. It lives at the app root (outside any
-   .pop), so it's `fixed` and inset to the window panel (the 14px gutter) with
-   the same radius, so the blur clips to the rounded window — not the gutter. */
+   .pop), so it's `fixed` and inset to the window panel with the same gutter
+   variables as #root, so the blur clips to the rounded window — not the gutter. */
 .quit-scrim {
   position: fixed;
-  inset: 14px;
+  inset: var(--window-gutter-top) var(--window-gutter-x) var(--window-gutter-bottom);
   border-radius: var(--r-lg);
   overflow: hidden;
   background: color-mix(in oklch, var(--bg) 55%, transparent);
@@ -1592,8 +1599,11 @@ button.row.danger:hover {
     opacity: 0;
   }
 }
-.sheet {
-  width: 100%;
+.sheet-frame {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
   background: linear-gradient(180deg, var(--surface-top), var(--surface));
   border: 1px solid var(--line-2);
   border-bottom: none;
@@ -1602,17 +1612,37 @@ button.row.danger:hover {
   box-shadow: var(--elev-3);
   padding: var(--space-md) var(--space-md) var(--space-sm);
   text-align: center;
-  animation: rise 0.32s var(--ease-out);
+  transform: translate3d(0, 0, 0);
+  will-change: transform, opacity;
+  animation: sheet-rise 0.32s var(--ease-sheet) both;
 }
-@keyframes rise {
+.sheet-frame::after {
+  content: "";
+  position: absolute;
+  left: -1px;
+  right: -1px;
+  bottom: calc(-1 * var(--sheet-bottom-skirt));
+  height: var(--sheet-bottom-skirt);
+  background: var(--surface);
+  pointer-events: none;
+}
+.sheet {
+  position: relative;
+  z-index: 1;
+}
+@keyframes sheet-rise {
   from {
-    transform: translateY(24px);
+    transform: translate3d(0, var(--sheet-slide-distance), 0);
     opacity: 0;
+  }
+  to {
+    transform: translate3d(0, 0, 0);
+    opacity: 1;
   }
 }
 /* Exit — the reverse of the entrances: the scrim fades and the sheet sinks back
    down. Driven by an animation (not a transition) so it fires reliably the
-   instant `.is-closing` lands — the resting `.sheet`/`.scrim` carry no
+   instant `.is-closing` lands — the resting `.sheet-frame`/`.scrim` carry no
    transition to interpolate from, so a same-frame transition wouldn't tween. The
    Sheet component holds the node mounted for the duration (CLOSE_MS) before
    unmounting, so dismiss no longer hard-cuts. */
@@ -1623,7 +1653,7 @@ button.row.danger:hover {
 }
 @keyframes sheet-sink {
   to {
-    transform: translateY(24px);
+    transform: translate3d(0, var(--sheet-slide-distance), 0);
     opacity: 0;
   }
 }
@@ -1631,17 +1661,18 @@ button.row.danger:hover {
 .quit-scrim.is-closing {
   animation: scrim-out 0.2s var(--ease) forwards;
 }
-.sheet.is-closing {
+.sheet-frame.is-closing {
   animation: sheet-sink 0.24s var(--ease-out) forwards;
 }
 /* Reduced-motion: no enter/exit movement (the component also unmounts at once). */
 @media (prefers-reduced-motion: reduce) {
   .scrim,
   .quit-scrim,
+  .sheet-frame,
   .sheet,
   .scrim.is-closing,
   .quit-scrim.is-closing,
-  .sheet.is-closing {
+  .sheet-frame.is-closing {
     animation: none;
   }
 }

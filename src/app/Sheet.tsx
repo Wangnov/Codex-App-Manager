@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 
 import { useFocusTrap } from "./useFocusTrap";
 
-// Keep in sync with the longest `.sheet.is-closing` exit transition in
+// Keep in sync with the longest `.sheet-frame.is-closing` exit transition in
 // styles.css — once it elapses the sheet is actually unmounted.
 const CLOSE_MS = 240;
 
@@ -73,15 +73,19 @@ export function Sheet({
   return (
     <div className={`${scrimClass}${closing ? " is-closing" : ""}`} onClick={dismiss}>
       <div
-        ref={sheetRef}
-        className={`sheet${closing ? " is-closing" : ""}`}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={labelledBy}
-        aria-describedby={describedBy}
+        className={`sheet-frame${closing ? " is-closing" : ""}`}
         onClick={(event) => event.stopPropagation()}
       >
-        {children}
+        <div
+          ref={sheetRef}
+          className="sheet"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={labelledBy}
+          aria-describedby={describedBy}
+        >
+          {children}
+        </div>
       </div>
     </div>
   );
