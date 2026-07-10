@@ -66,6 +66,10 @@ struct ActiveOp {
     /// Claimed leases are not subject to wall-clock stale reclaim.
     detached: bool,
     claimed: bool,
+    /// Number of live `validate` holders (DetachedGuard instances). `end` only
+    /// unlocks when the last holder releases, so concurrent guards cannot free
+    /// the lock while another worker still thinks it owns the lease.
+    holders: u32,
 }
 
 #[must_use = "持有 guard 才代表持有操作锁；提前 drop 会立即释放锁"]
@@ -140,24 +144,37 @@ impl OperationManager {
             .inner
             .lock()
             .map_err(|_| OperationError::Lock("operation mutex poisoned".to_string()))?;
-        self.reclaim_stale_detached(&mut inner)?;
-        let Some(active) = inner.active.as_ref() else {
-            log::warn!("end_operation received invalid token");
-            return Err(OperationError::InvalidToken);
-        };
-        if active.token != token.0 {
-            log::warn!("end_operation received mismatched token");
-            return Err(OperationError::InvalidToken);
+        // Matching token: release a holder (and unlock only on the last one)
+        // BEFORE stale reclaim, so an unclaimed-but-expired correct token still
+        // ends cleanly instead of self-reclaiming into InvalidToken.
+        if let Some(active) = inner.active.as_mut() {
+            if active.token == token.0 {
+                let active_kind = active.kind;
+                if active.holders > 0 {
+                    active.holders -= 1;
+                }
+                if active.holders > 0 {
+                    log::debug!(
+                        "released operation lease holder kind={} remaining={} token_prefix={}",
+                        active_kind.as_str(),
+                        active.holders,
+                        token_prefix(&token.0)
+                    );
+                    return Ok(());
+                }
+                Self::unlock_lock_file(&mut inner)?;
+                log::info!(
+                    "ended operation lock kind={} token_prefix={}",
+                    active_kind.as_str(),
+                    token_prefix(&token.0)
+                );
+                inner.active.take();
+                return Ok(());
+            }
         }
-        let active_kind = active.kind;
-        Self::unlock_lock_file(&mut inner)?;
-        log::info!(
-            "ended operation lock kind={} token_prefix={}",
-            active_kind.as_str(),
-            token_prefix(&token.0)
-        );
-        inner.active.take();
-        Ok(())
+        self.reclaim_stale_detached(&mut inner)?;
+        log::warn!("end_operation received invalid token");
+        Err(OperationError::InvalidToken)
     }
 
     pub fn validate(&self, token: &OperationToken) -> Result<(), OperationError> {
@@ -180,6 +197,7 @@ impl OperationManager {
                         token_prefix(&token.0)
                     );
                 }
+                active.holders = active.holders.saturating_add(1);
                 return Ok(());
             }
         }
@@ -254,6 +272,7 @@ impl OperationManager {
             started_unix,
             detached,
             claimed,
+            holders: 0,
         });
         log::info!(
             "acquired operation lock kind={} token_prefix={} detached={detached} claimed={claimed}",
@@ -485,13 +504,18 @@ mod tests {
         assert!(manager.is_busy());
 
         manager.validate(&token).unwrap();
-        // Second validate is a no-op success after claim.
+        // Second validate adds another holder (concurrent DetachedGuard) — still busy.
         manager.validate(&token).unwrap();
 
         assert!(matches!(
             manager.begin(OperationKind::Install),
             Err(OperationError::BusySameProcess("adopt"))
         ));
+        // First end only drops one holder; lock stays until the last end.
+        manager.end(token.clone()).unwrap();
+        assert!(manager.is_busy());
+        manager.end(token).unwrap();
+        assert!(!manager.is_busy());
 
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
