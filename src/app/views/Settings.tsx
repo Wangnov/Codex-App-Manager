@@ -1,7 +1,13 @@
-import { useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 
 import { errorMessage, managerApi } from "../../services/managerApi";
-import type { ProxyMode, UpdateSourceKind, WindowsInstallMode } from "../../shared/types";
+import type {
+  ConfigHealth,
+  ConfigWhich,
+  ProxyMode,
+  UpdateSourceKind,
+  WindowsInstallMode,
+} from "../../shared/types";
 import { DEFAULT_SETTINGS } from "../../shared/types";
 import { Icon } from "../icons";
 import { useI18n, LANGS, type Lang, type TFn, type TKey } from "../i18n";
@@ -11,6 +17,29 @@ import { isWindows } from "../platform";
 import { samePath } from "../paths";
 import { Sheet } from "../Sheet";
 import { useSettingsSaver } from "./useSettingsSaver";
+
+const OK_HEALTH: ConfigHealth = {
+  settingsStatus: "ok",
+  provenanceStatus: "ok",
+  unknownSource: null,
+  detail: null,
+  settingsBackupAvailable: false,
+  provenanceBackupAvailable: false,
+};
+
+function healthLabel(status: string, t: TFn): string {
+  if (status === "recovered") return t("settings.health.recovered");
+  if (status === "corrupt") return t("settings.health.corrupt");
+  return t("settings.health.ok");
+}
+
+function healthNeedsAttention(h: ConfigHealth): boolean {
+  return (
+    h.settingsStatus !== "ok" ||
+    h.provenanceStatus !== "ok" ||
+    Boolean(h.unknownSource)
+  );
+}
 
 const SOURCES: { kind: UpdateSourceKind; label: TKey; desc: TKey | "" }[] = [
   { kind: "auto", label: "settings.source.auto", desc: "settings.source.autoDesc" },
@@ -109,18 +138,63 @@ export function Settings({
   const [commandError, setCommandError] = useState<string | null>(null);
   const [langSheet, setLangSheet] = useState(false);
   const [customIntervalOpen, setCustomIntervalOpen] = useState(false);
+  const [configHealth, setConfigHealth] = useState<ConfigHealth>(OK_HEALTH);
+  const [healthBusy, setHealthBusy] = useState<string | null>(null);
+  const [healthNotice, setHealthNotice] = useState<string | null>(null);
+  const [healthConfirm, setHealthConfirm] = useState<
+    null | { kind: "restore" | "reset"; which: ConfigWhich }
+  >(null);
   const langTitleId = useId();
+  const healthConfirmTitleId = useId();
+  const healthConfirmBodyId = useId();
   // Prefix for the switch-row title ids — each Toggle names itself off its
   // visible row title via aria-labelledby.
   const switchId = useId();
 
+  const refreshHealth = useCallback(async () => {
+    try {
+      setConfigHealth(await managerApi.getConfigHealth());
+    } catch {
+      // Leave last-known health; surface via commandError only on explicit actions.
+    }
+  }, []);
+
   useEffect(() => {
     void managerApi.getSettings().then(reset).catch(() => undefined);
     void managerApi.getAutostart().then(setAutostart).catch(() => undefined);
+    void refreshHealth();
     if (win) {
       void managerApi.winDefaultInstallRoot().then(setDefaultInstallRoot).catch(() => undefined);
     }
-  }, [reset, win]);
+  }, [reset, win, refreshHealth]);
+
+  const runHealthAction = async (kind: "restore" | "reset", which: ConfigWhich) => {
+    setHealthConfirm(null);
+    setHealthBusy(`${kind}:${which}`);
+    setCommandError(null);
+    setHealthNotice(null);
+    try {
+      const next =
+        kind === "restore"
+          ? await managerApi.restoreConfigBackup(which)
+          : await managerApi.resetConfig(which);
+      setConfigHealth(next);
+      // Re-read verified health + reload settings so the form matches disk.
+      const verified = await managerApi.getConfigHealth();
+      setConfigHealth(verified);
+      try {
+        reset(await managerApi.getSettings());
+      } catch {
+        // Settings reload is best-effort after provenance-only ops.
+      }
+      setHealthNotice(t("settings.health.verified"));
+    } catch (cause) {
+      setCommandError(errorMessage(cause));
+      await refreshHealth();
+    } finally {
+      setHealthBusy(null);
+    }
+  };
 
   const pickInstallRoot = async () => {
     setCommandError(null);
@@ -182,10 +256,16 @@ export function Settings({
     update({ ...s, periodicCheckIntervalSeconds: intervalFromParts(nextParts) });
   };
 
+  const whichLabel = (which: ConfigWhich) =>
+    which === "settings" ? t("settings.health.settings") : t("settings.health.provenance");
+
   return (
     <div className="pop">
       <NavBar title={t("settings.title")} onBack={onBack} />
-      <div className="scroll view" inert={langSheet ? true : undefined}>
+      <div
+        className="scroll view"
+        inert={langSheet || healthConfirm ? true : undefined}
+      >
         {saveStatus === "saving" ? (
           <div className="banner info" role="status">
             <Icon name="loader" />
@@ -205,6 +285,89 @@ export function Settings({
             ) : null}
           </div>
         ) : null}
+        {healthNeedsAttention(configHealth) ? (
+          <div className="banner warn" role="status">
+            <Icon name="alert" />
+            <span>{t("settings.health.banner")}</span>
+          </div>
+        ) : null}
+        {healthNotice ? (
+          <div className="banner info" role="status">
+            <Icon name="check" />
+            <span>{healthNotice}</span>
+          </div>
+        ) : null}
+
+        {/* 配置健康 — persistent, with restore/reset consequence flows */}
+        <div className="group">
+          <div className="group-h">{t("settings.health.header")}</div>
+          <div className="list">
+            {(
+              [
+                {
+                  which: "settings" as const,
+                  status: configHealth.settingsStatus,
+                  backup: configHealth.settingsBackupAvailable,
+                },
+                {
+                  which: "provenance" as const,
+                  status: configHealth.provenanceStatus,
+                  backup: configHealth.provenanceBackupAvailable,
+                },
+              ] as const
+            ).map((row) => (
+              <div key={row.which} className="row" style={{ display: "block" }}>
+                <div className="rtext" style={{ marginBottom: 8 }}>
+                  <span className="rtitle">
+                    {whichLabel(row.which)}
+                    <span className="tag" style={{ marginInlineStart: 8 }}>
+                      {healthLabel(row.status, t)}
+                    </span>
+                  </span>
+                  {!row.backup ? (
+                    <span className="rsub">{t("settings.health.noBackup")}</span>
+                  ) : null}
+                </div>
+                <div className="install-root-actions">
+                  <button
+                    className="mini-action"
+                    disabled={Boolean(healthBusy) || !row.backup}
+                    onClick={() => setHealthConfirm({ kind: "restore", which: row.which })}
+                  >
+                    {healthBusy === `restore:${row.which}`
+                      ? t("settings.health.working")
+                      : t("settings.health.restore")}
+                  </button>
+                  <button
+                    className="mini-action"
+                    disabled={Boolean(healthBusy)}
+                    onClick={() => setHealthConfirm({ kind: "reset", which: row.which })}
+                  >
+                    {healthBusy === `reset:${row.which}`
+                      ? t("settings.health.working")
+                      : t("settings.health.reset")}
+                  </button>
+                </div>
+              </div>
+            ))}
+            {configHealth.unknownSource ? (
+              <div className="row">
+                <span className="rtext">
+                  <span className="rtitle">{t("settings.health.unknownSource")}</span>
+                  <span className="rsub mono">{configHealth.unknownSource}</span>
+                </span>
+              </div>
+            ) : null}
+            {configHealth.detail ? (
+              <div className="row">
+                <span className="rtext">
+                  <span className="rtitle">{t("settings.health.detail")}</span>
+                  <span className="rsub">{configHealth.detail}</span>
+                </span>
+              </div>
+            ) : null}
+          </div>
+        </div>
 
         {/* 更新源 */}
         <div className="group">
@@ -639,6 +802,50 @@ export function Settings({
           </div>
         </div>
       </div>
+
+      <Sheet
+        open={healthConfirm != null}
+        onDismiss={() => setHealthConfirm(null)}
+        labelledBy={healthConfirmTitleId}
+        describedBy={healthConfirmBodyId}
+        initialFocus="dismiss"
+      >
+        {healthConfirm ? (
+          <>
+            <h3 id={healthConfirmTitleId}>
+              {healthConfirm.kind === "restore"
+                ? t("settings.health.restoreConfirm.title", {
+                    which: whichLabel(healthConfirm.which),
+                  })
+                : t("settings.health.resetConfirm.title", {
+                    which: whichLabel(healthConfirm.which),
+                  })}
+            </h3>
+            <p id={healthConfirmBodyId}>
+              {healthConfirm.kind === "restore"
+                ? t("settings.health.restoreConfirm.body")
+                : healthConfirm.which === "settings"
+                  ? t("settings.health.resetConfirm.body.settings")
+                  : t("settings.health.resetConfirm.body.provenance")}
+            </p>
+            <div className="row2">
+              <button className="btn ghost" onClick={() => setHealthConfirm(null)}>
+                {t("confirm.cancel")}
+              </button>
+              <button
+                className="btn danger"
+                onClick={() =>
+                  void runHealthAction(healthConfirm.kind, healthConfirm.which)
+                }
+              >
+                {healthConfirm.kind === "restore"
+                  ? t("settings.health.restore")
+                  : t("settings.health.reset")}
+              </button>
+            </div>
+          </>
+        ) : null}
+      </Sheet>
 
       <Sheet
         open={langSheet}

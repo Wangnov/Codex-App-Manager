@@ -267,6 +267,14 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         );
         setConfirmOpen(false);
         setInstallDirOpen(false);
+        // Partial success (app installed, provenance failed): keep success path
+        // and surface a recovery notice — never treat as hard failure.
+        if (
+          result.success &&
+          result.outcome?.recoveryActions?.includes("record_provenance")
+        ) {
+          setNotice(t("install.partial.note"));
+        }
         await refreshStatus();
         await check();
       } catch (cause) {

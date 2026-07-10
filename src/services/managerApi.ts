@@ -2,9 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 
 import type {
+  AncillaryRetryReport,
+  AncillaryRetryRequest,
   AppSettings,
   CommandError,
   CodexUpdatePlatform,
+  ConfigHealth,
+  ConfigWhich,
   Diagnostics,
   MacInstallStatus,
   MacPerformReport,
@@ -19,7 +23,7 @@ import type {
   WinUninstallReport,
   WinUpdateReport,
 } from "../shared/types";
-import { DEFAULT_SETTINGS } from "../shared/types";
+import { DEFAULT_SETTINGS, emptyOperationOutcome } from "../shared/types";
 
 const SETTINGS_LS = "cam.settings";
 export const SETTINGS_CHANGED_EVENT = "cam:settings-changed";
@@ -347,6 +351,11 @@ const WIN_FALLBACK_PERFORM: WinPerformReport = {
   fallbackAvailable: true,
   fallbackAttempted: false,
   notes: ["browser-dev mock: install path is simulated."],
+  outcome: emptyOperationOutcome({
+    primaryOk: true,
+    appState: "present",
+    installClass: "managed",
+  }),
 };
 
 const WIN_FALLBACK_UNINSTALL: WinUninstallReport = {
@@ -368,6 +377,20 @@ const WIN_FALLBACK_UNINSTALL: WinUninstallReport = {
   },
   purgedUserData: false,
   notes: ["User data was preserved."],
+  outcome: emptyOperationOutcome({
+    primaryOk: true,
+    appState: "absent",
+    installClass: "none",
+  }),
+};
+
+const FALLBACK_CONFIG_HEALTH: ConfigHealth = {
+  settingsStatus: "ok",
+  provenanceStatus: "ok",
+  unknownSource: null,
+  detail: null,
+  settingsBackupAvailable: false,
+  provenanceBackupAvailable: false,
 };
 
 const FALLBACK_DIAGNOSTICS: Diagnostics = {
@@ -379,12 +402,7 @@ const FALLBACK_DIAGNOSTICS: Diagnostics = {
   customSourceHost: null,
   windowsInstallMode: null,
   installStatus: "browser preview",
-  configHealth: {
-    settingsStatus: "ok",
-    provenanceStatus: "ok",
-    unknownSource: null,
-    detail: null,
-  },
+  configHealth: { ...FALLBACK_CONFIG_HEALTH },
   logsDir: null,
   recentErrors: [],
   logTail: "",
@@ -738,10 +756,50 @@ export const managerApi = {
         removed: true,
         keptCodexHome: keepCodexHome,
         message: keepCodexHome ? "（浏览器开发态）已卸载,保留数据" : "（浏览器开发态）已卸载并清除数据",
+        outcome: emptyOperationOutcome({
+          primaryOk: true,
+          appState: "absent",
+          installClass: "none",
+          cleanup: {
+            state: keepCodexHome ? "skipped" : "ok",
+            detail: keepCodexHome ? "kept user data" : null,
+          },
+        }),
       });
     }
     const token = await managerApi.armDestructive("uninstall");
     return invoke<MacUninstallReport>("mac_uninstall", { confirm: true, token, keepCodexHome });
+  },
+  getConfigHealth(): Promise<ConfigHealth> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve({ ...FALLBACK_CONFIG_HEALTH });
+    }
+    return invoke<ConfigHealth>("get_config_health");
+  },
+  restoreConfigBackup(which: ConfigWhich): Promise<ConfigHealth> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve({ ...FALLBACK_CONFIG_HEALTH });
+    }
+    return invoke<ConfigHealth>("restore_config_backup", { which });
+  },
+  resetConfig(which: ConfigWhich): Promise<ConfigHealth> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve({ ...FALLBACK_CONFIG_HEALTH });
+    }
+    return invoke<ConfigHealth>("reset_config", { which });
+  },
+  retryAncillary(request: AncillaryRetryRequest): Promise<AncillaryRetryReport> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve({
+        message: "browser-dev mock: ancillary retry ok",
+        outcome: emptyOperationOutcome({
+          primaryOk: true,
+          appState: "unknown",
+          installClass: null,
+        }),
+      });
+    }
+    return invoke<AncillaryRetryReport>("retry_ancillary", { request });
   },
   winPlanUpdate(): Promise<WinUpdateReport> {
     if (!hasTauriRuntime()) {

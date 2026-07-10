@@ -327,7 +327,8 @@ impl AppSettings {
                 StoreLoadHealth::corrupt("无法定位 settings.json 数据目录".to_string()),
             );
         };
-        if !path.exists() && !atomic_file::backup_path(&path).exists() {
+        let backup_available = atomic_file::backup_path(&path).exists();
+        if !path.exists() && !backup_available {
             return (Self::default(), StoreLoadHealth::ok());
         }
 
@@ -347,6 +348,7 @@ impl AppSettings {
                 )
             }
         };
+        health.backup_available = backup_available;
 
         let mut settings = match raw {
             Some(raw) => {

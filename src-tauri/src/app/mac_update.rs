@@ -23,6 +23,7 @@ use codex_mac_engine::{
 };
 
 use crate::app::disk;
+use crate::app::operation_outcome::{recovery, OperationOutcome, StepOutcome};
 use crate::app::provenance::ProvenanceStore;
 use crate::app::settings_store::UpdateSource;
 use crate::app::staging::{self, StagingDir};
@@ -1141,6 +1142,10 @@ pub struct MacInstallStatus {
     /// operations stay safe regardless (they re-verify path + build + identity).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ambiguous_paths: Option<Vec<String>>,
+    /// Present after install (or other mutators) that can partial-succeed.
+    /// Absent on plain status probes so the contract stays light.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<OperationOutcome>,
 }
 
 /// Classify the installed Codex against our provenance store.
@@ -1168,6 +1173,7 @@ pub fn mac_install_status() -> MacInstallStatus {
         installed,
         status,
         ambiguous_paths,
+        outcome: None,
     }
 }
 
@@ -1340,21 +1346,37 @@ fn install_macos_in_staging(
     std::fs::rename(&out_app, install_path)
         .map_err(|e| AppError::Engine(format!("写入 {} 失败: {e}", install_dir.display())))?;
 
+    let mut outcome = OperationOutcome::full_success("present", Some("managed"));
+    outcome.cleanup = StepOutcome::not_applicable();
     if let Some((path, build)) = sys::installed_codex_build() {
         let mut store = ProvenanceStore::load();
         store.record(path, build, "manager-installed");
-        // The app is on disk now; if we can't persist provenance the install
-        // would be misclassified as external, so surface it (the install
-        // succeeded — the user just needs to re-adopt from the main screen).
-        store.save().map_err(|e| {
-            AppError::Engine(format!(
-                "已安装 Codex,但来源记录保存失败（{e}）;请在主界面「开始管理」纳入管理"
-            ))
-        })?;
+        // The app is on disk now. Provenance save is ancillary: never turn a
+        // landed install into a hard failure (that would invite a re-install).
+        if let Err(e) = store.save() {
+            let detail = format!("托管记录保存失败（{e}）");
+            outcome.provenance = StepOutcome::failed(detail.clone());
+            outcome.push_warning(format!(
+                "{detail}；应用已在磁盘上，请用「开始管理」重试写入托管记录，勿重复安装"
+            ));
+            outcome.push_recovery(recovery::RECORD_PROVENANCE);
+            outcome.install_class = Some("external".to_string());
+        }
+    } else {
+        outcome.provenance = StepOutcome::failed("安装后未能读取 bundle 版本，托管记录未写入");
+        outcome.push_warning("已写入应用，但未能确认版本；请重新检查状态或「开始管理」".to_string());
+        outcome.push_recovery(recovery::RECORD_PROVENANCE);
+        outcome.install_class = Some("external".to_string());
     }
     // Do NOT auto-launch — the UI shows a completion state with an explicit
     // 〔打开 Codex〕 button so opening is the user's choice, not a surprise.
-    Ok(mac_install_status())
+    let mut status = mac_install_status();
+    // Prefer the live classification after the attempted record write.
+    if outcome.provenance.is_failed() {
+        status.status = "external".to_string();
+    }
+    status.outcome = Some(outcome);
+    Ok(status)
 }
 
 /// Open the installed Codex.app — invoked by the UI's explicit 〔打开 Codex〕
@@ -1457,6 +1479,8 @@ pub struct MacUninstallReport {
     pub removed: bool,
     pub kept_codex_home: bool,
     pub message: String,
+    /// Structured primary/ancillary result for partial-success recovery.
+    pub outcome: OperationOutcome,
 }
 
 /// Remove the installed Codex app. Only uninstalls an install THIS manager
@@ -1492,15 +1516,24 @@ pub fn uninstall_macos(keep_codex_home: bool) -> Result<MacUninstallReport, AppE
     std::fs::remove_dir_all(&install_path)
         .map_err(|e| AppError::Engine(format!("remove app bundle: {e}")))?;
 
+    let mut outcome = OperationOutcome::full_success("absent", Some("none"));
+    let removed_path = installed.path.clone();
+
     // The app is gone — drop the provenance record. If the write fails, surface
     // it: a stale record could misclassify a same-path/same-build reinstall.
     store.managed.retain(|r| r.path != installed.path);
-    let prov_saved = store.save().is_ok();
+    if let Err(e) = store.save() {
+        let detail = format!("托管记录清除失败（{e}）");
+        outcome.provenance = StepOutcome::failed(detail.clone());
+        outcome.push_warning(detail);
+        outcome.push_recovery(recovery::CLEAR_PROVENANCE);
+    }
 
     // Only ever touch ~/.codex when the user explicitly opted out of keeping it.
     // If the removal fails (e.g. permissions), report honestly rather than
     // claiming the data was cleared.
     let (kept_codex_home, mut message) = if keep_codex_home {
+        outcome.cleanup = StepOutcome::skipped("保留用户数据 ~/.codex");
         (true, "已卸载 Codex,保留了 ~/.codex".to_string())
     } else {
         // Best-effort, non-fatal: a purge failure must not abort the uninstall
@@ -1517,27 +1550,148 @@ pub fn uninstall_macos(keep_codex_home: bool) -> Result<MacUninstallReport, AppE
             }
         }
         match purge_err {
-            None => (false, "已卸载 Codex,并清除了 ~/.codex".to_string()),
-            Some(err) => (
-                true,
-                format!("已卸载 Codex,但 ~/.codex 清除失败,数据仍保留: {err}"),
-            ),
+            None => {
+                outcome.cleanup = StepOutcome::ok_detail("已清除 ~/.codex");
+                (false, "已卸载 Codex,并清除了 ~/.codex".to_string())
+            }
+            Some(err) => {
+                let detail = format!("~/.codex 清除失败,数据仍保留: {err}");
+                outcome.cleanup = StepOutcome::failed(detail.clone());
+                outcome.push_warning(detail.clone());
+                outcome.push_recovery(recovery::PURGE_USER_DATA);
+                (true, format!("已卸载 Codex,但 {detail}"))
+            }
         }
     };
-    if !prov_saved {
-        message.push_str("；托管记录更新失败,请重新检查管理状态");
+    if outcome.provenance.is_failed() {
+        message.push_str("；托管记录更新失败,可仅重试清除记录（无需再卸载）");
+    }
+    // Stash the removed path in a warning so recovery can target it.
+    if outcome.provenance.is_failed() {
+        outcome.push_warning(format!("path:{removed_path}"));
     }
 
     let report = MacUninstallReport {
         removed: true,
         kept_codex_home,
         message,
+        outcome,
     };
     log::info!(
         "macOS uninstall complete keep_codex_home={}",
         report.kept_codex_home
     );
     Ok(report)
+}
+
+/// Retry only failed ancillary steps after a macOS uninstall (or install
+/// provenance write). Never re-deletes the app bundle.
+pub fn retry_macos_ancillary(
+    actions: &[String],
+    path: Option<&str>,
+    purge_user_data: bool,
+) -> Result<crate::app::operation_outcome::AncillaryRetryReport, AppError> {
+    use crate::app::operation_outcome::AncillaryRetryReport;
+
+    let mut outcome = OperationOutcome {
+        primary_ok: true,
+        app_state: "unknown".to_string(),
+        install_class: None,
+        provenance: StepOutcome::not_applicable(),
+        cleanup: StepOutcome::not_applicable(),
+        warnings: Vec::new(),
+        recovery_actions: Vec::new(),
+    };
+    let mut messages = Vec::new();
+
+    if actions.iter().any(|a| a == recovery::RECORD_PROVENANCE) {
+        // Re-record currently detected install as managed — same as adopt, but
+        // as an explicit recovery path for "installed, record failed".
+        match detect_managed_installed().or_else(detect_installed) {
+            Some(installed) => {
+                let mut store = ProvenanceStore::load();
+                store.record(
+                    installed.path.clone(),
+                    installed.build,
+                    "manager-installed",
+                );
+                match store.save() {
+                    Ok(()) => {
+                        outcome.provenance = StepOutcome::ok();
+                        outcome.app_state = "present".to_string();
+                        outcome.install_class = Some("managed".to_string());
+                        messages.push("托管记录已重新写入".to_string());
+                    }
+                    Err(e) => {
+                        outcome.provenance = StepOutcome::failed(e.to_string());
+                        outcome.push_recovery(recovery::RECORD_PROVENANCE);
+                        messages.push(format!("托管记录写入仍失败: {e}"));
+                    }
+                }
+            }
+            None => {
+                outcome.provenance = StepOutcome::failed("未检测到可记录的 Codex 安装");
+                outcome.app_state = "absent".to_string();
+                messages.push("未检测到 Codex，无法写入托管记录".to_string());
+            }
+        }
+    }
+
+    if actions.iter().any(|a| a == recovery::CLEAR_PROVENANCE) {
+        let mut store = ProvenanceStore::load();
+        if let Some(path) = path {
+            store.remove(path);
+        } else {
+            // Drop records whose path no longer exists (stale after uninstall).
+            store.managed.retain(|r| Path::new(&r.path).exists());
+        }
+        match store.save() {
+            Ok(()) => {
+                outcome.provenance = StepOutcome::ok();
+                messages.push("陈旧托管记录已清除".to_string());
+            }
+            Err(e) => {
+                outcome.provenance = StepOutcome::failed(e.to_string());
+                outcome.push_recovery(recovery::CLEAR_PROVENANCE);
+                messages.push(format!("清除托管记录仍失败: {e}"));
+            }
+        }
+    }
+
+    if actions.iter().any(|a| a == recovery::PURGE_USER_DATA) && purge_user_data {
+        let mut purge_err: Option<String> = None;
+        if let Ok(home) = std::env::var("HOME") {
+            let codex_home = PathBuf::from(home).join(".codex");
+            if codex_home.exists() {
+                if let Err(e) = std::fs::remove_dir_all(&codex_home) {
+                    purge_err = Some(e.to_string());
+                }
+            }
+        }
+        match purge_err {
+            None => {
+                outcome.cleanup = StepOutcome::ok_detail("已清除 ~/.codex");
+                messages.push("用户数据已清除".to_string());
+            }
+            Some(err) => {
+                outcome.cleanup = StepOutcome::failed(err.clone());
+                outcome.push_recovery(recovery::PURGE_USER_DATA);
+                messages.push(format!("清除用户数据仍失败: {err}"));
+            }
+        }
+    }
+
+    if messages.is_empty() {
+        return Err(AppError::Internal(
+            "没有可执行的恢复步骤（请传入 record_provenance / clear_provenance / purge_user_data）"
+                .to_string(),
+        ));
+    }
+
+    Ok(AncillaryRetryReport {
+        message: messages.join("；"),
+        outcome,
+    })
 }
 
 #[cfg(test)]

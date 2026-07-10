@@ -1,6 +1,8 @@
-import { useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 
 import { errorMessage, managerApi } from "../../services/managerApi";
+import type { InstallProbeState, OperationOutcome } from "../../shared/types";
+import { outcomeIsPartial } from "../../shared/types";
 import { Icon } from "../icons";
 import { useI18n } from "../i18n";
 import { NavBar, Ring, Toggle } from "../components";
@@ -15,6 +17,14 @@ function hasTauriRuntime(): boolean {
   );
 }
 
+function pathFromOutcome(outcome: OperationOutcome | null): string | null {
+  if (!outcome) return null;
+  for (const w of outcome.warnings) {
+    if (w.startsWith("path:")) return w.slice("path:".length);
+  }
+  return null;
+}
+
 export function Uninstall({ onBack }: { onBack: () => void }) {
   const { t } = useI18n();
   const platform = currentPlatform();
@@ -27,8 +37,11 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
   const [done, setDone] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pathCopied, setPathCopied] = useState(false);
-  // Only a managed install may be uninstalled — mirror the backend boundary.
-  const [managed, setManaged] = useState<boolean | null>(null);
+  // Install probe: Loading / Managed / External / None / Error — never treat a
+  // status-query failure as "external".
+  const [probe, setProbe] = useState<InstallProbeState>("loading");
+  const [partialOutcome, setPartialOutcome] = useState<OperationOutcome | null>(null);
+  const [retryBusy, setRetryBusy] = useState(false);
   // Confirmation gate: 0 = none, 1 = first confirm, 2 = data-purge confirm
   // (only reached when the user opted out of keeping data — a 3rd tap total).
   const [confirmStep, setConfirmStep] = useState<0 | 1 | 2>(0);
@@ -38,20 +51,37 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
   const confirm2BodyId = useId();
   const keepDataTitleId = useId();
 
-  useEffect(() => {
-    const load = win ? managerApi.winStatus() : managerApi.macStatus();
-    void load.then((s) => setManaged(s.status === "managed")).catch(() => setManaged(false));
+  const refreshProbe = useCallback(async () => {
+    setProbe("loading");
+    try {
+      const s = win ? await managerApi.winStatus() : await managerApi.macStatus();
+      if (s.status === "managed") setProbe("managed");
+      else if (s.status === "external") setProbe("external");
+      else setProbe("none");
+    } catch {
+      setProbe("error");
+    }
   }, [win]);
+
+  useEffect(() => {
+    void refreshProbe();
+  }, [refreshProbe]);
 
   const run = async () => {
     setConfirmStep(0);
     setBusy(true);
     setError(null);
+    setPartialOutcome(null);
     try {
       // mac keeps ~/.codex via keepCodexHome; win purges via purgeUserData (the
       // inverse) — both surface the backend message as the source of truth.
       if (win) {
         const r = await managerApi.winUninstall(true, !keepData);
+        if (r.success && outcomeIsPartial(r.outcome)) {
+          setPartialOutcome(r.outcome);
+          setDone(r.message);
+          return;
+        }
         if (!r.success) {
           setError(r.message);
           return;
@@ -59,6 +89,11 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
         setDone(r.message);
       } else {
         const r = await managerApi.macUninstall(keepData);
+        if (r.removed && outcomeIsPartial(r.outcome)) {
+          setPartialOutcome(r.outcome);
+          setDone(r.message);
+          return;
+        }
         if (!r.removed) {
           setError(r.message);
           return;
@@ -69,6 +104,28 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
       setError(errorMessage(cause));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const retryActions = async (actions: string[]) => {
+    setRetryBusy(true);
+    setError(null);
+    try {
+      const report = await managerApi.retryAncillary({
+        actions,
+        path: pathFromOutcome(partialOutcome),
+        purgeUserData: actions.includes("purge_user_data"),
+      });
+      setDone(report.message);
+      if (outcomeIsPartial(report.outcome)) {
+        setPartialOutcome(report.outcome);
+      } else {
+        setPartialOutcome(null);
+      }
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setRetryBusy(false);
     }
   };
 
@@ -91,6 +148,8 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
     }
   };
 
+  const canUninstall = probe === "managed";
+
   return (
     <div className="pop">
       <NavBar title={t("uninstall.heading")} onBack={onBack} />
@@ -98,10 +157,66 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
         {done ? (
           <>
             <section className="hero" style={{ marginTop: 16 }}>
-              <Ring icon="check" variant="success" className="pop" />
+              <Ring
+                icon={partialOutcome ? "alert" : "check"}
+                variant={partialOutcome ? "amber" : "success"}
+                className="pop"
+              />
               <div className="headline">{t("uninstall.heading")}</div>
               <div className="desc">{done}</div>
             </section>
+            {partialOutcome ? (
+              <>
+                <div className="banner warn">
+                  <Icon name="alert" />
+                  <span>{t("uninstall.partial.title")}</span>
+                </div>
+                <div className="actions">
+                  {partialOutcome.recoveryActions.includes("cleanup_metadata") ? (
+                    <button
+                      className="btn big"
+                      disabled={retryBusy}
+                      onClick={() => void retryActions(["cleanup_metadata"])}
+                    >
+                      {t("uninstall.partial.retryCleanup")}
+                    </button>
+                  ) : null}
+                  {partialOutcome.recoveryActions.includes("clear_provenance") ? (
+                    <button
+                      className="btn big"
+                      disabled={retryBusy}
+                      onClick={() => void retryActions(["clear_provenance"])}
+                    >
+                      {t("uninstall.partial.retryProvenance")}
+                    </button>
+                  ) : null}
+                  {partialOutcome.recoveryActions.includes("purge_user_data") ? (
+                    <button
+                      className="btn big"
+                      disabled={retryBusy}
+                      onClick={() => void retryActions(["purge_user_data"])}
+                    >
+                      {t("uninstall.partial.retryPurge")}
+                    </button>
+                  ) : null}
+                  {partialOutcome.recoveryActions.includes("record_provenance") ? (
+                    <button
+                      className="btn big"
+                      disabled={retryBusy}
+                      onClick={() => void retryActions(["record_provenance"])}
+                    >
+                      {t("uninstall.partial.retryRecord")}
+                    </button>
+                  ) : null}
+                </div>
+              </>
+            ) : null}
+            {error ? (
+              <div className="banner err">
+                <Icon name="alert" />
+                <span>{error}</span>
+              </div>
+            ) : null}
             <button className="btn ghost big" onClick={onBack}>
               {t("nav.back")}
             </button>
@@ -116,6 +231,37 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
               <div className="desc">{t("uninstall.warn")}</div>
             </section>
 
+            {probe === "loading" ? (
+              <div className="banner info" role="status">
+                <Icon name="loader" />
+                <span>{t("uninstall.status.loading")}</span>
+              </div>
+            ) : null}
+
+            {probe === "error" ? (
+              <div className="banner err">
+                <Icon name="alert" />
+                <span>{t("uninstall.status.error")}</span>
+                <button className="linkbtn" onClick={() => void refreshProbe()}>
+                  {t("settings.retry")}
+                </button>
+              </div>
+            ) : null}
+
+            {probe === "none" ? (
+              <div className="banner info">
+                <Icon name="info" />
+                <span>{t("uninstall.status.none")}</span>
+              </div>
+            ) : null}
+
+            {probe === "external" ? (
+              <div className="banner info">
+                <Icon name="info" />
+                <span>{t("uninstall.needAdopt")}</span>
+              </div>
+            ) : null}
+
             <div className="list">
               <div className="row">
                 <span className="rtext">
@@ -126,12 +272,12 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
                   ariaLabelledBy={keepDataTitleId}
                   checked={keepData}
                   onChange={setKeepData}
-                  disabled={busy}
+                  disabled={busy || !canUninstall}
                 />
               </div>
             </div>
 
-            {managed === true ? (
+            {probe === "managed" ? (
               <div className="list">
                 <div className={`row data-path-row${keepData ? "" : " danger"}`}>
                   <span className="rtext">
@@ -158,13 +304,6 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
               </div>
             ) : null}
 
-            {managed === false ? (
-              <div className="banner info">
-                <Icon name="info" />
-                <span>{t("uninstall.needAdopt")}</span>
-              </div>
-            ) : null}
-
             {error ? (
               <div className="banner err">
                 <Icon name="alert" />
@@ -176,7 +315,7 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
               <button
                 className="btn danger big"
                 onClick={() => setConfirmStep(1)}
-                disabled={busy || managed !== true}
+                disabled={busy || !canUninstall}
               >
                 <Icon name="trash" />
                 {busy ? t("uninstall.working") : t("uninstall.confirm")}
@@ -220,7 +359,7 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
         describedBy={confirm2BodyId}
         initialFocus="dismiss"
       >
-        <Ring icon="alert" variant="danger" />
+        <Ring icon="trash" variant="danger" />
         <h3 id={confirm2TitleId}>{t("uninstall.confirm2.title")}</h3>
         <p id={confirm2BodyId}>{t("uninstall.confirm2.body", { path: codexHome })}</p>
         <div className="row2">

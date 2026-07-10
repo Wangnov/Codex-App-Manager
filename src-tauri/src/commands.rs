@@ -16,9 +16,11 @@ use crate::app::mac_update::{
     cancel_macos_download, detect_existing_install_at_path as detect_macos_install_at_path,
     discard_macos_download, install_macos_with_network, mac_adopt_path as adopt_macos_path,
     pause_macos_download, perform_macos_update_with_network, plan_macos_update_with_network,
-    stage_macos_update_with_network, uninstall_macos, InstalledCodex, MacInstallStatus,
-    MacPerformReport, MacStageReport, MacUninstallReport, MacUpdateReport, PerformExpectation,
+    retry_macos_ancillary, stage_macos_update_with_network, uninstall_macos, InstalledCodex,
+    MacInstallStatus, MacPerformReport, MacStageReport, MacUninstallReport, MacUpdateReport,
+    PerformExpectation,
 };
+use crate::app::operation_outcome::{AncillaryRetryReport, AncillaryRetryRequest};
 use crate::app::oplock::{
     OperationError, OperationGuard, OperationKind, OperationManager, OperationToken,
 };
@@ -33,8 +35,9 @@ use crate::app::win_update::{
     discard_windows_download, pause_windows_download,
     perform_windows_update_with_install_mode_and_network,
     plan_windows_update_with_install_mode_and_network,
-    stage_windows_update_with_install_mode_and_network, uninstall_windows_codex,
-    win_adopt as adopt_windows_install, win_adopt_path as adopt_windows_path, win_install_status,
+    retry_windows_ancillary, stage_windows_update_with_install_mode_and_network,
+    uninstall_windows_codex, win_adopt as adopt_windows_install,
+    win_adopt_path as adopt_windows_path, win_install_status,
     DownloadProgress as WinDownloadProgress, WinAutoStageReport, WinInstallStatus,
     WinPerformExpectation, WinPerformReport, WinStageReport, WinUninstallReport, WinUpdateReport,
 };
@@ -325,7 +328,7 @@ fn destructive_token_error(err: OperationError) -> CommandError {
 fn refresh_config_health(state: &ManagerState) -> ConfigHealth {
     let (_, settings_health) = PersistedAppSettings::load_with_health();
     let (_, provenance_health) = ProvenanceStore::load_with_health();
-    let health = ConfigHealth::from_parts(settings_health, provenance_health);
+    let health = ConfigHealth::from_parts(settings_health, provenance_health).with_live_backup_flags();
     let mut slot = state
         .config_health
         .lock()
@@ -855,11 +858,9 @@ pub fn set_settings(
 
 #[tauri::command]
 pub fn get_config_health(state: State<'_, ManagerState>) -> ConfigHealth {
-    state
-        .config_health
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .clone()
+    // Always re-read from disk so the UI sees post-restore/reset truth, not a
+    // stale snapshot taken at process start.
+    refresh_config_health(&state)
 }
 
 #[tauri::command]
@@ -892,7 +893,20 @@ pub fn restore_config_backup(
         let _ = std::fs::remove_file(current_tmp);
     }
     log::info!("restored config backup which={which}");
-    Ok(refresh_config_health(&state))
+    // Re-read + re-verify; never claim success without a fresh health probe.
+    let health = refresh_config_health(&state);
+    let status = match which.as_str() {
+        "settings" => health.settings_status.as_str(),
+        "provenance" => health.provenance_status.as_str(),
+        _ => "ok",
+    };
+    if status == "corrupt" {
+        return Err(AppError::Internal(format!(
+            "已从 .bak 还原 {which}，但重新读取仍判定为损坏"
+        ))
+        .into());
+    }
+    Ok(health)
 }
 
 #[tauri::command]
@@ -918,7 +932,42 @@ pub fn reset_config(
         }
     }
     log::info!("reset config which={which}");
-    Ok(refresh_config_health(&state))
+    let health = refresh_config_health(&state);
+    let status = match which.as_str() {
+        "settings" => health.settings_status.as_str(),
+        "provenance" => health.provenance_status.as_str(),
+        _ => "ok",
+    };
+    if status == "corrupt" {
+        return Err(AppError::Internal(format!(
+            "已重置 {which}，但重新读取仍判定为损坏"
+        ))
+        .into());
+    }
+    Ok(health)
+}
+
+/// Retry only failed ancillary steps after a partial install/uninstall.
+/// Never re-runs full install or uninstall of the app itself.
+#[tauri::command]
+pub fn retry_ancillary(
+    state: State<'_, ManagerState>,
+    request: AncillaryRetryRequest,
+) -> Result<AncillaryRetryReport, CommandError> {
+    let _op = begin_guard(&state, OperationKind::Adopt)?;
+    let actions = &request.actions;
+    let path = request.path.as_deref();
+    let purge = request.purge_user_data;
+    match state.target.os {
+        OperatingSystem::Macos => {
+            retry_macos_ancillary(actions, path, purge).map_err(Into::into)
+        }
+        OperatingSystem::Windows => {
+            let settings = windows_domain_settings_for_persisted(&state);
+            retry_windows_ancillary(&settings, actions, path, purge).map_err(Into::into)
+        }
+        _ => Err(AppError::UnsupportedPlatform.into()),
+    }
 }
 
 #[tauri::command]

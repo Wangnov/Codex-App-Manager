@@ -89,6 +89,45 @@ export interface MacPerformReport {
 
 export type InstallClass = "managed" | "external" | "none";
 
+/** UI-facing install probe state — distinguishes a failed status query from
+ *  "external" so we never mislabel probe errors as unmanaged installs. */
+export type InstallProbeState = "loading" | "managed" | "external" | "none" | "error";
+
+/** Ancillary step result inside a structured operation outcome. */
+export interface StepOutcome {
+  /** "ok" | "failed" | "skipped" | "not_applicable" */
+  state: string;
+  detail: string | null;
+}
+
+/**
+ * Structured result of install/uninstall (and similar) ops.
+ * Primary work can succeed while provenance/cleanup fail — the UI must show
+ * disk truth and only retry the failed ancillary steps.
+ */
+export interface OperationOutcome {
+  primaryOk: boolean;
+  /** "present" | "absent" | "unknown" */
+  appState: string;
+  installClass: InstallClass | string | null;
+  provenance: StepOutcome;
+  cleanup: StepOutcome;
+  warnings: string[];
+  /** Stable keys: record_provenance | clear_provenance | cleanup_metadata | purge_user_data */
+  recoveryActions: string[];
+}
+
+export interface AncillaryRetryRequest {
+  actions: string[];
+  path?: string | null;
+  purgeUserData?: boolean;
+}
+
+export interface AncillaryRetryReport {
+  outcome: OperationOutcome;
+  message: string;
+}
+
 export interface MacInstallStatus {
   installed: InstalledCodex | null;
   status: InstallClass;
@@ -96,6 +135,8 @@ export interface MacInstallStatus {
    *  Codex.app plus a hand-dragged post-rebrand ChatGPT.app); the user should
    *  adopt one explicitly. Absent when unambiguous. */
   ambiguousPaths?: string[];
+  /** Present after install mutators that can partial-succeed. */
+  outcome?: OperationOutcome | null;
 }
 
 export type UpdateSourceKind = "auto" | "mirror" | "official" | "custom";
@@ -148,7 +189,11 @@ export interface ConfigHealth {
   provenanceStatus: string;
   unknownSource: string | null;
   detail: string | null;
+  settingsBackupAvailable: boolean;
+  provenanceBackupAvailable: boolean;
 }
+
+export type ConfigWhich = "settings" | "provenance";
 
 export interface Diagnostics {
   appVersion: string;
@@ -188,6 +233,7 @@ export interface MacUninstallReport {
   removed: boolean;
   keptCodexHome: boolean;
   message: string;
+  outcome: OperationOutcome;
 }
 
 export interface InstalledWindowsCodex {
@@ -357,6 +403,7 @@ export interface WinPerformReport {
   fallbackAvailable: boolean;
   fallbackAttempted: boolean;
   notes: string[];
+  outcome: OperationOutcome;
 }
 
 export interface PortableInstallReport {
@@ -414,6 +461,31 @@ export interface WinUninstallReport {
   portable: PortableUninstallReport | null;
   purgedUserData: boolean;
   notes: string[];
+  outcome: OperationOutcome;
+}
+
+export function emptyStepOutcome(state = "not_applicable"): StepOutcome {
+  return { state, detail: null };
+}
+
+export function emptyOperationOutcome(
+  overrides: Partial<OperationOutcome> = {},
+): OperationOutcome {
+  return {
+    primaryOk: true,
+    appState: "unknown",
+    installClass: null,
+    provenance: emptyStepOutcome("ok"),
+    cleanup: emptyStepOutcome("ok"),
+    warnings: [],
+    recoveryActions: [],
+    ...overrides,
+  };
+}
+
+export function outcomeIsPartial(outcome: OperationOutcome | null | undefined): boolean {
+  if (!outcome?.primaryOk) return false;
+  return outcome.provenance.state === "failed" || outcome.cleanup.state === "failed";
 }
 
 export interface WinInstallStatus {

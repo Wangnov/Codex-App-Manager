@@ -130,6 +130,7 @@ pub fn run() {
             commands::get_config_health,
             commands::restore_config_backup,
             commands::reset_config,
+            commands::retry_ancillary,
             commands::begin_operation,
             commands::arm_destructive,
             commands::end_operation,

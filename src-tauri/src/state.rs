@@ -27,8 +27,9 @@ impl ManagerState {
         let mirror_base_url = "https://codexapp.agentsmirror.com".to_string();
         let (saved, settings_health) = PersistedAppSettings::load_with_health();
         let (_, provenance_health) = ProvenanceStore::load_with_health();
-        let config_health =
-            Mutex::new(ConfigHealth::from_parts(settings_health, provenance_health));
+        let config_health = Mutex::new(
+            ConfigHealth::from_parts(settings_health, provenance_health).with_live_backup_flags(),
+        );
         let install_root = if saved.install_root.trim().is_empty() {
             host::default_install_root(&target)
         } else {

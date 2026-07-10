@@ -27,6 +27,8 @@ const diagnostics: Diagnostics = {
     provenanceStatus: "ok",
     unknownSource: null,
     detail: null,
+    settingsBackupAvailable: false,
+    provenanceBackupAvailable: false,
   },
   logsDir: "/tmp/logs",
   recentErrors: [],

@@ -15,7 +15,7 @@ import type {
   WinPerformReport,
   WinUpdateReport,
 } from "../../shared/types";
-import { DEFAULT_SETTINGS } from "../../shared/types";
+import { DEFAULT_SETTINGS, emptyOperationOutcome } from "../../shared/types";
 import { I18nProvider } from "../i18n";
 import { ThemeProvider } from "../theme";
 import { WinHome } from "./WinHome";
@@ -133,6 +133,11 @@ const PERFORM_OK: WinPerformReport = {
   fallbackAvailable: false,
   fallbackAttempted: false,
   notes: [],
+  outcome: emptyOperationOutcome({
+    primaryOk: true,
+    appState: "present",
+    installClass: "managed",
+  }),
 };
 
 function settings(overrides: Partial<AppSettings> = {}): AppSettings {

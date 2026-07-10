@@ -707,21 +707,10 @@ pub fn purge_codex_user_data(notes: &mut Vec<String>) -> Result<bool, EngineErro
     }
 }
 
-pub fn uninstall_portable(
-    install_root: &Path,
-    purge_user_data: bool,
-) -> Result<PortableUninstallReport, EngineError> {
-    let path = install_root.display();
-    log::info!("portable uninstall start path={path}");
-    request_codex_close_for_root(30, install_root)?;
-
-    let removed_files = if install_root.exists() {
-        fs::remove_dir_all(install_root).map_err(|e| io_err("remove portable install", e))?;
-        true
-    } else {
-        false
-    };
-
+/// Ancillary-only cleanup after the portable app tree is already gone (or
+/// never existed). Retries Start Menu shortcut + Apps & Features entry removal
+/// without touching an install directory. Optional user-data purge.
+pub fn cleanup_portable_metadata(purge_user_data: bool) -> Result<PortableUninstallReport, EngineError> {
     let mut notes = Vec::new();
     let removed_shortcut = match remove_start_menu_shortcut() {
         Ok(removed) => removed,
@@ -745,25 +734,50 @@ pub fn uninstall_portable(
         false
     };
     let partial = notes.iter().any(|note| note.contains("cleanup failed"));
-
-    let report = PortableUninstallReport {
+    Ok(PortableUninstallReport {
         success: true,
         partial,
-        install_root: install_root.to_string_lossy().into_owned(),
-        removed_files,
+        install_root: String::new(),
+        removed_files: false,
         removed_shortcut,
         removed_uninstall_entry,
         purged_user_data,
         message: if partial {
-            "Portable Codex uninstall completed with cleanup warnings.".to_string()
+            "Portable metadata cleanup completed with warnings.".to_string()
         } else {
-            "Portable Codex uninstall completed.".to_string()
+            "Portable metadata cleanup completed.".to_string()
         },
         notes,
+    })
+}
+
+pub fn uninstall_portable(
+    install_root: &Path,
+    purge_user_data: bool,
+) -> Result<PortableUninstallReport, EngineError> {
+    let path = install_root.display();
+    log::info!("portable uninstall start path={path}");
+    request_codex_close_for_root(30, install_root)?;
+
+    let removed_files = if install_root.exists() {
+        fs::remove_dir_all(install_root).map_err(|e| io_err("remove portable install", e))?;
+        true
+    } else {
+        false
     };
-    let path = &report.install_root;
+
+    let mut meta = cleanup_portable_metadata(purge_user_data)?;
+    // Preserve install-root context on the combined report.
+    meta.install_root = install_root.to_string_lossy().into_owned();
+    meta.removed_files = removed_files;
+    meta.message = if meta.partial {
+        "Portable Codex uninstall completed with cleanup warnings.".to_string()
+    } else {
+        "Portable Codex uninstall completed.".to_string()
+    };
+    let path = &meta.install_root;
     log::info!("portable uninstall completed path={path}");
-    Ok(report)
+    Ok(meta)
 }
 
 #[cfg(test)]

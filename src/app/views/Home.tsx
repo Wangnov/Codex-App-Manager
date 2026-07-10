@@ -227,8 +227,17 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     setPaused(null);
     const un = await startDlListen();
     try {
-      setStatus(await managerApi.macInstall());
-      setJustInstalled(true);
+      const status = await managerApi.macInstall();
+      setStatus(status);
+      // Primary install can succeed while provenance fails — still a completed
+      // install on disk; never treat it as a hard failure (would invite reinstall).
+      const outcome = status.outcome;
+      if (outcome?.primaryOk && outcome.recoveryActions.includes("record_provenance")) {
+        setNotice(t("install.partial.note"));
+        setJustInstalled(true);
+      } else {
+        setJustInstalled(true);
+      }
       await check();
     } catch (cause) {
       const stop = downloadStopRef.current;
@@ -531,6 +540,9 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   // Fresh-install completion — opening Codex is the user's explicit choice.
   if (justInstalled) {
+    const needsRecord =
+      status?.outcome?.recoveryActions.includes("record_provenance") ||
+      status?.status === "external";
     return (
       <div className="pop">
         <TopBar />
@@ -541,6 +553,12 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
               <span>{actionError}</span>
             </div>
           ) : null}
+          {notice || needsRecord ? (
+            <div className="banner warn">
+              <Icon name="alert" />
+              <span>{notice ?? t("install.partial.note")}</span>
+            </div>
+          ) : null}
           <section className="hero" style={{ marginTop: 16 }} key={scene}>
             <Ring icon="check" variant="success" />
             <div className="headline">{t("install.done.title")}</div>
@@ -549,6 +567,18 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             </div>
           </section>
           <div className="actions">
+            {needsRecord ? (
+              <button
+                className="btn primary big"
+                onClick={() => {
+                  setJustInstalled(false);
+                  void adopt();
+                }}
+                disabled={busy === "adopt"}
+              >
+                {t("install.partial.record")}
+              </button>
+            ) : null}
             <button className="btn primary big" onClick={onLaunch}>
               <CodexGlyph />
               {t("install.done.open")}

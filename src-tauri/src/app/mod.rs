@@ -5,6 +5,7 @@ pub mod diagnostics;
 pub mod disk;
 pub mod logging;
 pub mod mac_update;
+pub mod operation_outcome;
 pub mod oplock;
 pub mod paths;
 pub mod provenance;
