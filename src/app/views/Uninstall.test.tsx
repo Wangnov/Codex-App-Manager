@@ -7,7 +7,6 @@ import { I18nProvider } from "../i18n";
 import { Uninstall } from "./Uninstall";
 
 vi.mock("../../services/managerApi", () => ({
-  errorMessage: (cause: unknown) => (cause instanceof Error ? cause.message : String(cause)),
   managerApi: {
     macStatus: vi.fn(),
     winStatus: vi.fn(),

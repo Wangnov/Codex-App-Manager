@@ -84,7 +84,7 @@ export function ManualExistingInstallSheet({
         ) : null}
 
         {error ? (
-          <div className="manual-existing-error">
+          <div className="manual-existing-error" role="alert" aria-live="assertive">
             <Icon name="alert" />
             <span>{error}</span>
           </div>

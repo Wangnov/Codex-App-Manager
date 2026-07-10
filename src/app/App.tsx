@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { I18nProvider } from "./i18n";
 import { ThemeProvider } from "./theme";
@@ -12,6 +12,21 @@ import { CodexConfig } from "./views/CodexConfig";
 
 type View = "home" | "settings" | "about" | "uninstall" | "config";
 
+function focusPageTarget(root: ParentNode | null) {
+  if (!root) return;
+  const active = document.activeElement;
+  if (active && active !== document.body && active !== document.documentElement) {
+    if (root instanceof Element && root.contains(active)) return;
+    // Focus is still on a control from a view that just unmounted — reclaim it.
+  }
+  const preferred =
+    (root as Element).querySelector?.<HTMLElement>("[data-page-focus]") ??
+    (root as Element).querySelector?.<HTMLElement>(
+      'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
+    );
+  preferred?.focus({ preventScroll: true });
+}
+
 function Shell() {
   const [view, setView] = useState<View>("home");
 
@@ -24,9 +39,23 @@ function Shell() {
   // Cross-fade the window instead via the shared ::view-transition(root) rule —
   // no re-mount, no re-check. Forward / inter-sub-view nav keeps each view's own
   // staggered `.view` entrance, so only the return Home is wrapped.
+  //
+  // After a view change, ensure keyboard focus has a definite landing target
+  // (NavBar focuses its back control; Home focuses the settings control).
+  useEffect(() => {
+    const id = window.requestAnimationFrame(() => {
+      if (view === "home") {
+        focusPageTarget(document.querySelector('[data-view="home"]'));
+      } else {
+        focusPageTarget(document.querySelector(".pop"));
+      }
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [view]);
+
   return (
     <>
-      <div style={{ display: view === "home" ? "contents" : "none" }}>
+      <div data-view="home" style={{ display: view === "home" ? "contents" : "none" }}>
         <Home onOpenSettings={() => setView("settings")} />
       </div>
       {view === "settings" ? (

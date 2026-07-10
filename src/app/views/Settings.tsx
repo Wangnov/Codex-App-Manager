@@ -1,12 +1,13 @@
 import { useEffect, useId, useState } from "react";
 
-import { errorMessage, managerApi } from "../../services/managerApi";
+import { managerApi } from "../../services/managerApi";
+import { userErrorMessage } from "../errorCopy";
 import type { ProxyMode, UpdateSourceKind, WindowsInstallMode } from "../../shared/types";
 import { DEFAULT_SETTINGS } from "../../shared/types";
 import { Icon } from "../icons";
 import { useI18n, LANGS, type Lang, type TFn, type TKey } from "../i18n";
 import { useTheme, type ThemeMode } from "../theme";
-import { NavBar, Segmented, Toggle, radioNavTarget } from "../components";
+import { NavBar, Segmented, Toggle, StatusBanner, radioNavTarget } from "../components";
 import { isWindows } from "../platform";
 import { samePath } from "../paths";
 import { Sheet } from "../Sheet";
@@ -103,7 +104,7 @@ export function Settings({
     retry,
     reset,
     setDraft,
-  } = useSettingsSaver(DEFAULT_SETTINGS);
+  } = useSettingsSaver(DEFAULT_SETTINGS, t);
   const [defaultInstallRoot, setDefaultInstallRoot] = useState(DEFAULT_SETTINGS.installRoot);
   const [autostart, setAutostart] = useState(false);
   const [commandError, setCommandError] = useState<string | null>(null);
@@ -129,7 +130,7 @@ export function Settings({
       if (!path) return;
       reset(await managerApi.winSetInstallRoot(path));
     } catch (cause) {
-      setCommandError(errorMessage(cause));
+      setCommandError(userErrorMessage(cause, t));
     }
   };
 
@@ -138,7 +139,7 @@ export function Settings({
     try {
       reset(await managerApi.winResetInstallRoot());
     } catch (cause) {
-      setCommandError(errorMessage(cause));
+      setCommandError(userErrorMessage(cause, t));
     }
   };
 
@@ -187,23 +188,23 @@ export function Settings({
       <NavBar title={t("settings.title")} onBack={onBack} />
       <div className="scroll view" inert={langSheet ? true : undefined}>
         {saveStatus === "saving" ? (
-          <div className="banner info" role="status">
-            <Icon name="loader" />
-            <span>{t("settings.saving")}</span>
-          </div>
+          <StatusBanner tone="info" icon="loader">
+            {t("settings.saving")}
+          </StatusBanner>
         ) : null}
         {error ? (
-          <div className="banner err">
-            <Icon name="alert" />
-            <span>
-              {showingSaveError ? `${t("settings.saveError")}: ${error}` : error}
-            </span>
-            {showingSaveError ? (
-              <button className="linkbtn" onClick={retry}>
-                {t("settings.retry")}
-              </button>
-            ) : null}
-          </div>
+          <StatusBanner
+            tone="err"
+            action={
+              showingSaveError ? (
+                <button className="linkbtn" onClick={retry}>
+                  {t("settings.retry")}
+                </button>
+              ) : null
+            }
+          >
+            {showingSaveError ? t("settings.saveError") : error}
+          </StatusBanner>
         ) : null}
 
         {/* 更新源 */}

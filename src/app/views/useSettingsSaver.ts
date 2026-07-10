@@ -1,11 +1,13 @@
 import { useCallback, useRef, useState } from "react";
 
-import { errorMessage, managerApi } from "../../services/managerApi";
+import { managerApi } from "../../services/managerApi";
 import type { AppSettings } from "../../shared/types";
+import { userErrorMessage } from "../errorCopy";
+import type { TFn } from "../i18n";
 
 export type SaveStatus = "idle" | "saving" | "error";
 
-export function useSettingsSaver(initial: AppSettings) {
+export function useSettingsSaver(initial: AppSettings, t: TFn) {
   const [value, setValue] = useState<AppSettings>(initial);
   const [status, setStatus] = useState<SaveStatus>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -14,6 +16,8 @@ export function useSettingsSaver(initial: AppSettings) {
   const inFlightRef = useRef(false);
   const pendingRef = useRef<AppSettings | null>(null);
   const lastValueRef = useRef(initial);
+  const tRef = useRef(t);
+  tRef.current = t;
 
   const flush = useCallback(async () => {
     if (inFlightRef.current) {
@@ -40,7 +44,7 @@ export function useSettingsSaver(initial: AppSettings) {
     } catch (cause) {
       if (mySeq === seqRef.current && pendingRef.current == null) {
         setStatus("error");
-        setError(errorMessage(cause));
+        setError(userErrorMessage(cause, tRef.current));
       }
     } finally {
       inFlightRef.current = false;

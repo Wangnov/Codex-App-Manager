@@ -3,16 +3,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { managerApi } from "../../services/managerApi";
 import { DEFAULT_SETTINGS, type AppSettings } from "../../shared/types";
+import type { TKey } from "../i18n";
 import { useSettingsSaver } from "./useSettingsSaver";
 
-vi.mock("../../services/managerApi", () => ({
-  errorMessage: (cause: unknown) => (cause instanceof Error ? cause.message : String(cause)),
-  managerApi: {
-    setSettings: vi.fn(),
-  },
-}));
+vi.mock("../../services/managerApi", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../services/managerApi")>();
+  return {
+    ...actual,
+    managerApi: {
+      ...actual.managerApi,
+      setSettings: vi.fn(),
+    },
+  };
+});
 
 const setSettings = vi.mocked(managerApi.setSettings);
+const t = (key: TKey) => (key === "error.generic" ? "localized-generic" : key);
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -33,7 +39,7 @@ describe("useSettingsSaver", () => {
     const first = deferred<AppSettings>();
     const second = deferred<AppSettings>();
     setSettings.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
-    const { result } = renderHook(() => useSettingsSaver(DEFAULT_SETTINGS));
+    const { result } = renderHook(() => useSettingsSaver(DEFAULT_SETTINGS, t));
     const older = { ...DEFAULT_SETTINGS, source: "mirror" as const };
     const latest = { ...DEFAULT_SETTINGS, source: "custom" as const, customUrl: "https://x.test" };
 
@@ -53,17 +59,19 @@ describe("useSettingsSaver", () => {
     expect(result.current.settings).toEqual(latest);
   });
 
-  it("surfaces failures and retries the latest value", async () => {
+  it("surfaces localized failures and retries the latest value", async () => {
     setSettings
       .mockRejectedValueOnce(new Error("disk full"))
       .mockResolvedValueOnce({ ...DEFAULT_SETTINGS, askBefore: false });
-    const { result } = renderHook(() => useSettingsSaver(DEFAULT_SETTINGS));
+    const { result } = renderHook(() => useSettingsSaver(DEFAULT_SETTINGS, t));
     const next = { ...DEFAULT_SETTINGS, askBefore: false };
 
     act(() => result.current.update(next));
 
     await waitFor(() => expect(result.current.status).toBe("error"));
-    expect(result.current.error).toBe("disk full");
+    // Raw engine text must not leak into the save banner.
+    expect(result.current.error).toBe("localized-generic");
+    expect(result.current.error).not.toContain("disk full");
 
     act(() => result.current.retry());
 

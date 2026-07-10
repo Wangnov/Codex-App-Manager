@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Diagnostics } from "../shared/types";
 import { managerApi } from "../services/managerApi";
+import { CATALOG } from "./i18n";
 import { ErrorBoundary } from "./ErrorBoundary";
 
 vi.mock("../services/managerApi", () => ({
@@ -58,16 +59,21 @@ describe("ErrorBoundary", () => {
       </ErrorBoundary>,
     );
 
-    expect(screen.getByText("Something went wrong")).toBeInTheDocument();
-    expect(screen.getByText("Error: boom")).toBeInTheDocument();
+    expect(screen.getByText(CATALOG.en["crash.title"])).toBeInTheDocument();
+    expect(screen.queryByText("Error: boom")).not.toBeInTheDocument();
     expect(reportFrontendError).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "render", message: "boom" }),
     );
 
-    await user.click(screen.getByRole("button", { name: "Copy diagnostics" }));
+    await user.click(screen.getByRole("button", { name: CATALOG.en["crash.details"] }));
+    expect(screen.getByText("Error: boom")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: CATALOG.en["crash.copy"] }));
     await waitFor(() => expect(writeText).toHaveBeenCalled());
     expect(writeText.mock.calls[0][0]).toContain("## Frontend error");
-    expect(screen.getByRole("button", { name: "Diagnostics copied" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: CATALOG.en["crash.copied"] }),
+    ).toBeInTheDocument();
 
     writeText.mockRestore();
     consoleError.mockRestore();
@@ -82,7 +88,30 @@ describe("ErrorBoundary", () => {
 
     window.dispatchEvent(new CustomEvent("cam:fatal", { detail: { error: new Error("fatal") } }));
 
-    await waitFor(() => expect(screen.getByText("Something went wrong")).toBeInTheDocument());
-    expect(screen.getByText("Error: fatal")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByText(CATALOG.en["crash.title"])).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("Error: fatal")).not.toBeInTheDocument();
+  });
+
+  it("uses the current locale for crash copy (zh-CN, de, ar)", () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    for (const lang of ["zh-CN", "de", "ar"] as const) {
+      localStorage.setItem("cam.lang", lang);
+      const { unmount } = render(
+        <ErrorBoundary>
+          <Boom />
+        </ErrorBoundary>,
+      );
+      expect(screen.getByText(CATALOG[lang]["crash.title"])).toBeInTheDocument();
+      expect(screen.getByText(CATALOG[lang]["crash.body"])).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: CATALOG[lang]["crash.reload"] }),
+      ).toBeInTheDocument();
+      unmount();
+    }
+
+    consoleError.mockRestore();
   });
 });

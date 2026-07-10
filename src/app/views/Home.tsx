@@ -2,7 +2,6 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 
 import {
   errorCode,
-  errorMessage,
   isDownloadCancelled,
   managerApi,
   SETTINGS_CHANGED_EVENT,
@@ -14,10 +13,10 @@ import type {
   MacUpdateReport,
 } from "../../shared/types";
 import { DEFAULT_SETTINGS } from "../../shared/types";
-import { userErrorMessage } from "../errorCopy";
+import { resolveFailure, userErrorMessage, type FailureSurface } from "../errorCopy";
 import { Icon, CodexGlyph } from "../icons";
 import { useI18n, dirOf, type TKey } from "../i18n";
-import { Ring, TopBar, ResultBanner, ErrorHero } from "../components";
+import { Ring, TopBar, ResultBanner, ErrorHero, StatusBanner } from "../components";
 import { currentPlatform } from "../platform";
 import { WinHome } from "./WinHome";
 import { mib, fmtDateTime } from "../format";
@@ -52,7 +51,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [updatedVer, setUpdatedVer] = useState<{ from: string; to: string } | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [busy, setBusy] = useState<"plan" | "perform" | "adopt" | "install" | null>(null);
-  const [checkError, setCheckError] = useState<string | null>(null);
+  const [checkError, setCheckError] = useState<FailureSurface | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   // A non-error, transient heads-up (e.g. "we re-checked because the install
   // changed"). Kept SEPARATE from `checkError` on purpose: `checkError` drives the
@@ -134,12 +133,12 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       // Drop any stale plan so a failed re-check can't keep driving "立即更新"
       // off an outdated currentBuild/latestBuild.
       setReport(null);
-      setCheckError(errorMessage(cause));
+      setCheckError(resolveFailure(cause, t));
       return false;
     } finally {
       setBusy(null);
     }
-  }, [refreshStatus]);
+  }, [refreshStatus, t]);
 
   useEffect(() => {
     void (async () => {
@@ -421,11 +420,11 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         });
       }
     } catch (cause) {
-      setManualExistingError(errorMessage(cause));
+      setManualExistingError(userErrorMessage(cause, t));
     } finally {
       setManualExistingBusy(null);
     }
-  }, []);
+  }, [t]);
 
   const adoptManualExisting = useCallback(async () => {
     if (!manualExistingCandidate) return;
@@ -440,11 +439,11 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       setManualExistingCandidate(null);
       await check();
     } catch (cause) {
-      setManualExistingError(errorMessage(cause));
+      setManualExistingError(userErrorMessage(cause, t));
     } finally {
       setManualExistingBusy(null);
     }
-  }, [check, manualExistingCandidate]);
+  }, [check, manualExistingCandidate, t]);
 
   const skipCurrentUpdate = useCallback(async () => {
     if (!skippedCandidate) return;
@@ -535,12 +534,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       <div className="pop">
         <TopBar />
         <div className="scroll" ref={scopeRef}>
-          {actionError ? (
-            <div className="banner err">
-              <Icon name="alert" />
-              <span>{actionError}</span>
-            </div>
-          ) : null}
+          {actionError ? <StatusBanner tone="err">{actionError}</StatusBanner> : null}
           <section className="hero" style={{ marginTop: 16 }} key={scene}>
             <Ring icon="check" variant="success" />
             <div className="headline">{t("install.done.title")}</div>
@@ -565,7 +559,12 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   return (
     <div className="pop">
       <TopBar>
-        <button className="iconbtn" title={t("nav.settings")} onClick={onOpenSettings}>
+        <button
+          className="iconbtn"
+          data-page-focus
+          title={t("nav.settings")}
+          onClick={onOpenSettings}
+        >
           <Icon name="gear" />
         </button>
       </TopBar>
@@ -601,12 +600,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             onClose={() => setNotice(null)}
           />
         ) : null}
-        {actionError ? (
-          <div className="banner err">
-            <Icon name="alert" />
-            <span>{actionError}</span>
-          </div>
-        ) : null}
+        {actionError ? <StatusBanner tone="err">{actionError}</StatusBanner> : null}
 
         <section className="hero" key={scene}>
           {rechecking ? (
@@ -626,7 +620,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
               <div className="headline shimmer">{t("home.checking")}</div>
             </>
           ) : kind === "error" ? (
-            <ErrorHero message={checkError} />
+            <ErrorHero failure={checkError} />
           ) : kind === "none" ? (
             <>
               <Ring icon="download" variant="muted" />
