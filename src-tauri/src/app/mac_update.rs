@@ -296,8 +296,21 @@ fn require_not_translocation_risk(app: &str) -> Result<(), AppError> {
     if sys::is_translocation_risk(app) {
         return Err(AppError::Internal(
             "该应用带有会触发 App Translocation 的 macOS 隔离属性：系统会在随机路径运行它，\
-             无法安全地检测或退出运行中的实例。请用 Finder 将它「移动」到其他位置再移回\
-             （移动会写入豁免标记），或运行 xattr -d com.apple.quarantine 移除隔离属性后重试"
+             无法安全地检测或退出运行中的实例。请先退出该应用，再用 Finder 将它「移动」到\
+             其他位置再移回（移动会写入豁免标记），或运行 xattr -d com.apple.quarantine \
+             移除隔离属性后重试"
+                .to_string(),
+        ));
+    }
+    // De-quarantining does not migrate an ALREADY-RUNNING translocated
+    // instance back — it stays on its randomized mount, invisible to the
+    // path-scoped quit check. Refuse until it exits. (Bundle-name matching may
+    // also catch a translocated ChatGPT Classic; quitting it too is a harmless
+    // ask compared to swapping under a live process.)
+    if codex_mac_engine::swap::translocated_instance_running(Path::new(app)) {
+        return Err(AppError::Internal(
+            "检测到该应用（或同名应用）仍有一个经 App Translocation 启动的实例在运行：\
+             它不会随隔离属性的清除而迁回原路径，无法被安全退出。请先退出该应用后重试"
                 .to_string(),
         ));
     }
@@ -1164,7 +1177,7 @@ pub fn mac_adopt() -> Result<MacInstallStatus, AppError> {
     // lineage installs coexisting that silently chooses for the user and every
     // later update/uninstall would act on a target they never confirmed.
     // Force the explicit path-picking flow instead.
-    let candidates = sys::installed_codex_candidates();
+    let mut candidates = sys::installed_codex_candidates();
     if candidates.len() > 1 {
         let paths: Vec<String> = candidates.into_iter().map(|(path, _)| path).collect();
         return Err(AppError::Internal(format!(
@@ -1172,8 +1185,13 @@ pub fn mac_adopt() -> Result<MacInstallStatus, AppError> {
             paths.join("、")
         )));
     }
-    let installed = detect_installed()
+    // Adopt exactly the install the ambiguity check saw — a second scan could
+    // pick a DIFFERENT path if another install appeared in between, recording
+    // provenance for something the user never looked at.
+    let (path, build) = candidates
+        .pop()
         .ok_or_else(|| AppError::Internal("no Codex detected to adopt".to_string()))?;
+    let installed = installed_from_path_build(path, build);
     // Same gate as the manual picker — ambient adoption must not manage a
     // bundle whose running instance cannot be located.
     require_not_translocation_risk(&installed.path)?;

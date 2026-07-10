@@ -71,6 +71,28 @@ pub fn codex_running_at(install_app: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Is a live process running out of an App Translocation mount for a bundle
+/// with this name? Translocated instances do NOT move back when the original
+/// bundle is de-quarantined or relocated, so they stay invisible to
+/// `codex_running_at`'s path-scoped match. Matching is by bundle basename
+/// (the tightest anchor a randomized mount allows), which can also hit a
+/// translocated ChatGPT Classic — an acceptable false positive: callers only
+/// use this to REFUSE managing until the instance exits.
+pub fn translocated_instance_running(install_app: &Path) -> bool {
+    let Some(bundle_name) = install_app.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let pattern = format!(
+        "/AppTranslocation/.*/{}/Contents/MacOS/",
+        ere_escape(bundle_name)
+    );
+    Command::new(PGREP)
+        .args(["-f", &pattern])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Send `quit`/`activate` to the app bundle AT THIS PATH. AppleScript's
 /// `tell application "<POSIX path>"` addresses that specific bundle, unlike
 /// `tell application id`, which lets LaunchServices pick any install of the

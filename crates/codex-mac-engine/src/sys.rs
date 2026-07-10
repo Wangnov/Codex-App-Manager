@@ -253,8 +253,11 @@ pub fn is_translocation_risk(app: &str) -> bool {
         )
     };
     if size < 0 {
-        // No quarantine attribute at all — no translocation.
-        return false;
+        // Only a definitive "attribute does not exist" is safe. Any other
+        // failure (EACCES via an ACL, EIO, …) leaves the quarantine state
+        // unknown — fail closed rather than let an 0083-quarantined bundle
+        // through on a read error.
+        return std::io::Error::last_os_error().raw_os_error() != Some(libc::ENOATTR);
     }
     let mut buf = vec![0_u8; size as usize];
     let read = unsafe {
