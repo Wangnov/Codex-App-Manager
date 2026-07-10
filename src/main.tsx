@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 
 import { App } from "./app/App";
+import { installContextMenuPolicy } from "./app/contextMenuPolicy";
 import { ErrorBoundary } from "./app/ErrorBoundary";
 import { installGlobalErrorHandlers } from "./app/globalErrors";
 import { currentPlatform } from "./app/platform";
@@ -17,6 +18,9 @@ document.documentElement.dataset.platform = currentPlatform();
 // user gets one dark frame on every launch.
 document.documentElement.dataset.theme = resolveInitialTheme();
 installGlobalErrorHandlers();
+// Production WebViews: no browser Print/Reload menu; editable fields keep
+// copy/paste. Dev builds leave the default menu for Reload/DevTools.
+installContextMenuPolicy();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <ErrorBoundary>
