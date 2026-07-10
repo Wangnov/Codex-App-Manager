@@ -56,7 +56,14 @@ export function useHomeMotion(
         // .btn:disabled fade and the :active press transform).
         const CLEAR = "transform,opacity,visibility";
         let split: SplitText | undefined;
-        const tl = gsap.timeline({ defaults: { ease: "cam-out", duration: 0.58 } });
+        const tl = gsap.timeline({
+          defaults: { ease: "cam-out", duration: 0.58 },
+          // SplitText leaves every glyph in its own inline-block. That is useful
+          // during the reveal, but keeping it afterward changes kerning and CJK
+          // fallback spacing on Windows. Restore the original text once the
+          // complete scene entrance has settled.
+          onComplete: () => split?.revert(),
+        });
         // fromTo with EXPLICIT end states (not from(): persistent sibling nodes
         // like .actions/.list.meta aren't remounted with the keyed hero, and a
         // bare from() would read a leftover inline opacity:0 as the end target
