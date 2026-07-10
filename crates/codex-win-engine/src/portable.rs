@@ -271,6 +271,10 @@ fn run_powershell_with_limits(
 // alone: post-merge the Codex entry process is `ChatGPT`, which is also the
 // process name of ChatGPT Classic — an unrooted name match would close the
 // wrong product. That is why there is no unfiltered close variant.
+//
+// Path resolution falls through Get-Process.Path → MainModule.FileName →
+// Win32_Process.ExecutablePath: AppX / protected processes often leave `.Path`
+// empty even when the process is clearly ours under InstallLocation.
 #[cfg(windows)]
 fn request_codex_close_filtered(timeout_secs: u64, root: &Path) -> Result<(), EngineError> {
     let root_filter = ps_quote(&root.to_string_lossy());
@@ -279,18 +283,38 @@ fn request_codex_close_filtered(timeout_secs: u64, root: &Path) -> Result<(), En
         r#"
 $RootFilter = {root_filter}
 try {{ $RootFilter = [System.IO.Path]::GetFullPath($RootFilter).TrimEnd('\') }} catch {{}}
+function Get-ProcessExePath($p) {{
+  try {{
+    $path = [string]$p.Path
+    if (-not [string]::IsNullOrWhiteSpace($path)) {{ return $path }}
+  }} catch {{}}
+  try {{
+    $path = [string]$p.MainModule.FileName
+    if (-not [string]::IsNullOrWhiteSpace($path)) {{ return $path }}
+  }} catch {{}}
+  try {{
+    $cim = Get-CimInstance -ClassName Win32_Process -Filter ("ProcessId=" + $p.Id) -ErrorAction SilentlyContinue
+    if ($null -ne $cim -and -not [string]::IsNullOrWhiteSpace([string]$cim.ExecutablePath)) {{
+      return [string]$cim.ExecutablePath
+    }}
+  }} catch {{}}
+  return $null
+}}
+function Test-UnderRoot($p) {{
+  $path = Get-ProcessExePath $p
+  if ([string]::IsNullOrWhiteSpace($path) -or [string]::IsNullOrWhiteSpace($RootFilter)) {{ return $false }}
+  try {{
+    $full = [System.IO.Path]::GetFullPath($path)
+    return ($full.Equals($RootFilter, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $full.StartsWith($RootFilter + '\', [System.StringComparison]::OrdinalIgnoreCase))
+  }} catch {{
+    return $false
+  }}
+}}
 function Get-TargetCodexProcess {{
   $all = Get-Process -Name Codex, ChatGPT -ErrorAction SilentlyContinue
   foreach ($p in $all) {{
-    try {{
-      $path = [string]$p.Path
-      if (-not $path) {{ continue }}
-      $full = [System.IO.Path]::GetFullPath($path)
-      if ($full.Equals($RootFilter, [System.StringComparison]::OrdinalIgnoreCase) -or
-          $full.StartsWith($RootFilter + '\', [System.StringComparison]::OrdinalIgnoreCase)) {{
-        $p
-      }}
-    }} catch {{}}
+    if (Test-UnderRoot $p) {{ $p }}
   }}
 }}
 $deadline = (Get-Date).AddSeconds({timeout})

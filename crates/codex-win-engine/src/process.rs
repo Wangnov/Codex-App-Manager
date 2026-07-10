@@ -25,8 +25,13 @@ pub const DEFAULT_STALL_TIMEOUT: Duration = Duration::from_secs(120);
 pub const DEFAULT_DOWNLOAD_TOTAL_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 /// Minimum survival window after spawning a portable binary for "launchable".
 pub const PORTABLE_LIVENESS_WINDOW: Duration = Duration::from_secs(3);
-/// Budget to observe MSIX activation after shell start.
-pub const MSIX_ACTIVATION_WINDOW_SECS: u64 = 10;
+/// Continuous survival required after MSIX shell activation — aligned with the
+/// portable liveness window so both routes reject the same class of crash-loops.
+pub const MSIX_LIVENESS_WINDOW_SECS: u64 = PORTABLE_LIVENESS_WINDOW.as_secs();
+/// Outer budget to wait for a cold-started MSIX process to *appear* after
+/// `Start-Process shell:AppsFolder\…`. Cold machines / AppX service warm-up can
+/// take well over 10s; too short a window causes false portable fallbacks.
+pub const MSIX_ACTIVATION_WINDOW_SECS: u64 = 30;
 
 /// Poll interval while waiting on a child.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
