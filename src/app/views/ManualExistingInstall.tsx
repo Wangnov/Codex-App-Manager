@@ -90,7 +90,7 @@ export function ManualExistingInstallSheet({
           </div>
         ) : null}
 
-        <div className="row2">
+        <div className="row2 sheet-actions">
           <button className="btn ghost" onClick={onDismiss} disabled={busy}>
             {t("confirm.cancel")}
           </button>

@@ -196,7 +196,7 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
             ? t("uninstall.confirm1.bodyKeep", { path: codexHome })
             : t("uninstall.confirm1.bodyPurge")}
         </p>
-        <div className="row2">
+        <div className="row2 sheet-actions">
           <button className="btn ghost" onClick={() => setConfirmStep(0)}>
             {t("uninstall.cancel")}
           </button>
@@ -216,7 +216,7 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
         <Ring icon="alert" variant="danger" />
         <h3 id={confirm2TitleId}>{t("uninstall.confirm2.title")}</h3>
         <p id={confirm2BodyId}>{t("uninstall.confirm2.body", { path: codexHome })}</p>
-        <div className="row2">
+        <div className="row2 sheet-actions">
           <button className="btn ghost" onClick={() => setConfirmStep(0)}>
             {t("uninstall.cancel")}
           </button>

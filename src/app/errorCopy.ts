@@ -75,6 +75,15 @@ export function userErrorMessage(cause: unknown, t: TFn): string {
   return resolveFailure(cause, t).message;
 }
 
+/** Build a FailureSurface from already-localized copy (no raw detail). */
+export function messageFailure(
+  message: string,
+  code = "unknown",
+  recoverable = true,
+): FailureSurface {
+  return { code, message, detail: null, recoverable };
+}
+
 /** True when the failure is a connectivity class (DNS / TLS / timeout). */
 export function isConnectivityFailure(cause: unknown): boolean {
   const code = errorCode(cause);

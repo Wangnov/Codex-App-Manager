@@ -22,7 +22,7 @@ function SheetHarness({ dismissable = true }: { dismissable?: boolean }) {
       >
         <h3 id={titleId}>Danger zone</h3>
         <p id={bodyId}>Confirm the action</p>
-        <div className="row2">
+        <div className="row2 sheet-actions">
           <button className="btn ghost" onClick={() => setOpen(false)}>
             Cancel
           </button>
@@ -42,7 +42,7 @@ describe("Sheet", () => {
         <Sheet open labelledBy="t" describedBy="d" initialFocus="primary" onDismiss={() => {}}>
           <h3 id="t">Long sheet</h3>
           <p id="d">{"Tall content. ".repeat(80)}</p>
-          <div className="row2">
+          <div className="row2 sheet-actions">
             <button className="btn ghost">Cancel</button>
             <button className="btn primary">Confirm</button>
           </div>

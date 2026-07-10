@@ -16,7 +16,7 @@ import { DEFAULT_SETTINGS } from "../../shared/types";
 import { resolveFailure, userErrorMessage, type FailureSurface } from "../errorCopy";
 import { Icon, CodexGlyph } from "../icons";
 import { useI18n, dirOf, type TKey } from "../i18n";
-import { Ring, TopBar, ResultBanner, ErrorHero, StatusBanner } from "../components";
+import { Ring, TopBar, ResultBanner, ErrorHero, FailureBanner } from "../components";
 import { currentPlatform } from "../platform";
 import { WinHome } from "./WinHome";
 import { mib, fmtDateTime } from "../format";
@@ -52,7 +52,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [busy, setBusy] = useState<"plan" | "perform" | "adopt" | "install" | null>(null);
   const [checkError, setCheckError] = useState<FailureSurface | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<FailureSurface | null>(null);
   // A non-error, transient heads-up (e.g. "we re-checked because the install
   // changed"). Kept SEPARATE from `checkError` on purpose: `checkError` drives the
   // "检查失败" hero in the `!installed` branch, so reusing it for an info note
@@ -214,7 +214,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     try {
       setStatus(await managerApi.macAdopt());
     } catch (cause) {
-      setActionError(userErrorMessage(cause, t));
+      setActionError(resolveFailure(cause, t));
     } finally {
       setBusy(null);
     }
@@ -238,7 +238,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       } else if (stop && isDownloadCancelled(cause)) {
         setNotice(t("progress.cancelled"));
       } else {
-        setActionError(userErrorMessage(cause, t));
+        setActionError(resolveFailure(cause, t));
       }
     } finally {
       un();
@@ -294,7 +294,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           setNotice(t("home.stale.rechecked"));
         }
       } else {
-        setActionError(userErrorMessage(cause, t));
+        setActionError(resolveFailure(cause, t));
       }
     } finally {
       un();
@@ -325,7 +325,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       await managerApi.macDiscardDownload();
       setNotice(t("progress.cancelled"));
     } catch (cause) {
-      setActionError(userErrorMessage(cause, t));
+      setActionError(resolveFailure(cause, t));
     }
   }, [t]);
 
@@ -456,14 +456,14 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       setSettings(saved);
       setNotice(t("home.skip.toast", { version: skippedCandidate.version }));
     } catch (cause) {
-      setActionError(userErrorMessage(cause, t));
+      setActionError(resolveFailure(cause, t));
     }
   }, [settings, skippedCandidate, t]);
   const onLaunch = () => {
     // Surface a failed open (stale path / backend error) via the error banner
     // like every other action, instead of an unhandled rejection with no feedback.
     setActionError(null);
-    void managerApi.macLaunch().catch((cause) => setActionError(userErrorMessage(cause, t)));
+    void managerApi.macLaunch().catch((cause) => setActionError(resolveFailure(cause, t)));
   };
 
   // One string identifying the visible "scene"; when it changes the hero
@@ -534,7 +534,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       <div className="pop">
         <TopBar />
         <div className="scroll" ref={scopeRef}>
-          {actionError ? <StatusBanner tone="err">{actionError}</StatusBanner> : null}
+          {actionError ? <FailureBanner failure={actionError} /> : null}
           <section className="hero" style={{ marginTop: 16 }} key={scene}>
             <Ring icon="check" variant="success" />
             <div className="headline">{t("install.done.title")}</div>
@@ -600,7 +600,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             onClose={() => setNotice(null)}
           />
         ) : null}
-        {actionError ? <StatusBanner tone="err">{actionError}</StatusBanner> : null}
+        {actionError ? <FailureBanner failure={actionError} /> : null}
 
         <section className="hero" key={scene}>
           {rechecking ? (
@@ -876,7 +876,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         <Ring icon="arrowUp" className="" />
         <h3 id={confirmTitleId}>{t("confirm.title", { version: latestVersion })}</h3>
         <p id={confirmBodyId}>{t("confirm.body")}</p>
-        <div className="row2">
+        <div className="row2 sheet-actions">
           <button className="btn ghost" onClick={() => setConfirmOpen(false)}>
             {t("confirm.cancel")}
           </button>

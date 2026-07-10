@@ -98,12 +98,14 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
     const summary = `${error.name}: ${error.message}`;
 
     return (
-      <div className="pop" role="alert" aria-live="assertive">
+      <div className="pop">
         <div className="scroll view">
           <section className="hero" style={{ marginTop: 20 }}>
             <Ring icon="alert" variant="danger" />
-            <div className="headline">{strings["crash.title"]}</div>
-            <div className="desc">{strings["crash.body"]}</div>
+            <div role="alert" aria-live="assertive">
+              <div className="headline">{strings["crash.title"]}</div>
+              <div className="desc">{strings["crash.body"]}</div>
+            </div>
             <button
               type="button"
               className={`errdetails-toggle${this.state.showDetails ? " open" : ""}`}

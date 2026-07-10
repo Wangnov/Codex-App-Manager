@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { I18nProvider } from "./i18n";
 import { ThemeProvider } from "./theme";
@@ -29,6 +29,9 @@ function focusPageTarget(root: ParentNode | null) {
 
 function Shell() {
   const [view, setView] = useState<View>("home");
+  // Skip the first paint: NavBar / Home already own initial focus; stealing it
+  // on mount is noisier than helpful for keyboard users.
+  const skipInitialFocus = useRef(true);
 
   // Home stays mounted (just hidden) so returning to it doesn't re-mount and
   // re-run the network check — it shows its last state instantly. Sub-views
@@ -42,13 +45,15 @@ function Shell() {
   //
   // After a view change, ensure keyboard focus has a definite landing target
   // (NavBar focuses its back control; Home focuses the settings control).
+  // Scope by data-view so we never hit the hidden Home .pop while a sub-view
+  // is showing (querySelector(".pop") would prefer the still-mounted Home).
   useEffect(() => {
+    if (skipInitialFocus.current) {
+      skipInitialFocus.current = false;
+      return;
+    }
     const id = window.requestAnimationFrame(() => {
-      if (view === "home") {
-        focusPageTarget(document.querySelector('[data-view="home"]'));
-      } else {
-        focusPageTarget(document.querySelector(".pop"));
-      }
+      focusPageTarget(document.querySelector(`[data-view="${view}"]`));
     });
     return () => window.cancelAnimationFrame(id);
   }, [view]);
@@ -59,16 +64,30 @@ function Shell() {
         <Home onOpenSettings={() => setView("settings")} />
       </div>
       {view === "settings" ? (
-        <Settings
-          onBack={() => withViewTransition(() => setView("home"))}
-          onOpenAbout={() => setView("about")}
-          onOpenUninstall={() => setView("uninstall")}
-          onOpenConfig={() => setView("config")}
-        />
+        <div data-view="settings" style={{ display: "contents" }}>
+          <Settings
+            onBack={() => withViewTransition(() => setView("home"))}
+            onOpenAbout={() => setView("about")}
+            onOpenUninstall={() => setView("uninstall")}
+            onOpenConfig={() => setView("config")}
+          />
+        </div>
       ) : null}
-      {view === "about" ? <About onBack={() => setView("settings")} /> : null}
-      {view === "uninstall" ? <Uninstall onBack={() => setView("settings")} /> : null}
-      {view === "config" ? <CodexConfig onBack={() => setView("settings")} /> : null}
+      {view === "about" ? (
+        <div data-view="about" style={{ display: "contents" }}>
+          <About onBack={() => setView("settings")} />
+        </div>
+      ) : null}
+      {view === "uninstall" ? (
+        <div data-view="uninstall" style={{ display: "contents" }}>
+          <Uninstall onBack={() => setView("settings")} />
+        </div>
+      ) : null}
+      {view === "config" ? (
+        <div data-view="config" style={{ display: "contents" }}>
+          <CodexConfig onBack={() => setView("settings")} />
+        </div>
+      ) : null}
       <QuitConfirm />
     </>
   );

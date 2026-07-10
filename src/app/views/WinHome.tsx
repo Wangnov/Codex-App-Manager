@@ -16,7 +16,7 @@ import { DEFAULT_SETTINGS } from "../../shared/types";
 import { resolveFailure, userErrorMessage, type FailureSurface } from "../errorCopy";
 import { Icon, CodexGlyph } from "../icons";
 import { useI18n, dirOf, type TKey } from "../i18n";
-import { Ring, TopBar, ResultBanner, ErrorHero, StatusBanner } from "../components";
+import { Ring, TopBar, ResultBanner, ErrorHero, FailureBanner, StatusBanner } from "../components";
 import { mib, fmtDateTime } from "../format";
 import { samePath, normalizePath } from "../paths";
 import { useHomeMotion } from "../motion";
@@ -48,7 +48,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     null,
   );
   const [checkError, setCheckError] = useState<FailureSurface | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<FailureSurface | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [installDirOpen, setInstallDirOpen] = useState(false);
@@ -209,7 +209,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     try {
       setStatus(await managerApi.winAdopt());
     } catch (cause) {
-      setActionError(userErrorMessage(cause, t));
+      setActionError(resolveFailure(cause, t));
     } finally {
       setBusy(null);
     }
@@ -226,7 +226,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       const next: AppSettings = { ...settings, windowsInstallMode: "portable" };
       setSettings(await managerApi.setSettings(next));
     } catch (cause) {
-      setActionError(userErrorMessage(cause, t));
+      setActionError(resolveFailure(cause, t));
       return;
     }
     await check();
@@ -284,7 +284,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             setNotice(t("home.stale.rechecked"));
           }
         } else {
-          setActionError(userErrorMessage(cause, t));
+          setActionError(resolveFailure(cause, t));
         }
       } finally {
         unlisten();
@@ -316,7 +316,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       await managerApi.winDiscardDownload();
       setNotice(t("progress.cancelled"));
     } catch (cause) {
-      setActionError(userErrorMessage(cause, t));
+      setActionError(resolveFailure(cause, t));
     }
   }, [t]);
 
@@ -372,7 +372,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       const refreshed = await managerApi.getSettings().catch(() => null);
       if (refreshed) setSettings(refreshed);
     } catch (cause) {
-      setActionError(userErrorMessage(cause, t));
+      setActionError(resolveFailure(cause, t));
       setInstallDirOpen(false);
     } finally {
       setInstallDirBusy(false);
@@ -506,7 +506,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       setSettings(saved);
       setNotice(t("home.skip.toast", { version: skippedCandidate.version }));
     } catch (cause) {
-      setActionError(userErrorMessage(cause, t));
+      setActionError(resolveFailure(cause, t));
     }
   }, [settings, skippedCandidate, t]);
   const onLaunch = () => {
@@ -518,7 +518,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     setBusy("launch");
     void managerApi
       .winLaunch()
-      .catch((cause) => setActionError(userErrorMessage(cause, t)))
+      .catch((cause) => setActionError(resolveFailure(cause, t)))
       .finally(() => {
         launchInFlightRef.current = false;
         setBusy(null);
@@ -626,7 +626,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           />
         ) : null}
         {notice ? <StatusBanner tone="info">{notice}</StatusBanner> : null}
-        {actionError ? <StatusBanner tone="err">{actionError}</StatusBanner> : null}
+        {actionError ? <FailureBanner failure={actionError} /> : null}
 
         <section className="hero" key={scene}>
           {rechecking ? (
@@ -883,7 +883,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           <br />
           {routeNote}
         </p>
-        <div className="row2">
+        <div className="row2 sheet-actions">
           <button className="btn ghost" onClick={() => setConfirmOpen(false)}>
             {t("confirm.cancel")}
           </button>
@@ -905,7 +905,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         <h3 id={installDirTitleId}>{t("win.installDir.title")}</h3>
         <p id={installDirBodyId}>{t("win.installDir.body")}</p>
         <div className="sheet-path">{settings.installRoot}</div>
-        <div className="row2">
+        <div className="row2 sheet-actions">
           <button className="btn ghost" onClick={installToCurrentRoot} disabled={installDirBusy}>
             {t(
               installRootIsDefault ? "win.installDir.useDefault" : "win.installDir.useCurrent",

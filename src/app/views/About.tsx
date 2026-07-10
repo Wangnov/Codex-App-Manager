@@ -149,7 +149,7 @@ export function About({ onBack }: { onBack: () => void }) {
           {pendingUpdate ? t("confirm.title", { version: pendingUpdate.version }) : ""}
         </h3>
         <p id={updateBodyId}>{t("about.mgrConfirmBody")}</p>
-        <div className="row2">
+        <div className="row2 sheet-actions">
           <button className="btn ghost" onClick={closeUpdateConfirm} disabled={mgrBusy}>
             {t("confirm.cancel")}
           </button>

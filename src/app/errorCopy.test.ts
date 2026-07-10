@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { isConnectivityFailure, resolveFailure, userErrorMessage } from "./errorCopy";
+import {
+  isConnectivityFailure,
+  messageFailure,
+  resolveFailure,
+  userErrorMessage,
+} from "./errorCopy";
 import type { TKey } from "./i18n";
 
 const copy: Partial<Record<TKey, string>> = {
@@ -82,5 +87,14 @@ describe("userErrorMessage / resolveFailure", () => {
     expect(isConnectivityFailure({ code: "network", message: "x" })).toBe(true);
     expect(isConnectivityFailure({ code: "timeout", message: "x" })).toBe(true);
     expect(isConnectivityFailure({ code: "disk_write", message: "x" })).toBe(false);
+  });
+
+  it("builds a message-only surface without raw detail", () => {
+    expect(messageFailure("already localized", "cancelled")).toEqual({
+      code: "cancelled",
+      message: "already localized",
+      detail: null,
+      recoverable: true,
+    });
   });
 });

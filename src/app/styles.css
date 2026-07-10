@@ -2105,7 +2105,16 @@ button.row.danger:hover {
   display: flex;
   gap: 9px;
   margin-top: var(--space-md);
-  /* Keep confirm/cancel reachable when the sheet body scrolls at large text. */
+}
+.sheet .row2 > * {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.25;
+  white-space: normal;
+}
+/* Dedicated sticky action bar — prefer this over bare .row2 so long body copy
+   at 200% text scaling can't push Confirm/Cancel off-screen. */
+.sheet .sheet-actions {
   position: sticky;
   bottom: 0;
   z-index: 2;
@@ -2118,11 +2127,27 @@ button.row.danger:hover {
     var(--surface) 100%
   );
 }
-.sheet .row2 > * {
-  flex: 1;
+
+/* Action-path failure banner: stack message + disclosure under the alert icon. */
+.failure-banner {
+  align-items: flex-start;
+}
+.failure-banner-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
   min-width: 0;
-  line-height: 1.25;
-  white-space: normal;
+  flex: 1;
+}
+.failure-banner-toggle {
+  margin-top: 2px;
+  padding-inline: 0;
+}
+.failure-banner-detail {
+  margin: 4px 0 0;
+  max-width: 100%;
+  max-height: 96px;
 }
 
 .data-path-row {
