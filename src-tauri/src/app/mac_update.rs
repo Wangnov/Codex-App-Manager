@@ -281,13 +281,15 @@ pub fn detect_existing_install_at_path(path: &Path) -> Result<InstalledCodex, Ap
             ));
         }
     }
-    // A quarantined bundle runs via App Translocation (randomized path), so no
-    // run/quit protection can target its live process — refuse to manage it.
-    if sys::has_quarantine_attribute(&raw) {
+    // An unapproved-quarantined bundle runs via App Translocation (randomized
+    // path), so no run/quit protection can target its live process — refuse to
+    // manage it. Approved quarantine (the common state after first launch) is
+    // fine and must not be rejected.
+    if sys::is_translocation_risk(&raw) {
         return Err(AppError::Internal(
-            "所选应用带有 macOS 隔离属性（quarantine）：系统会通过 App Translocation 在随机路径运行它，\
-             无法安全地检测或退出运行中的实例。请先用 Finder 将它移动到「应用程序」文件夹\
-             （或运行 xattr -d com.apple.quarantine）后重试"
+            "所选应用带有未经批准的 macOS 隔离属性：系统会通过 App Translocation 在随机路径运行它，\
+             无法安全地检测或退出运行中的实例。请先双击打开一次该应用（完成 Gatekeeper 批准），\
+             或运行 xattr -d com.apple.quarantine 移除隔离属性后重试"
                 .to_string(),
         ));
     }

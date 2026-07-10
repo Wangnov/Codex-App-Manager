@@ -224,13 +224,17 @@ fn read_bundle_build(app: &str) -> Option<u64> {
     String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }
 
-/// Does the bundle carry macOS's quarantine attribute? A quarantined app is
-/// launched through App Translocation (a randomized `/private/var/folders/…`
-/// mount), so its running process can NOT be located from the bundle's own
-/// path — none of our run/quit protections can safely target it. Such bundles
-/// are rejected at adoption time rather than mismanaged later.
+/// Would this bundle run through App Translocation (a randomized
+/// `/private/var/folders/…` mount, where its running process cannot be
+/// located from the bundle's own path)?
+///
+/// Translocation only applies to quarantined bundles Gatekeeper has NOT yet
+/// user-approved. The quarantine xattr itself routinely SURVIVES on perfectly
+/// normal installs — it stays after the Finder move to /Applications and
+/// after first-launch approval — so its mere presence must not disqualify a
+/// bundle; only the missing approval flag does.
 #[cfg(target_os = "macos")]
-pub fn has_quarantine_attribute(app: &str) -> bool {
+pub fn is_translocation_risk(app: &str) -> bool {
     use std::ffi::CString;
     let Ok(cpath) = CString::new(app) else {
         return false;
@@ -248,12 +252,46 @@ pub fn has_quarantine_attribute(app: &str) -> bool {
             0,
         )
     };
-    size >= 0
+    if size < 0 {
+        // No quarantine attribute at all — no translocation.
+        return false;
+    }
+    let mut buf = vec![0_u8; size as usize];
+    let read = unsafe {
+        libc::getxattr(
+            cpath.as_ptr(),
+            cname.as_ptr(),
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+            0,
+            0,
+        )
+    };
+    if read < 0 {
+        // Attribute exists but is unreadable — treat as risky (the adoption
+        // error explains how to clear it).
+        return true;
+    }
+    buf.truncate(read as usize);
+    quarantine_flags_indicate_translocation(&String::from_utf8_lossy(&buf))
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn has_quarantine_attribute(_app: &str) -> bool {
+pub fn is_translocation_risk(_app: &str) -> bool {
     false
+}
+
+/// The quarantine xattr value is `flags;timestamp;agent;uuid` with hex flags.
+/// `QTN_FLAG_USER_APPROVED` (0x0040, libquarantine qtn.h) is set once the user
+/// approved the app at first launch — approved bundles do not translocate.
+/// Unparseable values are treated as risky (fail closed, with guidance).
+fn quarantine_flags_indicate_translocation(value: &str) -> bool {
+    const QTN_FLAG_USER_APPROVED: u32 = 0x0040;
+    let flags_hex = value.split(';').next().unwrap_or("").trim();
+    match u32::from_str_radix(flags_hex, 16) {
+        Ok(flags) => flags & QTN_FLAG_USER_APPROVED == 0,
+        Err(_) => true,
+    }
 }
 
 /// Read a bundle's `CFBundleExecutable` — the main binary's name under
@@ -323,6 +361,32 @@ pub fn read_bundle_short_version(app: &str) -> Option<String> {
         None
     } else {
         Some(v)
+    }
+}
+
+#[cfg(test)]
+mod quarantine_tests {
+    use super::quarantine_flags_indicate_translocation;
+
+    #[test]
+    fn approved_quarantine_is_not_a_translocation_risk() {
+        // Typical post-approval value: 0x0040 (QTN_FLAG_USER_APPROVED) set.
+        assert!(!quarantine_flags_indicate_translocation(
+            "00c3;68701c2a;Chrome;A1B2C3"
+        ));
+        assert!(!quarantine_flags_indicate_translocation("0041;0;Safari;"));
+    }
+
+    #[test]
+    fn unapproved_or_garbled_quarantine_is_risky() {
+        // Fresh download, never launched: approved bit clear.
+        assert!(quarantine_flags_indicate_translocation(
+            "0083;68701c2a;Chrome;A1B2C3"
+        ));
+        assert!(quarantine_flags_indicate_translocation("0002;0;curl;"));
+        // Unparseable flags fail closed.
+        assert!(quarantine_flags_indicate_translocation("not-hex;x;y;z"));
+        assert!(quarantine_flags_indicate_translocation(""));
     }
 }
 
