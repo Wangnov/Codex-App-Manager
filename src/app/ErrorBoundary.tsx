@@ -3,30 +3,7 @@ import { Component, type ErrorInfo, type ReactNode } from "react";
 import { managerApi } from "../services/managerApi";
 import { Ring } from "./components";
 import { formatDiagnostics } from "./diagnostics";
-import { pickLang } from "./i18n";
-
-const FALLBACK_STRINGS = {
-  en: {
-    title: "Something went wrong",
-    body: "The manager hit an unexpected error. Your Codex install was not changed by this screen.",
-    reload: "Reload",
-    copy: "Copy diagnostics",
-    copied: "Diagnostics copied",
-    details: "Show details",
-    hideDetails: "Hide details",
-  },
-  "zh-CN": {
-    title: "出了点问题",
-    body: "管理器遇到意外错误。此界面不会改动你已安装的 Codex。",
-    reload: "重新加载",
-    copy: "复制诊断信息",
-    copied: "已复制诊断信息",
-    details: "查看详情",
-    hideDetails: "收起详情",
-  },
-} as const;
-
-type FallbackLang = keyof typeof FALLBACK_STRINGS;
+import { CATALOG, pickLang, type Lang, type TKey } from "./i18n";
 
 interface State {
   error: Error | null;
@@ -34,12 +11,29 @@ interface State {
   showDetails: boolean;
 }
 
-function fallbackLang(): FallbackLang {
+const CRASH_KEYS = [
+  "crash.title",
+  "crash.body",
+  "crash.reload",
+  "crash.copy",
+  "crash.copied",
+  "crash.details",
+  "crash.hideDetails",
+] as const satisfies readonly TKey[];
+
+type CrashKey = (typeof CRASH_KEYS)[number];
+
+function crashStrings(): Record<CrashKey, string> {
   const saved = typeof localStorage === "undefined" ? null : localStorage.getItem("cam.lang");
   const prefs =
     typeof navigator !== "undefined" && navigator.languages ? Array.from(navigator.languages) : [];
-  const code = pickLang(saved, prefs);
-  return code in FALLBACK_STRINGS ? (code as FallbackLang) : "en";
+  const lang: Lang = pickLang(saved, prefs);
+  const catalog = CATALOG[lang] ?? CATALOG.en;
+  const out = {} as Record<CrashKey, string>;
+  for (const key of CRASH_KEYS) {
+    out[key] = catalog[key] ?? CATALOG.en[key] ?? key;
+  }
+  return out;
 }
 
 export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
@@ -99,7 +93,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
       return this.props.children;
     }
 
-    const strings = FALLBACK_STRINGS[fallbackLang()];
+    const strings = crashStrings();
     const error = this.state.error;
     const summary = `${error.name}: ${error.message}`;
 
@@ -108,27 +102,33 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
         <div className="scroll view">
           <section className="hero" style={{ marginTop: 20 }}>
             <Ring icon="alert" variant="danger" />
-            <div className="headline">{strings.title}</div>
-            <div className="desc">{strings.body}</div>
+            <div role="alert" aria-live="assertive">
+              <div className="headline">{strings["crash.title"]}</div>
+              <div className="desc">{strings["crash.body"]}</div>
+            </div>
             <button
               type="button"
               className={`errdetails-toggle${this.state.showDetails ? " open" : ""}`}
               aria-expanded={this.state.showDetails}
               onClick={() => this.setState((state) => ({ showDetails: !state.showDetails }))}
             >
-              {this.state.showDetails ? strings.hideDetails : strings.details}
+              {this.state.showDetails ? strings["crash.hideDetails"] : strings["crash.details"]}
             </button>
-            <pre className="errdetails">{summary}</pre>
-            {this.state.showDetails && error.stack ? (
-              <pre className="errdetails">{error.stack}</pre>
+            {this.state.showDetails ? (
+              <div className="errdetails-panel open">
+                <div className="errdetails-panel-inner">
+                  <pre className="errdetails">{summary}</pre>
+                  {error.stack ? <pre className="errdetails">{error.stack}</pre> : null}
+                </div>
+              </div>
             ) : null}
           </section>
           <div className="actions">
             <button className="btn primary big" onClick={this.reload}>
-              {strings.reload}
+              {strings["crash.reload"]}
             </button>
             <button className="btn ghost" onClick={this.copy}>
-              {this.state.copied ? strings.copied : strings.copy}
+              {this.state.copied ? strings["crash.copied"] : strings["crash.copy"]}
             </button>
           </div>
         </div>

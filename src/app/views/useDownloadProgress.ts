@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
 import type { DownloadProgress } from "../../shared/types";
-import { userErrorMessage } from "../errorCopy";
+import { messageFailure, resolveFailure, type FailureSurface } from "../errorCopy";
 import { useI18n } from "../i18n";
 import { useCountUp } from "../useCountUp";
 import type { DownloadStopIntent } from "./ProgressScreen";
@@ -11,13 +11,13 @@ import type { DownloadStopIntent } from "./ProgressScreen";
  *  progress bytes + eased readouts, the pause/cancel intent, and the backend
  *  stop request. Platform differences are injected — the event channel name and
  *  the pause/cancel commands. Errors surface through `onError` so the host view
- *  can drive its own banner. */
+ *  can drive its own banner (with optional raw detail disclosure). */
 export function useDownloadProgress(opts: {
   eventName: string;
   pauseDownload: () => Promise<boolean>;
   cancelDownload: () => Promise<boolean>;
   cannotCancelMessage: string;
-  onError: (message: string | null) => void;
+  onError: (failure: FailureSurface | null) => void;
 }) {
   const { eventName, pauseDownload, cancelDownload, cannotCancelMessage, onError } = opts;
   const { t } = useI18n();
@@ -77,13 +77,13 @@ export function useDownloadProgress(opts: {
           downloadStopRef.current = null;
           setDownloadStop(null);
           setDownloadStopBusy(false);
-          onError(cannotCancelMessage);
+          onError(messageFailure(cannotCancelMessage, "cancelled"));
         }
       } catch (cause) {
         downloadStopRef.current = null;
         setDownloadStop(null);
         setDownloadStopBusy(false);
-        onError(userErrorMessage(cause, t));
+        onError(resolveFailure(cause, t));
       }
     },
     [pauseDownload, cancelDownload, cannotCancelMessage, onError, t],

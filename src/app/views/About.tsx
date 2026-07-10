@@ -1,6 +1,7 @@
 import { useCallback, useId, useState } from "react";
 
-import { errorMessage, managerApi, type ManagerUpdateAvailable } from "../../services/managerApi";
+import { managerApi, type ManagerUpdateAvailable } from "../../services/managerApi";
+import { userErrorMessage } from "../errorCopy";
 import { Icon, CodexMark } from "../icons";
 import { useI18n } from "../i18n";
 import { NavBar, Ring } from "../components";
@@ -44,7 +45,7 @@ export function About({ onBack }: { onBack: () => void }) {
         setMgrMsg(t("about.mgrUnavailable"));
       }
     } catch (cause) {
-      setMgrMsg(errorMessage(cause));
+      setMgrMsg(userErrorMessage(cause, t));
     } finally {
       setMgrBusy(false);
     }
@@ -57,7 +58,7 @@ export function About({ onBack }: { onBack: () => void }) {
     try {
       await pendingUpdate.installAndRelaunch();
     } catch (cause) {
-      setMgrMsg(errorMessage(cause));
+      setMgrMsg(userErrorMessage(cause, t));
       setPendingUpdate(null);
     } finally {
       setMgrBusy(false);
@@ -69,9 +70,9 @@ export function About({ onBack }: { onBack: () => void }) {
     try {
       await managerApi.openLogsDir();
     } catch (cause) {
-      setMgrMsg(errorMessage(cause));
+      setMgrMsg(userErrorMessage(cause, t));
     }
-  }, []);
+  }, [t]);
 
   const copyDiagnostics = useCallback(async () => {
     setMgrMsg(null);
@@ -148,7 +149,7 @@ export function About({ onBack }: { onBack: () => void }) {
           {pendingUpdate ? t("confirm.title", { version: pendingUpdate.version }) : ""}
         </h3>
         <p id={updateBodyId}>{t("about.mgrConfirmBody")}</p>
-        <div className="row2">
+        <div className="row2 sheet-actions">
           <button className="btn ghost" onClick={closeUpdateConfirm} disabled={mgrBusy}>
             {t("confirm.cancel")}
           </button>

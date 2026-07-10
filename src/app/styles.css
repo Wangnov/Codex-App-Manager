@@ -1938,6 +1938,12 @@ button.row.danger:hover {
   left: 0;
   right: 0;
   bottom: 0;
+  /* Cap height so 200% text scaling / long copy can't push actions off-screen
+     in the fixed 400×640 window. Body scrolls; sticky .row2 stays reachable. */
+  max-height: calc(100% - 10px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: linear-gradient(180deg, var(--surface-top), var(--surface));
   border: 1px solid var(--line-2);
   border-bottom: none;
@@ -1963,6 +1969,12 @@ button.row.danger:hover {
 .sheet {
   position: relative;
   z-index: 1;
+  min-height: 0;
+  max-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 @keyframes sheet-rise {
   from {
@@ -2103,6 +2115,43 @@ button.row.danger:hover {
   min-width: 0;
   line-height: 1.25;
   white-space: normal;
+}
+/* Dedicated sticky action bar — prefer this over bare .row2 so long body copy
+   at 200% text scaling can't push Confirm/Cancel off-screen. */
+.sheet .sheet-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  padding-top: var(--space-xs);
+  padding-bottom: 2px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklch, var(--surface) 0%, transparent) 0%,
+    var(--surface) 36%,
+    var(--surface) 100%
+  );
+}
+
+/* Action-path failure banner: stack message + disclosure under the alert icon. */
+.failure-banner {
+  align-items: flex-start;
+}
+.failure-banner-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+.failure-banner-toggle {
+  margin-top: 2px;
+  padding-inline: 0;
+}
+.failure-banner-detail {
+  margin: 4px 0 0;
+  max-width: 100%;
+  max-height: 96px;
 }
 
 .data-path-row {

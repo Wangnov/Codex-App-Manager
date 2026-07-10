@@ -22,7 +22,7 @@ function SheetHarness({ dismissable = true }: { dismissable?: boolean }) {
       >
         <h3 id={titleId}>Danger zone</h3>
         <p id={bodyId}>Confirm the action</p>
-        <div className="row2">
+        <div className="row2 sheet-actions">
           <button className="btn ghost" onClick={() => setOpen(false)}>
             Cancel
           </button>
@@ -34,6 +34,31 @@ function SheetHarness({ dismissable = true }: { dismissable?: boolean }) {
 }
 
 describe("Sheet", () => {
+  it("keeps dialog actions reachable when content overflows (text scaling)", async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <button>Open</button>
+        <Sheet open labelledBy="t" describedBy="d" initialFocus="primary" onDismiss={() => {}}>
+          <h3 id="t">Long sheet</h3>
+          <p id="d">{"Tall content. ".repeat(80)}</p>
+          <div className="row2 sheet-actions">
+            <button className="btn ghost">Cancel</button>
+            <button className="btn primary">Confirm</button>
+          </div>
+        </Sheet>
+      </>,
+    );
+
+    // Sanity: dialog is present and primary action is a focus target even when
+    // body text is very tall (sticky actions + max-height sheet frame in CSS).
+    const dialog = screen.getByRole("dialog", { name: "Long sheet" });
+    expect(dialog).toBeInTheDocument();
+    expect(dialog.className).toContain("sheet");
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeInTheDocument();
+  });
+
   it("sets dialog semantics, traps focus, handles Escape, and restores focus", async () => {
     const user = userEvent.setup();
     render(<SheetHarness />);

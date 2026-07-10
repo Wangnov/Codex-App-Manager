@@ -84,13 +84,13 @@ export function ManualExistingInstallSheet({
         ) : null}
 
         {error ? (
-          <div className="manual-existing-error">
+          <div className="manual-existing-error" role="alert" aria-live="assertive">
             <Icon name="alert" />
             <span>{error}</span>
           </div>
         ) : null}
 
-        <div className="row2">
+        <div className="row2 sheet-actions">
           <button className="btn ghost" onClick={onDismiss} disabled={busy}>
             {t("confirm.cancel")}
           </button>

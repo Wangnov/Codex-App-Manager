@@ -11,7 +11,8 @@ import {
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 
-import { isNetworkError, managerApi } from "../services/managerApi";
+import { managerApi } from "../services/managerApi";
+import type { FailureSurface } from "./errorCopy";
 import { Icon, type IconName, CodexMark } from "./icons";
 import { useI18n } from "./i18n";
 import { Sheet } from "./Sheet";
@@ -102,7 +103,7 @@ export function QuitConfirm() {
       <Ring icon="info" variant="amber" />
       <h3 id={titleId}>{t("close.confirm.title")}</h3>
       <p id={bodyId}>{t("close.confirm.body")}</p>
-      <div className="row2">
+      <div className="row2 sheet-actions">
         <button className="btn ghost" onClick={() => setOpen(false)}>
           {t("confirm.cancel")}
         </button>
@@ -134,6 +135,8 @@ export function TopBar({ children }: { children?: ReactNode }) {
         {t("app.name")}
       </div>
       <div className="spacer" data-tauri-drag-region />
+      {/* First interactive child is the preferred home focus target after a
+          view transition (see App focus restore + data-page-focus). */}
       {children}
       <MinimizeButton />
       <CloseButton />
@@ -153,9 +156,28 @@ export function NavBar({
   children?: ReactNode;
 }) {
   const { t } = useI18n();
+  const backRef = useRef<HTMLButtonElement>(null);
+
+  // Sub-views replace the previous page without a focus handoff; when focus
+  // lands on <body>, put it on the back control so keyboard users aren't stuck.
+  useLayoutEffect(() => {
+    if (disableBack) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active !== document.documentElement) {
+      return;
+    }
+    backRef.current?.focus({ preventScroll: true });
+  }, [disableBack]);
+
   return (
     <div className="navbar" data-tauri-drag-region>
-      <button className="navback" onClick={onBack} disabled={disableBack}>
+      <button
+        ref={backRef}
+        className="navback"
+        data-page-focus
+        onClick={onBack}
+        disabled={disableBack}
+      >
         <Icon name="back" />
         {t("nav.back")}
       </button>
@@ -191,23 +213,31 @@ export function Ring({
   );
 }
 
-/** The "检查失败" hero, shared by both platform homes. Classifies a connectivity
- *  failure (DNS / TLS / timeout) apart from other errors so the user sees a
- *  calm, actionable line instead of a raw curl diagnostic — the raw message
- *  stays one tap away behind 查看详情 for bug reports. Render this inside the
- *  hero `<section>` for the `kind === "error"` branch. */
-export function ErrorHero({ message }: { message: string | null }) {
+/** The "检查失败" hero, shared by both platform homes. Selects title/body by
+ *  stable failure code (never by string-matching engine text). Raw diagnostics
+ *  stay one tap away behind 查看详情 for bug reports.
+ *
+ *  `role="alert"` wraps only the spoken copy — not the disclosure control — so
+ *  expanding details doesn't re-announce the whole interactive tree. */
+export function ErrorHero({ failure }: { failure: FailureSurface | null }) {
   const { t } = useI18n();
   const [showDetails, setShowDetails] = useState(false);
-  const network = message ? isNetworkError(message) : false;
+  const network = failure?.code === "network" || failure?.code === "timeout";
+  // Connectivity keeps the short network sub under a calm title; other codes
+  // use the classified localized message as the body.
+  const body = network
+    ? t("home.error.network.sub")
+    : (failure?.message ?? t("home.error.sub"));
   return (
     <>
       <Ring icon="alert" variant="danger" />
-      <div className="headline">
-        {t(network ? "home.error.network.title" : "home.error.title")}
+      <div role="alert" aria-live="assertive">
+        <div className="headline">
+          {t(network ? "home.error.network.title" : "home.error.title")}
+        </div>
+        <div className="desc">{body}</div>
       </div>
-      <div className="desc">{t(network ? "home.error.network.sub" : "home.error.sub")}</div>
-      {message ? (
+      {failure?.detail ? (
         <>
           <button
             type="button"
@@ -215,7 +245,7 @@ export function ErrorHero({ message }: { message: string | null }) {
             aria-expanded={showDetails}
             onClick={() => setShowDetails((v) => !v)}
           >
-            {t("home.error.details")}
+            {showDetails ? t("home.error.hideDetails") : t("home.error.details")}
           </button>
           {/* Grow the raw diagnostic in via grid-rows (same accordion technique
               as .schedule-panel) instead of letting it pop in/out. */}
@@ -225,12 +255,72 @@ export function ErrorHero({ message }: { message: string | null }) {
             inert={showDetails ? undefined : true}
           >
             <div className="errdetails-panel-inner">
-              <pre className="errdetails">{message}</pre>
+              <pre className="errdetails">{failure.detail}</pre>
             </div>
           </div>
         </>
       ) : null}
     </>
+  );
+}
+
+/** Inline status/error strip used across Home, Settings, Uninstall, etc.
+ *  Live-region attributes sit on the text span so action buttons (retry) are
+ *  not part of the announced tree. */
+export function StatusBanner({
+  tone,
+  children,
+  action,
+  icon,
+}: {
+  tone: "err" | "info" | "ok" | "warn";
+  children: ReactNode;
+  action?: ReactNode;
+  icon?: IconName;
+}) {
+  const isError = tone === "err";
+  const resolvedIcon: IconName =
+    icon ?? (isError ? "alert" : tone === "ok" ? "check" : "info");
+  return (
+    <div className={`banner ${tone}`}>
+      <Icon name={resolvedIcon} />
+      <span role={isError ? "alert" : "status"} aria-live={isError ? "assertive" : "polite"}>
+        {children}
+      </span>
+      {action}
+    </div>
+  );
+}
+
+/** Action-path failure banner: localized primary message + optional raw detail
+ *  disclosure. Used by Home/WinHome install/update/launch paths. */
+export function FailureBanner({ failure }: { failure: FailureSurface }) {
+  const { t } = useI18n();
+  const [showDetails, setShowDetails] = useState(false);
+  return (
+    <div className="banner err failure-banner">
+      <Icon name="alert" />
+      <div className="failure-banner-body">
+        <span role="alert" aria-live="assertive">
+          {failure.message}
+        </span>
+        {failure.detail ? (
+          <>
+            <button
+              type="button"
+              className={`errdetails-toggle failure-banner-toggle${showDetails ? " open" : ""}`}
+              aria-expanded={showDetails}
+              onClick={() => setShowDetails((v) => !v)}
+            >
+              {showDetails ? t("home.error.hideDetails") : t("home.error.details")}
+            </button>
+            {showDetails ? (
+              <pre className="errdetails failure-banner-detail">{failure.detail}</pre>
+            ) : null}
+          </>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -275,11 +365,15 @@ export function ResultBanner({
 
   return (
     <div className={`resultbar-slot${leaving ? " leaving" : ""}`}>
-      <div className={`resultbar ${tone}`} role="status" aria-live="polite">
+      <div className={`resultbar ${tone}`}>
         <span className="rb-badge" aria-hidden="true">
           <Icon name={tone === "ok" ? "check" : "alert"} />
         </span>
-        <span className="rb-text">
+        <span
+          className="rb-text"
+          role={tone === "err" ? "alert" : "status"}
+          aria-live={tone === "err" ? "assertive" : "polite"}
+        >
           <span className="rb-title">{title}</span>
           {detail ? <span className="rb-detail">{detail}</span> : null}
         </span>

@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useId, useState } from "react";
 
-import { errorMessage, managerApi } from "../../services/managerApi";
+import { managerApi } from "../../services/managerApi";
 import type { InstallProbeState, OperationOutcome } from "../../shared/types";
 import { outcomeIsPartial } from "../../shared/types";
+import { userErrorMessage } from "../errorCopy";
 import { Icon } from "../icons";
 import { useI18n } from "../i18n";
-import { NavBar, Ring, Toggle } from "../components";
+import { NavBar, Ring, Toggle, StatusBanner } from "../components";
 import { codexHomeDisplay } from "../paths";
 import { currentPlatform } from "../platform";
 import { Sheet } from "../Sheet";
@@ -96,7 +97,7 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
         setDone(r.message);
       }
     } catch (cause) {
-      setError(errorMessage(cause));
+      setError(userErrorMessage(cause, t));
     } finally {
       setBusy(false);
     }
@@ -119,7 +120,7 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
         setPartialOutcome(null);
       }
     } catch (cause) {
-      setError(errorMessage(cause));
+      setError(userErrorMessage(cause, t));
     } finally {
       setRetryBusy(false);
     }
@@ -163,10 +164,7 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
             </section>
             {partialOutcome ? (
               <>
-                <div className="banner warn">
-                  <Icon name="alert" />
-                  <span>{t("uninstall.partial.title")}</span>
-                </div>
+                <StatusBanner tone="warn">{t("uninstall.partial.title")}</StatusBanner>
                 <div className="actions">
                   {partialOutcome.recoveryActions.includes("cleanup_metadata") ? (
                     <button
@@ -207,12 +205,7 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
                 </div>
               </>
             ) : null}
-            {error ? (
-              <div className="banner err">
-                <Icon name="alert" />
-                <span>{error}</span>
-              </div>
-            ) : null}
+            {error ? <StatusBanner tone="err">{error}</StatusBanner> : null}
             <button className="btn ghost big" onClick={onBack}>
               {t("nav.back")}
             </button>
@@ -228,34 +221,30 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
             </section>
 
             {probe === "loading" ? (
-              <div className="banner info" role="status">
-                <Icon name="loader" />
-                <span>{t("uninstall.status.loading")}</span>
-              </div>
+              <StatusBanner tone="info" icon="loader">
+                {t("uninstall.status.loading")}
+              </StatusBanner>
             ) : null}
 
             {probe === "error" ? (
-              <div className="banner err">
-                <Icon name="alert" />
-                <span>{t("uninstall.status.error")}</span>
-                <button className="linkbtn" onClick={() => void refreshProbe()}>
-                  {t("settings.retry")}
-                </button>
-              </div>
+              <StatusBanner
+                tone="err"
+                action={
+                  <button className="linkbtn" onClick={() => void refreshProbe()}>
+                    {t("settings.retry")}
+                  </button>
+                }
+              >
+                {t("uninstall.status.error")}
+              </StatusBanner>
             ) : null}
 
             {probe === "none" ? (
-              <div className="banner info">
-                <Icon name="info" />
-                <span>{t("uninstall.status.none")}</span>
-              </div>
+              <StatusBanner tone="info">{t("uninstall.status.none")}</StatusBanner>
             ) : null}
 
             {probe === "external" ? (
-              <div className="banner info">
-                <Icon name="info" />
-                <span>{t("uninstall.needAdopt")}</span>
-              </div>
+              <StatusBanner tone="info">{t("uninstall.needAdopt")}</StatusBanner>
             ) : null}
 
             <div className="list">
@@ -300,12 +289,7 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
               </div>
             ) : null}
 
-            {error ? (
-              <div className="banner err">
-                <Icon name="alert" />
-                <span>{error}</span>
-              </div>
-            ) : null}
+            {error ? <StatusBanner tone="err">{error}</StatusBanner> : null}
 
             <div className="actions">
               <button
@@ -338,7 +322,7 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
             ? t("uninstall.confirm1.bodyKeep", { path: codexHome })
             : t("uninstall.confirm1.bodyPurge")}
         </p>
-        <div className="row2">
+        <div className="row2 sheet-actions">
           <button className="btn ghost" onClick={() => setConfirmStep(0)}>
             {t("uninstall.cancel")}
           </button>
@@ -358,7 +342,7 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
         <Ring icon="trash" variant="danger" />
         <h3 id={confirm2TitleId}>{t("uninstall.confirm2.title")}</h3>
         <p id={confirm2BodyId}>{t("uninstall.confirm2.body", { path: codexHome })}</p>
-        <div className="row2">
+        <div className="row2 sheet-actions">
           <button className="btn ghost" onClick={() => setConfirmStep(0)}>
             {t("uninstall.cancel")}
           </button>
