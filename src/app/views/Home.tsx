@@ -43,6 +43,9 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const { t, lang } = useI18n();
   const [report, setReport] = useState<MacUpdateReport | null>(null);
   const [status, setStatus] = useState<MacInstallStatus | null>(null);
+  // Several coexisting Codex-lineage installs: ambient adoption refuses, the
+  // explicit picker becomes the primary action (see the external button row).
+  const ambiguousInstall = (status?.ambiguousPaths?.length ?? 0) > 1;
   const [perform, setPerform] = useState<MacPerformReport | null>(null);
   // Human-facing version pair captured at perform time, so the outcome strip can
   // read "26.602.40724 → 26.602.71036" instead of raw build numbers.
@@ -653,6 +656,10 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
                 {t("prov.external")}
               </div>
               <div className="desc">{t("home.external.desc")}</div>
+              {/* Paths are technical content, shown verbatim in every locale. */}
+              {ambiguousInstall && status?.ambiguousPaths ? (
+                <div className="desc mono">{status.ambiguousPaths.join(" · ")}</div>
+              ) : null}
             </>
           ) : (
             <>
@@ -765,10 +772,24 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           ) : null}
           {!rechecking && kind === "external" ? (
             <>
-              <button className="btn primary big" onClick={adopt} disabled={busy !== null}>
-                <Icon name="shield" />
-                {t("home.external.cta")}
-              </button>
+              {/* With several coexisting Codex installs, ambient adoption
+                  would refuse (and must not silently pick one) — make the
+                  explicit picker the primary action instead. */}
+              {ambiguousInstall ? (
+                <button
+                  className="btn primary big"
+                  onClick={openManualExisting}
+                  disabled={busy !== null || manualExistingBusy !== null}
+                >
+                  <Icon name="folder" />
+                  {t("home.manualExisting.title")}
+                </button>
+              ) : (
+                <button className="btn primary big" onClick={adopt} disabled={busy !== null}>
+                  <Icon name="shield" />
+                  {t("home.external.cta")}
+                </button>
+              )}
               <button className="btn ghost" onClick={onLaunch} disabled={busy !== null}>
                 <CodexGlyph />
                 {t("home.launch")}
@@ -816,10 +837,9 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           ) : null}
         </div>
 
-        {/* Also offered on "external": with several coexisting lineage installs
-            ambient adoption refuses to pick one (see mac_adopt), and this is
-            the explicit path-picking flow that resolves the ambiguity. */}
-        {!rechecking && (kind === "none" || kind === "external") ? (
+        {/* Also offered on non-ambiguous "external" (on ambiguity the picker
+            IS the primary action above, so the secondary link would repeat). */}
+        {!rechecking && (kind === "none" || (kind === "external" && !ambiguousInstall)) ? (
           <div className="manual-existing-entry">
             <button
               className="linkbtn subtle"

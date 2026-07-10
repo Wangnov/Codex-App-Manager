@@ -282,14 +282,20 @@ pub fn is_translocation_risk(_app: &str) -> bool {
 }
 
 /// The quarantine xattr value is `flags;timestamp;agent;uuid` with hex flags.
-/// `QTN_FLAG_USER_APPROVED` (0x0040, libquarantine qtn.h) is set once the user
-/// approved the app at first launch — approved bundles do not translocate.
-/// Unparseable values are treated as risky (fail closed, with guidance).
+/// macOS translocates a bundle iff the TRANSLOCATE flag (0x0080) is set AND
+/// the DO_NOT_TRANSLOCATE flag (0x0100) is clear. The user-approved flag
+/// (0x0040) is irrelevant — `00c3` (approved, 0x0080 set) still translocates.
+/// Verified empirically against `SecTranslocateURLShouldRunTranslocated` for
+/// nine flag combinations (0083/00c3/0080 → translocate; 0381/0181/0143/0100/
+/// 0043/0001 → not). Unparseable values fail closed (risky, with guidance).
 fn quarantine_flags_indicate_translocation(value: &str) -> bool {
-    const QTN_FLAG_USER_APPROVED: u32 = 0x0040;
+    const QTN_FLAG_TRANSLOCATE: u32 = 0x0080;
+    const QTN_FLAG_DO_NOT_TRANSLOCATE: u32 = 0x0100;
     let flags_hex = value.split(';').next().unwrap_or("").trim();
     match u32::from_str_radix(flags_hex, 16) {
-        Ok(flags) => flags & QTN_FLAG_USER_APPROVED == 0,
+        Ok(flags) => {
+            flags & QTN_FLAG_TRANSLOCATE != 0 && flags & QTN_FLAG_DO_NOT_TRANSLOCATE == 0
+        }
         Err(_) => true,
     }
 }
@@ -368,23 +374,27 @@ pub fn read_bundle_short_version(app: &str) -> Option<String> {
 mod quarantine_tests {
     use super::quarantine_flags_indicate_translocation;
 
+    // Expected values below match SecTranslocateURLShouldRunTranslocated
+    // observed on a real bundle for each flag combination.
     #[test]
-    fn approved_quarantine_is_not_a_translocation_risk() {
-        // Typical post-approval value: 0x0040 (QTN_FLAG_USER_APPROVED) set.
-        assert!(!quarantine_flags_indicate_translocation(
-            "00c3;68701c2a;Chrome;A1B2C3"
-        ));
-        assert!(!quarantine_flags_indicate_translocation("0041;0;Safari;"));
+    fn translocates_only_with_translocate_set_and_do_not_translocate_clear() {
+        assert!(quarantine_flags_indicate_translocation("0083;t;a;u"));
+        assert!(quarantine_flags_indicate_translocation("00c3;t;a;u")); // approved bit does NOT exempt
+        assert!(quarantine_flags_indicate_translocation("0080;t;a;u"));
     }
 
     #[test]
-    fn unapproved_or_garbled_quarantine_is_risky() {
-        // Fresh download, never launched: approved bit clear.
-        assert!(quarantine_flags_indicate_translocation(
-            "0083;68701c2a;Chrome;A1B2C3"
-        ));
-        assert!(quarantine_flags_indicate_translocation("0002;0;curl;"));
-        // Unparseable flags fail closed.
+    fn does_not_translocate_without_flag_or_with_exemption() {
+        assert!(!quarantine_flags_indicate_translocation("0381;t;a;u")); // Finder-copy shape
+        assert!(!quarantine_flags_indicate_translocation("0181;t;a;u"));
+        assert!(!quarantine_flags_indicate_translocation("0143;t;a;u"));
+        assert!(!quarantine_flags_indicate_translocation("0100;t;a;u"));
+        assert!(!quarantine_flags_indicate_translocation("0043;t;a;u"));
+        assert!(!quarantine_flags_indicate_translocation("0001;t;a;u"));
+    }
+
+    #[test]
+    fn garbled_quarantine_fails_closed() {
         assert!(quarantine_flags_indicate_translocation("not-hex;x;y;z"));
         assert!(quarantine_flags_indicate_translocation(""));
     }

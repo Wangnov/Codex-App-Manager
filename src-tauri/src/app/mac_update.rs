@@ -281,21 +281,27 @@ pub fn detect_existing_install_at_path(path: &Path) -> Result<InstalledCodex, Ap
             ));
         }
     }
-    // An unapproved-quarantined bundle runs via App Translocation (randomized
-    // path), so no run/quit protection can target its live process — refuse to
-    // manage it. Approved quarantine (the common state after first launch) is
-    // fine and must not be rejected.
-    if sys::is_translocation_risk(&raw) {
-        return Err(AppError::Internal(
-            "所选应用带有未经批准的 macOS 隔离属性：系统会通过 App Translocation 在随机路径运行它，\
-             无法安全地检测或退出运行中的实例。请先双击打开一次该应用（完成 Gatekeeper 批准），\
-             或运行 xattr -d com.apple.quarantine 移除隔离属性后重试"
-                .to_string(),
-        ));
-    }
+    require_not_translocation_risk(&raw)?;
     let (detected_path, build) = sys::installed_codex_build_at_path(&raw)
         .ok_or_else(|| AppError::Internal("无法读取所选 Codex 应用的版本信息".to_string()))?;
     Ok(installed_from_path_build(detected_path, build))
+}
+
+/// Refuse paths macOS would run through App Translocation: the live process
+/// then sits on a randomized mount, every path-scoped run/quit protection is
+/// blind to it, and a swap/uninstall could act while the app is running.
+/// Checked at adoption AND re-checked right before each destructive tail
+/// (the attribute can appear later, e.g. after a re-download over the path).
+fn require_not_translocation_risk(app: &str) -> Result<(), AppError> {
+    if sys::is_translocation_risk(app) {
+        return Err(AppError::Internal(
+            "该应用带有会触发 App Translocation 的 macOS 隔离属性：系统会在随机路径运行它，\
+             无法安全地检测或退出运行中的实例。请用 Finder 将它「移动」到其他位置再移回\
+             （移动会写入豁免标记），或运行 xattr -d com.apple.quarantine 移除隔离属性后重试"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn detect_managed_installed() -> Option<InstalledCodex> {
@@ -973,6 +979,10 @@ pub fn perform_macos_update_with_network(
                 ));
             }
         }
+        // The attribute can appear after adoption (e.g. the path was replaced
+        // by a fresh download) — a translocated live instance would be
+        // invisible to the quit check below.
+        require_not_translocation_risk(&installed.path)?;
 
         // 4b) graceful quit (never force-kill), then 5) atomic same-volume swap. If
         //     the swap fails after the quit, swap_in_place has restored the old
@@ -1164,6 +1174,9 @@ pub fn mac_adopt() -> Result<MacInstallStatus, AppError> {
     }
     let installed = detect_installed()
         .ok_or_else(|| AppError::Internal("no Codex detected to adopt".to_string()))?;
+    // Same gate as the manual picker — ambient adoption must not manage a
+    // bundle whose running instance cannot be located.
+    require_not_translocation_risk(&installed.path)?;
     let path = &installed.path;
     log::info!("macOS adopt external install path={path}");
     let mut store = ProvenanceStore::load();
@@ -1450,6 +1463,9 @@ pub fn uninstall_macos(keep_codex_home: bool) -> Result<MacUninstallReport, AppE
         ));
     }
 
+    // A translocated live instance would be invisible to the quit check —
+    // re-verify before the destructive delete, same as perform.
+    require_not_translocation_risk(&installed.path)?;
     quit_codex_gracefully(&install_path)?;
 
     // Delete first: if we lack permission to remove the bundle (e.g. a root-owned
