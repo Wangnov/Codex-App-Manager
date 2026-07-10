@@ -816,7 +816,10 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           ) : null}
         </div>
 
-        {!rechecking && kind === "none" ? (
+        {/* Also offered on "external": with several coexisting lineage installs
+            ambient adoption refuses to pick one (see mac_adopt), and this is
+            the explicit path-picking flow that resolves the ambiguity. */}
+        {!rechecking && (kind === "none" || kind === "external") ? (
           <div className="manual-existing-entry">
             <button
               className="linkbtn subtle"

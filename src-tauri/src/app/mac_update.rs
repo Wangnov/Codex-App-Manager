@@ -281,6 +281,16 @@ pub fn detect_existing_install_at_path(path: &Path) -> Result<InstalledCodex, Ap
             ));
         }
     }
+    // A quarantined bundle runs via App Translocation (randomized path), so no
+    // run/quit protection can target its live process — refuse to manage it.
+    if sys::has_quarantine_attribute(&raw) {
+        return Err(AppError::Internal(
+            "所选应用带有 macOS 隔离属性（quarantine）：系统会通过 App Translocation 在随机路径运行它，\
+             无法安全地检测或退出运行中的实例。请先用 Finder 将它移动到「应用程序」文件夹\
+             （或运行 xattr -d com.apple.quarantine）后重试"
+                .to_string(),
+        ));
+    }
     let (detected_path, build) = sys::installed_codex_build_at_path(&raw)
         .ok_or_else(|| AppError::Internal("无法读取所选 Codex 应用的版本信息".to_string()))?;
     Ok(installed_from_path_build(detected_path, build))
@@ -1138,6 +1148,18 @@ pub fn mac_install_status() -> MacInstallStatus {
 
 /// Adopt the detected install — record provenance after explicit user consent.
 pub fn mac_adopt() -> Result<MacInstallStatus, AppError> {
+    // Ambient adoption picks the canonical-order first install; with several
+    // lineage installs coexisting that silently chooses for the user and every
+    // later update/uninstall would act on a target they never confirmed.
+    // Force the explicit path-picking flow instead.
+    let candidates = sys::installed_codex_candidates();
+    if candidates.len() > 1 {
+        let paths: Vec<String> = candidates.into_iter().map(|(path, _)| path).collect();
+        return Err(AppError::Internal(format!(
+            "检测到多个 Codex 安装（{}）。请使用「选择已安装的 Codex」手动指定要管理的那一个",
+            paths.join("、")
+        )));
+    }
     let installed = detect_installed()
         .ok_or_else(|| AppError::Internal("no Codex detected to adopt".to_string()))?;
     let path = &installed.path;

@@ -224,6 +224,38 @@ fn read_bundle_build(app: &str) -> Option<u64> {
     String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }
 
+/// Does the bundle carry macOS's quarantine attribute? A quarantined app is
+/// launched through App Translocation (a randomized `/private/var/folders/…`
+/// mount), so its running process can NOT be located from the bundle's own
+/// path — none of our run/quit protections can safely target it. Such bundles
+/// are rejected at adoption time rather than mismanaged later.
+#[cfg(target_os = "macos")]
+pub fn has_quarantine_attribute(app: &str) -> bool {
+    use std::ffi::CString;
+    let Ok(cpath) = CString::new(app) else {
+        return false;
+    };
+    let Ok(cname) = CString::new("com.apple.quarantine") else {
+        return false;
+    };
+    let size = unsafe {
+        libc::getxattr(
+            cpath.as_ptr(),
+            cname.as_ptr(),
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+        )
+    };
+    size >= 0
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn has_quarantine_attribute(_app: &str) -> bool {
+    false
+}
+
 /// Read a bundle's `CFBundleExecutable` — the main binary's name under
 /// `Contents/MacOS/`. Needed to address the RUNNING instance of a specific
 /// install by executable path (the name changed `Codex` → `ChatGPT` in the
