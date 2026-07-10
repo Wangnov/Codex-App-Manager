@@ -54,14 +54,16 @@ pub use portable::{
     purge_codex_user_data, uninstall_portable, PortableInstallReport, PortableUninstallReport,
 };
 pub use sys::{
-    detect_installed_codex, detect_portable_install, fetch_text, fetch_text_with_network,
-    launch_codex, launch_codex_with_options, probe_capabilities, remove_msix_package,
-    InstalledWindowsCodex, LaunchOptions, MsixRemoveReport,
+    close_msix_codex_processes, detect_installed_codex, detect_portable_install, fetch_text,
+    fetch_text_with_network, launch_codex, launch_codex_with_options, probe_capabilities,
+    remove_msix_package, InstalledWindowsCodex, LaunchOptions, MsixRemoveReport,
 };
 pub use sys::{
     install_msix_sideload, precheck_msix_dependencies, verify_msix_health, MsixDependencyPrecheck,
     MsixHealthReport, MsixSideloadReport,
 };
+// Failure-kind constants for structured MSIX health outcomes.
+pub use sys::msix_failure;
 pub use version::{compare_versions, version_key};
 
 pub const OPENAI_PACKAGE_IDENTITY: &str = "OpenAI.Codex";

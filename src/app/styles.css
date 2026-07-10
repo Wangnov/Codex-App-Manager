@@ -1164,11 +1164,15 @@ input {
 button.row {
   transition: background 0.16s var(--ease);
 }
-button.row:hover {
+button.row:hover:not(:disabled) {
   background: color-mix(in oklch, var(--accent) 6%, var(--surface-2));
 }
-button.row:active {
+button.row:active:not(:disabled) {
   background: color-mix(in oklch, var(--accent) 9%, var(--surface-2));
+}
+button.row:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 .row .ricon {
   width: 18px;

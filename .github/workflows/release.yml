@@ -5,7 +5,7 @@ name: Release
 #   sign + notarize + staple + repackage updater/dmg) → collect → publish a
 #   GitHub Release with the Tauri updater manifest (latest.json).
 #
-# Required repo secrets (Settings ▸ Secrets and variables ▸ Actions):
+# Required repo secrets (Settings ▸ Secrets and variables ▸ Actions / release env):
 #   APPLE_CERTIFICATE            base64 of your "Developer ID Application" .p12
 #   APPLE_CERTIFICATE_PASSWORD   password for that .p12
 #   APPLE_SIGNING_IDENTITY       "Developer ID Application: NAME (TEAMID)"
@@ -15,6 +15,12 @@ name: Release
 #   AC_API_KEY_BASE64            base64 of the AuthKey_XXXX.p8
 #   TAURI_SIGNING_PRIVATE_KEY            updater private key (string)
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD   its password (empty if none)
+#
+# Optional Windows Authenticode (non-blocking until configured; see docs/windows-signing.md):
+#   WINDOWS_CERTIFICATE          base64 of OV/EV code-signing .pfx
+#   WINDOWS_CERTIFICATE_PASSWORD password for that .pfx
+#   vars.AUTHENTICODE_REQUIRED   set to "true" to fail release when PE is unsigned
+#   vars.WINDOWS_TIMESTAMP_URL   optional RFC3161 timestamp URL override
 
 on:
   push:
@@ -135,14 +141,75 @@ jobs:
           export AC_API_KEY="$RUNNER_TEMP/AuthKey.p8"
           bash scripts/finalize-macos.sh "${{ matrix.target }}"
 
+      # ── Windows: PE architecture diagnostic (especially ARM64 cross-build) ─
+      #    windows-latest is x64; aarch64-pc-windows-msvc is cross-compiled.
+      #    Hard-assert the main PE machine type (0xAA64 / 0x8664). The NSIS
+      #    outer -setup.exe is an x86/x64 stub that embeds the payload, so we
+      #    assert machine type on the app binary, not the setup wrapper.
+      #    Cross-compilation ≠ runtime verification. See docs/windows-signing.md.
+      #    Invoke scripts in-process (`& .\scripts\…`); nested `pwsh -File` breaks
+      #    array parameter binding for -Path on GitHub-hosted Windows runners.
+      - name: Windows PE architecture diagnostic
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $target = "${{ matrix.target }}"
+          $main = "src-tauri/target/$target/release/codex-app-manager.exe"
+          $setup = @(Get-ChildItem "src-tauri/target/$target/release/bundle/nsis/*-setup.exe" -ErrorAction SilentlyContinue)
+          if (-not (Test-Path -LiteralPath $main)) {
+            Write-Host "::error::[build] missing main PE: $main"
+            exit 1
+          }
+          $expect = if ($target -like "aarch64-*") { "0xAA64" } else { "0x8664" }
+          # Hard assert on the app binary only (setup is a host stub).
+          & .\scripts\windows-pe-arch.ps1 -Path $main -ExpectMachine $expect
+          if ($setup.Count -gt 0) {
+            # Report-only for the installer wrapper (no ExpectMachine).
+            & .\scripts\windows-pe-arch.ps1 -Path @($setup | ForEach-Object { $_.FullName })
+          }
+          if ($target -like "aarch64-*") {
+            Write-Host "::notice::ARM64 main PE asserted machine=0xAA64 (cross-build on x64). Full install/launch smoke remains x64-only until ARM64 runners or trusted virtualization is available."
+          }
+
+      # ── Windows: optional Authenticode (OV/EV) on final NSIS installer ────
+      #    Non-blocking until WINDOWS_CERTIFICATE is configured in the release
+      #    environment. When present, signs the published -setup.exe. Full
+      #    inside-out signing of main binary + uninstaller should eventually
+      #    move into tauri build via certificateThumbprint (docs/windows-signing.md).
+      #    This is independent of the Tauri updater minisign key below.
+      - name: Authenticode-sign Windows installer (optional)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
+        run: |
+          $setup = Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe" -ErrorAction Stop
+          & .\scripts\sign-windows-authenticode.ps1 -Path $setup.FullName -Stage "sign"
+
+      - name: Verify Authenticode on Windows installer
+        if: matrix.os == 'windows'
+        shell: pwsh
+        env:
+          AUTHENTICODE_MODE: ${{ vars.AUTHENTICODE_REQUIRED == 'true' && 'required' || 'optional' }}
+        run: |
+          $setup = Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe" -ErrorAction Stop
+          & .\scripts\verify-windows-authenticode.ps1 `
+            -Path $setup.FullName `
+            -Mode $env:AUTHENTICODE_MODE `
+            -Stage "sign-verify"
+
       # ── Windows: sign the NSIS installer for the updater ──────────────────
-      #    The build is intentionally unsigned (mirroring macOS), so Tauri emits
-      #    no `.sig`. In Tauri 2 the Windows updater ships the `-setup.exe`
-      #    itself, so signing it here with the updater key — exactly what
-      #    finalize-macos.sh does for the .app.tar.gz — is equivalent to
-      #    `createUpdaterArtifacts` and is what gets windows-x86_64 and
-      #    windows-aarch64 into latest.json. Without it the manifest has macOS
-      #    platforms only and Windows in-app self-update never sees new versions.
+      #    The build is intentionally unsigned for Authenticode (until OV/EV is
+      #    configured), so Tauri emits no updater `.sig` during build. In Tauri 2
+      #    the Windows updater ships the `-setup.exe` itself, so signing it here
+      #    with the updater key — exactly what finalize-macos.sh does for the
+      #    .app.tar.gz — is equivalent to `createUpdaterArtifacts` and is what
+      #    gets windows-x86_64 and windows-aarch64 into latest.json. Without it
+      #    the manifest has macOS platforms only and Windows in-app self-update
+      #    never sees new versions.
+      #    NOTE: updater signature ≠ Authenticode ≠ SmartScreen reputation.
       - name: Sign Windows updater artifact
         if: matrix.os == 'windows'
         shell: bash
@@ -150,6 +217,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
+          echo "::group::[sign] Tauri updater signature (.sig)"
           B="src-tauri/target/${{ matrix.target }}/release/bundle"
           shopt -s nullglob
           signed=0
@@ -158,15 +226,17 @@ jobs:
             signed=$((signed + 1))
           done
           if [ "$signed" -eq 0 ]; then
-            echo "::error::no NSIS -setup.exe found to sign under $B/nsis" >&2
+            echo "::error::[sign] no NSIS -setup.exe found to sign under $B/nsis" >&2
             exit 1
           fi
+          echo "::endgroup::"
 
       # ── Collect artifacts (rename macOS updater tarball with its arch so the
       #    two macOS jobs don't collide when merged) ──────────────────────────
       - name: Collect artifacts
         shell: bash
         run: |
+          echo "::group::[build] collect final publishable artifacts"
           DST="$GITHUB_WORKSPACE/dist-artifacts"; mkdir -p "$DST"
           B="src-tauri/target/${{ matrix.target }}/release/bundle"
           ARCH="${{ matrix.target }}"; ARCH="${ARCH%%-*}"
@@ -188,6 +258,26 @@ jobs:
             done
           fi
           ls -la "$DST"
+          # Gate on final publishable names (not intermediate target/ paths).
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            setup_count=$(ls -1 "$DST"/*-setup.exe 2>/dev/null | wc -l | tr -d ' ')
+            sig_count=$(ls -1 "$DST"/*-setup.exe.sig 2>/dev/null | wc -l | tr -d ' ')
+            if [ "$setup_count" -lt 1 ]; then
+              echo "::error::[build] no final *-setup.exe in dist-artifacts" >&2
+              exit 1
+            fi
+            if [ "$sig_count" -lt 1 ]; then
+              echo "::error::[sign] no final *-setup.exe.sig in dist-artifacts (updater signature missing)" >&2
+              exit 1
+            fi
+          else
+            dmg_count=$(ls -1 "$DST"/*.dmg 2>/dev/null | wc -l | tr -d ' ')
+            if [ "$dmg_count" -lt 1 ]; then
+              echo "::error::[build] no final *.dmg in dist-artifacts" >&2
+              exit 1
+            fi
+          fi
+          echo "::endgroup::"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
@@ -220,6 +310,42 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+
+      # Validate the merged *publishable* tree (renamed final names), not the
+      # per-target intermediate build directories from the matrix jobs.
+      - name: Validate final release artifacts
+        shell: bash
+        run: |
+          echo "::group::[build] validate final publishable artifacts"
+          set -euo pipefail
+          ls -la dist
+          missing=0
+          require() {
+            local pattern="$1"
+            # shellcheck disable=SC2086
+            if ! compgen -G "dist/$pattern" > /dev/null; then
+              echo "::error::[build] missing final artifact matching: $pattern"
+              missing=1
+            else
+              echo "OK $pattern → $(compgen -G "dist/$pattern" | tr '\n' ' ')"
+            fi
+          }
+          require "CodexAppManager_aarch64.dmg"
+          require "CodexAppManager_x86_64.dmg"
+          require "CodexAppManager_aarch64.app.tar.gz"
+          require "CodexAppManager_x86_64.app.tar.gz"
+          require "CodexAppManager_aarch64.app.tar.gz.sig"
+          require "CodexAppManager_x86_64.app.tar.gz.sig"
+          # Windows NSIS names after space-stripping (see Collect artifacts).
+          require "*x64*-setup.exe"
+          require "*arm64*-setup.exe"
+          require "*x64*-setup.exe.sig"
+          require "*arm64*-setup.exe.sig"
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::[build] final artifact validation failed"
+            exit 1
+          fi
+          echo "::endgroup::"
 
       - name: Generate updater manifest (latest.json)
         env:

@@ -321,6 +321,18 @@ export interface MsixHealthReport {
   aumidResolved: boolean;
   /** Declared framework dependencies missing on this machine. */
   missingDependencies: string[];
+  /**
+   * Real shell activation left a process under the package install location
+   * for the liveness window. Registration alone is not enough.
+   */
+  activationOk?: boolean;
+  /**
+   * Machine-stable failure class for notes / routing. Empty when healthy.
+   * Values: not-registered | status-bad | aumid-unresolved |
+   * missing-dependencies | activation-failed | immediate-exit | timeout |
+   * probe-failed | policy.
+   */
+  failureKind?: string;
   /** Human-facing reason when unhealthy; empty when healthy. */
   reason: string;
 }

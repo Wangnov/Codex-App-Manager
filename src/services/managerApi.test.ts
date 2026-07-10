@@ -92,6 +92,28 @@ describe("settings API", () => {
       }),
     );
   });
+
+  it("coerces empty custom source and proxy modes to real defaults", async () => {
+    const dispatchEvent = vi.fn();
+    vi.stubGlobal("window", {
+      open: vi.fn(),
+      __TAURI_INTERNALS__: undefined,
+      dispatchEvent,
+    });
+
+    const saved = await managerApi.setSettings({
+      ...DEFAULT_SETTINGS,
+      source: "custom",
+      customUrl: "  ",
+      proxyMode: "custom",
+      customProxyUrl: "",
+    });
+
+    expect(saved.source).toBe("auto");
+    expect(saved.customUrl).toBe("");
+    expect(saved.proxyMode).toBe("system");
+    expect(saved.customProxyUrl).toBe("");
+  });
 });
 
 describe("diagnostics API", () => {

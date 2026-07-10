@@ -12,7 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::{Deserialize, Serialize};
 
 use codex_win_engine::{
-    cancel_active_download, close_codex_gracefully_for_root, detect_installed_codex,
+    cancel_active_download, close_codex_gracefully_for_root, close_msix_codex_processes,
+    detect_installed_codex,
     detect_portable_install, download_to_with_progress_bounded_with_network,
     fetch_text_with_network, find_msix_sha256, install_msix_sideload, install_portable_from_msix,
     limits::MAX_PACKAGE_BYTES, parse_manifest, pause_active_download, plan_update,
@@ -995,6 +996,24 @@ pub fn perform_windows_update_with_install_mode_and_network(
         let health = verify_msix_health();
         if !health.healthy {
             log::warn!("Windows route changed to portable fallback from_route=msix-sideload to_route=portable-fallback");
+            // Activation probe may have started Codex (or left a half-started
+            // process). Close it before portable install and Remove-AppxPackage
+            // so package files unlock cleanly. Prefer the sideload install path
+            // when known; always also sweep via the registered package location.
+            if let Some(installed) = sideload.installed.as_ref() {
+                if let Err(err) =
+                    close_codex_gracefully_for_root(20, PathBuf::from(&installed.path).as_path())
+                {
+                    log::warn!(
+                        "close MSIX Codex after unhealthy health check (install path) error={err}"
+                    );
+                }
+            }
+            if let Err(err) = close_msix_codex_processes(20) {
+                log::warn!(
+                    "close MSIX Codex after unhealthy health check (package sweep) error={err}"
+                );
+            }
             let mut report = install_portable_after_stage(
                 settings,
                 stage,

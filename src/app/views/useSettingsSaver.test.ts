@@ -3,22 +3,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { managerApi } from "../../services/managerApi";
 import { DEFAULT_SETTINGS, type AppSettings } from "../../shared/types";
-import type { TKey } from "../i18n";
-import { useSettingsSaver } from "./useSettingsSaver";
+import {
+  mergeSavedKeepingCustomDraft,
+  settingsPayloadForSave,
+  useSettingsSaver,
+} from "./useSettingsSaver";
 
-vi.mock("../../services/managerApi", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../services/managerApi")>();
-  return {
-    ...actual,
-    managerApi: {
-      ...actual.managerApi,
-      setSettings: vi.fn(),
-    },
-  };
-});
+vi.mock("../../services/managerApi", () => ({
+  errorMessage: (cause: unknown) => (cause instanceof Error ? cause.message : String(cause)),
+  managerApi: {
+    setSettings: vi.fn(),
+  },
+}));
 
 const setSettings = vi.mocked(managerApi.setSettings);
-const t = (key: TKey) => (key === "error.generic" ? "localized-generic" : key);
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -30,6 +28,69 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+describe("settingsPayloadForSave", () => {
+  it("keeps incomplete custom modes on the last saved values", () => {
+    const last = {
+      ...DEFAULT_SETTINGS,
+      source: "mirror" as const,
+      proxyMode: "direct" as const,
+    };
+    const draft = {
+      ...DEFAULT_SETTINGS,
+      source: "custom" as const,
+      customUrl: "  ",
+      proxyMode: "custom" as const,
+      customProxyUrl: "",
+      askBefore: false,
+    };
+    expect(settingsPayloadForSave(draft, last)).toEqual({
+      ...draft,
+      source: "mirror",
+      customUrl: last.customUrl,
+      proxyMode: "direct",
+      customProxyUrl: last.customProxyUrl,
+    });
+  });
+
+  it("passes through complete custom modes", () => {
+    const last = { ...DEFAULT_SETTINGS };
+    const next = {
+      ...DEFAULT_SETTINGS,
+      source: "custom" as const,
+      customUrl: "https://example.test/feed",
+      proxyMode: "custom" as const,
+      customProxyUrl: "socks5h://127.0.0.1:7890",
+    };
+    expect(settingsPayloadForSave(next, last)).toEqual(next);
+  });
+});
+
+describe("mergeSavedKeepingCustomDraft", () => {
+  it("preserves incomplete custom drafts after other fields save", () => {
+    const draft = {
+      ...DEFAULT_SETTINGS,
+      source: "custom" as const,
+      customUrl: "",
+      proxyMode: "custom" as const,
+      customProxyUrl: "",
+      askBefore: false,
+    };
+    const saved = {
+      ...DEFAULT_SETTINGS,
+      source: "mirror" as const,
+      proxyMode: "direct" as const,
+      askBefore: false,
+    };
+    expect(mergeSavedKeepingCustomDraft(draft, saved)).toEqual({
+      ...saved,
+      source: "custom",
+      customUrl: "",
+      proxyMode: "custom",
+      customProxyUrl: "",
+    });
+  });
+});
+
 describe("useSettingsSaver", () => {
   beforeEach(() => {
     setSettings.mockReset();
@@ -39,7 +100,7 @@ describe("useSettingsSaver", () => {
     const first = deferred<AppSettings>();
     const second = deferred<AppSettings>();
     setSettings.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
-    const { result } = renderHook(() => useSettingsSaver(DEFAULT_SETTINGS, t));
+    const { result } = renderHook(() => useSettingsSaver(DEFAULT_SETTINGS));
     const older = { ...DEFAULT_SETTINGS, source: "mirror" as const };
     const latest = { ...DEFAULT_SETTINGS, source: "custom" as const, customUrl: "https://x.test" };
 
@@ -59,24 +120,139 @@ describe("useSettingsSaver", () => {
     expect(result.current.settings).toEqual(latest);
   });
 
-  it("surfaces localized failures and retries the latest value", async () => {
+  it("surfaces failures and retries the latest value", async () => {
     setSettings
       .mockRejectedValueOnce(new Error("disk full"))
       .mockResolvedValueOnce({ ...DEFAULT_SETTINGS, askBefore: false });
-    const { result } = renderHook(() => useSettingsSaver(DEFAULT_SETTINGS, t));
+    const { result } = renderHook(() => useSettingsSaver(DEFAULT_SETTINGS));
     const next = { ...DEFAULT_SETTINGS, askBefore: false };
 
     act(() => result.current.update(next));
 
     await waitFor(() => expect(result.current.status).toBe("error"));
-    // Raw engine text must not leak into the save banner.
-    expect(result.current.error).toBe("localized-generic");
-    expect(result.current.error).not.toContain("disk full");
+    expect(result.current.error).toBe("disk full");
 
     act(() => result.current.retry());
 
     await waitFor(() => expect(result.current.status).toBe("idle"));
     expect(setSettings).toHaveBeenCalledTimes(2);
     expect(result.current.settings.askBefore).toBe(false);
+  });
+
+  it("does not let a slow hydrate overwrite user edits", async () => {
+    const { result } = renderHook(() => useSettingsSaver(DEFAULT_SETTINGS));
+    const edited = { ...DEFAULT_SETTINGS, source: "mirror" as const };
+    setSettings.mockResolvedValue(edited);
+
+    act(() => result.current.update(edited));
+    act(() =>
+      result.current.hydrate({
+        ...DEFAULT_SETTINGS,
+        source: "official",
+        checkOnStartup: false,
+      }),
+    );
+
+    expect(result.current.settings.source).toBe("mirror");
+    expect(result.current.hydrated).toBe(true);
+    await waitFor(() => expect(result.current.status).toBe("idle"));
+  });
+
+  it("hydrates when the form is still clean", () => {
+    const { result } = renderHook(() => useSettingsSaver(DEFAULT_SETTINGS));
+    const loaded = { ...DEFAULT_SETTINGS, source: "mirror" as const, periodicCheck: false };
+
+    act(() => result.current.hydrate(loaded));
+
+    expect(result.current.settings).toEqual(loaded);
+    expect(result.current.hydrated).toBe(true);
+  });
+
+  it("saves other fields without persisting an incomplete custom draft", async () => {
+    setSettings.mockImplementation(async (next) => next);
+    const { result } = renderHook(() => useSettingsSaver(DEFAULT_SETTINGS));
+
+    act(() =>
+      result.current.setDraft({
+        ...DEFAULT_SETTINGS,
+        source: "custom",
+        customUrl: "",
+      }),
+    );
+    act(() =>
+      result.current.update({
+        ...DEFAULT_SETTINGS,
+        source: "custom",
+        customUrl: "",
+        askBefore: false,
+      }),
+    );
+
+    await waitFor(() => expect(setSettings).toHaveBeenCalledTimes(1));
+    expect(setSettings).toHaveBeenCalledWith({
+      ...DEFAULT_SETTINGS,
+      source: "auto",
+      customUrl: "",
+      askBefore: false,
+    });
+    // UI keeps the custom draft selection.
+    expect(result.current.settings.source).toBe("custom");
+    expect(result.current.settings.askBefore).toBe(false);
+  });
+
+  it("persists an explicit auto coerce when clearing a saved custom source", async () => {
+    setSettings.mockImplementation(async (next) => next);
+    const initial = {
+      ...DEFAULT_SETTINGS,
+      source: "custom" as const,
+      customUrl: "https://example.test/feed",
+    };
+    const { result } = renderHook(() => useSettingsSaver(initial));
+    act(() => result.current.hydrate(initial));
+
+    act(() =>
+      result.current.update({
+        ...initial,
+        source: "auto",
+        customUrl: "",
+      }),
+    );
+
+    await waitFor(() => expect(setSettings).toHaveBeenCalledTimes(1));
+    expect(setSettings).toHaveBeenCalledWith({
+      ...initial,
+      source: "auto",
+      customUrl: "",
+    });
+    expect(result.current.settings.source).toBe("auto");
+    expect(result.current.settings.customUrl).toBe("");
+  });
+
+  it("persists an explicit system coerce when clearing a saved custom proxy", async () => {
+    setSettings.mockImplementation(async (next) => next);
+    const initial = {
+      ...DEFAULT_SETTINGS,
+      proxyMode: "custom" as const,
+      customProxyUrl: "socks5h://127.0.0.1:7890",
+    };
+    const { result } = renderHook(() => useSettingsSaver(initial));
+    act(() => result.current.hydrate(initial));
+
+    act(() =>
+      result.current.update({
+        ...initial,
+        proxyMode: "system",
+        customProxyUrl: "",
+      }),
+    );
+
+    await waitFor(() => expect(setSettings).toHaveBeenCalledTimes(1));
+    expect(setSettings).toHaveBeenCalledWith({
+      ...initial,
+      proxyMode: "system",
+      customProxyUrl: "",
+    });
+    expect(result.current.settings.proxyMode).toBe("system");
+    expect(result.current.settings.customProxyUrl).toBe("");
   });
 });

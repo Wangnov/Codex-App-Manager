@@ -1,13 +1,12 @@
 import { useEffect, useId, useState } from "react";
 
-import { managerApi } from "../../services/managerApi";
-import { userErrorMessage } from "../errorCopy";
+import { errorMessage, managerApi } from "../../services/managerApi";
 import type { ProxyMode, UpdateSourceKind, WindowsInstallMode } from "../../shared/types";
 import { DEFAULT_SETTINGS } from "../../shared/types";
 import { Icon } from "../icons";
 import { useI18n, LANGS, type Lang, type TFn, type TKey } from "../i18n";
 import { useTheme, type ThemeMode } from "../theme";
-import { NavBar, Segmented, Toggle, StatusBanner, radioNavTarget } from "../components";
+import { NavBar, Segmented, Toggle, radioNavTarget } from "../components";
 import { isWindows } from "../platform";
 import { samePath } from "../paths";
 import { Sheet } from "../Sheet";
@@ -86,11 +85,12 @@ export function Settings({
   onBack,
   onOpenAbout,
   onOpenUninstall,
-  onOpenConfig,
+  onOpenConfig: _onOpenConfig,
 }: {
   onBack: () => void;
   onOpenAbout: () => void;
   onOpenUninstall: () => void;
+  /** Reserved: Codex config is not shippable yet; entry stays disabled. */
   onOpenConfig: () => void;
 }) {
   const { t, lang, setLang } = useI18n();
@@ -100,14 +100,17 @@ export function Settings({
     settings: s,
     status: saveStatus,
     error: saveError,
+    hydrated,
     update,
     retry,
+    hydrate,
     reset,
     setDraft,
-  } = useSettingsSaver(DEFAULT_SETTINGS, t);
+  } = useSettingsSaver(DEFAULT_SETTINGS);
   const [defaultInstallRoot, setDefaultInstallRoot] = useState(DEFAULT_SETTINGS.installRoot);
   const [autostart, setAutostart] = useState(false);
   const [commandError, setCommandError] = useState<string | null>(null);
+  const [fieldError, setFieldError] = useState<string | null>(null);
   const [langSheet, setLangSheet] = useState(false);
   const [customIntervalOpen, setCustomIntervalOpen] = useState(false);
   const langTitleId = useId();
@@ -116,12 +119,23 @@ export function Settings({
   const switchId = useId();
 
   useEffect(() => {
-    void managerApi.getSettings().then(reset).catch(() => undefined);
+    let cancelled = false;
+    void managerApi
+      .getSettings()
+      .then((settings) => {
+        if (!cancelled) hydrate(settings);
+      })
+      .catch(() => {
+        if (!cancelled) hydrate(DEFAULT_SETTINGS);
+      });
     void managerApi.getAutostart().then(setAutostart).catch(() => undefined);
     if (win) {
       void managerApi.winDefaultInstallRoot().then(setDefaultInstallRoot).catch(() => undefined);
     }
-  }, [reset, win]);
+    return () => {
+      cancelled = true;
+    };
+  }, [hydrate, win]);
 
   const pickInstallRoot = async () => {
     setCommandError(null);
@@ -130,7 +144,7 @@ export function Settings({
       if (!path) return;
       reset(await managerApi.winSetInstallRoot(path));
     } catch (cause) {
-      setCommandError(userErrorMessage(cause, t));
+      setCommandError(errorMessage(cause));
     }
   };
 
@@ -139,7 +153,7 @@ export function Settings({
     try {
       reset(await managerApi.winResetInstallRoot());
     } catch (cause) {
-      setCommandError(userErrorMessage(cause, t));
+      setCommandError(errorMessage(cause));
     }
   };
 
@@ -151,7 +165,33 @@ export function Settings({
 
   const restoreSkippedUpdate = () => {
     setCommandError(null);
+    setFieldError(null);
     update({ ...s, skippedCodexUpdate: null });
+  };
+
+  const selectSource = (next: UpdateSourceKind) => {
+    setCommandError(null);
+    setFieldError(null);
+    const draft = { ...s, source: next };
+    // Custom with no URL is a draft only — not saved until a value exists.
+    if (next === "custom" && !s.customUrl.trim()) {
+      setDraft(draft);
+      setFieldError(t("settings.source.customRequired"));
+      return;
+    }
+    update(draft);
+  };
+
+  const selectProxyMode = (key: ProxyMode) => {
+    setCommandError(null);
+    setFieldError(null);
+    const next = { ...s, proxyMode: key };
+    if (key === "custom" && !s.customProxyUrl.trim()) {
+      setDraft(next);
+      setFieldError(t("settings.network.proxyRequired"));
+      return;
+    }
+    update(next);
   };
 
   const themes: { v: ThemeMode; k: "settings.appearance.system" | "settings.appearance.light" | "settings.appearance.dark" }[] = [
@@ -165,13 +205,14 @@ export function Settings({
     : "settings.windows.portableDescCustom";
   const availableSources = SOURCES.filter((src) => !(win && src.kind === "official"));
   const showingSaveError = !commandError && Boolean(saveError);
-  const error = commandError ?? saveError;
+  const error = commandError ?? saveError ?? fieldError;
   const skippedUpdate = s.skippedCodexUpdate;
   const customInterval = customIntervalOpen || !FREQUENCY_PRESETS.some(
     (option) => option.seconds === s.periodicCheckIntervalSeconds,
   );
   const intervalParts = splitInterval(s.periodicCheckIntervalSeconds);
   const intervalLabel = formatInterval(s.periodicCheckIntervalSeconds, t);
+  const formLocked = !hydrated;
 
   const updateIntervalPart = (
     part: "hours" | "minutes" | "seconds",
@@ -180,31 +221,38 @@ export function Settings({
     const nextParts = { ...splitInterval(s.periodicCheckIntervalSeconds) };
     nextParts[part] = clampPart(value, part === "hours" ? MAX_CUSTOM_HOURS : 59);
     setCommandError(null);
+    setFieldError(null);
     update({ ...s, periodicCheckIntervalSeconds: intervalFromParts(nextParts) });
   };
 
   return (
     <div className="pop">
       <NavBar title={t("settings.title")} onBack={onBack} />
-      <div className="scroll view" inert={langSheet ? true : undefined}>
-        {saveStatus === "saving" ? (
-          <StatusBanner tone="info" icon="loader">
-            {t("settings.saving")}
-          </StatusBanner>
+      <div className="scroll view" inert={formLocked || langSheet ? true : undefined}>
+        {!hydrated ? (
+          <div className="banner info" role="status" aria-live="polite">
+            <Icon name="loader" />
+            <span>{t("settings.loading")}</span>
+          </div>
+        ) : null}
+        {hydrated && saveStatus === "saving" ? (
+          <div className="banner info" role="status">
+            <Icon name="loader" />
+            <span>{t("settings.saving")}</span>
+          </div>
         ) : null}
         {error ? (
-          <StatusBanner
-            tone="err"
-            action={
-              showingSaveError ? (
-                <button className="linkbtn" onClick={retry}>
-                  {t("settings.retry")}
-                </button>
-              ) : null
-            }
-          >
-            {showingSaveError ? t("settings.saveError") : error}
-          </StatusBanner>
+          <div className="banner err" role="alert">
+            <Icon name="alert" />
+            <span>
+              {showingSaveError ? `${t("settings.saveError")}: ${error}` : error}
+            </span>
+            {showingSaveError ? (
+              <button className="linkbtn" onClick={retry}>
+                {t("settings.retry")}
+              </button>
+            ) : null}
+          </div>
         ) : null}
 
         {/* 更新源 */}
@@ -225,8 +273,7 @@ export function Settings({
                 event.currentTarget,
               );
               if (next === null) return;
-              setCommandError(null);
-              update({ ...s, source: next as UpdateSourceKind });
+              selectSource(next as UpdateSourceKind);
             }}
           >
             {availableSources.map((src) => (
@@ -236,10 +283,7 @@ export function Settings({
                 role="radio"
                 aria-checked={s.source === src.kind}
                 tabIndex={s.source === src.kind ? 0 : -1}
-                onClick={() => {
-                  setCommandError(null);
-                  update({ ...s, source: src.kind });
-                }}
+                onClick={() => selectSource(src.kind)}
               >
                 <span className="radio" />
                 <span className="rtext">
@@ -260,14 +304,33 @@ export function Settings({
                 <input
                   className="input mono"
                   aria-label={t("settings.source.custom")}
+                  aria-invalid={Boolean(fieldError && !s.customUrl.trim()) || undefined}
                   value={s.customUrl}
                   placeholder={t("settings.source.customPlaceholder")}
-                  onChange={(e) => setDraft({ ...s, customUrl: e.target.value })}
-                  onBlur={() => {
+                  onChange={(e) => {
+                    setFieldError(null);
+                    setDraft({ ...s, customUrl: e.target.value });
+                  }}
+                  onBlur={(e) => {
                     setCommandError(null);
-                    update(s);
+                    // Read from the input — closed-over s.customUrl can lag the DOM value.
+                    const customUrl = e.currentTarget.value;
+                    if (!customUrl.trim()) {
+                      // Abandon incomplete custom so UI selection matches runtime
+                      // (empty custom must not leave the previous URL active).
+                      setFieldError(null);
+                      update({ ...s, source: "auto", customUrl: "" });
+                      return;
+                    }
+                    setFieldError(null);
+                    update({ ...s, customUrl });
                   }}
                 />
+                {!s.customUrl.trim() ? (
+                  <span className="rsub" style={{ display: "block", marginTop: 8 }}>
+                    {t("settings.source.customRequired")}
+                  </span>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -291,6 +354,7 @@ export function Settings({
                 );
                 if (next === null) return;
                 setCommandError(null);
+                setFieldError(null);
                 update({ ...s, windowsInstallMode: next as WindowsInstallMode });
               }}
             >
@@ -303,6 +367,7 @@ export function Settings({
                   tabIndex={s.windowsInstallMode === mode.kind ? 0 : -1}
                   onClick={() => {
                     setCommandError(null);
+                    setFieldError(null);
                     update({ ...s, windowsInstallMode: mode.kind });
                   }}
                 >
@@ -402,6 +467,7 @@ export function Settings({
                 checked={s.checkOnStartup}
                 onChange={(v) => {
                   setCommandError(null);
+                  setFieldError(null);
                   update({ ...s, checkOnStartup: v });
                 }}
               />
@@ -409,12 +475,14 @@ export function Settings({
             <div className="row">
               <span className="rtext">
                 <span className="rtitle" id={`${switchId}-periodic`}>{t("settings.general.periodicCheck")}</span>
+                <span className="rsub">{t("settings.general.periodicCheckNote")}</span>
               </span>
               <Toggle
                 ariaLabelledBy={`${switchId}-periodic`}
                 checked={s.periodicCheck}
                 onChange={(v) => {
                   setCommandError(null);
+                  setFieldError(null);
                   update({ ...s, autoCheck: v, periodicCheck: v });
                 }}
               />
@@ -442,6 +510,7 @@ export function Settings({
                     ]}
                     onChange={(key) => {
                       setCommandError(null);
+                      setFieldError(null);
                       if (key === "custom") {
                         setCustomIntervalOpen(true);
                         return;
@@ -502,6 +571,7 @@ export function Settings({
                 checked={s.askBefore}
                 onChange={(v) => {
                   setCommandError(null);
+                  setFieldError(null);
                   update({ ...s, askBefore: v });
                 }}
               />
@@ -515,6 +585,7 @@ export function Settings({
                 checked={s.disableCodexSelfUpdates}
                 onChange={(v) => {
                   setCommandError(null);
+                  setFieldError(null);
                   update({ ...s, disableCodexSelfUpdates: v });
                 }}
               />
@@ -539,6 +610,7 @@ export function Settings({
                 checked={s.confirmClose}
                 onChange={(v) => {
                   setCommandError(null);
+                  setFieldError(null);
                   update({ ...s, confirmClose: v });
                 }}
               />
@@ -583,28 +655,44 @@ export function Settings({
                 ariaLabel={t("settings.network.proxy")}
                 value={s.proxyMode}
                 items={PROXY_MODES.map((mode) => ({ key: mode.kind, label: t(mode.label) }))}
-                onChange={(key) => {
-                  setCommandError(null);
-                  const next = { ...s, proxyMode: key as ProxyMode };
-                  if (key === "custom" && !s.customProxyUrl.trim()) {
-                    setDraft(next);
-                    return;
-                  }
-                  update(next);
-                }}
+                onChange={(key) => selectProxyMode(key as ProxyMode)}
               />
+              {s.proxyMode === "system" ? (
+                <span className="rsub" style={{ display: "block", marginTop: 8 }}>
+                  {t("settings.network.proxySystemDesc")}
+                </span>
+              ) : null}
               {s.proxyMode === "custom" ? (
                 <div style={{ marginTop: 10 }}>
                   <input
                     className="input mono"
+                    aria-label={t("settings.network.proxyCustom")}
+                    aria-invalid={Boolean(fieldError && !s.customProxyUrl.trim()) || undefined}
                     value={s.customProxyUrl}
                     placeholder={t("settings.network.proxyPlaceholder")}
-                    onChange={(e) => setDraft({ ...s, customProxyUrl: e.target.value })}
+                    onChange={(e) => {
+                      setFieldError(null);
+                      setDraft({ ...s, customProxyUrl: e.target.value });
+                    }}
                     onBlur={(e) => {
                       setCommandError(null);
-                      update({ ...s, customProxyUrl: e.currentTarget.value });
+                      const customProxyUrl = e.currentTarget.value;
+                      if (!customProxyUrl.trim()) {
+                        // Same contract as custom source: empty blur coerces to a
+                        // real mode so UI and runtime do not keep the old proxy URL.
+                        setFieldError(null);
+                        update({ ...s, proxyMode: "system", customProxyUrl: "" });
+                        return;
+                      }
+                      setFieldError(null);
+                      update({ ...s, customProxyUrl });
                     }}
                   />
+                  {!s.customProxyUrl.trim() ? (
+                    <span className="rsub" style={{ display: "block", marginTop: 8 }}>
+                      {t("settings.network.proxyRequired")}
+                    </span>
+                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -615,13 +703,19 @@ export function Settings({
         <div className="group">
           <div className="group-h">{t("settings.more.header")}</div>
           <div className="list">
-            <button className="row" onClick={onOpenConfig}>
+            <button
+              className="row"
+              type="button"
+              disabled
+              aria-disabled="true"
+              title={t("settings.more.configUnavailable")}
+            >
               <Icon name="sliders" className="ricon" />
               <span className="rtext">
                 <span className="rtitle">{t("settings.more.config")}</span>
+                <span className="rsub">{t("settings.more.configUnavailable")}</span>
               </span>
               <span className="tag soon">{t("settings.more.soon")}</span>
-              <Icon name="chevron" className="chev" />
             </button>
             <button className="row" onClick={onOpenAbout}>
               <Icon name="info" className="ricon" />
