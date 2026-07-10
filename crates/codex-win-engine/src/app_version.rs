@@ -7,15 +7,44 @@ use serde_json::Value;
 
 const MAX_ASAR_HEADER_BYTES: u32 = 16 * 1024 * 1024;
 
+/// The Codex Electron app's npm package name — a package-level identity marker
+/// that survives inside `resources/app.asar` of any unpacked payload. Verified
+/// on the real 26.707.31428 MSIX and the 26.707.30751 macOS bundle (both
+/// post-rebrand: `name` stayed `openai-codex-electron` while display names
+/// moved to ChatGPT). Used to recognize manifest-less portable roots, where the
+/// MSIX's package-level signature is not available and the inner executables
+/// carry no embedded Authenticode.
+pub const CODEX_ASAR_PACKAGE_NAME: &str = "openai-codex-electron";
+
 #[derive(Debug, Deserialize)]
 struct PackageJson {
     version: String,
+    #[serde(default)]
+    name: Option<String>,
 }
 
 pub fn read_codex_app_version_from_install_root(root: &Path) -> Option<String> {
     for candidate in app_asar_candidates(root) {
-        if let Some(version) = read_codex_app_version_from_asar(&candidate) {
-            return Some(version);
+        if let Some(package) = read_package_json_from_asar(&candidate) {
+            let version = package.version.trim();
+            if !version.is_empty() {
+                return Some(version.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// The `name` field of the app payload's `package.json` (from `app.asar`),
+/// e.g. `openai-codex-electron`. `None` when no asar/package.json is readable.
+pub fn read_asar_package_name_from_install_root(root: &Path) -> Option<String> {
+    for candidate in app_asar_candidates(root) {
+        if let Some(package) = read_package_json_from_asar(&candidate) {
+            if let Some(name) = package.name.as_deref().map(str::trim) {
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
         }
     }
     None
@@ -68,6 +97,12 @@ fn find_app_asar(root: &Path, depth: usize, max_depth: usize) -> Option<PathBuf>
 }
 
 pub fn read_codex_app_version_from_asar(path: &Path) -> Option<String> {
+    let package = read_package_json_from_asar(path)?;
+    let version = package.version.trim();
+    (!version.is_empty()).then(|| version.to_string())
+}
+
+fn read_package_json_from_asar(path: &Path) -> Option<PackageJson> {
     let (mut file, header, data_offset) = read_asar_header(path).ok()?;
     let entry = find_asar_entry(&header, &["package.json"])?;
     let offset = asar_entry_offset(entry)?;
@@ -76,9 +111,7 @@ pub fn read_codex_app_version_from_asar(path: &Path) -> Option<String> {
     file.seek(SeekFrom::Start(absolute_offset)).ok()?;
     let mut bytes = vec![0; size.try_into().ok()?];
     file.read_exact(&mut bytes).ok()?;
-    let package: PackageJson = serde_json::from_slice(&bytes).ok()?;
-    let version = package.version.trim();
-    (!version.is_empty()).then(|| version.to_string())
+    serde_json::from_slice(&bytes).ok()
 }
 
 fn read_asar_header(path: &Path) -> Result<(File, Value, u64), ()> {
@@ -180,23 +213,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    fn write_test_asar(path: &Path, package_json: &[u8]) {
-        let header_json = format!(
-            r#"{{"files":{{"package.json":{{"size":{},"offset":"0"}}}}}}"#,
-            package_json.len()
+    #[test]
+    fn reads_asar_package_name_from_install_root() {
+        let dir =
+            std::env::temp_dir().join(format!("codex-asar-name-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let resources = dir.join("resources");
+        std::fs::create_dir_all(&resources).unwrap();
+        write_test_asar(
+            &resources.join("app.asar"),
+            br#"{"version":"26.707.31428","name":"openai-codex-electron"}"#,
         );
-        let mut header = Vec::new();
-        header.extend_from_slice(&0_u32.to_le_bytes());
-        header.extend_from_slice(header_json.as_bytes());
-        while header.len() % 4 != 0 {
-            header.push(0);
-        }
 
-        let mut out = Vec::new();
-        out.extend_from_slice(&4_u32.to_le_bytes());
-        out.extend_from_slice(&(header.len() as u32).to_le_bytes());
-        out.extend_from_slice(&header);
-        out.extend_from_slice(package_json);
-        std::fs::write(path, out).unwrap();
+        assert_eq!(
+            read_asar_package_name_from_install_root(&dir).as_deref(),
+            Some(CODEX_ASAR_PACKAGE_NAME)
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+// Shared with sys.rs's manifest-less portable detection tests.
+#[cfg(test)]
+pub(crate) fn write_test_asar(path: &Path, package_json: &[u8]) {
+    let header_json = format!(
+        r#"{{"files":{{"package.json":{{"size":{},"offset":"0"}}}}}}"#,
+        package_json.len()
+    );
+    let mut header = Vec::new();
+    header.extend_from_slice(&0_u32.to_le_bytes());
+    header.extend_from_slice(header_json.as_bytes());
+    while header.len() % 4 != 0 {
+        header.push(0);
+    }
+
+    let mut out = Vec::new();
+    out.extend_from_slice(&4_u32.to_le_bytes());
+    out.extend_from_slice(&(header.len() as u32).to_le_bytes());
+    out.extend_from_slice(&header);
+    out.extend_from_slice(package_json);
+    std::fs::write(path, out).unwrap();
 }

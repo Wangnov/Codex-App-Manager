@@ -898,9 +898,11 @@ pub fn detect_portable_install(portable_root: &Path) -> Option<InstalledWindowsC
     //     declare exactly the Codex package identity; a foreign or unparseable
     //     manifest is never a Codex install.
     //   - Without a manifest (a user-unpacked `app/` dir or a legacy adopted
-    //     root), fall back to Authenticode: the entry exe must carry a trusted
-    //     OpenAI signature. Weaker than the manifest gate but keeps the
-    //     long-supported self-extracted layout adoptable.
+    //     root), fall back to the payload's package-level identity: the
+    //     `name` in app.asar's package.json. MSIX-internal executables carry
+    //     no embedded Authenticode (integrity lives in the package-level
+    //     AppxSignature.p7x, which does not survive unpacking), so signature
+    //     checks cannot recognize these roots — the asar marker can.
     let identity = match std::fs::read_to_string(portable_root.join("AppxManifest.xml")) {
         Ok(xml) => match parse_appx_manifest_xml(&xml) {
             Ok(identity) if identity.name == crate::OPENAI_PACKAGE_IDENTITY => Some(identity),
@@ -922,13 +924,13 @@ pub fn detect_portable_install(portable_root: &Path) -> Option<InstalledWindowsC
             }
         },
         Err(_) => {
-            let signed_by_openai = crate::authenticode::verify_openai_authenticode(&exe)
-                .map(|report| report.is_valid_openai())
-                .unwrap_or(false);
-            if !signed_by_openai {
+            let asar_name = crate::app_version::read_asar_package_name_from_install_root(portable_root);
+            if asar_name.as_deref() != Some(crate::app_version::CODEX_ASAR_PACKAGE_NAME) {
                 log::debug!(
-                    "portable root at {} has no manifest and its entry exe lacks a trusted OpenAI signature; not a Codex install",
-                    portable_root.display()
+                    "portable root at {} has no manifest and its app payload name is {:?} (expected {}); not a Codex install",
+                    portable_root.display(),
+                    asar_name,
+                    crate::app_version::CODEX_ASAR_PACKAGE_NAME
                 );
                 return None;
             }
@@ -1401,11 +1403,41 @@ mod portable_identity_tests {
 
     #[test]
     fn rejects_portable_without_manifest_identity() {
-        // Without a manifest the gate falls back to Authenticode on the entry
-        // exe; this fake exe carries no trusted OpenAI signature, so the
-        // directory is not recognized as a Codex install. (A real user-unpacked
-        // official payload passes via its genuine signature on Windows.)
+        // Without a manifest the gate falls back to the app.asar package-name
+        // marker; this root has no asar at all, so it is not recognized.
         let root = write_root("no-manifest", "Codex.exe", None);
+        assert!(detect_portable_install(&root).is_none());
+        cleanup(&root);
+    }
+
+    #[test]
+    fn accepts_manifestless_portable_with_codex_asar_marker() {
+        // A user-unpacked official `app/` dir: no package-root manifest, but
+        // the payload's asar carries the Codex package name — the supported
+        // self-extracted layout must stay detectable/adoptable.
+        let root = write_root("selfextracted", "ChatGPT.exe", None);
+        let resources = root.join("resources");
+        std::fs::create_dir_all(&resources).unwrap();
+        crate::app_version::write_test_asar(
+            &resources.join("app.asar"),
+            br#"{"version":"26.707.31428","name":"openai-codex-electron"}"#,
+        );
+        let installed = detect_portable_install(&root).expect("asar marker accepted");
+        assert_eq!(installed.version, "26.707.31428");
+        cleanup(&root);
+    }
+
+    #[test]
+    fn rejects_manifestless_portable_with_foreign_asar_name() {
+        // Same shape but a non-Codex Electron payload (e.g. an unpacked
+        // Classic): the asar package name differs, so it is never adopted.
+        let root = write_root("foreign-asar", "ChatGPT.exe", None);
+        let resources = root.join("resources");
+        std::fs::create_dir_all(&resources).unwrap();
+        crate::app_version::write_test_asar(
+            &resources.join("app.asar"),
+            br#"{"version":"1.2026.160","name":"chatgpt-desktop"}"#,
+        );
         assert!(detect_portable_install(&root).is_none());
         cleanup(&root);
     }
