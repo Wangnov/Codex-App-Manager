@@ -224,6 +224,30 @@ fn read_bundle_build(app: &str) -> Option<u64> {
     String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }
 
+/// Read a bundle's `CFBundleExecutable` — the main binary's name under
+/// `Contents/MacOS/`. Needed to address the RUNNING instance of a specific
+/// install by executable path (the name changed `Codex` → `ChatGPT` in the
+/// brand merge, so it must be read per-bundle, never assumed).
+pub fn read_bundle_executable(app: &str) -> Option<String> {
+    let plist = format!("{app}/Contents/Info.plist");
+    if !Path::new(&plist).exists() {
+        return None;
+    }
+    let output = Command::new("/usr/libexec/PlistBuddy")
+        .args(["-c", "Print :CFBundleExecutable", &plist])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let exe = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if exe.is_empty() {
+        None
+    } else {
+        Some(exe)
+    }
+}
+
 /// Read a bundle's `CFBundleIdentifier` — the product-identity anchor (see
 /// `CODEX_BUNDLE_ID`). Returns `None` when the bundle or key is missing.
 pub fn read_bundle_identifier(app: &str) -> Option<String> {

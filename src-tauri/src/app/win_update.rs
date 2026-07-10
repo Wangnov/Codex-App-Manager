@@ -1205,7 +1205,8 @@ pub fn detect_existing_windows_install_at_path(
     }
     let installed = detect_portable_install(path).ok_or_else(|| {
         AppError::Internal(
-            "未在所选位置找到应用入口（ChatGPT.exe / Codex.exe），请选择 Codex 安装文件夹"
+            "未在所选位置识别到 Codex 安装：需要 ChatGPT.exe / Codex.exe 入口，且 AppxManifest.xml \
+             声明的包身份必须是 OpenAI.Codex（其他产品如 ChatGPT Classic 不受本工具管理）"
                 .to_string(),
         )
     })?;

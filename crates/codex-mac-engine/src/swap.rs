@@ -18,35 +18,67 @@ use crate::EngineError;
 
 const OPEN: &str = "/usr/bin/open";
 const OSASCRIPT: &str = "/usr/bin/osascript";
+const PGREP: &str = "/usr/bin/pgrep";
 
-/// Is the Codex lineage app currently running?
+/// Escape a literal string for use inside a POSIX extended regular expression
+/// (the pattern language `pgrep -f` matches against).
+fn ere_escape(literal: &str) -> String {
+    let mut escaped = String::with_capacity(literal.len());
+    for ch in literal.chars() {
+        if matches!(
+            ch,
+            '\\' | '^' | '$' | '.' | '[' | ']' | '|' | '(' | ')' | '*' | '+' | '?' | '{' | '}'
+        ) {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+
+/// Escape a literal for embedding in a double-quoted AppleScript string.
+fn applescript_quote(literal: &str) -> String {
+    literal.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Is THIS install of Codex currently running?
 ///
-/// Addressed by bundle id, not process name: the ChatGPT-brand merge renamed
-/// the executable (`Codex` → `ChatGPT`), and a name match would both miss the
-/// renamed Codex and hit ChatGPT Classic (whose process is also `ChatGPT`).
-/// AppleScript's `running` property is read without launching the target.
-pub fn codex_running() -> bool {
-    let script = format!(
-        r#"application id "{}" is running"#,
-        crate::sys::CODEX_BUNDLE_ID
-    );
-    Command::new(OSASCRIPT)
-        .args(["-e", &script])
+/// Addressed by the install's own executable path, not by process name or
+/// bundle id: the brand merge renamed the executable (`Codex` → `ChatGPT`,
+/// same as ChatGPT Classic's process), and bundle-id addressing resolves via
+/// LaunchServices, which may pick a DIFFERENT install of the same id when
+/// several coexist. The main process's argv[0] is the bundle's
+/// `Contents/MacOS/<CFBundleExecutable>` absolute path, so a prefix match on
+/// that pins the exact instance we manage.
+pub fn codex_running_at(install_app: &Path) -> bool {
+    let app = install_app.to_string_lossy();
+    let Some(exe) = crate::sys::read_bundle_executable(&app) else {
+        // No readable bundle at the path (e.g. already removed) — not running.
+        return false;
+    };
+    let pattern = format!("^{}( |$)", ere_escape(&format!("{app}/Contents/MacOS/{exe}")));
+    Command::new(PGREP)
+        .args(["-f", &pattern])
         .output()
-        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true")
+        .map(|o| o.status.success())
         .unwrap_or(false)
 }
 
-fn tell_codex(verb: &str) -> std::io::Result<std::process::ExitStatus> {
+/// Send `quit`/`activate` to the app bundle AT THIS PATH. AppleScript's
+/// `tell application "<POSIX path>"` addresses that specific bundle, unlike
+/// `tell application id`, which lets LaunchServices pick any install of the
+/// id. Callers must gate on `codex_running_at` first: telling a non-running
+/// app launches it.
+fn tell_codex_at(install_app: &Path, verb: &str) -> std::io::Result<std::process::ExitStatus> {
     let script = format!(
-        r#"tell application id "{}" to {verb}"#,
-        crate::sys::CODEX_BUNDLE_ID
+        r#"tell application "{}" to {verb}"#,
+        applescript_quote(&install_app.to_string_lossy())
     );
     Command::new(OSASCRIPT).args(["-e", &script]).status()
 }
 
-/// Ask Codex to quit gracefully (AppleScript), polling up to `timeout_secs`.
-/// Never force-kills.
+/// Ask the Codex install at `install_app` to quit gracefully (AppleScript),
+/// polling up to `timeout_secs`. Never force-kills.
 ///
 /// Codex may answer the quit event with its own in-app confirmation dialog
 /// instead of quitting (e.g. "Quit Codex? Enabled automations won't run…"
@@ -54,22 +86,25 @@ fn tell_codex(verb: &str) -> std::io::Result<std::process::ExitStatus> {
 /// on a window the user never sees, so the quit silently stalls. After a short
 /// grace period we therefore `activate` Codex — bringing the pending dialog
 /// frontmost so the user can answer it — and keep waiting until the timeout.
-pub fn quit_codex(timeout_secs: u64) -> Result<(), EngineError> {
-    if !codex_running() {
+pub fn quit_codex_at(install_app: &Path, timeout_secs: u64) -> Result<(), EngineError> {
+    if !codex_running_at(install_app) {
         return Ok(());
     }
-    log::info!("requesting Codex graceful quit timeout={timeout_secs}");
-    let _ = tell_codex("quit");
+    log::info!(
+        "requesting Codex graceful quit timeout={timeout_secs} path={}",
+        install_app.display()
+    );
+    let _ = tell_codex_at(install_app, "quit");
 
     // 250ms ticks; if Codex is still running after ~5s it is most likely
     // waiting on its quit-confirmation dialog — surface it.
     let activate_tick = 5 * 4;
     for tick in 0..(timeout_secs * 4) {
-        if !codex_running() {
+        if !codex_running_at(install_app) {
             return Ok(());
         }
         if tick == activate_tick {
-            let _ = tell_codex("activate");
+            let _ = tell_codex_at(install_app, "activate");
         }
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
@@ -204,7 +239,7 @@ pub fn install_gated_bundle(
 ) -> Result<(), EngineError> {
     crate::codesign::gate_reconstructed(new_app)?;
     if manage_process {
-        quit_codex(30)?;
+        quit_codex_at(install_app, 30)?;
     }
     swap_in_place(install_app, new_app, backup_app)?;
     if manage_process {

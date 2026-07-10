@@ -41,7 +41,7 @@ fn main() {
         exit(2);
     }
     let before = build_of(&install);
-    let was_running = swap::codex_running();
+    let was_running = swap::codex_running_at(&install);
     println!("真实安装根: /Applications/Codex.app  build={before}  running={was_running}");
 
     let stage_dir = std::env::temp_dir().join("codex-live-test");

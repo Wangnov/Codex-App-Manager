@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::Serialize;
 
 use codex_mac_engine::{
-    apply_delta, download, gate_reconstructed, parse_appcast, plan_update, quit_codex, relaunch,
-    rollback, swap::codex_running, swap_in_place, sys, verify_sparkle, Appcast, NetworkConfig,
+    apply_delta, download, gate_reconstructed, parse_appcast, plan_update, quit_codex_at, relaunch,
+    rollback, swap::codex_running_at, swap_in_place, sys, verify_sparkle, Appcast, NetworkConfig,
     UpdatePlan, UpdateStrategy,
 };
 
@@ -434,8 +434,8 @@ fn no_progress(_p: DownloadProgress) {}
 /// automations are enabled); the engine brings that dialog frontmost after a
 /// grace period, and if the user still hasn't confirmed by the timeout we say
 /// exactly what to click instead of a bare timeout. Never force-kills.
-fn quit_codex_gracefully() -> Result<(), AppError> {
-    quit_codex(30).map_err(|_| {
+fn quit_codex_gracefully(install_app: &Path) -> Result<(), AppError> {
+    quit_codex_at(install_app, 30).map_err(|_| {
         AppError::Engine(
             "Codex 未在限时内退出——它可能正在等待退出确认（如「Quit Codex?」对话框，已尝试将其带到前台）。\
              请在 Codex 中确认退出后重试；为保护进行中的会话，不会强制结束 Codex"
@@ -944,9 +944,9 @@ pub fn perform_macos_update_with_network(
         // 4b) graceful quit (never force-kill), then 5) atomic same-volume swap. If
         //     the swap fails after the quit, swap_in_place has restored the old
         //     bundle in place — bring the user's app back before surfacing the error.
-        let was_running = codex_running();
+        let was_running = codex_running_at(&install_path);
         log::info!("macOS perform step=quit");
-        quit_codex_gracefully()?;
+        quit_codex_gracefully(&install_path)?;
         log::info!("macOS perform step=swap");
         if let Err(err) = swap_in_place(&install_path, &out_app, &backup) {
             if was_running {
@@ -1405,7 +1405,7 @@ pub fn uninstall_macos(keep_codex_home: bool) -> Result<MacUninstallReport, AppE
         ));
     }
 
-    quit_codex_gracefully()?;
+    quit_codex_gracefully(&install_path)?;
 
     // Delete first: if we lack permission to remove the bundle (e.g. a root-owned
     // install), the managed record stays intact so the user can retry without

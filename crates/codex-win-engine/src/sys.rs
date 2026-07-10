@@ -892,17 +892,28 @@ pub fn detect_portable_install(portable_root: &Path) -> Option<InstalledWindowsC
     // Entry-exe aware (manifest-declared, ChatGPT.exe/Codex.exe fallback) so
     // both pre- and post-rebrand portable payloads are recognized.
     let exe = crate::portable::installed_app_exe(portable_root)?;
+    // Identity gate: an entry executable alone is not product identity — a
+    // ChatGPT Classic payload also ships a root-level ChatGPT.exe. Require the
+    // payload manifest (written by our installer) to declare exactly the Codex
+    // package identity; anything else is not a Codex install and must never be
+    // adopted, updated over, or replaced.
     let identity = std::fs::read_to_string(portable_root.join("AppxManifest.xml"))
         .ok()
-        .and_then(|xml| parse_appx_manifest_xml(&xml).ok());
+        .and_then(|xml| parse_appx_manifest_xml(&xml).ok())?;
+    if identity.name != crate::OPENAI_PACKAGE_IDENTITY {
+        log::debug!(
+            "portable root at {} declares identity {} (expected {}); not a Codex install",
+            portable_root.display(),
+            identity.name,
+            crate::OPENAI_PACKAGE_IDENTITY
+        );
+        return None;
+    }
 
     let installed = InstalledWindowsCodex {
         path: portable_root.to_string_lossy().into_owned(),
-        version: identity
-            .as_ref()
-            .map(|i| i.version.clone())
-            .unwrap_or_else(|| "0.0.0.0".to_string()),
-        arch: identity.as_ref().map(|i| i.processor_architecture.clone()),
+        version: identity.version.clone(),
+        arch: Some(identity.processor_architecture.clone()),
         source: "portable".to_string(),
         package_family_name: None,
         installed_at: path_mtime_secs(&exe.to_string_lossy()),
@@ -1307,5 +1318,62 @@ mod tests {
             reason: String::new(),
         };
         assert!(!inconsistent.should_route_portable());
+    }
+}
+
+#[cfg(test)]
+mod portable_identity_tests {
+    use super::detect_portable_install;
+    use std::path::Path;
+
+    fn write_root(name: &str, exe: &str, manifest: Option<&str>) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("codex-sys-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(exe), b"fake exe").unwrap();
+        if let Some(identity_name) = manifest {
+            std::fs::write(
+                root.join("AppxManifest.xml"),
+                format!(
+                    r#"<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">
+  <Identity Name="{identity_name}" Publisher="CN=OpenAI OpCo, LLC" Version="26.707.3748.0" ProcessorArchitecture="x64" />
+  <Applications><Application Id="App" Executable="app/{exe}" /></Applications>
+</Package>"#
+                ),
+            )
+            .unwrap();
+        }
+        root
+    }
+
+    fn cleanup(root: &Path) {
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn accepts_rebranded_portable_with_codex_identity() {
+        let root = write_root("rebrand", "ChatGPT.exe", Some("OpenAI.Codex"));
+        let installed = detect_portable_install(&root).expect("codex identity accepted");
+        assert_eq!(installed.version, "26.707.3748.0");
+        assert_eq!(installed.source, "portable");
+        cleanup(&root);
+    }
+
+    #[test]
+    fn rejects_portable_with_foreign_identity() {
+        // Same file shape as an unpacked ChatGPT Classic: entry exe + manifest,
+        // but the identity is not OpenAI.Codex — never a Codex install.
+        let root = write_root("classic", "ChatGPT.exe", Some("OpenAI.ChatGPT"));
+        assert!(detect_portable_install(&root).is_none());
+        cleanup(&root);
+    }
+
+    #[test]
+    fn rejects_portable_without_manifest_identity() {
+        // An entry executable alone is not identity; without a parseable
+        // manifest the directory is not recognized as a Codex install.
+        let root = write_root("no-manifest", "Codex.exe", None);
+        assert!(detect_portable_install(&root).is_none());
+        cleanup(&root);
     }
 }
