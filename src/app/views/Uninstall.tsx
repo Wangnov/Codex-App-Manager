@@ -17,14 +17,6 @@ function hasTauriRuntime(): boolean {
   );
 }
 
-function pathFromOutcome(outcome: OperationOutcome | null): string | null {
-  if (!outcome) return null;
-  for (const w of outcome.warnings) {
-    if (w.startsWith("path:")) return w.slice("path:".length);
-  }
-  return null;
-}
-
 export function Uninstall({ onBack }: { onBack: () => void }) {
   const { t } = useI18n();
   const platform = currentPlatform();
@@ -44,11 +36,14 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
   const [retryBusy, setRetryBusy] = useState(false);
   // Confirmation gate: 0 = none, 1 = first confirm, 2 = data-purge confirm
   // (only reached when the user opted out of keeping data — a 3rd tap total).
-  const [confirmStep, setConfirmStep] = useState<0 | 1 | 2>(0);
+  // 3 = post-uninstall purge_user_data ancillary retry confirm (destructive).
+  const [confirmStep, setConfirmStep] = useState<0 | 1 | 2 | 3>(0);
   const confirm1TitleId = useId();
   const confirm1BodyId = useId();
   const confirm2TitleId = useId();
   const confirm2BodyId = useId();
+  const purgeRetryTitleId = useId();
+  const purgeRetryBodyId = useId();
   const keepDataTitleId = useId();
 
   const refreshProbe = useCallback(async () => {
@@ -108,12 +103,13 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
   };
 
   const retryActions = async (actions: string[]) => {
+    setConfirmStep(0);
     setRetryBusy(true);
     setError(null);
     try {
       const report = await managerApi.retryAncillary({
         actions,
-        path: pathFromOutcome(partialOutcome),
+        path: partialOutcome?.path ?? null,
         purgeUserData: actions.includes("purge_user_data"),
       });
       setDone(report.message);
@@ -194,7 +190,7 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
                     <button
                       className="btn big"
                       disabled={retryBusy}
-                      onClick={() => void retryActions(["purge_user_data"])}
+                      onClick={() => setConfirmStep(3)}
                     >
                       {t("uninstall.partial.retryPurge")}
                     </button>
@@ -368,6 +364,30 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
           </button>
           <button className="btn danger" onClick={() => void run()}>
             {t("uninstall.purgeConfirm")}
+          </button>
+        </div>
+      </Sheet>
+
+      {/* Destructive: retry purge_user_data only — same consequence copy as full purge. */}
+      <Sheet
+        open={confirmStep === 3}
+        onDismiss={() => setConfirmStep(0)}
+        labelledBy={purgeRetryTitleId}
+        describedBy={purgeRetryBodyId}
+        initialFocus="dismiss"
+      >
+        <Ring icon="trash" variant="danger" />
+        <h3 id={purgeRetryTitleId}>{t("uninstall.confirm2.title")}</h3>
+        <p id={purgeRetryBodyId}>{t("uninstall.confirm2.body", { path: codexHome })}</p>
+        <div className="row2">
+          <button className="btn ghost" onClick={() => setConfirmStep(0)}>
+            {t("uninstall.cancel")}
+          </button>
+          <button
+            className="btn danger"
+            onClick={() => void retryActions(["purge_user_data"])}
+          >
+            {t("uninstall.partial.retryPurge")}
           </button>
         </div>
       </Sheet>

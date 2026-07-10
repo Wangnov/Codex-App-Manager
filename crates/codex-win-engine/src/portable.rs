@@ -728,8 +728,16 @@ pub fn cleanup_portable_metadata(purge_user_data: bool) -> Result<PortableUninst
             false
         }
     };
+    // User-data purge is ancillary: a failure must not abort the whole cleanup
+    // report (matches the MSIX uninstall path — partial success + recovery CTA).
     let purged_user_data = if purge_user_data {
-        purge_codex_user_data(&mut notes)?
+        match purge_codex_user_data(&mut notes) {
+            Ok(purged) => purged,
+            Err(err) => {
+                notes.push(format!("User data cleanup failed: {err}"));
+                false
+            }
+        }
     } else {
         false
     };
@@ -784,7 +792,52 @@ pub fn uninstall_portable(
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use zip::write::SimpleFileOptions;
+
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+    fn temp_test_dir(name: &str) -> PathBuf {
+        let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "codex-portable-{name}-{}-{id}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// When `~/.codex` is a file (not a directory), purge fails — must stay
+    /// non-fatal so the portable uninstall can still report partial success.
+    #[test]
+    fn user_data_purge_failure_is_non_fatal_in_metadata_cleanup() {
+        let home = temp_test_dir("purge-home");
+        // A regular file at `.codex` makes remove_dir_all fail.
+        fs::write(home.join(".codex"), b"not-a-directory").unwrap();
+        let prev_user = std::env::var_os("USERPROFILE");
+        let prev_home = std::env::var_os("HOME");
+        // SAFETY: test-only, serialised by the unique temp dir; restored below.
+        std::env::set_var("USERPROFILE", &home);
+        std::env::set_var("HOME", &home);
+        let report = cleanup_portable_metadata(true).expect("purge failure must not Err");
+        match prev_user {
+            Some(v) => std::env::set_var("USERPROFILE", v),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        assert!(report.success);
+        assert!(report.partial, "purge IO failure should mark partial");
+        assert!(!report.purged_user_data);
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n.contains("User data cleanup failed")));
+        let _ = fs::remove_dir_all(home);
+    }
 
     fn write_fake_msix(path: &Path) {
         let file = fs::File::create(path).unwrap();

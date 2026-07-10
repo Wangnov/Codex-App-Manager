@@ -949,15 +949,46 @@ pub fn reset_config(
 
 /// Retry only failed ancillary steps after a partial install/uninstall.
 /// Never re-runs full install or uninstall of the app itself.
+///
+/// `purge_user_data` is destructive (deletes `~/.codex`): it requires the same
+/// explicit confirm + armed uninstall token as a full uninstall, so it cannot
+/// be one-clicked from a recovery CTA.
 #[tauri::command]
 pub fn retry_ancillary(
     state: State<'_, ManagerState>,
     request: AncillaryRetryRequest,
+    confirm: Option<bool>,
+    token: Option<OperationToken>,
 ) -> Result<AncillaryRetryReport, CommandError> {
-    let _op = begin_guard(&state, OperationKind::Adopt)?;
     let actions = &request.actions;
     let path = request.path.as_deref();
-    let purge = request.purge_user_data;
+    let purge = request.purge_user_data
+        && actions
+            .iter()
+            .any(|a| a == crate::app::operation_outcome::recovery::PURGE_USER_DATA);
+    // Hold either a scoped adopt lock or a validated destructive uninstall token
+    // for the duration of the retry. Drop ends the token/lock (fields unread on purpose).
+    #[allow(dead_code)]
+    enum RetryGuard {
+        Scoped(OperationGuard),
+        Detached(DetachedGuard),
+    }
+    let _guard: RetryGuard = if purge {
+        if confirm != Some(true) {
+            return Err(AppError::Internal(
+                "清除用户数据需要二次确认（confirm=true）".to_string(),
+            )
+            .into());
+        }
+        let token = token.ok_or_else(|| {
+            AppError::Internal(
+                "清除用户数据需要破坏性令牌（先 arm_destructive uninstall）".to_string(),
+            )
+        })?;
+        RetryGuard::Detached(DetachedGuard::validate(&state, token)?)
+    } else {
+        RetryGuard::Scoped(begin_guard(&state, OperationKind::Adopt)?)
+    };
     match state.target.os {
         OperatingSystem::Macos => {
             retry_macos_ancillary(actions, path, purge).map_err(Into::into)

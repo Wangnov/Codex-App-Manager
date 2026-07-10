@@ -788,7 +788,7 @@ export const managerApi = {
     }
     return invoke<ConfigHealth>("reset_config", { which });
   },
-  retryAncillary(request: AncillaryRetryRequest): Promise<AncillaryRetryReport> {
+  async retryAncillary(request: AncillaryRetryRequest): Promise<AncillaryRetryReport> {
     if (!hasTauriRuntime()) {
       return Promise.resolve({
         message: "browser-dev mock: ancillary retry ok",
@@ -799,7 +799,24 @@ export const managerApi = {
         }),
       });
     }
-    return invoke<AncillaryRetryReport>("retry_ancillary", { request });
+    // purge_user_data is destructive — arm the same uninstall token as a full
+    // uninstall so recovery cannot one-click wipe ~/.codex.
+    const wantsPurge =
+      Boolean(request.purgeUserData) &&
+      request.actions.includes("purge_user_data");
+    if (wantsPurge) {
+      const token = await managerApi.armDestructive("uninstall");
+      return invoke<AncillaryRetryReport>("retry_ancillary", {
+        request,
+        confirm: true,
+        token,
+      });
+    }
+    return invoke<AncillaryRetryReport>("retry_ancillary", {
+      request,
+      confirm: null,
+      token: null,
+    });
   },
   winPlanUpdate(): Promise<WinUpdateReport> {
     if (!hasTauriRuntime()) {

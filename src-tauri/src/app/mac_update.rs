@@ -1349,6 +1349,7 @@ fn install_macos_in_staging(
     let mut outcome = OperationOutcome::full_success("present", Some("managed"));
     outcome.cleanup = StepOutcome::not_applicable();
     if let Some((path, build)) = sys::installed_codex_build() {
+        outcome.path = Some(path.clone());
         let mut store = ProvenanceStore::load();
         store.record(path, build, "manager-installed");
         // The app is on disk now. Provenance save is ancillary: never turn a
@@ -1363,10 +1364,13 @@ fn install_macos_in_staging(
             outcome.install_class = Some("external".to_string());
         }
     } else {
+        outcome.path = Some(install_path.to_string_lossy().into_owned());
         outcome.provenance = StepOutcome::failed("安装后未能读取 bundle 版本，托管记录未写入");
         outcome.push_warning("已写入应用，但未能确认版本；请重新检查状态或「开始管理」".to_string());
         outcome.push_recovery(recovery::RECORD_PROVENANCE);
         outcome.install_class = Some("external".to_string());
+        // Honest: app may be present but we couldn't classify it as managed.
+        outcome.app_state = "present".to_string();
     }
     // Do NOT auto-launch — the UI shows a completion state with an explicit
     // 〔打开 Codex〕 button so opening is the user's choice, not a surprise.
@@ -1516,8 +1520,8 @@ pub fn uninstall_macos(keep_codex_home: bool) -> Result<MacUninstallReport, AppE
     std::fs::remove_dir_all(&install_path)
         .map_err(|e| AppError::Engine(format!("remove app bundle: {e}")))?;
 
-    let mut outcome = OperationOutcome::full_success("absent", Some("none"));
-    let removed_path = installed.path.clone();
+    let mut outcome =
+        OperationOutcome::full_success("absent", Some("none")).with_path(installed.path.clone());
 
     // The app is gone — drop the provenance record. If the write fails, surface
     // it: a stale record could misclassify a same-path/same-build reinstall.
@@ -1566,10 +1570,6 @@ pub fn uninstall_macos(keep_codex_home: bool) -> Result<MacUninstallReport, AppE
     if outcome.provenance.is_failed() {
         message.push_str("；托管记录更新失败,可仅重试清除记录（无需再卸载）");
     }
-    // Stash the removed path in a warning so recovery can target it.
-    if outcome.provenance.is_failed() {
-        outcome.push_warning(format!("path:{removed_path}"));
-    }
 
     let report = MacUninstallReport {
         removed: true,
@@ -1597,6 +1597,7 @@ pub fn retry_macos_ancillary(
         primary_ok: true,
         app_state: "unknown".to_string(),
         install_class: None,
+        path: path.map(str::to_string),
         provenance: StepOutcome::not_applicable(),
         cleanup: StepOutcome::not_applicable(),
         warnings: Vec::new(),

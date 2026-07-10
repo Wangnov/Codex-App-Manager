@@ -180,7 +180,8 @@ fn record_managed_install(
     installed: &InstalledWindowsCodex,
     source: &str,
 ) -> OperationOutcome {
-    let mut outcome = OperationOutcome::full_success("present", Some("managed"));
+    let mut outcome =
+        OperationOutcome::full_success("present", Some("managed")).with_path(installed.path.clone());
     outcome.cleanup = StepOutcome::not_applicable();
     let mut store = ProvenanceStore::load();
     if let Some(previous) = previous {
@@ -206,26 +207,33 @@ fn record_managed_install(
     }
 }
 
+/// Build a structured outcome after portable uninstall.
+///
+/// Primary success means the install tree is gone (removed this run **or**
+/// already absent). Cleanup/metadata/provenance failures are partial, not hard
+/// failures — the UI can offer ancillary-only recovery CTAs.
 fn outcome_from_portable_uninstall(
     portable: &PortableUninstallReport,
     provenance: StepOutcome,
     path: &str,
 ) -> OperationOutcome {
     let provenance_failed = provenance.is_failed();
+    // `removed_files == false` with `success` means the tree was already gone —
+    // that is still a successful primary uninstall (nothing left to delete).
+    let primary_ok = portable.success;
     let mut outcome = OperationOutcome {
-        primary_ok: portable.success && portable.removed_files,
-        app_state: if portable.removed_files {
-            "absent".to_string()
-        } else if portable.success {
+        primary_ok,
+        app_state: if primary_ok {
             "absent".to_string()
         } else {
             "present".to_string()
         },
-        install_class: if portable.success {
+        install_class: if primary_ok {
             Some("none".to_string())
         } else {
             None
         },
+        path: Some(path.to_string()),
         provenance,
         cleanup: if portable.partial {
             StepOutcome::failed(
@@ -242,17 +250,32 @@ fn outcome_from_portable_uninstall(
         warnings: portable.notes.clone(),
         recovery_actions: Vec::new(),
     };
+    if !portable.removed_files && primary_ok {
+        outcome.push_warning(
+            "Install tree was already absent; performed ancillary cleanup only.".to_string(),
+        );
+    }
     if outcome.cleanup.is_failed() {
-        outcome.push_recovery(recovery::CLEANUP_METADATA);
+        // Shortcut / uninstall-entry failures.
+        if portable.notes.iter().any(|n| {
+            n.contains("Start Menu") || n.contains("Apps & Features") || n.contains("uninstall entry")
+        }) {
+            outcome.push_recovery(recovery::CLEANUP_METADATA);
+        }
+        // User-data purge failures (non-fatal).
+        if portable.notes.iter().any(|n| {
+            let lower = n.to_ascii_lowercase();
+            lower.contains("user data") && lower.contains("failed")
+        }) {
+            outcome.push_recovery(recovery::PURGE_USER_DATA);
+        }
+        // Fallback: any partial cleanup gets a metadata retry.
+        if outcome.recovery_actions.is_empty() {
+            outcome.push_recovery(recovery::CLEANUP_METADATA);
+        }
     }
     if provenance_failed {
         outcome.push_recovery(recovery::CLEAR_PROVENANCE);
-        outcome.push_warning(format!("path:{path}"));
-    }
-    if portable.notes.iter().any(|n| n.to_ascii_lowercase().contains("user data"))
-        && portable.notes.iter().any(|n| n.contains("failed") || n.contains("Failed"))
-    {
-        outcome.push_recovery(recovery::PURGE_USER_DATA);
     }
     outcome
 }
@@ -1131,22 +1154,48 @@ pub fn perform_windows_update_with_install_mode_and_network(
             .installed
             .clone()
             .or_else(|| win_install_status(settings).installed);
-        let mut outcome = OperationOutcome::full_success("present", Some("managed"));
-        outcome.cleanup = StepOutcome::not_applicable();
         let mut notes = stage.notes.clone();
-        if let Some(installed) = &installed {
-            outcome = record_managed_install(
-                current_installed.as_ref(),
-                installed,
-                "manager-installed-msix",
-            );
-            notes.extend(outcome.warnings.iter().cloned());
-        }
+        let outcome = match &installed {
+            Some(installed) => {
+                let outcome = record_managed_install(
+                    current_installed.as_ref(),
+                    installed,
+                    "manager-installed-msix",
+                );
+                notes.extend(outcome.warnings.iter().cloned());
+                outcome
+            }
+            None => {
+                // Sideload claimed success but we cannot see an install — do not
+                // pretend managed/ok provenance.
+                let mut outcome = OperationOutcome {
+                    primary_ok: true,
+                    app_state: "unknown".to_string(),
+                    install_class: None,
+                    path: None,
+                    provenance: StepOutcome::failed(
+                        "安装完成但未检测到可记录的安装，托管状态未知",
+                    ),
+                    cleanup: StepOutcome::not_applicable(),
+                    warnings: vec![
+                        "MSIX sideload reported success but no install was detected afterward."
+                            .to_string(),
+                    ],
+                    recovery_actions: vec![recovery::RECORD_PROVENANCE.to_string()],
+                };
+                notes.extend(outcome.warnings.iter().cloned());
+                outcome.push_warning(
+                    "请重新检查状态；若 Codex 已可用，用「开始管理」写入托管记录，勿盲目重装"
+                        .to_string(),
+                );
+                outcome
+            }
+        };
 
         let report = WinPerformReport {
             success: true,
             action: WinPerformAction::MsixSideload,
-            message: if outcome.is_partial() {
+            message: if outcome.is_partial() || outcome.provenance.is_failed() {
                 format!(
                     "{}（已安装，但托管记录未写入 — 请「开始管理」重试，勿重复安装）",
                     sideload.message
@@ -1205,15 +1254,31 @@ fn install_portable_after_stage(
     // (e.g. when sideload was blocked by policy), recording the wrong target so
     // the user keeps seeing the same update and the portable build goes unmanaged.
     let installed = detect_portable_install(PathBuf::from(&install_root).as_path());
-    let mut outcome = OperationOutcome::full_success("present", Some("managed"));
-    outcome.cleanup = StepOutcome::not_applicable();
-    if let Some(installed) = &installed {
-        outcome = record_managed_install(
+    let outcome = match &installed {
+        Some(installed) => record_managed_install(
             previous_installed.as_ref(),
             installed,
             "manager-installed-portable",
-        );
-    }
+        ),
+        None => OperationOutcome {
+            primary_ok: portable.success,
+            app_state: if portable.success {
+                "unknown".to_string()
+            } else {
+                "absent".to_string()
+            },
+            install_class: None,
+            path: Some(install_root.clone()),
+            provenance: StepOutcome::failed(
+                "便携安装完成但未检测到可记录的安装，托管状态未知",
+            ),
+            cleanup: StepOutcome::not_applicable(),
+            warnings: vec![
+                "Portable install finished but no install was detected for provenance.".to_string(),
+            ],
+            recovery_actions: vec![recovery::RECORD_PROVENANCE.to_string()],
+        },
+    };
 
     let mut notes = stage.notes.clone();
     let msix_unhealthy = health.as_ref().is_some_and(|h| !h.healthy);
@@ -1442,7 +1507,7 @@ pub fn uninstall_windows_codex(
                 outcome.provenance = StepOutcome::failed(detail.clone());
                 outcome.push_warning(detail);
                 outcome.push_recovery(recovery::CLEAR_PROVENANCE);
-                outcome.push_warning(format!("path:{}", installed_before.path));
+                outcome.path = Some(installed_before.path.clone());
             }
             notes.extend(msix.notes.clone());
             // Honor the user's "don't keep my data" choice on the MSIX path too,
@@ -1538,6 +1603,7 @@ pub fn retry_windows_ancillary(
         primary_ok: true,
         app_state: "unknown".to_string(),
         install_class: None,
+        path: path.map(str::to_string),
         provenance: StepOutcome::not_applicable(),
         cleanup: StepOutcome::not_applicable(),
         warnings: Vec::new(),
@@ -1648,11 +1714,13 @@ pub fn retry_windows_ancillary(
 mod tests {
     use super::{
         bind_manifest_checksums, check_win_update_abort, detect_existing_windows_install_at_path,
-        detect_managed_codex, WinAbortGuard, WinPerformAction, WIN_UPDATE_ABORT,
+        detect_managed_codex, outcome_from_portable_uninstall, WinAbortGuard, WinPerformAction,
+        WIN_UPDATE_ABORT,
     };
+    use crate::app::operation_outcome::{recovery, StepOutcome};
     use crate::app::provenance::ProvenanceStore;
     use crate::domain::settings::AppSettings;
-    use codex_win_engine::WindowsRelease;
+    use codex_win_engine::{PortableUninstallReport, WindowsRelease};
     use std::path::PathBuf;
     use std::sync::atomic::Ordering;
 
@@ -1849,5 +1917,81 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  OpenAI.Codex_2
             "https://example.com/OpenAI.Codex_26.602.3474.0_x64__2p2nqsd0c76g0.Msix",
         )
         .is_err());
+    }
+
+    #[test]
+    fn portable_uninstall_primary_ok_when_tree_already_absent() {
+        let portable = PortableUninstallReport {
+            success: true,
+            partial: true,
+            install_root: r"C:\Codex".into(),
+            removed_files: false, // already gone
+            removed_shortcut: false,
+            removed_uninstall_entry: false,
+            purged_user_data: false,
+            message: "cleanup warnings".into(),
+            notes: vec!["Start Menu shortcut cleanup failed: access denied".into()],
+        };
+        let outcome = outcome_from_portable_uninstall(
+            &portable,
+            StepOutcome::ok(),
+            r"C:\Codex",
+        );
+        assert!(outcome.primary_ok, "absent tree is still primary success");
+        assert_eq!(outcome.app_state, "absent");
+        assert_eq!(outcome.path.as_deref(), Some(r"C:\Codex"));
+        assert!(outcome.is_partial());
+        assert!(outcome
+            .recovery_actions
+            .iter()
+            .any(|a| a == recovery::CLEANUP_METADATA));
+        // Path lives in the field, not smuggled through warnings.
+        assert!(!outcome.warnings.iter().any(|w| w.starts_with("path:")));
+    }
+
+    #[test]
+    fn portable_uninstall_surfaces_user_data_purge_failure_as_partial() {
+        let portable = PortableUninstallReport {
+            success: true,
+            partial: true,
+            install_root: r"C:\Codex".into(),
+            removed_files: true,
+            removed_shortcut: true,
+            removed_uninstall_entry: true,
+            purged_user_data: false,
+            message: "cleanup warnings".into(),
+            notes: vec!["User data cleanup failed: access denied".into()],
+        };
+        let outcome = outcome_from_portable_uninstall(
+            &portable,
+            StepOutcome::ok(),
+            r"C:\Codex",
+        );
+        assert!(outcome.primary_ok);
+        assert!(outcome.is_partial());
+        assert!(outcome
+            .recovery_actions
+            .iter()
+            .any(|a| a == recovery::PURGE_USER_DATA));
+    }
+
+    #[test]
+    fn portable_uninstall_hard_failure_is_not_partial() {
+        let portable = PortableUninstallReport {
+            success: false,
+            partial: false,
+            install_root: r"C:\Codex".into(),
+            removed_files: false,
+            removed_shortcut: false,
+            removed_uninstall_entry: false,
+            purged_user_data: false,
+            message: "remove failed".into(),
+            notes: vec![],
+        };
+        let outcome =
+            outcome_from_portable_uninstall(&portable, StepOutcome::ok(), r"C:\Codex");
+        assert!(!outcome.primary_ok);
+        assert!(!outcome.is_partial());
+        assert_eq!(outcome.app_state, "present");
     }
 }

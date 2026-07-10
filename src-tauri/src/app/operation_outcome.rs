@@ -74,6 +74,9 @@ pub struct OperationOutcome {
     pub app_state: String,
     /// Classification when known: `"managed"` | `"external"` | `"none"`.
     pub install_class: Option<String>,
+    /// Install path context for targeted recovery (e.g. clear a specific record).
+    /// Prefer this over encoding paths into `warnings`.
+    pub path: Option<String>,
     pub provenance: StepOutcome,
     pub cleanup: StepOutcome,
     pub warnings: Vec<String>,
@@ -87,6 +90,7 @@ impl OperationOutcome {
             primary_ok: true,
             app_state: app_state.to_string(),
             install_class: install_class.map(str::to_string),
+            path: None,
             provenance: StepOutcome::ok(),
             cleanup: StepOutcome::ok(),
             warnings: Vec::new(),
@@ -99,11 +103,17 @@ impl OperationOutcome {
             primary_ok: false,
             app_state: app_state.to_string(),
             install_class: None,
+            path: None,
             provenance: StepOutcome::not_applicable(),
             cleanup: StepOutcome::not_applicable(),
             warnings: vec![detail.into()],
             recovery_actions: Vec::new(),
         }
+    }
+
+    pub fn with_path(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
+        self
     }
 
     pub fn push_warning(&mut self, warning: impl Into<String>) {

@@ -110,6 +110,8 @@ export interface OperationOutcome {
   /** "present" | "absent" | "unknown" */
   appState: string;
   installClass: InstallClass | string | null;
+  /** Install path context for targeted recovery (clear a specific record, etc.). */
+  path?: string | null;
   provenance: StepOutcome;
   cleanup: StepOutcome;
   warnings: string[];
@@ -475,6 +477,7 @@ export function emptyOperationOutcome(
     primaryOk: true,
     appState: "unknown",
     installClass: null,
+    path: null,
     provenance: emptyStepOutcome("ok"),
     cleanup: emptyStepOutcome("ok"),
     warnings: [],

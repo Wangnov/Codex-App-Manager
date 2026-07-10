@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -15,6 +15,7 @@ vi.mock("../../services/managerApi", () => ({
     macUninstall: vi.fn(),
     winUninstall: vi.fn(),
     retryAncillary: vi.fn(),
+    armDestructive: vi.fn(() => Promise.resolve("token")),
     openCodexHome: vi.fn(() => Promise.resolve()),
   },
 }));
@@ -183,6 +184,56 @@ describe("Uninstall", () => {
     await waitFor(() =>
       expect(retryAncillary).toHaveBeenCalledWith(
         expect.objectContaining({ actions: ["cleanup_metadata"] }),
+      ),
+    );
+  });
+
+  it("requires a second confirm before retrying purge_user_data", async () => {
+    const user = userEvent.setup();
+    setPlatform("MacIntel");
+    macUninstall.mockResolvedValue({
+      removed: true,
+      keptCodexHome: true,
+      message: "removed but purge failed",
+      outcome: emptyOperationOutcome({
+        primaryOk: true,
+        appState: "absent",
+        installClass: "none",
+        path: "/Applications/Codex.app",
+        cleanup: { state: "failed", detail: "purge failed" },
+        recoveryActions: ["purge_user_data"],
+        warnings: ["~/.codex purge failed"],
+      }),
+    });
+    renderUninstall();
+
+    await screen.findByText("Data location");
+    await user.click(screen.getByRole("button", { name: "Uninstall" }));
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(
+      await screen.findByText(/App removed, but some cleanup did not finish/i),
+    ).toBeInTheDocument();
+    // Clicking the purge retry CTA opens a confirm sheet — no API call yet.
+    await user.click(
+      screen.getByRole("button", { name: /Retry purging user data only/i }),
+    );
+    expect(retryAncillary).not.toHaveBeenCalled();
+    const purgeDialog = screen.getByRole("dialog", { name: "Erase all data?" });
+    expect(purgeDialog).toBeInTheDocument();
+
+    await user.click(
+      within(purgeDialog).getByRole("button", {
+        name: /Retry purging user data only/i,
+      }),
+    );
+    await waitFor(() =>
+      expect(retryAncillary).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actions: ["purge_user_data"],
+          purgeUserData: true,
+          path: "/Applications/Codex.app",
+        }),
       ),
     );
   });
