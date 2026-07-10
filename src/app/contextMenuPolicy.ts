@@ -11,17 +11,32 @@
 const EDITABLE_SELECTOR = [
   "input",
   "textarea",
-  "select",
   '[contenteditable=""]',
   '[contenteditable="true"]',
+  '[contenteditable="plaintext-only"]',
   '[role="textbox"]',
 ].join(", ");
 
+function eventTargetElement(target: EventTarget | null): Element | null {
+  if (target instanceof Text) return target.parentElement;
+  if (target instanceof Element) return target;
+  return null;
+}
+
 /** True when the event target (or an ancestor) is a text-editing control. */
 export function isEditableContextTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof Element)) return false;
-  const el = target.closest(EDITABLE_SELECTOR);
-  if (!el) return false;
+  const start = eventTargetElement(target);
+  if (!start) return false;
+  const el = start.closest(EDITABLE_SELECTOR);
+  if (!el) {
+    // Inherited contentEditable is not always reflected as an attribute match.
+    let node: Element | null = start;
+    while (node) {
+      if (node instanceof HTMLElement && node.isContentEditable) return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
   if (el instanceof HTMLInputElement) {
     // Buttons/checkboxes are "input" but not text-editing surfaces.
     const type = (el.type || "text").toLowerCase();
@@ -38,7 +53,13 @@ export function isEditableContextTarget(target: EventTarget | null): boolean {
       "hidden",
     ].includes(type);
   }
-  return true;
+  if (el instanceof HTMLTextAreaElement) return true;
+  if (el.getAttribute("role") === "textbox") return true;
+  // Prefer the live contentEditable flag; also honor the attribute so jsdom
+  // (and similar test envs where isContentEditable stays false) still match.
+  if (el instanceof HTMLElement && el.isContentEditable) return true;
+  const ce = el.getAttribute("contenteditable");
+  return ce === "" || ce === "true" || ce === "plaintext-only";
 }
 
 /**
