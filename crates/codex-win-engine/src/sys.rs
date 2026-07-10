@@ -10,7 +10,7 @@ use crate::capability::WinCapabilityReport;
 use crate::capability::{CapabilityCheck, CapabilityState};
 use crate::limits::MAX_TEXT_BYTES;
 use crate::msix::parse_appx_manifest_xml;
-use crate::network::NetworkConfig;
+use crate::network::{is_schannel_revocation_offline, NetworkConfig, SchannelRevocationCheck};
 use crate::process::{curl_exe, hidden_command};
 use crate::EngineError;
 
@@ -140,13 +140,15 @@ pub fn fetch_text(url: &str) -> Result<String, EngineError> {
     fetch_text_with_network(url, &NetworkConfig::system())
 }
 
-pub fn fetch_text_with_network(url: &str, network: &NetworkConfig) -> Result<String, EngineError> {
-    let source = url_host(url);
-    log::debug!("fetch Windows text source={source}");
+fn fetch_text_output(
+    url: &str,
+    network: &NetworkConfig,
+    revocation_check: SchannelRevocationCheck,
+) -> Result<std::process::Output, EngineError> {
     let max_text = MAX_TEXT_BYTES.to_string();
     let mut command = hidden_command(curl_exe());
-    network.apply_to_command(&mut command);
-    let output = command
+    network.apply_to_command_with_schannel_revocation(&mut command, revocation_check);
+    command
         .args([
             "-fsSL",
             "--proto",
@@ -162,7 +164,24 @@ pub fn fetch_text_with_network(url: &str, network: &NetworkConfig) -> Result<Str
             url,
         ])
         .output()
-        .map_err(|e| EngineError::Io(format!("spawn curl: {e}")))?;
+        .map_err(|e| EngineError::Io(format!("spawn curl: {e}")))
+}
+
+pub fn fetch_text_with_network(url: &str, network: &NetworkConfig) -> Result<String, EngineError> {
+    let source = url_host(url);
+    log::debug!("fetch Windows text source={source}");
+    let mut output = fetch_text_output(url, network, SchannelRevocationCheck::Strict)?;
+    let should_retry_without_revocation = {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        !output.status.success()
+            && is_schannel_revocation_offline(output.status.code(), stderr.as_ref())
+    };
+    if should_retry_without_revocation {
+        log::warn!(
+            "Windows curl Schannel revocation check failed; retrying with --ssl-no-revoke source={source}"
+        );
+        output = fetch_text_output(url, network, SchannelRevocationCheck::Disabled)?;
+    }
 
     if !output.status.success() {
         let err = EngineError::Io(curl_failure_message(
@@ -207,7 +226,26 @@ fn curl_failure_message(url: &str, exit_code: Option<i32>, stderr: &str) -> Stri
 fn is_connectivity_exit(exit_code: Option<i32>) -> bool {
     matches!(
         exit_code,
-        Some(5 | 6 | 7 | 28 | 35 | 52 | 53 | 54 | 55 | 56 | 58 | 59 | 60 | 67 | 77 | 80 | 82 | 83 | 91)
+        Some(
+            5 | 6
+                | 7
+                | 28
+                | 35
+                | 52
+                | 53
+                | 54
+                | 55
+                | 56
+                | 58
+                | 59
+                | 60
+                | 67
+                | 77
+                | 80
+                | 82
+                | 83
+                | 91
+        )
     )
 }
 

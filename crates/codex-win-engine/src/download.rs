@@ -8,7 +8,7 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 
 use crate::limits::MAX_PACKAGE_BYTES;
-use crate::network::NetworkConfig;
+use crate::network::{is_schannel_revocation_offline, NetworkConfig, SchannelRevocationCheck};
 use crate::process::{curl_exe, hidden_command};
 use crate::EngineError;
 
@@ -137,7 +137,26 @@ fn curl_failure_message(url: &str, exit_code: Option<i32>, stderr: &str) -> Stri
 fn is_connectivity_exit(exit_code: Option<i32>) -> bool {
     matches!(
         exit_code,
-        Some(5 | 6 | 7 | 28 | 35 | 52 | 53 | 54 | 55 | 56 | 58 | 59 | 60 | 67 | 77 | 80 | 82 | 83 | 91)
+        Some(
+            5 | 6
+                | 7
+                | 28
+                | 35
+                | 52
+                | 53
+                | 54
+                | 55
+                | 56
+                | 58
+                | 59
+                | 60
+                | 67
+                | 77
+                | 80
+                | 82
+                | 83
+                | 91
+        )
     )
 }
 
@@ -148,8 +167,9 @@ fn curl_args(
     max_bytes: &str,
     progress_mode: ProgressMode,
     network: &NetworkConfig,
+    revocation_check: SchannelRevocationCheck,
 ) -> Vec<String> {
-    let mut args = network.curl_args();
+    let mut args = network.curl_args_with_schannel_revocation(revocation_check);
     args.extend([
         "-fL".to_string(),
         "--proto".to_string(),
@@ -231,6 +251,60 @@ fn run_curl_once(
     Ok(())
 }
 
+struct CurlRun<'a> {
+    url: &'a str,
+    dest: &'a str,
+    resume: bool,
+    max_bytes: &'a str,
+    network: &'a NetworkConfig,
+    on_progress: &'a dyn Fn(u64),
+}
+
+impl CurlRun<'_> {
+    fn source(&self) -> &str {
+        url_host(self.url)
+    }
+}
+
+fn run_curl_with_mode(
+    run: &CurlRun<'_>,
+    progress_mode: ProgressMode,
+    revocation_check: SchannelRevocationCheck,
+) -> Result<(), CurlAttemptError> {
+    let args = curl_args(
+        run.url,
+        run.dest,
+        run.resume,
+        run.max_bytes,
+        progress_mode,
+        run.network,
+        revocation_check,
+    );
+    run_curl_once(run.source(), run.dest, args, run.on_progress)
+}
+
+fn retry_with_schannel_no_revoke(
+    err: CurlAttemptError,
+    run: &CurlRun<'_>,
+    progress_mode: ProgressMode,
+) -> Result<(), CurlAttemptError> {
+    let should_retry = match &err {
+        CurlAttemptError::Curl { exit_code, stderr } => {
+            is_schannel_revocation_offline(*exit_code, stderr)
+        }
+        _ => false,
+    };
+    if !should_retry {
+        return Err(err);
+    }
+
+    let source = run.source();
+    log::warn!(
+        "Windows curl Schannel revocation check failed; retrying with --ssl-no-revoke source={source}"
+    );
+    run_curl_with_mode(run, progress_mode, SchannelRevocationCheck::Disabled)
+}
+
 fn run_curl(
     url: &str,
     dest: &Path,
@@ -242,34 +316,39 @@ fn run_curl(
     let source = url_host(url);
     let dest = dest.to_string_lossy().into_owned();
     let max_bytes = max_bytes.to_string();
-
-    let modern_args = curl_args(
+    let run = CurlRun {
         url,
-        &dest,
+        dest: &dest,
         resume,
-        &max_bytes,
-        ProgressMode::NoProgressMeter,
+        max_bytes: &max_bytes,
         network,
-    );
-    if let Err(first_err) = run_curl_once(source, &dest, modern_args, on_progress) {
+        on_progress,
+    };
+
+    if let Err(first_err) = run_curl_with_mode(
+        &run,
+        ProgressMode::NoProgressMeter,
+        SchannelRevocationCheck::Strict,
+    ) {
         if let CurlAttemptError::Curl { exit_code, stderr } = &first_err {
             if is_no_progress_meter_unsupported(*exit_code, stderr) {
                 log::warn!(
                     "Windows curl does not support --no-progress-meter; retrying with -sS source={source}"
                 );
-                let compat_args = curl_args(
-                    url,
-                    &dest,
-                    resume,
-                    &max_bytes,
+                let compat_result = run_curl_with_mode(
+                    &run,
                     ProgressMode::SilentWithErrors,
-                    network,
+                    SchannelRevocationCheck::Strict,
                 );
-                return run_curl_once(source, &dest, compat_args, on_progress)
+                return compat_result
+                    .or_else(|err| {
+                        retry_with_schannel_no_revoke(err, &run, ProgressMode::SilentWithErrors)
+                    })
                     .map_err(|err| err.into_message(url));
             }
         }
-        return Err(first_err.into_message(url));
+        return retry_with_schannel_no_revoke(first_err, &run, ProgressMode::NoProgressMeter)
+            .map_err(|err| err.into_message(url));
     }
     Ok(())
 }
@@ -449,6 +528,7 @@ mod tests {
             "123",
             ProgressMode::NoProgressMeter,
             &NetworkConfig::system(),
+            SchannelRevocationCheck::Strict,
         );
 
         assert!(args.contains(&"--no-progress-meter".to_string()));
@@ -464,6 +544,7 @@ mod tests {
             "123",
             ProgressMode::SilentWithErrors,
             &NetworkConfig::system(),
+            SchannelRevocationCheck::Strict,
         );
 
         assert!(args.contains(&"-sS".to_string()));
@@ -480,6 +561,7 @@ mod tests {
             "123",
             ProgressMode::NoProgressMeter,
             &NetworkConfig::custom("socks5h://127.0.0.1:7890"),
+            SchannelRevocationCheck::Strict,
         );
 
         assert_eq!(args.first().map(String::as_str), Some("--proxy"));
