@@ -2,14 +2,33 @@ name: Windows installer check
 
 # Builds the NSIS installer (the only place the custom template + branding +
 # languages are exercised — the PR `ci.yml` matrix runs clippy/tests but never
-# bundles). Runs when the installer template, brand images, or bundle config
-# change, and uploads the -setup.exe so it can be inspected on a real Windows box.
+# bundles), then runs a packaged lifecycle smoke on Windows x64:
+# install → first launch → upgrade → uninstall.
+#
+# Also probes Authenticode on the installer and installed PE files in
+# non-blocking (optional) mode until OV/EV secrets are configured.
+#
+# ARM64 is NOT smoke-tested here: GitHub-hosted runners are x64, and a
+# cross-built ARM64 PE is not runtime verification. See docs/windows-signing.md.
+#
+# CI shell is already `pwsh` — invoke helper scripts in-process with
+# `& .\scripts\...ps1` (nested `pwsh -File ... -Path @(…)` breaks array binding).
 
 on:
   pull_request:
     paths:
       - "src-tauri/installer/**"
       - "src-tauri/tauri.conf.json"
+      - "src-tauri/Cargo.toml"
+      - "src-tauri/Cargo.lock"
+      - "src-tauri/src/**"
+      - "crates/**"
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
+      - "scripts/windows-*.ps1"
+      - "scripts/sign-windows-authenticode.ps1"
+      - "scripts/verify-windows-authenticode.ps1"
       - ".github/workflows/win-installer-check.yml"
   workflow_dispatch:
 
@@ -44,14 +63,65 @@ jobs:
       # NSIS only — just needs to compile the template, resolve the brand images,
       # and link all languages. NO signing secrets here on purpose: this is a
       # pull_request trigger running PR-authored code (config/template/hooks), so
-      # exposing TAURI_SIGNING_PRIVATE_KEY would let a PR exfiltrate the updater
-      # signing key. The build doesn't need it (createUpdaterArtifacts is off);
-      # signing the updater artifact is a release-time concern (release.yml).
+      # exposing TAURI_SIGNING_PRIVATE_KEY / WINDOWS_CERTIFICATE would let a PR
+      # exfiltrate keys. createUpdaterArtifacts is off; Authenticode remains a
+      # release-time concern (release.yml) with optional post-build path.
       - name: Build NSIS installer
+        id: build
         shell: bash
-        run: npm run tauri build -- --bundles nsis --target x86_64-pc-windows-msvc
+        run: |
+          echo "::group::[build] tauri nsis x86_64"
+          npm run tauri build -- --bundles nsis --target x86_64-pc-windows-msvc
+          echo "::endgroup::"
 
+      - name: Locate installer + PE arch diagnostic
+        id: artifact
+        shell: pwsh
+        run: |
+          $nsis = "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis"
+          $setup = Get-ChildItem -Path $nsis -Filter "*-setup.exe" -ErrorAction Stop |
+            Select-Object -First 1
+          if (-not $setup) {
+            Write-Host "::error::[build] no *-setup.exe under $nsis"
+            exit 1
+          }
+          $main = "src-tauri/target/x86_64-pc-windows-msvc/release/codex-app-manager.exe"
+          if (-not (Test-Path -LiteralPath $main)) {
+            Write-Host "::error::[build] missing main PE: $main"
+            exit 1
+          }
+          Write-Host "INSTALLER=$($setup.FullName)"
+          "installer=$($setup.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          # In-process invoke — do not nest `pwsh -File` (array -Path binding breaks).
+          # Hard-assert the app PE only; NSIS -setup.exe is a host stub and may
+          # not match the payload architecture.
+          & .\scripts\windows-pe-arch.ps1 -Path $main -ExpectMachine 0x8664
+          & .\scripts\windows-pe-arch.ps1 -Path $setup.FullName
+
+      - name: Authenticode probe (optional / non-blocking)
+        shell: pwsh
+        env:
+          # Flip to "required" via repo variable once OV/EV is wired into release.
+          AUTHENTICODE_MODE: ${{ vars.AUTHENTICODE_REQUIRED == 'true' && 'required' || 'optional' }}
+        run: |
+          & .\scripts\verify-windows-authenticode.ps1 `
+            -Path "${{ steps.artifact.outputs.installer }}" `
+            -Mode $env:AUTHENTICODE_MODE `
+            -Stage "sign-verify"
+
+      - name: Packaged lifecycle smoke (install / launch / upgrade / uninstall)
+        shell: pwsh
+        env:
+          AUTHENTICODE_MODE: ${{ vars.AUTHENTICODE_REQUIRED == 'true' && 'required' || 'optional' }}
+        run: |
+          & .\scripts\windows-packaged-smoke.ps1 `
+            -Installer "${{ steps.artifact.outputs.installer }}" `
+            -AuthenticodeMode $env:AUTHENTICODE_MODE
+
+      # Upload even when smoke fails so the built installer can be inspected.
+      # Still requires the build/locate steps to have produced a setup.exe.
       - name: Upload installer
+        if: ${{ always() && steps.artifact.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: nsis-installer

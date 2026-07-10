@@ -829,7 +829,9 @@ pub fn set_settings(
     let mut s = settings;
     s.normalize();
     normalize_settings_for_target(&mut s, &state.target);
-    if s.source == UpdateSource::Custom && !s.custom_url.trim().is_empty() {
+    // After normalize(), empty custom source/proxy is coerced away. Any remaining
+    // Custom mode must carry a non-empty, validated URL so disk matches runtime.
+    if s.source == UpdateSource::Custom {
         s.custom_url = validate_custom_source(&s.custom_url).map_err(|e| {
             let host = redact_url(&s.custom_url);
             log::warn!("url_guard rejected custom source reason={e} host={host}");
@@ -1501,24 +1503,35 @@ mod open_url_tests {
 }
 
 /// Windows-only: classify the installed Codex (managed / external / none).
+///
+/// Async + `spawn_blocking` so AppX / PowerShell status probes cannot freeze the
+/// WebView when enterprise policy or a hung AppX service stalls detection.
 #[tauri::command]
-pub fn win_status(state: State<'_, ManagerState>) -> Result<WinInstallStatus, CommandError> {
+pub async fn win_status(state: State<'_, ManagerState>) -> Result<WinInstallStatus, CommandError> {
     if !matches!(state.target.os, OperatingSystem::Windows) {
         return Err(AppError::UnsupportedPlatform.into());
     }
     let settings = windows_domain_settings_for_persisted(&state);
-    Ok(win_install_status(&settings))
+    tauri::async_runtime::spawn_blocking(move || win_install_status(&settings))
+        .await
+        .map_err(|e| AppError::Internal(format!("join: {e}")))
+        .map_err(Into::into)
 }
 
 /// Windows-only: adopt the detected external install (after explicit consent).
+///
+/// Async + `spawn_blocking` so filesystem / provenance work stays off the UI thread.
 #[tauri::command]
-pub fn win_adopt(state: State<'_, ManagerState>) -> Result<WinInstallStatus, CommandError> {
+pub async fn win_adopt(state: State<'_, ManagerState>) -> Result<WinInstallStatus, CommandError> {
     if !matches!(state.target.os, OperatingSystem::Windows) {
         return Err(AppError::UnsupportedPlatform.into());
     }
     let _op = begin_guard(&state, OperationKind::Adopt)?;
     let settings = windows_domain_settings_for_persisted(&state);
-    adopt_windows_install(&settings).map_err(Into::into)
+    tauri::async_runtime::spawn_blocking(move || adopt_windows_install(&settings))
+        .await
+        .map_err(|e| AppError::Internal(format!("join: {e}")))?
+        .map_err(Into::into)
 }
 
 /// Windows-only: open the installed Codex.

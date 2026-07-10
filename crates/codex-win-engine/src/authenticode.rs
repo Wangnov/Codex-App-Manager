@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 #[cfg(windows)]
-use crate::process::hidden_command;
+use crate::process::{hidden_command, run_capturing, RunLimits};
 use crate::EngineError;
 
 // The mirror currently serves Store-re-signed MSIX packages; add a separate
@@ -127,10 +127,11 @@ $sig = Get-AuthenticodeSignature -LiteralPath {path}
         path = ps_quote(&path.to_string_lossy())
     );
 
-    let output = hidden_command(powershell_exe())
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .output()
-        .map_err(|e| EngineError::Authenticode(format!("spawn powershell: {e}")))?;
+    let mut command = hidden_command(powershell_exe());
+    command.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+    let output = run_capturing(command, RunLimits::probe(), None).map_err(|e| {
+        EngineError::Authenticode(format!("Get-AuthenticodeSignature: {}", e.message()))
+    })?;
 
     if !output.status.success() {
         let err = EngineError::Authenticode(format!(
