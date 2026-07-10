@@ -33,6 +33,7 @@ pub use download::{
 pub use network::NetworkConfig;
 pub use plan::{plan_update, UpdatePlan, UpdateStrategy};
 pub use swap::{install_gated_bundle, quit_codex, relaunch, rollback, swap_in_place};
+pub use sys::CODEX_BUNDLE_ID;
 pub use verify::{verify_sparkle, SPARKLE_ED_PUBKEY_B64};
 
 #[derive(Debug, thiserror::Error)]

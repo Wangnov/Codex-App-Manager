@@ -889,10 +889,9 @@ fn detect_msix_install() -> Option<InstalledWindowsCodex> {
 }
 
 pub fn detect_portable_install(portable_root: &Path) -> Option<InstalledWindowsCodex> {
-    let exe = portable_root.join("Codex.exe");
-    if !exe.exists() {
-        return None;
-    }
+    // Entry-exe aware (manifest-declared, ChatGPT.exe/Codex.exe fallback) so
+    // both pre- and post-rebrand portable payloads are recognized.
+    let exe = crate::portable::installed_app_exe(portable_root)?;
     let identity = std::fs::read_to_string(portable_root.join("AppxManifest.xml"))
         .ok()
         .and_then(|xml| parse_appx_manifest_xml(&xml).ok());
@@ -925,7 +924,14 @@ pub fn launch_codex_with_options(
     options: LaunchOptions,
 ) -> Result<(), EngineError> {
     if installed.source == "portable" {
-        let exe = Path::new(&installed.path).join("Codex.exe");
+        let root = Path::new(&installed.path);
+        let exe = crate::portable::installed_app_exe(root)
+            .ok_or_else(|| {
+                EngineError::Io(format!(
+                    "no app entry executable (ChatGPT.exe / Codex.exe) in {}",
+                    root.display()
+                ))
+            })?;
         // CREATE_NO_WINDOW only suppresses a console flash; the GUI still shows.
         let mut command = hidden_command(exe);
         if options.disable_codex_self_updates {

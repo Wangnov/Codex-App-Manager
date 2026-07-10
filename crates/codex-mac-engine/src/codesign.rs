@@ -140,7 +140,31 @@ pub fn assess_gatekeeper(app: &Path) -> Result<(), EngineError> {
     Ok(())
 }
 
-/// Full post-apply gate: signature intact + correct team + Gatekeeper accepts.
+/// Assert the bundle IS the Codex product. Team ID alone cannot do this:
+/// ChatGPT Classic (`com.openai.chat`) is signed by the same OpenAI team, so
+/// once bundles are no longer identified by name this is what keeps a Classic
+/// bundle from ever passing the gate. Runs after `verify_signature`, which
+/// seals `Info.plist`, so the identifier read here is signature-backed.
+pub fn require_codex_bundle_identity(app: &Path) -> Result<(), EngineError> {
+    let id = crate::sys::read_bundle_identifier(&app.to_string_lossy()).ok_or_else(|| {
+        EngineError::Verify("bundle has no readable CFBundleIdentifier".to_string())
+    })?;
+    if id == crate::sys::CODEX_BUNDLE_ID {
+        return Ok(());
+    }
+    let hint = if id == "com.openai.chat" {
+        " (this is ChatGPT Classic — a different product this tool never manages)"
+    } else {
+        ""
+    };
+    Err(EngineError::Verify(format!(
+        "CFBundleIdentifier mismatch: got {id}, expected {}{hint}",
+        crate::sys::CODEX_BUNDLE_ID
+    )))
+}
+
+/// Full post-apply gate: signature intact + Codex product identity + correct
+/// team + Gatekeeper accepts.
 pub fn gate_reconstructed(app: &Path) -> Result<(), EngineError> {
     let app_name = app
         .file_name()
@@ -149,6 +173,10 @@ pub fn gate_reconstructed(app: &Path) -> Result<(), EngineError> {
     log::info!("codesign Gatekeeper gate start path={app_name}");
     if let Err(err) = verify_signature(app) {
         log::error!("codesign gate failed path={app_name} error={err}");
+        return Err(err);
+    }
+    if let Err(err) = require_codex_bundle_identity(app) {
+        log::error!("bundle identity gate failed path={app_name} error={err}");
         return Err(err);
     }
     let team = match team_identifier(app) {

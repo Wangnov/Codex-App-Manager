@@ -418,7 +418,8 @@ fn is_protected_install_root(path: &Path) -> bool {
 }
 
 fn is_existing_codex_portable_root(path: &Path) -> bool {
-    path.join("Codex.exe").is_file() && path.join("AppxManifest.xml").is_file()
+    codex_win_engine::portable::installed_app_exe(path).is_some()
+        && path.join("AppxManifest.xml").is_file()
 }
 
 fn directory_is_empty(path: &Path) -> Result<bool, AppError> {
@@ -642,7 +643,9 @@ pub fn mac_adopt(state: State<'_, ManagerState>) -> Result<MacInstallStatus, Com
     crate::app::mac_update::mac_adopt().map_err(Into::into)
 }
 
-/// macOS-only: let the user pick an existing Codex.app and validate it.
+/// macOS-only: let the user pick an existing Codex install and validate it.
+/// The bundle may be named Codex.app or (post-rebrand) ChatGPT.app — validation
+/// is by CFBundleIdentifier, so ChatGPT Classic is rejected with a clear error.
 #[tauri::command]
 pub async fn mac_pick_existing_install(
     app: tauri::AppHandle,
@@ -655,7 +658,7 @@ pub async fn mac_pick_existing_install(
     let selected = tauri::async_runtime::spawn_blocking(move || {
         app.dialog()
             .file()
-            .set_title("选择 Codex.app")
+            .set_title("选择 Codex 应用（Codex.app 或 ChatGPT.app）")
             .set_directory(start_dir)
             .blocking_pick_file()
             .map(|path| {

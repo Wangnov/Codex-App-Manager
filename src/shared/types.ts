@@ -92,6 +92,10 @@ export type InstallClass = "managed" | "external" | "none";
 export interface MacInstallStatus {
   installed: InstalledCodex | null;
   status: InstallClass;
+  /** Present when several Codex-lineage installs coexist (e.g. an old
+   *  Codex.app plus a hand-dragged post-rebrand ChatGPT.app); the user should
+   *  adopt one explicitly. Absent when unambiguous. */
+  ambiguousPaths?: string[];
 }
 
 export type UpdateSourceKind = "auto" | "mirror" | "official" | "custom";

@@ -18,15 +18,31 @@ use crate::EngineError;
 
 const OPEN: &str = "/usr/bin/open";
 const OSASCRIPT: &str = "/usr/bin/osascript";
-const PGREP: &str = "/usr/bin/pgrep";
 
-/// Is a process named `Codex` currently running?
+/// Is the Codex lineage app currently running?
+///
+/// Addressed by bundle id, not process name: the ChatGPT-brand merge renamed
+/// the executable (`Codex` → `ChatGPT`), and a name match would both miss the
+/// renamed Codex and hit ChatGPT Classic (whose process is also `ChatGPT`).
+/// AppleScript's `running` property is read without launching the target.
 pub fn codex_running() -> bool {
-    Command::new(PGREP)
-        .args(["-x", "Codex"])
+    let script = format!(
+        r#"application id "{}" is running"#,
+        crate::sys::CODEX_BUNDLE_ID
+    );
+    Command::new(OSASCRIPT)
+        .args(["-e", &script])
         .output()
-        .map(|o| o.status.success())
+        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true")
         .unwrap_or(false)
+}
+
+fn tell_codex(verb: &str) -> std::io::Result<std::process::ExitStatus> {
+    let script = format!(
+        r#"tell application id "{}" to {verb}"#,
+        crate::sys::CODEX_BUNDLE_ID
+    );
+    Command::new(OSASCRIPT).args(["-e", &script]).status()
 }
 
 /// Ask Codex to quit gracefully (AppleScript), polling up to `timeout_secs`.
@@ -43,9 +59,7 @@ pub fn quit_codex(timeout_secs: u64) -> Result<(), EngineError> {
         return Ok(());
     }
     log::info!("requesting Codex graceful quit timeout={timeout_secs}");
-    let _ = Command::new(OSASCRIPT)
-        .args(["-e", r#"tell application "Codex" to quit"#])
-        .status();
+    let _ = tell_codex("quit");
 
     // 250ms ticks; if Codex is still running after ~5s it is most likely
     // waiting on its quit-confirmation dialog — surface it.
@@ -55,9 +69,7 @@ pub fn quit_codex(timeout_secs: u64) -> Result<(), EngineError> {
             return Ok(());
         }
         if tick == activate_tick {
-            let _ = Command::new(OSASCRIPT)
-                .args(["-e", r#"tell application "Codex" to activate"#])
-                .status();
+            let _ = tell_codex("activate");
         }
         std::thread::sleep(std::time::Duration::from_millis(250));
     }

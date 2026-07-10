@@ -104,25 +104,66 @@ pub fn fetch_text_timeout_with_network(
     text_from_curl(url, output)
 }
 
-/// Locate an installed `Codex.app` and read its `CFBundleVersion` (build number).
+/// The Codex product's stable bundle identifier — the trust anchor for "is
+/// this the Codex lineage?". The upstream ChatGPT-brand merge renamed the
+/// bundle (`Codex.app` → `ChatGPT.app`) and its executable while keeping this
+/// ID, so names can no longer identify the product. ChatGPT Classic
+/// (`com.openai.chat`) shares the display name and signing team but is a
+/// different product and must never match.
+pub const CODEX_BUNDLE_ID: &str = "com.openai.codex";
+
+/// Bundle names the Codex lineage ships under (pre/post the ChatGPT rebrand).
+/// The canonical name comes first so, per root, a canonical install wins ties.
+const CANDIDATE_BUNDLE_NAMES: [&str; 2] = ["Codex.app", "ChatGPT.app"];
+
+/// Locate an installed Codex and read its `CFBundleVersion` (build number).
 ///
-/// Returns `(app_path, build)` for the first candidate found, or `None`.
+/// Candidates are identity-gated on `CFBundleIdentifier == com.openai.codex`,
+/// so a ChatGPT Classic at `/Applications/ChatGPT.app` is never picked up.
+/// Returns `(app_path, build)` for the first (canonical-order) match; when
+/// several lineage installs coexist the canonical path wins and the ambiguity
+/// is surfaced via `installed_codex_candidates` + a warning here.
 pub fn installed_codex_build() -> Option<(String, u64)> {
+    let candidates = installed_codex_candidates();
+    if candidates.len() > 1 {
+        let paths: Vec<&str> = candidates.iter().map(|(p, _)| p.as_str()).collect();
+        log::warn!(
+            "multiple Codex-lineage installs detected, preferring canonical path candidates={paths:?}"
+        );
+    }
+    candidates.into_iter().next()
+}
+
+/// Every Codex-lineage install found at the known roots, canonical order.
+/// More than one entry means the user has ambiguous installs (e.g. an old
+/// `Codex.app` plus a hand-dragged `ChatGPT.app` from the official DMG).
+pub fn installed_codex_candidates() -> Vec<(String, u64)> {
     candidate_app_paths()
         .into_iter()
-        .find_map(|app| installed_codex_build_at_path(&app))
+        .filter_map(|app| installed_codex_build_at_path(&app))
+        .collect()
 }
 
 pub fn installed_codex_build_at_path(app: &str) -> Option<(String, u64)> {
+    if read_bundle_identifier(app).as_deref() != Some(CODEX_BUNDLE_ID) {
+        return None;
+    }
     read_bundle_build(app).map(|build| (app.to_string(), build))
 }
 
 fn candidate_app_paths() -> Vec<String> {
-    let mut paths = vec!["/Applications/Codex.app".to_string()];
+    let mut roots = vec!["/Applications".to_string()];
     if let Ok(home) = std::env::var("HOME") {
-        paths.push(format!("{home}/Applications/Codex.app"));
+        roots.push(format!("{home}/Applications"));
     }
-    paths
+    roots
+        .into_iter()
+        .flat_map(|root| {
+            CANDIDATE_BUNDLE_NAMES
+                .iter()
+                .map(move |name| format!("{root}/{name}"))
+        })
+        .collect()
 }
 
 /// Best-effort architecture of an installed Codex.app, read from its Mach-O
@@ -183,6 +224,28 @@ fn read_bundle_build(app: &str) -> Option<u64> {
     String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }
 
+/// Read a bundle's `CFBundleIdentifier` — the product-identity anchor (see
+/// `CODEX_BUNDLE_ID`). Returns `None` when the bundle or key is missing.
+pub fn read_bundle_identifier(app: &str) -> Option<String> {
+    let plist = format!("{app}/Contents/Info.plist");
+    if !Path::new(&plist).exists() {
+        return None;
+    }
+    let output = Command::new("/usr/libexec/PlistBuddy")
+        .args(["-c", "Print :CFBundleIdentifier", &plist])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id)
+    }
+}
+
 /// Read the human-facing version string (`CFBundleShortVersionString`, e.g.
 /// `26.602.40724`) of an installed bundle. This is what we show the user; the
 /// build number (`CFBundleVersion`) is what Sparkle compares. Returns `None` if
@@ -204,5 +267,67 @@ pub fn read_bundle_short_version(app: &str) -> Option<String> {
         None
     } else {
         Some(v)
+    }
+}
+
+// PlistBuddy only exists on macOS, so the identity-gate tests are mac-only
+// (the Windows CI job still compiles this module).
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn write_fake_app(root: &Path, name: &str, bundle_id: &str, build: u64) -> String {
+        let app = root.join(name);
+        fs::create_dir_all(app.join("Contents")).unwrap();
+        let plist = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>{bundle_id}</string>
+    <key>CFBundleVersion</key>
+    <string>{build}</string>
+</dict>
+</plist>
+"#
+        );
+        fs::write(app.join("Contents/Info.plist"), plist).unwrap();
+        app.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn identity_gate_accepts_codex_lineage_under_any_bundle_name() {
+        let root = std::env::temp_dir().join(format!("codex-sys-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+
+        // Post-rebrand shape: the bundle is named ChatGPT.app but carries the
+        // Codex bundle id — it must be detected.
+        let renamed = write_fake_app(&root, "ChatGPT.app", CODEX_BUNDLE_ID, 5059);
+        assert_eq!(
+            installed_codex_build_at_path(&renamed),
+            Some((renamed.clone(), 5059))
+        );
+        assert_eq!(read_bundle_identifier(&renamed).as_deref(), Some(CODEX_BUNDLE_ID));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn identity_gate_rejects_chatgpt_classic() {
+        let root = std::env::temp_dir().join(format!("codex-sys-classic-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+
+        // ChatGPT Classic: same bundle name the rebranded Codex uses, different
+        // product identity — must never be treated as an install.
+        let classic = write_fake_app(&root, "ChatGPT.app", "com.openai.chat", 42);
+        assert_eq!(installed_codex_build_at_path(&classic), None);
+
+        // A Codex-named impostor with a foreign id is rejected too.
+        let impostor = write_fake_app(&root, "Codex.app", "com.example.fake", 7);
+        assert_eq!(installed_codex_build_at_path(&impostor), None);
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

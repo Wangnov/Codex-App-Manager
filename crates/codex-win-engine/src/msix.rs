@@ -53,6 +53,21 @@ pub fn is_framework_dependency(name: &str) -> bool {
         .any(|prefix| name.len() >= prefix.len() && name[..prefix.len()].eq_ignore_ascii_case(prefix))
 }
 
+/// The package-root-relative path of the app's entry executable, from the
+/// manifest's `<Application Executable="…">` (e.g. `app\ChatGPT.exe`). This is
+/// the authoritative entrypoint: the ChatGPT-brand merge switched it from
+/// `app\Codex.exe` to `app\ChatGPT.exe` while leaving a legacy `Codex.exe` in
+/// the payload, so guessing by file name would pick a non-entry binary.
+/// Returns `None` when the manifest declares no `<Application>` (never the
+/// case for real Codex packages, but tolerated for robustness).
+pub fn parse_appx_application_executable(xml: &str) -> Option<String> {
+    let doc = roxmltree::Document::parse(xml).ok()?;
+    doc.descendants()
+        .find(|node| node.has_tag_name("Application"))
+        .and_then(|node| node.attribute("Executable"))
+        .map(str::to_string)
+}
+
 pub fn parse_appx_manifest_xml(xml: &str) -> Result<MsixIdentity, EngineError> {
     let doc = roxmltree::Document::parse(xml)
         .map_err(|e| EngineError::Msix(format!("AppxManifest.xml: {e}")))?;
@@ -235,6 +250,29 @@ mod tests {
         assert_eq!(identity.name, "OpenAI.Codex");
         assert_eq!(identity.version, "26.602.3474.0");
         validate_codex_identity(&identity, "26.602.3474.0", Some("x64")).unwrap();
+    }
+
+    #[test]
+    fn parses_application_executable() {
+        // Post-rebrand shape observed on the real 26.707.3748.0 package: the
+        // entry is ChatGPT.exe even though a legacy Codex.exe ships alongside.
+        let xml = r#"
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">
+  <Identity Name="OpenAI.Codex" Publisher="CN=X" Version="26.707.3748.0" ProcessorArchitecture="x64" />
+  <Applications>
+    <Application Id="App" Executable="app/ChatGPT.exe" EntryPoint="Windows.FullTrustApplication" />
+  </Applications>
+</Package>"#;
+        assert_eq!(
+            parse_appx_application_executable(xml).as_deref(),
+            Some("app/ChatGPT.exe")
+        );
+
+        let no_application = r#"
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">
+  <Identity Name="OpenAI.Codex" Publisher="CN=X" Version="1.0.0.0" ProcessorArchitecture="x64" />
+</Package>"#;
+        assert_eq!(parse_appx_application_executable(no_application), None);
     }
 
     #[test]

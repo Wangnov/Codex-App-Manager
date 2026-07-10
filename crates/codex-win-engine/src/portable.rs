@@ -105,7 +105,12 @@ fn extract_msix(msix_path: &Path, dest: &Path) -> Result<String, EngineError> {
     manifest_xml.ok_or_else(|| EngineError::Msix("MSIX missing AppxManifest.xml".to_string()))
 }
 
-fn find_codex_exe(root: &Path) -> Result<PathBuf, EngineError> {
+/// Entry-executable basenames the Codex lineage has shipped, newest first.
+/// Post-merge packages keep a legacy `Codex.exe` next to the real entrypoint,
+/// so `ChatGPT.exe` must win when the manifest can't tell us (it normally can).
+const APP_EXE_CANDIDATES: [&str; 2] = ["ChatGPT.exe", "Codex.exe"];
+
+fn find_exe_named(root: &Path, name: &str) -> Result<Option<PathBuf>, EngineError> {
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         for entry in fs::read_dir(&dir).map_err(|e| io_err("walk extracted MSIX", e))? {
@@ -117,15 +122,64 @@ fn find_codex_exe(root: &Path) -> Result<PathBuf, EngineError> {
             } else if path
                 .file_name()
                 .and_then(|s| s.to_str())
-                .is_some_and(|name| name.eq_ignore_ascii_case("Codex.exe"))
+                .is_some_and(|n| n.eq_ignore_ascii_case(name))
             {
-                return Ok(path);
+                return Ok(Some(path));
             }
         }
     }
+    Ok(None)
+}
+
+/// Locate the app's entry executable in an extracted MSIX. The manifest's
+/// `Application@Executable` is authoritative (resolved as a package-root
+/// relative path, then by basename); known entry names are the fallback for
+/// odd payload layouts or a manifest without an `<Application>`.
+fn find_app_exe(root: &Path, manifest_xml: &str) -> Result<PathBuf, EngineError> {
+    if let Some(declared) = crate::msix::parse_appx_application_executable(manifest_xml) {
+        // Manifest paths use either separator; resolve component-wise.
+        let relative: PathBuf = declared.replace('\\', "/").split('/').collect();
+        let direct = root.join(&relative);
+        if direct.is_file() {
+            return Ok(direct);
+        }
+        if let Some(name) = relative.file_name().and_then(|s| s.to_str()) {
+            if let Some(found) = find_exe_named(root, name)? {
+                return Ok(found);
+            }
+        }
+    }
+    for name in APP_EXE_CANDIDATES {
+        if let Some(found) = find_exe_named(root, name)? {
+            return Ok(found);
+        }
+    }
     Err(EngineError::Msix(
-        "MSIX did not contain Codex.exe".to_string(),
+        "MSIX did not contain an app entry executable (ChatGPT.exe / Codex.exe)".to_string(),
     ))
+}
+
+/// The entry executable of an installed portable root. Reads the payload's
+/// `AppxManifest.xml` (written at install time) for the declared executable's
+/// basename — the payload root is the exe's directory, so only the basename
+/// applies — and falls back to probing known entry names for older installs.
+pub fn installed_app_exe(install_root: &Path) -> Option<PathBuf> {
+    let manifest = install_root.join("AppxManifest.xml");
+    if let Ok(xml) = fs::read_to_string(&manifest) {
+        if let Some(declared) = crate::msix::parse_appx_application_executable(&xml) {
+            let basename = declared.replace('\\', "/");
+            if let Some(name) = basename.rsplit('/').next() {
+                let exe = install_root.join(name);
+                if exe.is_file() {
+                    return Some(exe);
+                }
+            }
+        }
+    }
+    APP_EXE_CANDIDATES
+        .into_iter()
+        .map(|name| install_root.join(name))
+        .find(|exe| exe.is_file())
 }
 
 fn prepare_portable_payload(
@@ -144,10 +198,10 @@ fn prepare_portable_payload(
 
     let manifest_xml = extract_msix(msix_path, &extracted)?;
     let identity = parse_appx_manifest_xml(&manifest_xml)?;
-    let exe = find_codex_exe(&extracted)?;
+    let exe = find_app_exe(&extracted, &manifest_xml)?;
     let exe_dir = exe
         .parent()
-        .ok_or_else(|| EngineError::Msix("Codex.exe had no parent directory".to_string()))?;
+        .ok_or_else(|| EngineError::Msix("app entry executable had no parent directory".to_string()))?;
 
     copy_dir_all(exe_dir, &payload)?;
     fs::write(payload.join("AppxManifest.xml"), manifest_xml)
@@ -194,25 +248,21 @@ fn run_powershell(script: &str) -> Result<String, EngineError> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+// The process filter matches by executable path under `root`, never by name
+// alone: post-merge the Codex entry process is `ChatGPT`, which is also the
+// process name of ChatGPT Classic — an unrooted name match would close the
+// wrong product. That is why there is no unfiltered close variant.
 #[cfg(windows)]
-fn request_codex_close_filtered(timeout_secs: u64, root: Option<&Path>) -> Result<(), EngineError> {
-    let root_filter = root
-        .map(|path| ps_quote(&path.to_string_lossy()))
-        .unwrap_or_else(|| "$null".to_string());
+fn request_codex_close_filtered(timeout_secs: u64, root: &Path) -> Result<(), EngineError> {
+    let root_filter = ps_quote(&root.to_string_lossy());
     let timeout = timeout_secs;
     let script = format!(
         r#"
 $RootFilter = {root_filter}
-if ($null -ne $RootFilter) {{
-  try {{ $RootFilter = [System.IO.Path]::GetFullPath($RootFilter).TrimEnd('\') }} catch {{}}
-}}
+try {{ $RootFilter = [System.IO.Path]::GetFullPath($RootFilter).TrimEnd('\') }} catch {{}}
 function Get-TargetCodexProcess {{
-  $all = Get-Process -Name Codex -ErrorAction SilentlyContinue
+  $all = Get-Process -Name Codex, ChatGPT -ErrorAction SilentlyContinue
   foreach ($p in $all) {{
-    if ($null -eq $RootFilter) {{
-      $p
-      continue
-    }}
     try {{
       $path = [string]$p.Path
       if (-not $path) {{ continue }}
@@ -285,27 +335,13 @@ while ((Get-Date) -lt $forceDeadline) {{
 }
 
 #[cfg(windows)]
-fn request_codex_close(timeout_secs: u64) -> Result<(), EngineError> {
-    request_codex_close_filtered(timeout_secs, None)
-}
-
-#[cfg(windows)]
 fn request_codex_close_for_root(timeout_secs: u64, root: &Path) -> Result<(), EngineError> {
-    request_codex_close_filtered(timeout_secs, Some(root))
-}
-
-#[cfg(not(windows))]
-fn request_codex_close(_timeout_secs: u64) -> Result<(), EngineError> {
-    Ok(())
+    request_codex_close_filtered(timeout_secs, root)
 }
 
 #[cfg(not(windows))]
 fn request_codex_close_for_root(_timeout_secs: u64, _root: &Path) -> Result<(), EngineError> {
     Ok(())
-}
-
-pub fn close_codex_gracefully(timeout_secs: u64) -> Result<(), EngineError> {
-    request_codex_close(timeout_secs)
 }
 
 pub fn close_codex_gracefully_for_root(timeout_secs: u64, root: &Path) -> Result<(), EngineError> {
@@ -314,7 +350,9 @@ pub fn close_codex_gracefully_for_root(timeout_secs: u64, root: &Path) -> Result
 
 #[cfg(windows)]
 fn create_start_menu_shortcut(install_root: &Path) -> Result<bool, EngineError> {
-    let exe = install_root.join("Codex.exe");
+    let Some(exe) = installed_app_exe(install_root) else {
+        return Ok(false);
+    };
     let Some(appdata) = std::env::var_os("APPDATA") else {
         return Ok(false);
     };
@@ -353,7 +391,8 @@ fn register_uninstall_entry(
     version: &str,
     estimated_size_kb: u64,
 ) -> Result<bool, EngineError> {
-    let exe = install_root.join("Codex.exe");
+    // Icon only — the entry works without one, so fall back to the legacy name.
+    let exe = installed_app_exe(install_root).unwrap_or_else(|| install_root.join("Codex.exe"));
     let uninstall_script = format!(
         "if ($env:APPDATA) {{ $Shortcut = Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs\\Codex.lnk'; Remove-Item -LiteralPath $Shortcut -Force -ErrorAction SilentlyContinue }}; Remove-Item -LiteralPath '{}' -Recurse -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Codex' -Recurse -Force -ErrorAction SilentlyContinue",
         install_root.to_string_lossy().replace('\'', "''")
@@ -496,13 +535,12 @@ fn rollback_install_error(
 }
 
 fn health_check_portable_install(install_root: &Path, launch: bool) -> Result<bool, EngineError> {
-    let exe = install_root.join("Codex.exe");
-    if !exe.is_file() {
-        return Err(EngineError::Install(format!(
-            "portable health check failed: {} is missing",
-            exe.display()
-        )));
-    }
+    let exe = installed_app_exe(install_root).ok_or_else(|| {
+        EngineError::Install(format!(
+            "portable health check failed: no app entry executable (ChatGPT.exe / Codex.exe) in {}",
+            install_root.display()
+        ))
+    })?;
     if !launch {
         return Ok(false);
     }
@@ -609,7 +647,7 @@ fn install_portable_from_msix_inner(
         }
     };
 
-    let exe = install_root.join("Codex.exe");
+    let installed_exe = installed_app_exe(install_root);
     let mut backup_path = None;
     if had_previous && backup.exists() {
         match fs::remove_dir_all(&backup) {
@@ -631,7 +669,7 @@ fn install_portable_from_msix_inner(
     Ok(PortableInstallReport {
         success: true,
         install_root: install_root.to_string_lossy().into_owned(),
-        executable_path: exe.exists().then(|| exe.to_string_lossy().into_owned()),
+        executable_path: installed_exe.map(|exe| exe.to_string_lossy().into_owned()),
         version,
         backup_path,
         shortcut_created,
@@ -748,6 +786,31 @@ mod tests {
         zip.finish().unwrap();
     }
 
+    fn write_fake_rebranded_msix(path: &Path) {
+        // Post-rebrand layout: manifest entry is app/ChatGPT.exe while a legacy
+        // Codex.exe still ships next to it (as on the real 26.707.x package).
+        let file = fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let opts = SimpleFileOptions::default();
+        zip.start_file("AppxManifest.xml", opts).unwrap();
+        zip.write_all(
+            br#"<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">
+  <Identity Name="OpenAI.Codex" Publisher="CN=OpenAI OpCo, LLC" Version="26.707.3748.0" ProcessorArchitecture="x64" />
+  <Applications>
+    <Application Id="App" Executable="app/ChatGPT.exe" EntryPoint="Windows.FullTrustApplication" />
+  </Applications>
+</Package>"#,
+        )
+        .unwrap();
+        zip.start_file("app/ChatGPT.exe", opts).unwrap();
+        zip.write_all(b"fake entry exe").unwrap();
+        zip.start_file("app/Codex.exe", opts).unwrap();
+        zip.write_all(b"legacy compat exe").unwrap();
+        zip.start_file("app/resources/app.asar", opts).unwrap();
+        zip.write_all(b"fake asar").unwrap();
+        zip.finish().unwrap();
+    }
+
     #[test]
     fn installs_portable_payload_from_msix_layout() {
         let root = std::env::temp_dir().join(format!("codex-portable-test-{}", std::process::id()));
@@ -763,6 +826,69 @@ mod tests {
         assert!(install_root.join("resources/app.asar").exists());
         assert!(install_root.join("AppxManifest.xml").exists());
         assert_eq!(report.version, "26.602.3474.0");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn installs_rebranded_portable_payload_by_manifest_entry() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-portable-rebrand-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let msix = root.join("codex.msix");
+        let install_root = root.join("Codex");
+        write_fake_rebranded_msix(&msix);
+
+        let report = install_portable_from_msix_inner(&msix, &install_root, false, false).unwrap();
+        assert!(report.success);
+        // Payload root is the manifest entry's directory; both exes ride along.
+        assert!(install_root.join("ChatGPT.exe").exists());
+        assert!(install_root.join("Codex.exe").exists());
+        assert!(install_root.join("resources/app.asar").exists());
+        assert_eq!(report.version, "26.707.3748.0");
+        // The entry executable resolves to ChatGPT.exe, not the legacy binary.
+        assert_eq!(
+            installed_app_exe(&install_root),
+            Some(install_root.join("ChatGPT.exe"))
+        );
+        assert_eq!(
+            report.executable_path.as_deref(),
+            Some(install_root.join("ChatGPT.exe").to_string_lossy().as_ref())
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn installed_app_exe_prefers_manifest_then_known_names() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-portable-exe-probe-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        // No manifest, legacy layout → Codex.exe via known-name probe.
+        fs::write(root.join("Codex.exe"), b"legacy").unwrap();
+        assert_eq!(installed_app_exe(&root), Some(root.join("Codex.exe")));
+
+        // Both names present without a manifest → the newer entry name wins.
+        fs::write(root.join("ChatGPT.exe"), b"entry").unwrap();
+        assert_eq!(installed_app_exe(&root), Some(root.join("ChatGPT.exe")));
+
+        // A manifest declaring the legacy entry overrides the probe order.
+        fs::write(
+            root.join("AppxManifest.xml"),
+            br#"<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">
+  <Identity Name="OpenAI.Codex" Publisher="CN=X" Version="1.0.0.0" ProcessorArchitecture="x64" />
+  <Applications><Application Id="App" Executable="app\Codex.exe" /></Applications>
+</Package>"#,
+        )
+        .unwrap();
+        assert_eq!(installed_app_exe(&root), Some(root.join("Codex.exe")));
 
         let _ = fs::remove_dir_all(&root);
     }

@@ -244,20 +244,45 @@ fn detect_installed() -> Option<InstalledCodex> {
 pub fn detect_existing_install_at_path(path: &Path) -> Result<InstalledCodex, AppError> {
     if !path.exists() {
         return Err(AppError::Internal(
-            "所选位置不存在，请选择已安装的 Codex.app".to_string(),
+            "所选位置不存在，请选择已安装的 Codex 应用".to_string(),
         ));
     }
     if !path.is_dir() {
-        return Err(AppError::Internal("所选位置必须是 Codex.app".to_string()));
-    }
-    if path.file_name().and_then(|name| name.to_str()) != Some("Codex.app") {
         return Err(AppError::Internal(
-            "请选择 Codex.app，而不是它的上级文件夹".to_string(),
+            "所选位置必须是应用包（.app）".to_string(),
+        ));
+    }
+    // Identity, not name: after the upstream ChatGPT-brand merge the Codex
+    // bundle may be named ChatGPT.app, while /Applications/ChatGPT.app can just
+    // as well be ChatGPT Classic. Only CFBundleIdentifier can tell them apart.
+    if path.extension().and_then(|ext| ext.to_str()) != Some("app") {
+        return Err(AppError::Internal(
+            "请选择 Codex 应用本体（.app），而不是它的上级文件夹".to_string(),
         ));
     }
     let raw = path.to_string_lossy();
+    match sys::read_bundle_identifier(&raw).as_deref() {
+        Some(sys::CODEX_BUNDLE_ID) => {}
+        Some("com.openai.chat") => {
+            return Err(AppError::Internal(
+                "所选应用是 ChatGPT Classic（com.openai.chat），不是 Codex；本工具只管理 Codex"
+                    .to_string(),
+            ));
+        }
+        Some(other) => {
+            return Err(AppError::Internal(format!(
+                "所选应用不是 Codex（CFBundleIdentifier 为 {other}，期望 {}）",
+                sys::CODEX_BUNDLE_ID
+            )));
+        }
+        None => {
+            return Err(AppError::Internal(
+                "无法读取所选应用的 CFBundleIdentifier，请选择已安装的 Codex 应用".to_string(),
+            ));
+        }
+    }
     let (detected_path, build) = sys::installed_codex_build_at_path(&raw)
-        .ok_or_else(|| AppError::Internal("无法读取所选 Codex.app 的版本信息".to_string()))?;
+        .ok_or_else(|| AppError::Internal("无法读取所选 Codex 应用的版本信息".to_string()))?;
     Ok(installed_from_path_build(detected_path, build))
 }
 
@@ -642,6 +667,9 @@ fn unpack_app_zip(zip: &Path, work: &Path, out_app: &Path) -> Result<(), AppErro
         )));
     }
 
+    // The upstream archive may ship the bundle under either name (Codex.app
+    // pre-merge, ChatGPT.app post-merge); identity is checked, and the rename
+    // below normalizes whatever we accepted to the caller's canonical out_app.
     let found = require_single_codex_app(&extract)?;
     if out_app.exists() {
         let _ = std::fs::remove_dir_all(out_app);
@@ -663,7 +691,7 @@ fn require_single_codex_app(dir: &Path) -> Result<PathBuf, AppError> {
     }
     if apps.is_empty() {
         return Err(AppError::Engine(
-            "full-update zip did not contain Codex.app".to_string(),
+            "full-update zip did not contain an .app bundle".to_string(),
         ));
     }
     if apps.len() > 1 {
@@ -672,16 +700,17 @@ fn require_single_codex_app(dir: &Path) -> Result<PathBuf, AppError> {
         ));
     }
     let app = apps.remove(0);
-    if app
-        .file_name()
-        .map(|name| name == "Codex.app")
-        .unwrap_or(false)
-    {
-        Ok(app)
-    } else {
-        Err(AppError::Engine(
-            "full-update zip contained a non-Codex .app bundle".to_string(),
-        ))
+    // Accept any top-level bundle name but require the Codex product identity —
+    // the codesign gate re-asserts this against the sealed plist right after.
+    match sys::read_bundle_identifier(&app.to_string_lossy()).as_deref() {
+        Some(sys::CODEX_BUNDLE_ID) => Ok(app),
+        Some(other) => Err(AppError::Engine(format!(
+            "full-update zip contained a non-Codex .app bundle (CFBundleIdentifier {other}, expected {})",
+            sys::CODEX_BUNDLE_ID
+        ))),
+        None => Err(AppError::Engine(
+            "full-update zip's .app bundle had no readable CFBundleIdentifier".to_string(),
+        )),
     }
 }
 
@@ -1050,6 +1079,12 @@ pub struct MacInstallStatus {
     pub installed: Option<InstalledCodex>,
     /// "managed" | "external" | "none"
     pub status: String,
+    /// All Codex-lineage installs when more than one exists (e.g. an old
+    /// `Codex.app` plus a hand-dragged post-rebrand `ChatGPT.app`). The UI
+    /// should surface this and have the user adopt one explicitly; destructive
+    /// operations stay safe regardless (they re-verify path + build + identity).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ambiguous_paths: Option<Vec<String>>,
 }
 
 /// Classify the installed Codex against our provenance store.
@@ -1064,7 +1099,20 @@ pub fn mac_install_status() -> MacInstallStatus {
         Some(_) => "external",
     }
     .to_string();
-    MacInstallStatus { installed, status }
+    // Report ambient ambiguity (multiple lineage installs) unless provenance
+    // already pins which install the user manages.
+    let ambiguous_paths = match &installed {
+        Some(codex) if !store.is_managed_build(&codex.path, codex.build) => {
+            let candidates = sys::installed_codex_candidates();
+            (candidates.len() > 1).then(|| candidates.into_iter().map(|(path, _)| path).collect())
+        }
+        _ => None,
+    };
+    MacInstallStatus {
+        installed,
+        status,
+        ambiguous_paths,
+    }
 }
 
 /// Adopt the detected install — record provenance after explicit user consent.
@@ -1490,17 +1538,38 @@ mod tests {
         assert!(status.success(), "ditto {args:?} failed");
     }
 
+    fn write_bundle_plist(app: &Path, bundle_id: &str) {
+        std::fs::create_dir_all(app.join("Contents")).unwrap();
+        std::fs::write(
+            app.join("Contents/Info.plist"),
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>{bundle_id}</string>
+</dict>
+</plist>
+"#
+            ),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn unpack_app_zip_surfaces_bundle() {
         let root = std::env::temp_dir().join(format!("codex-unpack-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
 
-        // A synthetic Codex.app, zipped the way Sparkle ships a macOS full update
-        // (`ditto -c -k --keepParent` → the `.app` is the top-level entry).
-        let src_app = root.join("Codex.app");
-        std::fs::create_dir_all(src_app.join("Contents")).unwrap();
-        std::fs::write(src_app.join("Contents/marker"), "3575").unwrap();
+        // A synthetic post-rebrand bundle (named ChatGPT.app, Codex identity),
+        // zipped the way Sparkle ships a macOS full update (`ditto -c -k
+        // --keepParent` → the `.app` is the top-level entry). unpack must accept
+        // it by identity and normalize it to the caller's out_app name.
+        let src_app = root.join("ChatGPT.app");
+        write_bundle_plist(&src_app, sys::CODEX_BUNDLE_ID);
+        std::fs::write(src_app.join("Contents/marker"), "5059").unwrap();
         let zip = root.join("Codex.zip");
         ditto(&[
             "-c",
@@ -1518,7 +1587,7 @@ mod tests {
         assert!(out_app.join("Contents/marker").exists(), "bundle surfaced");
         assert_eq!(
             std::fs::read_to_string(out_app.join("Contents/marker")).unwrap(),
-            "3575"
+            "5059"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1532,6 +1601,26 @@ mod tests {
 
         let err = require_single_codex_app(&root).unwrap_err();
         assert!(err.to_string().contains("multiple .app"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn require_single_codex_app_gates_on_bundle_identity() {
+        let root = std::env::temp_dir().join(format!("codex-identity-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        // ChatGPT Classic in the archive: right name shape, wrong product.
+        let classic = root.join("classic");
+        write_bundle_plist(&classic.join("ChatGPT.app"), "com.openai.chat");
+        let err = require_single_codex_app(&classic).unwrap_err();
+        assert!(err.to_string().contains("com.openai.chat"));
+
+        // Rebranded Codex: accepted regardless of the bundle's file name.
+        let rebranded = root.join("rebranded");
+        write_bundle_plist(&rebranded.join("ChatGPT.app"), sys::CODEX_BUNDLE_ID);
+        let found = require_single_codex_app(&rebranded).unwrap();
+        assert!(found.ends_with("ChatGPT.app"));
 
         let _ = std::fs::remove_dir_all(&root);
     }

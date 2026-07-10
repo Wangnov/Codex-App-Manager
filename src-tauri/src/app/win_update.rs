@@ -1204,7 +1204,10 @@ pub fn detect_existing_windows_install_at_path(
         ));
     }
     let installed = detect_portable_install(path).ok_or_else(|| {
-        AppError::Internal("未在所选位置找到 Codex.exe，请选择 Codex 安装文件夹".to_string())
+        AppError::Internal(
+            "未在所选位置找到应用入口（ChatGPT.exe / Codex.exe），请选择 Codex 安装文件夹"
+                .to_string(),
+        )
     })?;
     if installed.version.trim().is_empty() || installed.version == "0.0.0.0" {
         return Err(AppError::Internal(

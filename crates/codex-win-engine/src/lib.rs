@@ -50,7 +50,7 @@ pub use msix::{
 pub use network::NetworkConfig;
 pub use plan::{plan_update, WinInstallRoute, WindowsUpdatePlan};
 pub use portable::{
-    close_codex_gracefully, close_codex_gracefully_for_root, install_portable_from_msix,
+    close_codex_gracefully_for_root, install_portable_from_msix, installed_app_exe,
     purge_codex_user_data, uninstall_portable, PortableInstallReport, PortableUninstallReport,
 };
 pub use sys::{
