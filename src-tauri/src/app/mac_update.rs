@@ -941,6 +941,27 @@ pub fn perform_macos_update_with_network(
         // (so its cancel flag never arms) yet reconstruct/gate still ran.
         check_update_abort()?;
 
+        // Re-verify the TARGET right before the destructive tail: the early
+        // consent check ran before download, and the bundle at this path may
+        // have been swapped in the meantime — e.g. replaced with a ChatGPT
+        // Classic, which the identity gate inside installed_codex_build_at_path
+        // rejects. Quitting/swapping whatever sits here now would destroy
+        // something the user never confirmed.
+        match sys::installed_codex_build_at_path(&installed.path) {
+            Some((_, build)) if build == expected.from_build => {}
+            Some((_, build)) => {
+                return Err(AppError::StaleExpectation(format!(
+                    "安装目标在确认后发生了变化（当前 build {build}，确认时为 {}）：请重新检查后再试",
+                    expected.from_build
+                )));
+            }
+            None => {
+                return Err(AppError::StaleExpectation(
+                    "安装目标在确认后被移除或替换为非 Codex 应用：请重新检查后再试".to_string(),
+                ));
+            }
+        }
+
         // 4b) graceful quit (never force-kill), then 5) atomic same-volume swap. If
         //     the swap fails after the quit, swap_in_place has restored the old
         //     bundle in place — bring the user's app back before surfacing the error.

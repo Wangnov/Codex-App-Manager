@@ -143,16 +143,14 @@ fn find_exe_named(root: &Path, name: &str) -> Result<Option<PathBuf>, EngineErro
 /// `<Application>` declaration at all.
 fn find_app_exe(root: &Path, manifest_xml: &str) -> Result<PathBuf, EngineError> {
     if let Some(declared) = crate::msix::parse_appx_application_executable(manifest_xml) {
-        // Manifest paths use either separator; resolve component-wise.
+        // Manifest paths use either separator; resolve component-wise. Only the
+        // exact declared path counts — matching a same-named file elsewhere in
+        // the package would select (and copy the parent directory of) a binary
+        // that is not the entry.
         let relative: PathBuf = declared.replace('\\', "/").split('/').collect();
         let direct = root.join(&relative);
         if direct.is_file() {
             return Ok(direct);
-        }
-        if let Some(name) = relative.file_name().and_then(|s| s.to_str()) {
-            if let Some(found) = find_exe_named(root, name)? {
-                return Ok(found);
-            }
         }
         return Err(EngineError::Msix(format!(
             "MSIX manifest declares entry executable '{declared}' but it is missing from the payload"

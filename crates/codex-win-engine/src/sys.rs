@@ -893,27 +893,58 @@ pub fn detect_portable_install(portable_root: &Path) -> Option<InstalledWindowsC
     // both pre- and post-rebrand portable payloads are recognized.
     let exe = crate::portable::installed_app_exe(portable_root)?;
     // Identity gate: an entry executable alone is not product identity — a
-    // ChatGPT Classic payload also ships a root-level ChatGPT.exe. Require the
-    // payload manifest (written by our installer) to declare exactly the Codex
-    // package identity; anything else is not a Codex install and must never be
-    // adopted, updated over, or replaced.
-    let identity = std::fs::read_to_string(portable_root.join("AppxManifest.xml"))
-        .ok()
-        .and_then(|xml| parse_appx_manifest_xml(&xml).ok())?;
-    if identity.name != crate::OPENAI_PACKAGE_IDENTITY {
-        log::debug!(
-            "portable root at {} declares identity {} (expected {}); not a Codex install",
-            portable_root.display(),
-            identity.name,
-            crate::OPENAI_PACKAGE_IDENTITY
-        );
-        return None;
-    }
+    // ChatGPT Classic payload also ships a root-level ChatGPT.exe.
+    //   - With a manifest present (our installer always writes one), it must
+    //     declare exactly the Codex package identity; a foreign or unparseable
+    //     manifest is never a Codex install.
+    //   - Without a manifest (a user-unpacked `app/` dir or a legacy adopted
+    //     root), fall back to Authenticode: the entry exe must carry a trusted
+    //     OpenAI signature. Weaker than the manifest gate but keeps the
+    //     long-supported self-extracted layout adoptable.
+    let identity = match std::fs::read_to_string(portable_root.join("AppxManifest.xml")) {
+        Ok(xml) => match parse_appx_manifest_xml(&xml) {
+            Ok(identity) if identity.name == crate::OPENAI_PACKAGE_IDENTITY => Some(identity),
+            Ok(identity) => {
+                log::debug!(
+                    "portable root at {} declares identity {} (expected {}); not a Codex install",
+                    portable_root.display(),
+                    identity.name,
+                    crate::OPENAI_PACKAGE_IDENTITY
+                );
+                return None;
+            }
+            Err(err) => {
+                log::debug!(
+                    "portable root at {} has an unparseable AppxManifest.xml ({err}); not a Codex install",
+                    portable_root.display()
+                );
+                return None;
+            }
+        },
+        Err(_) => {
+            let signed_by_openai = crate::authenticode::verify_openai_authenticode(&exe)
+                .map(|report| report.is_valid_openai())
+                .unwrap_or(false);
+            if !signed_by_openai {
+                log::debug!(
+                    "portable root at {} has no manifest and its entry exe lacks a trusted OpenAI signature; not a Codex install",
+                    portable_root.display()
+                );
+                return None;
+            }
+            None
+        }
+    };
 
     let installed = InstalledWindowsCodex {
         path: portable_root.to_string_lossy().into_owned(),
-        version: identity.version.clone(),
-        arch: Some(identity.processor_architecture.clone()),
+        version: identity
+            .as_ref()
+            .map(|identity| identity.version.clone())
+            .unwrap_or_else(|| "0.0.0.0".to_string()),
+        arch: identity
+            .as_ref()
+            .map(|identity| identity.processor_architecture.clone()),
         source: "portable".to_string(),
         package_family_name: None,
         installed_at: path_mtime_secs(&exe.to_string_lossy()),
@@ -1370,8 +1401,10 @@ mod portable_identity_tests {
 
     #[test]
     fn rejects_portable_without_manifest_identity() {
-        // An entry executable alone is not identity; without a parseable
-        // manifest the directory is not recognized as a Codex install.
+        // Without a manifest the gate falls back to Authenticode on the entry
+        // exe; this fake exe carries no trusted OpenAI signature, so the
+        // directory is not recognized as a Codex install. (A real user-unpacked
+        // official payload passes via its genuine signature on Windows.)
         let root = write_root("no-manifest", "Codex.exe", None);
         assert!(detect_portable_install(&root).is_none());
         cleanup(&root);
