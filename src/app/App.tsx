@@ -4,6 +4,7 @@ import { I18nProvider } from "./i18n";
 import { ThemeProvider } from "./theme";
 import { withViewTransition } from "./viewTransition";
 import { QuitConfirm } from "./components";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { Home } from "./views/Home";
 import { Settings } from "./views/Settings";
 import { About } from "./views/About";
@@ -88,16 +89,21 @@ function Shell() {
           <CodexConfig onBack={() => setView("settings")} />
         </div>
       ) : null}
-      <QuitConfirm />
     </>
   );
 }
 
 export function App() {
+  // QuitConfirm sits *outside* ErrorBoundary so a render crash that replaces
+  // Shell still leaves a live listener for app://confirm-quit / quit-blocked.
+  // Theme + i18n wrap both so the confirm sheet keeps working on the crash path.
   return (
     <ThemeProvider>
       <I18nProvider>
-        <Shell />
+        <ErrorBoundary>
+          <Shell />
+        </ErrorBoundary>
+        <QuitConfirm />
       </I18nProvider>
     </ThemeProvider>
   );

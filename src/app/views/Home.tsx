@@ -30,6 +30,7 @@ import {
 import { ProgressScreen, type PausedDownload } from "./ProgressScreen";
 import { useDownloadProgress } from "./useDownloadProgress";
 import { useFocusRecheck, installIdentity } from "./useFocusRecheck";
+import { useOperationReattach } from "./useOperationReattach";
 
 type Kind = "loading" | "error" | "none" | "idle" | "update" | "external" | "uptodate";
 
@@ -93,6 +94,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     downloadStopBusy,
     downloadStopRef,
     startDlListen,
+    applySnapshotProgress,
     requestDownloadStop,
     resetStop,
   } = useDownloadProgress({
@@ -145,6 +147,14 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       const s = await managerApi.getSettings().catch(() => DEFAULT_SETTINGS);
       setSettings(s);
       void refreshStatus();
+      // Skip the startup check when an install/update is already mid-flight —
+      // reattach owns the screen until that lease ends.
+      const snap = await Promise.resolve()
+        .then(() => managerApi.getOperationSnapshot())
+        .catch(() => null);
+      if (snap && (snap.kind === "install" || snap.kind === "update")) {
+        return;
+      }
       if (s.checkOnStartup) {
         void check();
       }
@@ -173,6 +183,23 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   useEffect(() => {
     checkRef.current = check;
   }, [check]);
+
+  // After renderer reload: query OperationSnapshot, rebuild progress listeners
+  // by operation id, and poll until the backend lease ends.
+  useOperationReattach({
+    startDlListen,
+    applySnapshotProgress,
+    resetStop,
+    setBusy: (next) => setBusy(next),
+    setPaused,
+    onOperationEnded: () => {
+      void checkRef.current();
+    },
+    isLocallyBusy: () => {
+      const b = busyRef.current;
+      return b === "perform" || b === "install";
+    },
+  });
 
   useEffect(() => {
     if (!settings.periodicCheck) return;

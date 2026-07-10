@@ -29,6 +29,7 @@ import {
 import { ProgressScreen, type PausedDownload } from "./ProgressScreen";
 import { useDownloadProgress } from "./useDownloadProgress";
 import { useFocusRecheck, installIdentity } from "./useFocusRecheck";
+import { useOperationReattach } from "./useOperationReattach";
 
 type Kind = "loading" | "error" | "none" | "idle" | "update" | "external" | "uptodate";
 
@@ -87,6 +88,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     downloadStopBusy,
     downloadStopRef,
     startDlListen,
+    applySnapshotProgress,
     requestDownloadStop,
     resetStop,
   } = useDownloadProgress({
@@ -131,6 +133,14 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       setSettings(s);
       void managerApi.winDefaultInstallRoot().then(setDefaultInstallRoot).catch(() => undefined);
       void refreshStatus();
+      // Skip the startup check when an install/update is already mid-flight —
+      // reattach owns the screen until that lease ends.
+      const snap = await Promise.resolve()
+        .then(() => managerApi.getOperationSnapshot())
+        .catch(() => null);
+      if (snap && (snap.kind === "install" || snap.kind === "update")) {
+        return;
+      }
       if (s.checkOnStartup) {
         void check();
       }
@@ -159,6 +169,24 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   useEffect(() => {
     checkRef.current = check;
   }, [check]);
+
+  // After renderer reload: query OperationSnapshot, rebuild progress listeners
+  // by operation id, and poll until the backend lease ends.
+  useOperationReattach({
+    startDlListen,
+    applySnapshotProgress,
+    resetStop,
+    setBusy: (next) => setBusy(next),
+    setPaused,
+    onOperationEnded: () => {
+      void checkRef.current();
+      void refreshStatus();
+    },
+    isLocallyBusy: () => {
+      const b = busyRef.current;
+      return b === "perform" || b === "install";
+    },
+  });
 
   // Window focus → silently re-detect the local install and re-check if the
   // install identity (version OR path) drifted out-of-band. Parity with the mac

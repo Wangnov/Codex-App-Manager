@@ -85,11 +85,18 @@ const ZH = {
   "error.generic": "操作未完成。请稍后重试；若持续失败，可复制诊断信息反馈。",
   "crash.title": "出了点问题",
   "crash.body": "管理器遇到意外错误。此界面不会改动你已安装的 Codex。",
+  "crash.bodyActive":
+    "管理器遇到意外错误。后台仍有安装/更新在进行 — 请点「重新加载」重新连接，或等待完成。",
+  "crash.bodyCritical":
+    "管理器在安装/更新的关键步骤出错。请勿强退；点「重新加载」重新连接并等待完成。",
+  "crash.bodyPaused":
+    "管理器遇到意外错误。后台有已暂停的下载 — 请点「重新加载」重新连接后继续或取消。",
   "crash.reload": "重新加载",
   "crash.copy": "复制诊断信息",
   "crash.copied": "已复制诊断信息",
   "crash.details": "查看详情",
   "crash.hideDetails": "收起详情",
+  "crash.quit": "退出",
   "home.source": "更新源:{source}",
   "home.stale.rechecked": "安装状态已变化,已重新检查——请再次确认。",
 
@@ -356,11 +363,18 @@ const EN: Record<Key, string> = {
   "error.generic": "Something didn’t finish. Try again; if it keeps failing, copy diagnostics and send feedback.",
   "crash.title": "Something went wrong",
   "crash.body": "The manager hit an unexpected error. Your Codex install was not changed by this screen.",
+  "crash.bodyActive":
+    "The manager hit an unexpected error. A Codex install/update is still running in the background — use Reload to reconnect, or wait for it to finish.",
+  "crash.bodyCritical":
+    "The manager hit an unexpected error while a Codex install/update is at a critical step. Do not force-quit; use Reload to reconnect and wait for it to finish.",
+  "crash.bodyPaused":
+    "The manager hit an unexpected error. A download is paused in the background — use Reload to reconnect and resume or cancel.",
   "crash.reload": "Reload",
   "crash.copy": "Copy diagnostics",
   "crash.copied": "Diagnostics copied",
   "crash.details": "Show details",
   "crash.hideDetails": "Hide details",
+  "crash.quit": "Quit",
   "home.source": "Source: {source}",
   "home.stale.rechecked": "The installed state changed — re-checked; please confirm again.",
 
@@ -624,11 +638,18 @@ const FR: Record<Key, string> = {
   "error.generic": "L'opération ne s'est pas terminée. Réessayez ; en cas d'échec répété, copiez le diagnostic et envoyez un retour.",
   "crash.title": "Une erreur s'est produite",
   "crash.body": "Le gestionnaire a rencontré une erreur inattendue. Cet écran n'a pas modifié votre installation Codex.",
+  "crash.bodyActive":
+    "Le gestionnaire a rencontré une erreur inattendue. Une installation/mise à jour Codex est encore en cours — utilisez Recharger pour vous reconnecter, ou attendez la fin.",
+  "crash.bodyCritical":
+    "Le gestionnaire a rencontré une erreur pendant une étape critique d'installation/mise à jour. Ne forcez pas la fermeture ; utilisez Recharger et attendez la fin.",
+  "crash.bodyPaused":
+    "Le gestionnaire a rencontré une erreur inattendue. Un téléchargement est en pause — utilisez Recharger pour vous reconnecter, puis reprendre ou annuler.",
   "crash.reload": "Recharger",
   "crash.copy": "Copier le diagnostic",
   "crash.copied": "Diagnostic copié",
   "crash.details": "Afficher les détails",
   "crash.hideDetails": "Masquer les détails",
+  "crash.quit": "Quitter",
   "home.source": "Source : {source}",
   "home.stale.rechecked": "L'état installé a changé — nouvelle vérification effectuée ; veuillez confirmer à nouveau.",
 
@@ -893,11 +914,18 @@ const ZH_TW: Record<Key, string> = {
   "error.generic": "操作未完成。請稍後重試；若持續失敗，可複製診斷資訊回報。",
   "crash.title": "出了點問題",
   "crash.body": "管理器遇到意外錯誤。此畫面不會改動你已安裝的 Codex。",
+  "crash.bodyActive":
+    "管理器遇到意外錯誤。後台仍有安裝/更新在進行 — 請點「重新載入」重新連線，或等待完成。",
+  "crash.bodyCritical":
+    "管理器在安裝/更新的關鍵步驟出錯。請勿強制結束；點「重新載入」重新連線並等待完成。",
+  "crash.bodyPaused":
+    "管理器遇到意外錯誤。後台有已暫停的下載 — 請點「重新載入」重新連線後繼續或取消。",
   "crash.reload": "重新載入",
   "crash.copy": "複製診斷資訊",
   "crash.copied": "已複製診斷資訊",
   "crash.details": "查看詳情",
   "crash.hideDetails": "收起詳情",
+  "crash.quit": "結束",
   "home.source": "來源：{source}",
   "home.stale.rechecked": "安裝狀態已變更，已重新檢查——請再次確認。",
 
@@ -1172,11 +1200,18 @@ const DE: Record<Key, string> = {
   "error.generic": "Der Vorgang wurde nicht abgeschlossen. Erneut versuchen; bei wiederholtem Fehler Diagnose kopieren und melden.",
   "crash.title": "Etwas ist schiefgelaufen",
   "crash.body": "Der Manager ist auf einen unerwarteten Fehler gestoßen. Deine Codex-Installation wurde durch diesen Bildschirm nicht geändert.",
+  "crash.bodyActive":
+    "Der Manager ist auf einen unerwarteten Fehler gestoßen. Eine Codex-Installation/Aktualisierung läuft noch im Hintergrund — mit Neu laden neu verbinden oder abwarten.",
+  "crash.bodyCritical":
+    "Der Manager ist bei einem kritischen Installations-/Aktualisierungsschritt fehlgeschlagen. Nicht erzwingen beenden; mit Neu laden neu verbinden und abwarten.",
+  "crash.bodyPaused":
+    "Der Manager ist auf einen unerwarteten Fehler gestoßen. Ein Download ist pausiert — mit Neu laden neu verbinden und fortsetzen oder abbrechen.",
   "crash.reload": "Neu laden",
   "crash.copy": "Diagnose kopieren",
   "crash.copied": "Diagnose kopiert",
   "crash.details": "Details anzeigen",
   "crash.hideDetails": "Details ausblenden",
+  "crash.quit": "Beenden",
   "home.source": "Quelle: {source}",
   "home.stale.rechecked": "Der Installationszustand hat sich geändert — erneut geprüft; bitte noch einmal bestätigen.",
 
@@ -1451,11 +1486,18 @@ const KO: Record<Key, string> = {
   "error.generic": "작업이 완료되지 않았습니다. 다시 시도하고, 계속 실패하면 진단 정보를 복사해 피드백을 보내 주세요.",
   "crash.title": "문제가 발생했습니다",
   "crash.body": "관리자에서 예기치 않은 오류가 발생했습니다. 이 화면은 설치된 Codex를 변경하지 않습니다.",
+  "crash.bodyActive":
+    "관리자에서 예기치 않은 오류가 발생했습니다. 백그라운드에서 Codex 설치/업데이트가 계속 실행 중입니다 — 「다시 로드」로 다시 연결하거나 완료될 때까지 기다리세요.",
+  "crash.bodyCritical":
+    "관리자가 설치/업데이트의 중요한 단계에서 오류가 났습니다. 강제 종료하지 말고 「다시 로드」로 다시 연결한 뒤 완료될 때까지 기다리세요.",
+  "crash.bodyPaused":
+    "관리자에서 예기치 않은 오류가 발생했습니다. 백그라운드 다운로드가 일시 중지되었습니다 — 「다시 로드」로 다시 연결한 뒤 재개하거나 취소하세요.",
   "crash.reload": "다시 로드",
   "crash.copy": "진단 정보 복사",
   "crash.copied": "진단 정보를 복사했습니다",
   "crash.details": "세부 정보 보기",
   "crash.hideDetails": "세부 정보 숨기기",
+  "crash.quit": "종료",
   "home.source": "소스: {source}",
   "home.stale.rechecked": "설치 상태가 변경되어 다시 확인했습니다 — 다시 한번 확인해 주세요.",
 
@@ -1726,11 +1768,18 @@ const JA: Record<Key, string> = {
   "error.generic": "操作が完了しませんでした。再試行し、続く場合は診断情報をコピーしてフィードバックしてください。",
   "crash.title": "問題が発生しました",
   "crash.body": "マネージャーで予期しないエラーが発生しました。この画面はインストール済みの Codex を変更しません。",
+  "crash.bodyActive":
+    "マネージャーで予期しないエラーが発生しました。バックグラウンドで Codex のインストール/更新が続いています — 「再読み込み」で再接続するか、完了を待ってください。",
+  "crash.bodyCritical":
+    "マネージャーがインストール/更新の重要ステップでエラーになりました。強制終了せず、「再読み込み」で再接続して完了を待ってください。",
+  "crash.bodyPaused":
+    "マネージャーで予期しないエラーが発生しました。ダウンロードが一時停止中です — 「再読み込み」で再接続して再開またはキャンセルしてください。",
   "crash.reload": "再読み込み",
   "crash.copy": "診断情報をコピー",
   "crash.copied": "診断情報をコピーしました",
   "crash.details": "詳細を表示",
   "crash.hideDetails": "詳細を隠す",
+  "crash.quit": "終了",
   "home.source": "ソース: {source}",
   "home.stale.rechecked": "インストール状態が変わったため再チェックしました — もう一度ご確認ください。",
   "prov.managed": "管理済み",
@@ -1985,11 +2034,18 @@ const RU: Record<Key, string> = {
   "error.generic": "Операция не завершилась. Повторите попытку; если ошибка повторяется, скопируйте диагностику и отправьте отзыв.",
   "crash.title": "Что-то пошло не так",
   "crash.body": "В менеджере произошла непредвиденная ошибка. Этот экран не изменял установленный Codex.",
+  "crash.bodyActive":
+    "В менеджере произошла непредвиденная ошибка. Установка/обновление Codex всё ещё идёт в фоне — нажмите «Перезагрузить», чтобы переподключиться, или дождитесь завершения.",
+  "crash.bodyCritical":
+    "В менеджере произошла ошибка на критическом шаге установки/обновления. Не завершайте принудительно; нажмите «Перезагрузить» и дождитесь завершения.",
+  "crash.bodyPaused":
+    "В менеджере произошла непредвиденная ошибка. Загрузка на паузе — нажмите «Перезагрузить», чтобы переподключиться и продолжить или отменить.",
   "crash.reload": "Перезагрузить",
   "crash.copy": "Копировать диагностику",
   "crash.copied": "Диагностика скопирована",
   "crash.details": "Показать подробности",
   "crash.hideDetails": "Скрыть подробности",
+  "crash.quit": "Выйти",
   "home.source": "Источник: {source}",
   "home.stale.rechecked": "Состояние установки изменилось — проверка выполнена заново; подтвердите ещё раз.",
   "prov.managed": "Управляется",
@@ -2244,11 +2300,18 @@ const AR: Record<Key, string> = {
   "error.generic": "لم تكتمل العملية. حاول مرة أخرى؛ وإن استمر الفشل فانسخ التشخيص وأرسل ملاحظاتك.",
   "crash.title": "حدث خطأ ما",
   "crash.body": "واجه المدير خطأ غير متوقع. هذه الشاشة لم تغيّر تثبيت Codex لديك.",
+  "crash.bodyActive":
+    "واجه المدير خطأ غير متوقع. ما زال تثبيت/تحديث Codex يعمل في الخلفية — استخدم «إعادة التحميل» لإعادة الاتصال، أو انتظر حتى ينتهي.",
+  "crash.bodyCritical":
+    "واجه المدير خطأ أثناء خطوة حرجة من التثبيت/التحديث. لا تُنهَه قسرًا؛ استخدم «إعادة التحميل» وأعد الاتصال وانتظر حتى ينتهي.",
+  "crash.bodyPaused":
+    "واجه المدير خطأ غير متوقع. التنزيل متوقف مؤقتًا — استخدم «إعادة التحميل» لإعادة الاتصال ثم الاستئناف أو الإلغاء.",
   "crash.reload": "إعادة التحميل",
   "crash.copy": "نسخ التشخيص",
   "crash.copied": "تم نسخ التشخيص",
   "crash.details": "عرض التفاصيل",
   "crash.hideDetails": "إخفاء التفاصيل",
+  "crash.quit": "خروج",
   "home.source": "المصدر: {source}",
   "home.stale.rechecked": "تغيّرت حالة التثبيت — أُعيد الفحص؛ يُرجى التأكيد مرة أخرى.",
   "prov.managed": "مُدار",
@@ -2503,11 +2566,18 @@ const ES: Record<Key, string> = {
   "error.generic": "La operación no terminó. Inténtalo de nuevo; si sigue fallando, copia el diagnóstico y envía comentarios.",
   "crash.title": "Algo salió mal",
   "crash.body": "El administrador encontró un error inesperado. Esta pantalla no modificó tu instalación de Codex.",
+  "crash.bodyActive":
+    "El administrador encontró un error inesperado. Una instalación/actualización de Codex sigue en segundo plano — usa Recargar para reconectar o espera a que termine.",
+  "crash.bodyCritical":
+    "El administrador falló en un paso crítico de instalación/actualización. No fuerces el cierre; usa Recargar para reconectar y espera a que termine.",
+  "crash.bodyPaused":
+    "El administrador encontró un error inesperado. Hay una descarga en pausa — usa Recargar para reconectar y reanudar o cancelar.",
   "crash.reload": "Recargar",
   "crash.copy": "Copiar diagnóstico",
   "crash.copied": "Diagnóstico copiado",
   "crash.details": "Mostrar detalles",
   "crash.hideDetails": "Ocultar detalles",
+  "crash.quit": "Salir",
   "home.source": "Fuente: {source}",
   "home.stale.rechecked": "El estado de instalación cambió — se volvió a comprobar; confírmalo de nuevo.",
   "prov.managed": "Gestionado",
@@ -2762,11 +2832,18 @@ const PT_BR: Record<Key, string> = {
   "error.generic": "A operação não foi concluída. Tente novamente; se continuar falhando, copie o diagnóstico e envie feedback.",
   "crash.title": "Algo deu errado",
   "crash.body": "O gerenciador encontrou um erro inesperado. Esta tela não alterou sua instalação do Codex.",
+  "crash.bodyActive":
+    "O gerenciador encontrou um erro inesperado. Uma instalação/atualização do Codex ainda está em andamento — use Recarregar para reconectar ou aguarde terminar.",
+  "crash.bodyCritical":
+    "O gerenciador falhou em uma etapa crítica de instalação/atualização. Não force o encerramento; use Recarregar para reconectar e aguarde terminar.",
+  "crash.bodyPaused":
+    "O gerenciador encontrou um erro inesperado. Um download está pausado — use Recarregar para reconectar e retomar ou cancelar.",
   "crash.reload": "Recarregar",
   "crash.copy": "Copiar diagnóstico",
   "crash.copied": "Diagnóstico copiado",
   "crash.details": "Mostrar detalhes",
   "crash.hideDetails": "Ocultar detalhes",
+  "crash.quit": "Sair",
   "home.source": "Fonte: {source}",
   "home.stale.rechecked": "O estado da instalação mudou — verificado novamente; confirme mais uma vez.",
   "prov.managed": "Gerenciado",

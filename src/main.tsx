@@ -3,7 +3,6 @@ import ReactDOM from "react-dom/client";
 
 import { App } from "./app/App";
 import { installContextMenuPolicy } from "./app/contextMenuPolicy";
-import { ErrorBoundary } from "./app/ErrorBoundary";
 import { installGlobalErrorHandlers } from "./app/globalErrors";
 import { currentPlatform } from "./app/platform";
 import { resolveInitialTheme } from "./app/theme";
@@ -23,9 +22,7 @@ installGlobalErrorHandlers();
 installContextMenuPolicy();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <ErrorBoundary>
-    <React.StrictMode>
-      <App />
-    </React.StrictMode>
-  </ErrorBoundary>,
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
 );

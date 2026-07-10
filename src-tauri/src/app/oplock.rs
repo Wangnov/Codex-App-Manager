@@ -60,6 +60,33 @@ struct Inner {
     lock_file: Result<File, String>,
 }
 
+/// Byte-transfer progress mirrored into the active lease so a reloaded
+/// frontend can restore the progress screen without waiting for the next event.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationProgress {
+    pub downloaded: u64,
+    pub total: u64,
+    pub source: String,
+}
+
+/// Public view of the currently held same-process operation, if any.
+/// Queried on frontend mount so a renderer reload can reattach to in-flight work.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationSnapshot {
+    /// Operation token id (same string the destructive commands use).
+    pub id: String,
+    pub kind: OperationKind,
+    pub phase: OperationPhase,
+    pub progress: Option<OperationProgress>,
+    pub paused: bool,
+    /// Whether cancel is a meaningful UI action right now.
+    pub cancellable: bool,
+    /// Whether the phase may be interrupted (pause/cancel/quit-after-cancel).
+    pub interruptible: bool,
+}
+
 struct ActiveOp {
     token: String,
     kind: OperationKind,
@@ -74,6 +101,10 @@ struct ActiveOp {
     holders: u32,
     /// Progress through the op lifecycle; drives quit policy.
     phase: OperationPhase,
+    /// Last reported download progress (if any).
+    progress: Option<OperationProgress>,
+    /// True after a pause was requested while the lease is still held.
+    paused: bool,
 }
 
 #[must_use = "持有 guard 才代表持有操作锁；提前 drop 会立即释放锁"]
@@ -328,6 +359,72 @@ impl OperationManager {
         QuitPolicy::evaluate(force_quit, confirm_close, busy, phase, kind)
     }
 
+    /// Snapshot of the local active operation, for frontend reattach after
+    /// renderer reload / remount. `None` when free (or only a cross-process lock).
+    pub fn snapshot(&self) -> Option<OperationSnapshot> {
+        let Ok(inner) = self.inner.lock() else {
+            return None;
+        };
+        inner.active.as_ref().map(|active| {
+            let interruptible = active.phase.interruptible();
+            // Cancel remains useful through preparing/downloading/verifying/applying
+            // (and while paused mid-transfer). Point-of-no-return phases refuse it.
+            let cancellable = interruptible;
+            OperationSnapshot {
+                id: active.token.clone(),
+                kind: active.kind,
+                phase: active.phase,
+                progress: active.progress.clone(),
+                paused: active.paused,
+                cancellable,
+                interruptible,
+            }
+        })
+    }
+
+    /// Record the latest download progress for a validated token.
+    pub fn set_progress(
+        &self,
+        token: &OperationToken,
+        progress: OperationProgress,
+    ) -> Result<(), OperationError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| OperationError::Lock("operation mutex poisoned".to_string()))?;
+        let Some(active) = inner.active.as_mut() else {
+            return Err(OperationError::InvalidToken);
+        };
+        if active.token != token.0 {
+            return Err(OperationError::InvalidToken);
+        }
+        // Bytes flowing again means we're no longer in a paused UI state.
+        active.paused = false;
+        active.progress = Some(progress);
+        Ok(())
+    }
+
+    /// Mark the active op as paused (or clear the flag). Used when the UI
+    /// requests pause so a reloaded frontend can restore the paused screen.
+    pub fn set_paused(
+        &self,
+        token: &OperationToken,
+        paused: bool,
+    ) -> Result<(), OperationError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| OperationError::Lock("operation mutex poisoned".to_string()))?;
+        let Some(active) = inner.active.as_mut() else {
+            return Err(OperationError::InvalidToken);
+        };
+        if active.token != token.0 {
+            return Err(OperationError::InvalidToken);
+        }
+        active.paused = paused;
+        Ok(())
+    }
+
     fn begin_inner(
         &self,
         kind: OperationKind,
@@ -373,6 +470,8 @@ impl OperationManager {
             claimed,
             holders: 0,
             phase: OperationPhase::Preparing,
+            progress: None,
+            paused: false,
         });
         log::info!(
             "acquired operation lock kind={} token_prefix={} detached={detached} claimed={claimed}",
@@ -726,6 +825,75 @@ mod tests {
 
         manager.end(token).unwrap();
         assert_eq!(manager.phase(), OperationPhase::Idle);
+
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn snapshot_exposes_progress_phase_and_flags() {
+        use crate::app::op_phase::OperationPhase;
+        use super::OperationProgress;
+
+        let path = lock_path("snapshot");
+        let manager = OperationManager::new(path.clone());
+        assert!(manager.snapshot().is_none());
+
+        let token = manager.begin_detached(OperationKind::Update).unwrap();
+        manager.validate(&token).unwrap();
+
+        let snap = manager.snapshot().expect("active snapshot");
+        assert_eq!(snap.id, token.0);
+        assert_eq!(snap.kind, OperationKind::Update);
+        assert_eq!(snap.phase, OperationPhase::Preparing);
+        assert!(snap.progress.is_none());
+        assert!(!snap.paused);
+        assert!(snap.cancellable);
+        assert!(snap.interruptible);
+
+        manager
+            .set_progress(
+                &token,
+                OperationProgress {
+                    downloaded: 50,
+                    total: 100,
+                    source: "example.test".into(),
+                },
+            )
+            .unwrap();
+        manager
+            .set_phase(&token, OperationPhase::Downloading)
+            .unwrap();
+        manager.set_paused(&token, true).unwrap();
+
+        let snap = manager.snapshot().expect("progress snapshot");
+        assert_eq!(snap.progress.as_ref().map(|p| p.downloaded), Some(50));
+        assert_eq!(snap.phase, OperationPhase::Downloading);
+        assert!(snap.paused);
+        assert!(snap.cancellable);
+        assert!(snap.interruptible);
+
+        // Progress update clears the paused flag (bytes flowing again).
+        manager
+            .set_progress(
+                &token,
+                OperationProgress {
+                    downloaded: 60,
+                    total: 100,
+                    source: "example.test".into(),
+                },
+            )
+            .unwrap();
+        assert!(!manager.snapshot().unwrap().paused);
+
+        manager
+            .set_phase(&token, OperationPhase::Committing)
+            .unwrap();
+        let snap = manager.snapshot().unwrap();
+        assert!(!snap.cancellable);
+        assert!(!snap.interruptible);
+
+        manager.end(token).unwrap();
+        assert!(manager.snapshot().is_none());
 
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }

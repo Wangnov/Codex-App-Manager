@@ -29,6 +29,7 @@ vi.mock("../../services/managerApi", async (importOriginal) => {
     managerApi: {
       getSettings: vi.fn(),
       setSettings: vi.fn(),
+      getOperationSnapshot: vi.fn(() => Promise.resolve(null)),
       winStatus: vi.fn(),
       winPlanUpdate: vi.fn(),
       winPerformUpdate: vi.fn(),

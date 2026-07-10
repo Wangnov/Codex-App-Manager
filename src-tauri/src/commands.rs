@@ -23,7 +23,8 @@ use crate::app::mac_update::{
 use crate::app::op_phase::{OperationPhase, QuitPolicy};
 use crate::app::operation_outcome::{AncillaryRetryReport, AncillaryRetryRequest};
 use crate::app::oplock::{
-    OperationError, OperationGuard, OperationKind, OperationManager, OperationToken,
+    OperationError, OperationGuard, OperationKind, OperationManager, OperationProgress,
+    OperationSnapshot, OperationToken,
 };
 use crate::app::paths;
 use crate::app::provenance::ProvenanceStore;
@@ -316,6 +317,47 @@ impl DetachedGuard {
     fn operations(&self) -> OperationManager {
         self.operations.clone()
     }
+}
+
+/// Progress payload emitted on the download event bus. Includes the operation
+/// id so a reloaded frontend can reject late events from a previous op.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadProgressEvent {
+    downloaded: u64,
+    total: u64,
+    source: String,
+    operation_id: String,
+}
+
+fn emit_op_download_progress(
+    app: &AppHandle,
+    operations: &OperationManager,
+    token: &OperationToken,
+    channel: &str,
+    downloaded: u64,
+    total: u64,
+    source: String,
+) {
+    let progress = OperationProgress {
+        downloaded,
+        total,
+        source: source.clone(),
+    };
+    let _ = operations.set_progress(token, progress);
+    // Bytes in flight ⇒ downloading phase (unless already past it).
+    if total > 0 && downloaded < total {
+        let _ = operations.set_phase(token, OperationPhase::Downloading);
+    }
+    let _ = app.emit(
+        channel,
+        DownloadProgressEvent {
+            downloaded,
+            total,
+            source,
+            operation_id: token.0.clone(),
+        },
+    );
 }
 
 impl Drop for DetachedGuard {
@@ -636,9 +678,23 @@ pub async fn mac_perform_update(
     let network = mac_network_config_for_settings()?;
     let ops = op.operations();
     let phase_token = op.token_clone();
+    let progress_token = phase_token.clone();
+    let progress_ops = ops.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let report = move |p: crate::app::mac_update::DownloadProgress| {
-            let _ = progress_app.emit("mac://download-progress", p);
+            if let Some(token) = progress_token.as_ref() {
+                emit_op_download_progress(
+                    &progress_app,
+                    &progress_ops,
+                    token,
+                    "mac://download-progress",
+                    p.downloaded,
+                    p.total,
+                    p.source,
+                );
+            } else {
+                let _ = progress_app.emit("mac://download-progress", p);
+            }
         };
         let phase_hook = |phase: OperationPhase| {
             if let Some(token) = phase_token.as_ref() {
@@ -743,11 +799,24 @@ pub async fn mac_install(
     if !cfg!(target_os = "macos") {
         return Err(AppError::UnsupportedPlatform.into());
     }
-    let _op = begin_guard(&state, OperationKind::Install)?;
+    let op = begin_guard(&state, OperationKind::Install)?;
+    let token = op.token().clone();
+    let ops = state.operations.clone();
+    let _ = ops.set_phase(&token, OperationPhase::Preparing);
     let network = mac_network_config_for_settings()?;
+    let progress_token = token.clone();
+    let progress_ops = ops.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let report = move |p: crate::app::mac_update::DownloadProgress| {
-            let _ = app.emit("mac://download-progress", p);
+            emit_op_download_progress(
+                &app,
+                &progress_ops,
+                &progress_token,
+                "mac://download-progress",
+                p.downloaded,
+                p.total,
+                p.source,
+            );
         };
         install_macos_with_network(&report, &network)
     })
@@ -759,9 +828,14 @@ pub async fn mac_install(
 /// macOS-only: request pausing an active package download.
 /// Partial bytes are left in place for the next resume-capable run.
 #[tauri::command]
-pub fn mac_pause_download() -> Result<bool, CommandError> {
+pub fn mac_pause_download(state: State<'_, ManagerState>) -> Result<bool, CommandError> {
     if !cfg!(target_os = "macos") {
         return Err(AppError::UnsupportedPlatform.into());
+    }
+    if let Some(snap) = state.operations.snapshot() {
+        let _ = state
+            .operations
+            .set_paused(&OperationToken(snap.id), true);
     }
     Ok(pause_macos_download())
 }
@@ -1085,6 +1159,15 @@ pub fn end_operation(
         .map_err(Into::into)
 }
 
+/// Current same-process operation lease, if any. Used by the frontend on mount
+/// to reattach progress/phase UI after a renderer reload without re-arming work.
+#[tauri::command]
+pub fn get_operation_snapshot(
+    state: State<'_, ManagerState>,
+) -> Result<Option<OperationSnapshot>, CommandError> {
+    Ok(state.operations.snapshot())
+}
+
 /// The user confirmed quitting from the close dialog — flag it and exit so the
 /// CloseRequested / ExitRequested guards stop intercepting and let it go.
 /// Still refuses when the backend is in a non-interruptible install phase.
@@ -1315,6 +1398,11 @@ pub async fn win_auto_stage_update(
 pub fn win_pause_download(state: State<'_, ManagerState>) -> Result<bool, CommandError> {
     if !matches!(state.target.os, OperatingSystem::Windows) {
         return Err(AppError::UnsupportedPlatform.into());
+    }
+    if let Some(snap) = state.operations.snapshot() {
+        let _ = state
+            .operations
+            .set_paused(&OperationToken(snap.id), true);
     }
     Ok(pause_windows_download())
 }
@@ -1644,9 +1732,23 @@ pub async fn win_perform_update(
     let progress_app = app.clone();
     let ops = op.operations();
     let phase_token = op.token_clone();
+    let progress_token = phase_token.clone();
+    let progress_ops = ops.clone();
     let report = tauri::async_runtime::spawn_blocking(move || {
         let report = move |p: WinDownloadProgress| {
-            let _ = progress_app.emit("win://download-progress", p);
+            if let Some(token) = progress_token.as_ref() {
+                emit_op_download_progress(
+                    &progress_app,
+                    &progress_ops,
+                    token,
+                    "win://download-progress",
+                    p.downloaded,
+                    p.total,
+                    p.source,
+                );
+            } else {
+                let _ = progress_app.emit("win://download-progress", p);
+            }
         };
         let phase_hook = |phase: OperationPhase| {
             if let Some(token) = phase_token.as_ref() {

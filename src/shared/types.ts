@@ -2,6 +2,29 @@ export type OperatingSystem = "windows" | "macos" | "linux" | "unknown";
 export type Architecture = "x64" | "arm64" | "unknown";
 export type OperationKind = "install" | "update" | "uninstall" | "set-install-root" | "adopt";
 export type OperationToken = string;
+/** Lifecycle phase of a backend operation lease (mirrors Rust `OperationPhase`). */
+export type OperationPhase =
+  | "idle"
+  | "preparing"
+  | "downloading"
+  | "verifying"
+  | "applying"
+  | "committing"
+  | "finishing";
+
+/**
+ * Active same-process operation, as reported by `get_operation_snapshot`.
+ * Used to reattach the UI after a renderer reload while work continues.
+ */
+export interface OperationSnapshot {
+  id: string;
+  kind: OperationKind;
+  phase: OperationPhase;
+  progress: DownloadProgress | null;
+  paused: boolean;
+  cancellable: boolean;
+  interruptible: boolean;
+}
 
 /**
  * Serialized error returned by failing Tauri commands. Mirrors the backend
@@ -53,6 +76,11 @@ export interface DownloadProgress {
   total: number;
   /** Host the bytes come from, e.g. codexapp.agentsmirror.com. */
   source: string;
+  /**
+   * Backend operation id that produced this event. Present on live desktop
+   * progress so a reloaded UI can reject late events from a previous op.
+   */
+  operationId?: string;
 }
 
 export interface MacUpdateReport {

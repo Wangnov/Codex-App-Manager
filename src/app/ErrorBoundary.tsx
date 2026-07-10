@@ -1,6 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 
 import { managerApi } from "../services/managerApi";
+import type { OperationSnapshot } from "../shared/types";
 import { Ring } from "./components";
 import { formatDiagnostics } from "./diagnostics";
 import { CATALOG, pickLang, type Lang, type TKey } from "./i18n";
@@ -9,35 +10,72 @@ interface State {
   error: Error | null;
   copied: boolean;
   showDetails: boolean;
+  /** Backend operation lease, if any — drives crash-page copy. */
+  opSnapshot: OperationSnapshot | null;
+  opLoaded: boolean;
 }
 
 const CRASH_KEYS = [
   "crash.title",
   "crash.body",
+  "crash.bodyActive",
+  "crash.bodyCritical",
+  "crash.bodyPaused",
   "crash.reload",
   "crash.copy",
   "crash.copied",
   "crash.details",
   "crash.hideDetails",
+  "crash.quit",
 ] as const satisfies readonly TKey[];
 
 type CrashKey = (typeof CRASH_KEYS)[number];
+export type CrashStrings = Record<CrashKey, string>;
 
-function crashStrings(): Record<CrashKey, string> {
+function crashStrings(): CrashStrings {
   const saved = typeof localStorage === "undefined" ? null : localStorage.getItem("cam.lang");
   const prefs =
     typeof navigator !== "undefined" && navigator.languages ? Array.from(navigator.languages) : [];
   const lang: Lang = pickLang(saved, prefs);
   const catalog = CATALOG[lang] ?? CATALOG.en;
-  const out = {} as Record<CrashKey, string>;
+  const out = {} as CrashStrings;
   for (const key of CRASH_KEYS) {
     out[key] = catalog[key] ?? CATALOG.en[key] ?? key;
   }
   return out;
 }
 
+/** Exported for unit tests — pick crash-page body from a backend snapshot. */
+export function crashBodyForSnapshot(
+  strings: CrashStrings,
+  snap: OperationSnapshot | null,
+): string {
+  if (!snap) return strings["crash.body"];
+  if (snap.paused) return strings["crash.bodyPaused"];
+  if (snap.phase === "committing" || snap.phase === "finishing" || !snap.interruptible) {
+    return strings["crash.bodyCritical"];
+  }
+  if (snap.kind === "install" || snap.kind === "update") {
+    return strings["crash.bodyActive"];
+  }
+  return strings["crash.body"];
+}
+
+function isTauri(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)
+  );
+}
+
 export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
-  state: State = { error: null, copied: false, showDetails: false };
+  state: State = {
+    error: null,
+    copied: false,
+    showDetails: false,
+    opSnapshot: null,
+    opLoaded: false,
+  };
 
   static getDerivedStateFromError(error: Error): Partial<State> {
     return { error };
@@ -45,6 +83,18 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
 
   componentDidMount() {
     window.addEventListener("cam:fatal", this.onFatal);
+    // Child may have thrown during the first render (getDerivedStateFromError),
+    // so the crash screen can be the first committed state — load snapshot now.
+    if (this.state.error) {
+      this.loadOperationSnapshot();
+    }
+  }
+
+  componentDidUpdate(_prevProps: { children: ReactNode }, prevState: State) {
+    // cam:fatal / late throw: enter crash screen after a healthy mount.
+    if (this.state.error && !prevState.error) {
+      this.loadOperationSnapshot();
+    }
   }
 
   componentWillUnmount() {
@@ -59,6 +109,17 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
       componentStack: info.componentStack ?? null,
     });
   }
+
+  private loadOperationSnapshot = () => {
+    void Promise.resolve()
+      .then(() => managerApi.getOperationSnapshot())
+      .then((snap) => {
+        this.setState({ opSnapshot: snap, opLoaded: true });
+      })
+      .catch(() => {
+        this.setState({ opSnapshot: null, opLoaded: true });
+      });
+  };
 
   private onFatal = (event: Event) => {
     const detail = (event as CustomEvent<{ error?: unknown }>).detail;
@@ -88,6 +149,19 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
     }
   };
 
+  /** Ask the shared QuitConfirm (mounted outside this boundary) to handle exit. */
+  private requestQuit = () => {
+    if (isTauri()) {
+      void import("@tauri-apps/api/window")
+        .then(({ getCurrentWindow }) => getCurrentWindow().close())
+        .catch(() => {
+          void managerApi.confirmQuit().catch(() => undefined);
+        });
+    } else {
+      window.dispatchEvent(new Event("cam:confirm-quit"));
+    }
+  };
+
   render() {
     if (!this.state.error) {
       return this.props.children;
@@ -96,6 +170,9 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
     const strings = crashStrings();
     const error = this.state.error;
     const summary = `${error.name}: ${error.message}`;
+    const body = this.state.opLoaded
+      ? crashBodyForSnapshot(strings, this.state.opSnapshot)
+      : strings["crash.body"];
 
     return (
       <div className="pop">
@@ -104,7 +181,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
             <Ring icon="alert" variant="danger" />
             <div role="alert" aria-live="assertive">
               <div className="headline">{strings["crash.title"]}</div>
-              <div className="desc">{strings["crash.body"]}</div>
+              <div className="desc">{body}</div>
             </div>
             <button
               type="button"
@@ -129,6 +206,9 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
             </button>
             <button className="btn ghost" onClick={this.copy}>
               {this.state.copied ? strings["crash.copied"] : strings["crash.copy"]}
+            </button>
+            <button className="btn ghost" onClick={this.requestQuit}>
+              {strings["crash.quit"]}
             </button>
           </div>
         </div>

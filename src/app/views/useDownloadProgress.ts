@@ -7,6 +7,13 @@ import { useI18n } from "../i18n";
 import { useCountUp } from "../useCountUp";
 import type { DownloadStopIntent } from "./ProgressScreen";
 
+export type StartDlListenOptions = {
+  /** When reattaching, bind to this operation id and reject foreign events. */
+  operationId?: string | null;
+  /** Keep the last known progress (reattach) instead of clearing to empty. */
+  preserveProgress?: boolean;
+};
+
 /** The live-download state machine shared by the Mac and Windows homes: the
  *  progress bytes + eased readouts, the pause/cancel intent, and the backend
  *  stop request. Platform differences are injected — the event channel name and
@@ -31,6 +38,10 @@ export function useDownloadProgress(opts: {
   // Latest live progress, read at pause time to snapshot the paused figures
   // (the `dl` state is cleared when the perform/install call unwinds).
   const dlRef = useRef<DownloadProgress | null>(null);
+  // Active operation id: latched from the first tagged event, or set on reattach.
+  // Events carrying a *different* id are dropped so a late packet from op A
+  // cannot paint onto op B after a new task started (or after reload).
+  const activeOperationIdRef = useRef<string | null>(null);
 
   // Smoothly roll the live figures instead of snapping on every progress event.
   const dlPctTarget = dl && dl.total > 0 ? Math.min(100, (dl.downloaded / dl.total) * 100) : 0;
@@ -40,6 +51,23 @@ export function useDownloadProgress(opts: {
 
   const onDlProgress = useCallback((event: { payload: DownloadProgress }) => {
     const p = event.payload;
+    const eventOpId = typeof p.operationId === "string" && p.operationId ? p.operationId : null;
+    const activeId = activeOperationIdRef.current;
+
+    if (eventOpId) {
+      if (activeId && eventOpId !== activeId) {
+        // Late event for a previous operation — ignore.
+        return;
+      }
+      if (!activeId) {
+        // First tagged event for this listen session: latch the id.
+        activeOperationIdRef.current = eventOpId;
+      }
+    } else if (activeId) {
+      // We already bound to a concrete op (reattach); untagged events are foreign.
+      return;
+    }
+
     setDl(p);
     dlRef.current = p;
     const now = Date.now();
@@ -52,18 +80,37 @@ export function useDownloadProgress(opts: {
     }
   }, []);
 
-  const startDlListen = useCallback(async () => {
-    setDl(null);
-    dlRef.current = null;
+  const startDlListen = useCallback(
+    async (options?: StartDlListenOptions) => {
+      activeOperationIdRef.current = options?.operationId ?? null;
+      if (!options?.preserveProgress) {
+        setDl(null);
+        dlRef.current = null;
+        setSpeed(0);
+        dlSample.current = null;
+      }
+      try {
+        return await listen<DownloadProgress>(eventName, onDlProgress);
+      } catch {
+        // Non-Tauri (web preview): no event bus — nothing to clean up.
+        return () => {};
+      }
+    },
+    [eventName, onDlProgress],
+  );
+
+  /** Seed progress state from a backend snapshot (reload reattach). */
+  const applySnapshotProgress = useCallback((progress: DownloadProgress | null | undefined) => {
+    if (!progress) return;
+    setDl(progress);
+    dlRef.current = progress;
     setSpeed(0);
-    dlSample.current = null;
-    try {
-      return await listen<DownloadProgress>(eventName, onDlProgress);
-    } catch {
-      // Non-Tauri (web preview): no event bus — nothing to clean up.
-      return () => {};
-    }
-  }, [eventName, onDlProgress]);
+    dlSample.current = { t: Date.now(), bytes: progress.downloaded };
+  }, []);
+
+  const clearActiveOperation = useCallback(() => {
+    activeOperationIdRef.current = null;
+  }, []);
 
   const requestDownloadStop = useCallback(
     async (intent: DownloadStopIntent) => {
@@ -95,6 +142,7 @@ export function useDownloadProgress(opts: {
     setDownloadStop(null);
     setDownloadStopBusy(false);
     downloadStopRef.current = null;
+    activeOperationIdRef.current = null;
   }, []);
 
   return {
@@ -107,7 +155,10 @@ export function useDownloadProgress(opts: {
     downloadStop,
     downloadStopBusy,
     downloadStopRef,
+    activeOperationIdRef,
     startDlListen,
+    applySnapshotProgress,
+    clearActiveOperation,
     requestDownloadStop,
     resetStop,
   };

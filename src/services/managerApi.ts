@@ -15,6 +15,7 @@ import type {
   MacUninstallReport,
   MacUpdateReport,
   OperationKind,
+  OperationSnapshot,
   OperationToken,
   WinInstallStatus,
   WinPerformReport,
@@ -497,6 +498,13 @@ export const managerApi = {
       return Promise.resolve(`browser-dev-token-${kind}`);
     }
     return invoke<OperationToken>("arm_destructive", { kind });
+  },
+  /** Active install/update lease, or null when idle. Queried on mount to reattach. */
+  getOperationSnapshot(): Promise<OperationSnapshot | null> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve(null);
+    }
+    return invoke<OperationSnapshot | null>("get_operation_snapshot");
   },
   macPlanUpdate(simulatedBuild?: number): Promise<MacUpdateReport> {
     if (!hasTauriRuntime()) {
