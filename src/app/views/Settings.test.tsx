@@ -83,7 +83,7 @@ describe("Settings runtime contract", () => {
     expect(screen.getByRole("radio", { name: /镜像/ })).toHaveAttribute("aria-checked", "true");
   });
 
-  it("does not persist empty custom source selection", async () => {
+  it("does not persist empty custom source selection until a URL is entered", async () => {
     const user = userEvent.setup();
     api.getSettings.mockResolvedValue(settings({ source: "mirror" }));
     renderSettings();
@@ -100,7 +100,7 @@ describe("Settings runtime contract", () => {
     );
   });
 
-  it("does not persist empty custom proxy mode", async () => {
+  it("does not persist empty custom proxy mode until a URL is entered", async () => {
     const user = userEvent.setup();
     api.getSettings.mockResolvedValue(settings({ proxyMode: "system" }));
     renderSettings();
@@ -111,6 +111,77 @@ describe("Settings runtime contract", () => {
 
     expect(screen.getAllByText("请填写有效的代理地址后才会保存").length).toBeGreaterThan(0);
     expect(api.setSettings).not.toHaveBeenCalled();
+  });
+
+  it("coerces cleared custom source to auto so UI and runtime stay aligned", async () => {
+    const user = userEvent.setup();
+    api.getSettings.mockResolvedValue(
+      settings({ source: "custom", customUrl: "https://example.test/feed" }),
+    );
+    renderSettings();
+
+    await waitFor(() => expect(screen.queryByText("正在加载设置…")).not.toBeInTheDocument());
+    const input = screen.getByRole("textbox", { name: "自定义" });
+    await user.clear(input);
+    await user.tab();
+
+    await waitFor(() =>
+      expect(api.setSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ source: "auto", customUrl: "" }),
+      ),
+    );
+    const sourceGroup = screen.getByRole("radiogroup", { name: "更新源" });
+    expect(within(sourceGroup).getByRole("radio", { name: /自动/ })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(screen.queryByRole("textbox", { name: "自定义" })).not.toBeInTheDocument();
+  });
+
+  it("coerces cleared custom proxy to system so UI and runtime stay aligned", async () => {
+    const user = userEvent.setup();
+    api.getSettings.mockResolvedValue(
+      settings({ proxyMode: "custom", customProxyUrl: "socks5h://127.0.0.1:7890" }),
+    );
+    renderSettings();
+
+    await waitFor(() => expect(screen.queryByText("正在加载设置…")).not.toBeInTheDocument());
+    const input = screen.getByRole("textbox", { name: "自定义" });
+    await user.clear(input);
+    await user.tab();
+
+    await waitFor(() =>
+      expect(api.setSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ proxyMode: "system", customProxyUrl: "" }),
+      ),
+    );
+    const proxyGroup = screen.getByRole("radiogroup", { name: "代理" });
+    expect(within(proxyGroup).getByRole("radio", { name: "跟随系统" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+  });
+
+  it("saves custom source from the input current value on blur", async () => {
+    const user = userEvent.setup();
+    api.getSettings.mockResolvedValue(settings({ source: "mirror" }));
+    renderSettings();
+
+    await waitFor(() => expect(screen.queryByText("正在加载设置…")).not.toBeInTheDocument());
+    const sourceGroup = screen.getByRole("radiogroup", { name: "更新源" });
+    await user.click(within(sourceGroup).getByRole("radio", { name: "自定义" }));
+    const input = screen.getByRole("textbox", { name: "自定义" });
+    await user.type(input, "https://mirror.example.test/appcast.xml");
+    await user.tab();
+
+    await waitFor(() =>
+      expect(api.setSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: "custom",
+          customUrl: "https://mirror.example.test/appcast.xml",
+        }),
+      ),
+    );
   });
 
   it("states that periodic checks only run while the manager is open", async () => {

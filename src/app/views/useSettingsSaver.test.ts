@@ -199,4 +199,60 @@ describe("useSettingsSaver", () => {
     expect(result.current.settings.source).toBe("custom");
     expect(result.current.settings.askBefore).toBe(false);
   });
+
+  it("persists an explicit auto coerce when clearing a saved custom source", async () => {
+    setSettings.mockImplementation(async (next) => next);
+    const initial = {
+      ...DEFAULT_SETTINGS,
+      source: "custom" as const,
+      customUrl: "https://example.test/feed",
+    };
+    const { result } = renderHook(() => useSettingsSaver(initial));
+    act(() => result.current.hydrate(initial));
+
+    act(() =>
+      result.current.update({
+        ...initial,
+        source: "auto",
+        customUrl: "",
+      }),
+    );
+
+    await waitFor(() => expect(setSettings).toHaveBeenCalledTimes(1));
+    expect(setSettings).toHaveBeenCalledWith({
+      ...initial,
+      source: "auto",
+      customUrl: "",
+    });
+    expect(result.current.settings.source).toBe("auto");
+    expect(result.current.settings.customUrl).toBe("");
+  });
+
+  it("persists an explicit system coerce when clearing a saved custom proxy", async () => {
+    setSettings.mockImplementation(async (next) => next);
+    const initial = {
+      ...DEFAULT_SETTINGS,
+      proxyMode: "custom" as const,
+      customProxyUrl: "socks5h://127.0.0.1:7890",
+    };
+    const { result } = renderHook(() => useSettingsSaver(initial));
+    act(() => result.current.hydrate(initial));
+
+    act(() =>
+      result.current.update({
+        ...initial,
+        proxyMode: "system",
+        customProxyUrl: "",
+      }),
+    );
+
+    await waitFor(() => expect(setSettings).toHaveBeenCalledTimes(1));
+    expect(setSettings).toHaveBeenCalledWith({
+      ...initial,
+      proxyMode: "system",
+      customProxyUrl: "",
+    });
+    expect(result.current.settings.proxyMode).toBe("system");
+    expect(result.current.settings.customProxyUrl).toBe("");
+  });
 });

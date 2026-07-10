@@ -311,14 +311,19 @@ export function Settings({
                     setFieldError(null);
                     setDraft({ ...s, customUrl: e.target.value });
                   }}
-                  onBlur={() => {
+                  onBlur={(e) => {
                     setCommandError(null);
-                    if (!s.customUrl.trim()) {
-                      setFieldError(t("settings.source.customRequired"));
+                    // Read from the input — closed-over s.customUrl can lag the DOM value.
+                    const customUrl = e.currentTarget.value;
+                    if (!customUrl.trim()) {
+                      // Abandon incomplete custom so UI selection matches runtime
+                      // (empty custom must not leave the previous URL active).
+                      setFieldError(null);
+                      update({ ...s, source: "auto", customUrl: "" });
                       return;
                     }
                     setFieldError(null);
-                    update(s);
+                    update({ ...s, customUrl });
                   }}
                 />
                 {!s.customUrl.trim() ? (
@@ -673,7 +678,10 @@ export function Settings({
                       setCommandError(null);
                       const customProxyUrl = e.currentTarget.value;
                       if (!customProxyUrl.trim()) {
-                        setFieldError(t("settings.network.proxyRequired"));
+                        // Same contract as custom source: empty blur coerces to a
+                        // real mode so UI and runtime do not keep the old proxy URL.
+                        setFieldError(null);
+                        update({ ...s, proxyMode: "system", customProxyUrl: "" });
                         return;
                       }
                       setFieldError(null);
