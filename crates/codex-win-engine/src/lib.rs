@@ -62,6 +62,8 @@ pub use sys::{
     install_msix_sideload, precheck_msix_dependencies, verify_msix_health, MsixDependencyPrecheck,
     MsixHealthReport, MsixSideloadReport,
 };
+// Failure-kind constants for structured MSIX health outcomes.
+pub use sys::msix_failure;
 pub use version::{compare_versions, version_key};
 
 pub const OPENAI_PACKAGE_IDENTITY: &str = "OpenAI.Codex";

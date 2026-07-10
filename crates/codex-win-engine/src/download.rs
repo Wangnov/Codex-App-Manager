@@ -1,15 +1,14 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
-use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
 use crate::limits::MAX_PACKAGE_BYTES;
 use crate::network::{is_schannel_revocation_offline, NetworkConfig, SchannelRevocationCheck};
-use crate::process::{curl_exe, hidden_command};
+use crate::process::{
+    curl_exe, hidden_command, run_with_progress, RunError, RunLimits, TimeoutKind,
+};
 use crate::EngineError;
 
 static DOWNLOAD_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -208,36 +207,50 @@ fn run_curl_once(
     args: Vec<String>,
     on_progress: &dyn Fn(u64),
 ) -> Result<(), CurlAttemptError> {
-    let mut child = hidden_command(curl_exe())
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| CurlAttemptError::Other(format!("spawn curl: {e}")))?;
+    let dest_path = PathBuf::from(dest);
+    let mut command = hidden_command(curl_exe());
+    command.args(args);
 
-    loop {
-        if DOWNLOAD_CANCELLED.load(Ordering::SeqCst) {
-            let _ = child.kill();
-            let _ = child.wait();
+    // Stall on no byte growth; total bound stops an endlessly crawling transfer.
+    // Cancel is cooperative via DOWNLOAD_CANCELLED — the runner kills the tree.
+    let output = match run_with_progress(
+        command,
+        RunLimits::download(),
+        Some(&DOWNLOAD_CANCELLED),
+        &|| std::fs::metadata(&dest_path).map(|m| m.len()).unwrap_or(0),
+        on_progress,
+    ) {
+        Ok(output) => output,
+        Err(RunError::Cancelled) => {
             let downloaded = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
             log::info!("Windows download cancelled source={source} downloaded={downloaded}");
             return Err(CurlAttemptError::Cancelled);
         }
-        let downloaded = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
-        on_progress(downloaded);
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) => thread::sleep(Duration::from_millis(200)),
-            Err(err) => {
-                let _ = child.kill();
-                return Err(CurlAttemptError::Other(format!("wait for curl: {err}")));
-            }
+        Err(RunError::Timeout { kind, .. }) => {
+            let downloaded = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+            return match kind {
+                TimeoutKind::Stall => {
+                    log::warn!(
+                        "Windows download stalled source={source} downloaded={downloaded}"
+                    );
+                    Err(CurlAttemptError::Other(format!(
+                        "curl download stalled (no progress) source={source} downloaded={downloaded}"
+                    )))
+                }
+                TimeoutKind::Total => {
+                    log::warn!(
+                        "Windows download exceeded total deadline source={source} downloaded={downloaded}"
+                    );
+                    Err(CurlAttemptError::Other(format!(
+                        "curl download exceeded total deadline source={source} downloaded={downloaded}"
+                    )))
+                }
+            };
         }
-    }
-
-    let output = child
-        .wait_with_output()
-        .map_err(|err| CurlAttemptError::Other(format!("collect curl output: {err}")))?;
+        Err(err) => {
+            return Err(CurlAttemptError::Other(format!("curl: {}", err.message())));
+        }
+    };
 
     if !output.status.success() {
         return Err(CurlAttemptError::Curl {

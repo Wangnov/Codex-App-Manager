@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::app_version::read_codex_app_version_from_install_root;
 use crate::msix::{parse_appx_manifest_xml, MsixIdentity};
-use crate::process::hidden_command;
+use crate::process::{
+    hidden_command, run_capturing, spawn_and_require_liveness, LivenessResult, RunLimits,
+    PORTABLE_LIVENESS_WINDOW,
+};
 use crate::EngineError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,10 +244,20 @@ fn powershell_exe() -> PathBuf {
 
 #[cfg(windows)]
 fn run_powershell(script: &str) -> Result<String, EngineError> {
-    let output = hidden_command(powershell_exe())
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .output()
-        .map_err(|e| EngineError::Install(format!("spawn powershell: {e}")))?;
+    // Close/shortcut/uninstall scripts can wait on processes; use the install
+    // budget so a stuck AppX/policy machine cannot hang forever.
+    run_powershell_with_limits(script, RunLimits::install())
+}
+
+#[cfg(windows)]
+fn run_powershell_with_limits(
+    script: &str,
+    limits: RunLimits,
+) -> Result<String, EngineError> {
+    let mut command = hidden_command(powershell_exe());
+    command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    let output = run_capturing(command, limits, None)
+        .map_err(|e| EngineError::Install(format!("powershell: {}", e.message())))?;
     if !output.status.success() {
         return Err(EngineError::Install(format!(
             "powershell failed: {}",
@@ -550,10 +563,26 @@ fn health_check_portable_install(install_root: &Path, launch: bool) -> Result<bo
     if !launch {
         return Ok(false);
     }
-    hidden_command(&exe)
-        .spawn()
-        .map(|_| true)
-        .map_err(|e| io_err("portable health check launch", e))
+    // Spawn alone is not enough: a broken payload can exit immediately after
+    // CreateProcess succeeds. Require a short liveness window, then leave the
+    // process running (this path is the post-install relaunch).
+    match spawn_and_require_liveness(hidden_command(&exe), PORTABLE_LIVENESS_WINDOW) {
+        Ok(LivenessResult::Survived { child }) => {
+            // Intentionally leak the Child handle so the relaunched app keeps
+            // running after the manager drops the wait loop.
+            std::mem::forget(child);
+            Ok(true)
+        }
+        Ok(LivenessResult::ExitedEarly { code }) => Err(EngineError::Install(format!(
+            "portable health check failed: entry executable exited immediately after launch (exit={})",
+            code.map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".to_string())
+        ))),
+        Err(err) => Err(EngineError::Install(format!(
+            "portable health check launch failed: {}",
+            err.message()
+        ))),
+    }
 }
 
 pub fn install_portable_from_msix(
@@ -978,6 +1007,43 @@ mod tests {
             .starts_with("Codex.rollback")));
         assert!(!install_root.join("old-marker.txt").exists());
         assert!(install_root.join("resources/app.asar").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn health_check_detects_immediate_exit_entry() {
+        // whoami.exe exits instantly — models a broken payload that CreateProcess
+        // accepts then immediately dies. The health check must fail closed.
+        let root = std::env::temp_dir().join(format!(
+            "codex-portable-liveness-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let windir = std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into());
+        let whoami = PathBuf::from(windir).join("System32").join("whoami.exe");
+        if !whoami.is_file() {
+            let _ = fs::remove_dir_all(&root);
+            return;
+        }
+        fs::copy(&whoami, root.join("ChatGPT.exe")).unwrap();
+        fs::write(
+            root.join("AppxManifest.xml"),
+            br#"<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">
+  <Identity Name="OpenAI.Codex" Publisher="CN=X" Version="1.0.0.0" ProcessorArchitecture="x64" />
+  <Applications><Application Id="App" Executable="app\ChatGPT.exe" /></Applications>
+</Package>"#,
+        )
+        .unwrap();
+
+        let err = health_check_portable_install(&root, true).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("exited immediately"),
+            "unexpected error: {msg}"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }

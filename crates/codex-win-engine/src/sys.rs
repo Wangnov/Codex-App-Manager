@@ -11,7 +11,10 @@ use crate::capability::{CapabilityCheck, CapabilityState};
 use crate::limits::MAX_TEXT_BYTES;
 use crate::msix::parse_appx_manifest_xml;
 use crate::network::{is_schannel_revocation_offline, NetworkConfig, SchannelRevocationCheck};
-use crate::process::{curl_exe, hidden_command};
+use crate::process::{
+    curl_exe, hidden_command, run_capturing, spawn_and_require_liveness, LivenessResult,
+    RunLimits, MSIX_ACTIVATION_WINDOW_SECS, PORTABLE_LIVENESS_WINDOW,
+};
 use crate::EngineError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,18 +82,17 @@ pub struct MsixRemoveReport {
 /// success only means the cmdlet did not throw — on a stripped Windows (no
 /// Store / App Installer, missing framework packages) the package can register
 /// yet fail to launch, which is exactly the failure users hit. We verify the
-/// package is registered, its Status is Ok, the app entry (AUMID) resolves, and
-/// every declared framework dependency is actually present; when any of these
+/// package is registered, its Status is Ok, the app entry (AUMID) resolves,
+/// every declared framework dependency is present, **and** a real shell
+/// activation leaves a process under the install location. When any of these
 /// fail the caller removes the package and falls back to the portable build.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MsixHealthReport {
     pub healthy: bool,
     /// Whether the health probe actually ran and the `healthy` verdict reflects
-    /// real checks. `false` means the probe could not run and `healthy` is a
-    /// conservative "keep the MSIX" default, not a clean bill of health that was
-    /// observed. Callers/UI/notes use this to tell "verified healthy" apart from
-    /// "kept because unverifiable".
+    /// real checks. `false` means the probe could not run (e.g. PowerShell
+    /// missing) — not a clean bill of health that was observed.
     pub verified: bool,
     pub package_registered: bool,
     /// Raw `Get-AppxPackage` Status string (e.g. "Ok", "Modified").
@@ -101,8 +103,31 @@ pub struct MsixHealthReport {
     /// Declared framework dependencies that are NOT installed on this machine —
     /// the usual reason an MSIX installs but won't launch on a stripped Windows.
     pub missing_dependencies: Vec<String>,
+    /// Shell activation succeeded and a process under the package install
+    /// location stayed alive for the liveness window.
+    #[serde(default)]
+    pub activation_ok: bool,
+    /// Machine-stable failure class for UI / fallback routing. Empty when healthy.
+    /// Values: `not-registered` | `status-bad` | `aumid-unresolved` |
+    /// `missing-dependencies` | `activation-failed` | `immediate-exit` |
+    /// `timeout` | `probe-failed` | `policy`.
+    #[serde(default)]
+    pub failure_kind: String,
     /// Human-facing reason when unhealthy; empty when healthy.
     pub reason: String,
+}
+
+/// Stable failure-kind strings shared with the frontend and notes.
+pub mod msix_failure {
+    pub const NOT_REGISTERED: &str = "not-registered";
+    pub const STATUS_BAD: &str = "status-bad";
+    pub const AUMID_UNRESOLVED: &str = "aumid-unresolved";
+    pub const MISSING_DEPENDENCIES: &str = "missing-dependencies";
+    pub const ACTIVATION_FAILED: &str = "activation-failed";
+    pub const IMMEDIATE_EXIT: &str = "immediate-exit";
+    pub const TIMEOUT: &str = "timeout";
+    pub const PROBE_FAILED: &str = "probe-failed";
+    pub const POLICY: &str = "policy";
 }
 
 /// Result of the framework-dependency PRE-check run BEFORE attempting an MSIX
@@ -148,23 +173,24 @@ fn fetch_text_output(
     let max_text = MAX_TEXT_BYTES.to_string();
     let mut command = hidden_command(curl_exe());
     network.apply_to_command_with_schannel_revocation(&mut command, revocation_check);
-    command
-        .args([
-            "-fsSL",
-            "--proto",
-            "=https",
-            "--proto-redir",
-            "=https",
-            "--connect-timeout",
-            "20",
-            "--max-time",
-            "60",
-            "--max-filesize",
-            &max_text,
-            url,
-        ])
-        .output()
-        .map_err(|e| EngineError::Io(format!("spawn curl: {e}")))
+    command.args([
+        "-fsSL",
+        "--proto",
+        "=https",
+        "--proto-redir",
+        "=https",
+        "--connect-timeout",
+        "20",
+        "--max-time",
+        "60",
+        "--max-filesize",
+        &max_text,
+        url,
+    ]);
+    // curl's own --max-time is the primary budget; the outer deadline is a
+    // backstop that also kills a hung curl that ignored max-time.
+    run_capturing(command, RunLimits::total(std::time::Duration::from_secs(75)), None)
+        .map_err(|e| EngineError::Io(format!("curl: {}", e.message())))
 }
 
 pub fn fetch_text_with_network(url: &str, network: &NetworkConfig) -> Result<String, EngineError> {
@@ -304,10 +330,18 @@ fn powershell_exe() -> PathBuf {
 
 #[cfg(windows)]
 fn run_powershell_json(script: &str) -> Result<String, EngineError> {
-    let output = hidden_command(powershell_exe())
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .output()
-        .map_err(|e| EngineError::Capability(format!("spawn powershell: {e}")))?;
+    run_powershell_json_with_limits(script, RunLimits::probe())
+}
+
+#[cfg(windows)]
+fn run_powershell_json_with_limits(
+    script: &str,
+    limits: RunLimits,
+) -> Result<String, EngineError> {
+    let mut command = hidden_command(powershell_exe());
+    command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    let output = run_capturing(command, limits, None)
+        .map_err(|e| EngineError::Capability(format!("powershell: {}", e.message())))?;
     if !output.status.success() {
         return Err(EngineError::Capability(format!(
             "powershell failed: {}",
@@ -367,7 +401,7 @@ try {{
         path = ps_quote(&path.to_string_lossy()),
         name = ps_quote(crate::OPENAI_PACKAGE_IDENTITY)
     );
-    let json = run_powershell_json(&script)
+    let json = run_powershell_json_with_limits(&script, RunLimits::install())
         .map_err(|e| EngineError::Install(format!("run Add-AppxPackage: {e}")))?;
     let mut report: MsixSideloadReport = serde_json::from_str(&json)
         .map_err(|e| EngineError::Install(format!("parse Add-AppxPackage result: {e}")))?;
@@ -635,7 +669,7 @@ pub fn remove_msix_package() -> Result<MsixRemoveReport, EngineError> {
 "#,
         name = ps_quote(crate::OPENAI_PACKAGE_IDENTITY)
     );
-    let json = run_powershell_json(&script)
+    let json = run_powershell_json_with_limits(&script, RunLimits::install())
         .map_err(|e| EngineError::Install(format!("run Remove-AppxPackage: {e}")))?;
     let report: MsixRemoveReport = serde_json::from_str(&json)
         .map_err(|e| EngineError::Install(format!("parse Remove-AppxPackage result: {e}")))?;
@@ -665,9 +699,14 @@ pub fn remove_msix_package() -> Result<MsixRemoveReport, EngineError> {
 #[cfg(windows)]
 pub fn verify_msix_health() -> MsixHealthReport {
     log::info!("MSIX health check start");
+    // Activation is the expensive step — budget probe + activation window + slack.
+    let limits = RunLimits::total(std::time::Duration::from_secs(
+        60 + MSIX_ACTIVATION_WINDOW_SECS + 15,
+    ));
     let script = format!(
         r#"
 $ErrorActionPreference = 'SilentlyContinue'
+$activationWindowSecs = {activation_window}
 $pkg = Get-AppxPackage -Name {name} |
   Sort-Object -Property Version -Descending |
   Select-Object -First 1
@@ -678,6 +717,9 @@ if ($null -eq $pkg) {{
     status = 'not-registered'
     aumidResolved = $false
     missingDependencies = ''
+    activationOk = $false
+    failureKind = 'not-registered'
+    activationDetail = ''
   }} | ConvertTo-Json -Compress
   exit 0
 }}
@@ -685,6 +727,10 @@ $statusStr = [string]$pkg.Status
 $statusOk = ([string]::IsNullOrEmpty($statusStr) -or $statusStr -eq 'Ok')
 $aumidResolved = $false
 $missing = @()
+$activationOk = $false
+$failureKind = ''
+$activationDetail = ''
+$appId = ''
 function Convert-ToVersion($value) {{
   try {{
     $text = [string]$value
@@ -742,20 +788,110 @@ try {{
     }}
   }}
 }} catch {{}}
+
+# Real activation: shell-start the AUMID and require a process under InstallLocation
+# for the liveness window. Registration alone is not enough on stripped Windows.
+if ($statusOk -and $aumidResolved -and $missing.Count -eq 0) {{
+  if ([string]::IsNullOrEmpty($appId)) {{ $appId = 'App' }}
+  $aumid = [string]$pkg.PackageFamilyName + '!' + $appId
+  $installLoc = [string]$pkg.InstallLocation
+  try {{ $installLoc = [System.IO.Path]::GetFullPath($installLoc).TrimEnd('\') }} catch {{}}
+  try {{
+    Start-Process ("shell:AppsFolder\" + $aumid) -ErrorAction Stop | Out-Null
+    $deadline = (Get-Date).AddSeconds($activationWindowSecs)
+    $sawProcess = $false
+    $stillAlive = $false
+    $targetIds = @()
+    while ((Get-Date) -lt $deadline) {{
+      Start-Sleep -Milliseconds 300
+      $found = @()
+      foreach ($p in @(Get-Process -Name Codex,ChatGPT -ErrorAction SilentlyContinue)) {{
+        try {{
+          $path = [string]$p.Path
+          if (-not $path) {{ continue }}
+          $full = [System.IO.Path]::GetFullPath($path)
+          if ($installLoc -and (
+              $full.Equals($installLoc, [System.StringComparison]::OrdinalIgnoreCase) -or
+              $full.StartsWith($installLoc + '\', [System.StringComparison]::OrdinalIgnoreCase)
+            )) {{
+            $found += $p
+          }}
+        }} catch {{}}
+      }}
+      if ($found.Count -gt 0) {{
+        $sawProcess = $true
+        $targetIds = @($found | ForEach-Object {{ $_.Id }})
+        # Require a short survival stretch so immediate crash-on-launch fails.
+        Start-Sleep -Milliseconds 800
+        $alive = @()
+        foreach ($id in $targetIds) {{
+          $p = Get-Process -Id $id -ErrorAction SilentlyContinue
+          if ($null -ne $p) {{ $alive += $p }}
+        }}
+        if ($alive.Count -gt 0) {{
+          $stillAlive = $true
+          break
+        }}
+      }}
+    }}
+    if ($stillAlive) {{
+      $activationOk = $true
+    }} elseif ($sawProcess) {{
+      $failureKind = 'immediate-exit'
+      $activationDetail = 'package process started then exited during the liveness window'
+    }} else {{
+      $failureKind = 'activation-failed'
+      $activationDetail = 'no process under install location after shell activation'
+    }}
+  }} catch {{
+    $msg = [string]$_.Exception.Message
+    $activationDetail = $msg
+    if ($msg -match '0x80073|policy|denied|Access is denied|0x80070005|blocked') {{
+      $failureKind = 'policy'
+    }} else {{
+      $failureKind = 'activation-failed'
+    }}
+  }}
+}}
+
 [pscustomobject]@{{
   packageRegistered = $true
   statusOk = $statusOk
   status = $statusStr
   aumidResolved = $aumidResolved
   missingDependencies = ($missing -join ', ')
+  activationOk = $activationOk
+  failureKind = $failureKind
+  activationDetail = $activationDetail
 }} | ConvertTo-Json -Compress
 "#,
-        name = ps_quote(crate::OPENAI_PACKAGE_IDENTITY)
+        name = ps_quote(crate::OPENAI_PACKAGE_IDENTITY),
+        activation_window = MSIX_ACTIVATION_WINDOW_SECS
     );
 
-    let parsed = run_powershell_json(&script)
-        .ok()
-        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok());
+    let run_result = run_powershell_json_with_limits(&script, limits);
+    let parsed = match &run_result {
+        Ok(json) => serde_json::from_str::<serde_json::Value>(json).ok(),
+        Err(err) => {
+            let msg = err.to_string();
+            if msg.contains("exceeded total deadline") || msg.contains("no progress") {
+                log::info!("MSIX health check result healthy=false status=timeout");
+                return MsixHealthReport {
+                    healthy: false,
+                    verified: true,
+                    package_registered: true,
+                    status: "timeout".to_string(),
+                    status_ok: false,
+                    aumid_resolved: false,
+                    missing_dependencies: vec![],
+                    activation_ok: false,
+                    failure_kind: msix_failure::TIMEOUT.to_string(),
+                    reason: "health probe timed out; routed to portable fallback".to_string(),
+                };
+            }
+            None
+        }
+    };
 
     let Some(value) = parsed else {
         // The health probe itself could not run. On managed/stripped Windows this
@@ -771,6 +907,8 @@ try {{
             status_ok: false,
             aumid_resolved: false,
             missing_dependencies: vec![],
+            activation_ok: false,
+            failure_kind: msix_failure::PROBE_FAILED.to_string(),
             reason: "health probe could not run; routed to portable fallback".to_string(),
         };
     };
@@ -801,22 +939,62 @@ try {{
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
+    let activation_ok = value
+        .get("activationOk")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let activation_detail = value
+        .get("activationDetail")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let reported_kind = value
+        .get("failureKind")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
-    let healthy =
-        package_registered && status_ok && aumid_resolved && missing_dependencies.is_empty();
-    let reason = if healthy {
-        String::new()
-    } else if !package_registered {
-        "the package is not registered after install".to_string()
-    } else if !status_ok {
-        format!("package status is {status}")
-    } else if !aumid_resolved {
-        "could not resolve the app entry (AUMID)".to_string()
-    } else {
-        format!(
-            "missing framework dependencies: {}",
-            missing_dependencies.join(", ")
+    let (healthy, failure_kind, reason) = if !package_registered {
+        (
+            false,
+            msix_failure::NOT_REGISTERED.to_string(),
+            "the package is not registered after install".to_string(),
         )
+    } else if !status_ok {
+        (
+            false,
+            msix_failure::STATUS_BAD.to_string(),
+            format!("package status is {status}"),
+        )
+    } else if !aumid_resolved {
+        (
+            false,
+            msix_failure::AUMID_UNRESOLVED.to_string(),
+            "could not resolve the app entry (AUMID)".to_string(),
+        )
+    } else if !missing_dependencies.is_empty() {
+        (
+            false,
+            msix_failure::MISSING_DEPENDENCIES.to_string(),
+            format!(
+                "missing framework dependencies: {}",
+                missing_dependencies.join(", ")
+            ),
+        )
+    } else if !activation_ok {
+        let kind = if reported_kind.is_empty() {
+            msix_failure::ACTIVATION_FAILED.to_string()
+        } else {
+            reported_kind
+        };
+        let reason = if activation_detail.is_empty() {
+            "package failed real activation / liveness check".to_string()
+        } else {
+            format!("package activation failed: {activation_detail}")
+        };
+        (false, kind, reason)
+    } else {
+        (true, String::new(), String::new())
     };
 
     let report = MsixHealthReport {
@@ -828,11 +1006,14 @@ try {{
         status_ok,
         aumid_resolved,
         missing_dependencies,
+        activation_ok,
+        failure_kind,
         reason,
     };
     let healthy = report.healthy;
     let status = &report.status;
-    log::info!("MSIX health check result healthy={healthy} status={status}");
+    let kind = &report.failure_kind;
+    log::info!("MSIX health check result healthy={healthy} status={status} failure_kind={kind}");
     report
 }
 
@@ -851,6 +1032,8 @@ pub fn verify_msix_health() -> MsixHealthReport {
         status_ok: true,
         aumid_resolved: true,
         missing_dependencies: vec![],
+        activation_ok: true,
+        failure_kind: String::new(),
         reason: "MSIX health checks are only meaningful on Windows".to_string(),
     }
 }
@@ -977,14 +1160,27 @@ pub fn launch_codex_with_options(
                 ))
             })?;
         // CREATE_NO_WINDOW only suppresses a console flash; the GUI still shows.
+        // Require a short liveness window so an immediate crash is reported as a
+        // launch failure instead of a silent no-op.
         let mut command = hidden_command(exe);
         if options.disable_codex_self_updates {
             command.env(CODEX_SELF_UPDATE_ENV_KEY, CODEX_SELF_UPDATE_ENV_DISABLED);
         }
-        command
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| EngineError::Io(format!("launch Codex: {e}")))
+        match spawn_and_require_liveness(command, PORTABLE_LIVENESS_WINDOW) {
+            Ok(LivenessResult::Survived { child }) => {
+                std::mem::forget(child);
+                Ok(())
+            }
+            Ok(LivenessResult::ExitedEarly { code }) => Err(EngineError::Io(format!(
+                "Codex exited immediately after launch (exit={})",
+                code.map(|c| c.to_string())
+                    .unwrap_or_else(|| "signal".to_string())
+            ))),
+            Err(err) => Err(EngineError::Io(format!(
+                "launch Codex: {}",
+                err.message()
+            ))),
+        }
     } else {
         if options.disable_codex_self_updates {
             log::debug!(
@@ -1012,7 +1208,8 @@ Start-Process ("shell:AppsFolder\" + $pkg.PackageFamilyName + "!" + $id)
 "#,
         name = ps_quote(crate::OPENAI_PACKAGE_IDENTITY)
     );
-    run_powershell_json(&script).map(|_| ())
+    // Activation is fire-and-forget from the shell; bound the AUMID resolve + Start-Process.
+    run_powershell_json_with_limits(&script, RunLimits::probe()).map(|_| ())
 }
 
 #[cfg(not(windows))]
@@ -1305,6 +1502,35 @@ mod tests {
             report.msix_deployment.state,
             crate::capability::CapabilityState::Unavailable
         );
+    }
+
+    #[test]
+    fn msix_health_failure_kinds_are_stable_strings() {
+        // Keep these stable: frontend / notes may switch on them.
+        assert_eq!(super::msix_failure::NOT_REGISTERED, "not-registered");
+        assert_eq!(super::msix_failure::ACTIVATION_FAILED, "activation-failed");
+        assert_eq!(super::msix_failure::IMMEDIATE_EXIT, "immediate-exit");
+        assert_eq!(super::msix_failure::TIMEOUT, "timeout");
+        assert_eq!(super::msix_failure::POLICY, "policy");
+    }
+
+    #[test]
+    fn msix_health_report_defaults_new_fields_on_deserialize() {
+        // Older fixtures without activationOk / failureKind still parse.
+        let report: super::MsixHealthReport = serde_json::from_value(serde_json::json!({
+            "healthy": true,
+            "verified": true,
+            "packageRegistered": true,
+            "status": "Ok",
+            "statusOk": true,
+            "aumidResolved": true,
+            "missingDependencies": [],
+            "reason": ""
+        }))
+        .unwrap();
+        assert!(report.healthy);
+        assert!(!report.activation_ok); // default false when absent
+        assert!(report.failure_kind.is_empty());
     }
 
     // Pure routing logic for the framework pre-check — verified on every host so
