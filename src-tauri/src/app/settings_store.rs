@@ -301,7 +301,16 @@ impl AppSettings {
         } else {
             self.install_root = self.install_root.trim().to_string();
         }
+        self.custom_url = self.custom_url.trim().to_string();
         self.custom_proxy_url = self.custom_proxy_url.trim().to_string();
+        // Empty custom modes are not a real runtime choice (update paths fall
+        // back silently). Coerce so UI selection, disk, and runtime agree.
+        if self.source == UpdateSource::Custom && self.custom_url.is_empty() {
+            self.source = UpdateSource::Auto;
+        }
+        if self.proxy_mode == ProxyMode::Custom && self.custom_proxy_url.is_empty() {
+            self.proxy_mode = ProxyMode::System;
+        }
         if let Some(skipped) = &mut self.skipped_codex_update {
             skipped.platform = skipped.platform.trim().to_ascii_lowercase();
             skipped.target = skipped.target.trim().to_string();
@@ -496,6 +505,22 @@ mod tests {
         settings.normalize();
         assert_eq!(settings.proxy_mode, ProxyMode::System);
         assert_eq!(settings.custom_proxy_url, "socks5h://127.0.0.1:7890");
+    }
+
+    #[test]
+    fn empty_custom_source_and_proxy_coerce_to_real_defaults() {
+        let mut settings = AppSettings {
+            source: UpdateSource::Custom,
+            custom_url: "   ".to_string(),
+            proxy_mode: ProxyMode::Custom,
+            custom_proxy_url: String::new(),
+            ..AppSettings::default()
+        };
+        settings.normalize();
+        assert_eq!(settings.source, UpdateSource::Auto);
+        assert_eq!(settings.custom_url, "");
+        assert_eq!(settings.proxy_mode, ProxyMode::System);
+        assert_eq!(settings.custom_proxy_url, "");
     }
 
     #[test]

@@ -826,7 +826,9 @@ pub fn set_settings(
     let mut s = settings;
     s.normalize();
     normalize_settings_for_target(&mut s, &state.target);
-    if s.source == UpdateSource::Custom && !s.custom_url.trim().is_empty() {
+    // After normalize(), empty custom source/proxy is coerced away. Any remaining
+    // Custom mode must carry a non-empty, validated URL so disk matches runtime.
+    if s.source == UpdateSource::Custom {
         s.custom_url = validate_custom_source(&s.custom_url).map_err(|e| {
             let host = redact_url(&s.custom_url);
             log::warn!("url_guard rejected custom source reason={e} host={host}");

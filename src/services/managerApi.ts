@@ -91,18 +91,32 @@ function normalizeSettings(raw: Partial<AppSettings>): AppSettings {
   const legacyAuto = typeof raw.autoCheck === "boolean" ? raw.autoCheck : DEFAULT_SETTINGS.autoCheck;
   const periodic =
     typeof raw.periodicCheck === "boolean" ? raw.periodicCheck : legacyAuto;
+  const customUrl = typeof raw.customUrl === "string" ? raw.customUrl.trim() : "";
+  const customProxyUrl =
+    typeof raw.customProxyUrl === "string" ? raw.customProxyUrl.trim() : "";
+  // Empty custom modes are not a real runtime choice — fall back so UI, disk,
+  // and update paths agree (mirror/auto for source, system proxy for network).
+  let source = raw.source ?? DEFAULT_SETTINGS.source;
+  if (source === "custom" && !customUrl) {
+    source = "auto";
+  }
+  let proxyMode = normalizedProxyMode(raw.proxyMode);
+  if (proxyMode === "custom" && !customProxyUrl) {
+    proxyMode = "system";
+  }
   return {
     ...DEFAULT_SETTINGS,
     ...raw,
+    source,
+    customUrl,
     autoCheck: periodic,
     checkOnStartup:
       typeof raw.checkOnStartup === "boolean" ? raw.checkOnStartup : legacyAuto,
     periodicCheck: periodic,
     periodicCheckIntervalSeconds: normalizedInterval(raw.periodicCheckIntervalSeconds),
     signedOnly: true,
-    proxyMode: normalizedProxyMode(raw.proxyMode),
-    customProxyUrl:
-      typeof raw.customProxyUrl === "string" ? raw.customProxyUrl.trim() : "",
+    proxyMode,
+    customProxyUrl,
     disableCodexSelfUpdates:
       typeof raw.disableCodexSelfUpdates === "boolean"
         ? raw.disableCodexSelfUpdates

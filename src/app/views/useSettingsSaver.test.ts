@@ -3,7 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { managerApi } from "../../services/managerApi";
 import { DEFAULT_SETTINGS, type AppSettings } from "../../shared/types";
-import { useSettingsSaver } from "./useSettingsSaver";
+import {
+  mergeSavedKeepingCustomDraft,
+  settingsPayloadForSave,
+  useSettingsSaver,
+} from "./useSettingsSaver";
 
 vi.mock("../../services/managerApi", () => ({
   errorMessage: (cause: unknown) => (cause instanceof Error ? cause.message : String(cause)),
@@ -23,6 +27,69 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
+
+describe("settingsPayloadForSave", () => {
+  it("keeps incomplete custom modes on the last saved values", () => {
+    const last = {
+      ...DEFAULT_SETTINGS,
+      source: "mirror" as const,
+      proxyMode: "direct" as const,
+    };
+    const draft = {
+      ...DEFAULT_SETTINGS,
+      source: "custom" as const,
+      customUrl: "  ",
+      proxyMode: "custom" as const,
+      customProxyUrl: "",
+      askBefore: false,
+    };
+    expect(settingsPayloadForSave(draft, last)).toEqual({
+      ...draft,
+      source: "mirror",
+      customUrl: last.customUrl,
+      proxyMode: "direct",
+      customProxyUrl: last.customProxyUrl,
+    });
+  });
+
+  it("passes through complete custom modes", () => {
+    const last = { ...DEFAULT_SETTINGS };
+    const next = {
+      ...DEFAULT_SETTINGS,
+      source: "custom" as const,
+      customUrl: "https://example.test/feed",
+      proxyMode: "custom" as const,
+      customProxyUrl: "socks5h://127.0.0.1:7890",
+    };
+    expect(settingsPayloadForSave(next, last)).toEqual(next);
+  });
+});
+
+describe("mergeSavedKeepingCustomDraft", () => {
+  it("preserves incomplete custom drafts after other fields save", () => {
+    const draft = {
+      ...DEFAULT_SETTINGS,
+      source: "custom" as const,
+      customUrl: "",
+      proxyMode: "custom" as const,
+      customProxyUrl: "",
+      askBefore: false,
+    };
+    const saved = {
+      ...DEFAULT_SETTINGS,
+      source: "mirror" as const,
+      proxyMode: "direct" as const,
+      askBefore: false,
+    };
+    expect(mergeSavedKeepingCustomDraft(draft, saved)).toEqual({
+      ...saved,
+      source: "custom",
+      customUrl: "",
+      proxyMode: "custom",
+      customProxyUrl: "",
+    });
+  });
+});
 
 describe("useSettingsSaver", () => {
   beforeEach(() => {
@@ -69,6 +136,67 @@ describe("useSettingsSaver", () => {
 
     await waitFor(() => expect(result.current.status).toBe("idle"));
     expect(setSettings).toHaveBeenCalledTimes(2);
+    expect(result.current.settings.askBefore).toBe(false);
+  });
+
+  it("does not let a slow hydrate overwrite user edits", async () => {
+    const { result } = renderHook(() => useSettingsSaver(DEFAULT_SETTINGS));
+    const edited = { ...DEFAULT_SETTINGS, source: "mirror" as const };
+    setSettings.mockResolvedValue(edited);
+
+    act(() => result.current.update(edited));
+    act(() =>
+      result.current.hydrate({
+        ...DEFAULT_SETTINGS,
+        source: "official",
+        checkOnStartup: false,
+      }),
+    );
+
+    expect(result.current.settings.source).toBe("mirror");
+    expect(result.current.hydrated).toBe(true);
+    await waitFor(() => expect(result.current.status).toBe("idle"));
+  });
+
+  it("hydrates when the form is still clean", () => {
+    const { result } = renderHook(() => useSettingsSaver(DEFAULT_SETTINGS));
+    const loaded = { ...DEFAULT_SETTINGS, source: "mirror" as const, periodicCheck: false };
+
+    act(() => result.current.hydrate(loaded));
+
+    expect(result.current.settings).toEqual(loaded);
+    expect(result.current.hydrated).toBe(true);
+  });
+
+  it("saves other fields without persisting an incomplete custom draft", async () => {
+    setSettings.mockImplementation(async (next) => next);
+    const { result } = renderHook(() => useSettingsSaver(DEFAULT_SETTINGS));
+
+    act(() =>
+      result.current.setDraft({
+        ...DEFAULT_SETTINGS,
+        source: "custom",
+        customUrl: "",
+      }),
+    );
+    act(() =>
+      result.current.update({
+        ...DEFAULT_SETTINGS,
+        source: "custom",
+        customUrl: "",
+        askBefore: false,
+      }),
+    );
+
+    await waitFor(() => expect(setSettings).toHaveBeenCalledTimes(1));
+    expect(setSettings).toHaveBeenCalledWith({
+      ...DEFAULT_SETTINGS,
+      source: "auto",
+      customUrl: "",
+      askBefore: false,
+    });
+    // UI keeps the custom draft selection.
+    expect(result.current.settings.source).toBe("custom");
     expect(result.current.settings.askBefore).toBe(false);
   });
 });
