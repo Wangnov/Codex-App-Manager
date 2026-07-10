@@ -1437,13 +1437,20 @@ pub fn win_adopt(state: State<'_, ManagerState>) -> Result<WinInstallStatus, Com
 }
 
 /// Windows-only: open the installed Codex.
+///
+/// Async + `spawn_blocking` so PowerShell AUMID activation (or portable spawn)
+/// cannot freeze the WebView while the OS is cold-starting Codex. Errors still
+/// surface to the UI after the blocking work finishes.
 #[tauri::command]
-pub fn win_launch_codex(state: State<'_, ManagerState>) -> Result<(), CommandError> {
+pub async fn win_launch_codex(state: State<'_, ManagerState>) -> Result<(), CommandError> {
     if !matches!(state.target.os, OperatingSystem::Windows) {
         return Err(AppError::UnsupportedPlatform.into());
     }
     let settings = windows_domain_settings_for_persisted(&state);
-    crate::app::win_update::launch_codex(&settings).map_err(Into::into)
+    tauri::async_runtime::spawn_blocking(move || crate::app::win_update::launch_codex(&settings))
+        .await
+        .map_err(|e| AppError::Internal(format!("join: {e}")))?
+        .map_err(Into::into)
 }
 
 /// Windows-only: guarded execution. Requires explicit confirmation, stages and

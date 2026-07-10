@@ -45,7 +45,9 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [updatedVer, setUpdatedVer] = useState<{ from: string; to: string } | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [defaultInstallRoot, setDefaultInstallRoot] = useState(DEFAULT_SETTINGS.installRoot);
-  const [busy, setBusy] = useState<"plan" | "perform" | "adopt" | "install" | null>(null);
+  const [busy, setBusy] = useState<"plan" | "perform" | "adopt" | "install" | "launch" | null>(
+    null,
+  );
   const [checkError, setCheckError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -64,6 +66,9 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   // resumes into the same chosen location.
   const [paused, setPaused] = useState<(PausedDownload & { installRoot?: string }) | null>(null);
   const scopeRef = useRef<HTMLDivElement>(null);
+  // Synchronous guard for launch double-clicks (state alone can miss a second
+  // click before setBusy("launch") re-renders).
+  const launchInFlightRef = useRef(false);
   const confirmTitleId = useId();
   const confirmBodyId = useId();
   const installDirTitleId = useId();
@@ -506,11 +511,32 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     }
   }, [settings, skippedCandidate, t]);
   const onLaunch = () => {
+    if (busy !== null || launchInFlightRef.current) return;
     // Surface a failed open (PowerShell/AUMID or portable-exe error) via the
     // error banner like every other action, not an unhandled rejection.
+    launchInFlightRef.current = true;
     setActionError(null);
-    void managerApi.winLaunch().catch((cause) => setActionError(userErrorMessage(cause, t)));
+    setBusy("launch");
+    void managerApi
+      .winLaunch()
+      .catch((cause) => setActionError(userErrorMessage(cause, t)))
+      .finally(() => {
+        launchInFlightRef.current = false;
+        setBusy(null);
+      });
   };
+  const launching = busy === "launch";
+  const launchButton = (variant: "primary" | "ghost") => (
+    <button
+      className={variant === "primary" ? "btn primary big" : "btn ghost"}
+      onClick={onLaunch}
+      disabled={busy !== null}
+      aria-busy={launching}
+    >
+      {launching ? <Icon name="loader" className="spinicon" /> : <CodexGlyph />}
+      {launching ? t("home.launching") : t("home.launch")}
+    </button>
+  );
 
   // Scene id; on change the hero remounts and GSAP replays the entrance. `lang`
   // is part of the key so a language switch re-splits the headline (otherwise
@@ -738,10 +764,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
               reflows under the hero. */}
           {rechecking ? (
             <>
-              <button className="btn primary big" onClick={onLaunch} disabled>
-                <CodexGlyph />
-                {t("home.launch")}
-              </button>
+              {launchButton("primary")}
               <button className="btn ghost" disabled>
                 <Icon name="loader" className="spinicon" />
                 {t("home.checking")}
@@ -766,10 +789,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           ) : null}
           {!rechecking && kind === "idle" ? (
             <>
-              <button className="btn primary big" onClick={onLaunch} disabled={busy !== null}>
-                <CodexGlyph />
-                {t("home.launch")}
-              </button>
+              {launchButton("primary")}
               <button className="btn ghost" onClick={check} disabled={busy !== null}>
                 <Icon name="refresh" />
                 {t("home.recheck")}
@@ -782,10 +802,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
                 <Icon name="shield" />
                 {t("home.external.cta")}
               </button>
-              <button className="btn ghost" onClick={onLaunch} disabled={busy !== null}>
-                <CodexGlyph />
-                {t("home.launch")}
-              </button>
+              {launchButton("ghost")}
             </>
           ) : null}
           {!rechecking && kind === "none" ? (
@@ -796,10 +813,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           ) : null}
           {!rechecking && kind === "uptodate" ? (
             <>
-              <button className="btn primary big" onClick={onLaunch} disabled={busy !== null}>
-                <CodexGlyph />
-                {t("home.launch")}
-              </button>
+              {launchButton("primary")}
               <button className="btn ghost" onClick={check} disabled={busy !== null}>
                 <Icon name="refresh" />
                 {t("home.recheck")}
@@ -811,10 +825,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           {!rechecking && kind === "error" ? (
             installed ? (
               <>
-                <button className="btn primary big" onClick={onLaunch} disabled={busy !== null}>
-                  <CodexGlyph />
-                  {t("home.launch")}
-                </button>
+                {launchButton("primary")}
                 <button className="btn ghost" onClick={check} disabled={busy !== null}>
                   <Icon name="refresh" />
                   {t("home.recheck")}
