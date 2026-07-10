@@ -121,4 +121,6 @@ if ($failed) {
 }
 
 Write-Host "[$Stage] Authenticode check passed (mode=$Mode, files=$($results.Count))"
-exit 0
+# Do not `exit` — scripts are invoked in-process with `&` from CI steps;
+# `exit` would terminate the whole step (and skip e.g. smoke after verify).
+return

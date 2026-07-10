@@ -143,20 +143,32 @@ jobs:
 
       # ── Windows: PE architecture diagnostic (especially ARM64 cross-build) ─
       #    windows-latest is x64; aarch64-pc-windows-msvc is cross-compiled.
-      #    Recording the PE machine type proves the *artifact* is ARM64 without
-      #    claiming runtime verification on ARM64 hardware. See
-      #    docs/windows-signing.md § ARM64.
+      #    Hard-assert the main PE machine type (0xAA64 / 0x8664). The NSIS
+      #    outer -setup.exe is an x86/x64 stub that embeds the payload, so we
+      #    assert machine type on the app binary, not the setup wrapper.
+      #    Cross-compilation ≠ runtime verification. See docs/windows-signing.md.
+      #    Invoke scripts in-process (`& .\scripts\…`); nested `pwsh -File` breaks
+      #    array parameter binding for -Path on GitHub-hosted Windows runners.
       - name: Windows PE architecture diagnostic
         if: matrix.os == 'windows'
         shell: pwsh
         run: |
           $target = "${{ matrix.target }}"
           $main = "src-tauri/target/$target/release/codex-app-manager.exe"
-          $setup = Get-ChildItem "src-tauri/target/$target/release/bundle/nsis/*-setup.exe" -ErrorAction SilentlyContinue
-          $paths = @($main) + @($setup | ForEach-Object { $_.FullName })
-          pwsh -File scripts/windows-pe-arch.ps1 -Path $paths
+          $setup = @(Get-ChildItem "src-tauri/target/$target/release/bundle/nsis/*-setup.exe" -ErrorAction SilentlyContinue)
+          if (-not (Test-Path -LiteralPath $main)) {
+            Write-Host "::error::[build] missing main PE: $main"
+            exit 1
+          }
+          $expect = if ($target -like "aarch64-*") { "0xAA64" } else { "0x8664" }
+          # Hard assert on the app binary only (setup is a host stub).
+          & .\scripts\windows-pe-arch.ps1 -Path $main -ExpectMachine $expect
+          if ($setup.Count -gt 0) {
+            # Report-only for the installer wrapper (no ExpectMachine).
+            & .\scripts\windows-pe-arch.ps1 -Path @($setup | ForEach-Object { $_.FullName })
+          }
           if ($target -like "aarch64-*") {
-            Write-Host "::notice::ARM64 target is cross-built on x64 runners — PE machine type is checked above; full install/launch smoke is x64-only until ARM64 runners or trusted virtualization is available."
+            Write-Host "::notice::ARM64 main PE asserted machine=0xAA64 (cross-build on x64). Full install/launch smoke remains x64-only until ARM64 runners or trusted virtualization is available."
           }
 
       # ── Windows: optional Authenticode (OV/EV) on final NSIS installer ────
@@ -174,7 +186,7 @@ jobs:
           WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
         run: |
           $setup = Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe" -ErrorAction Stop
-          pwsh -File scripts/sign-windows-authenticode.ps1 -Path @($setup.FullName) -Stage "sign"
+          & .\scripts\sign-windows-authenticode.ps1 -Path $setup.FullName -Stage "sign"
 
       - name: Verify Authenticode on Windows installer
         if: matrix.os == 'windows'
@@ -183,8 +195,8 @@ jobs:
           AUTHENTICODE_MODE: ${{ vars.AUTHENTICODE_REQUIRED == 'true' && 'required' || 'optional' }}
         run: |
           $setup = Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe" -ErrorAction Stop
-          pwsh -File scripts/verify-windows-authenticode.ps1 `
-            -Path @($setup.FullName) `
+          & .\scripts\verify-windows-authenticode.ps1 `
+            -Path $setup.FullName `
             -Mode $env:AUTHENTICODE_MODE `
             -Stage "sign-verify"
 

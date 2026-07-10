@@ -48,7 +48,8 @@ function Fail-Stage([string]$Message) {
 if ([string]::IsNullOrWhiteSpace($CertificateBase64)) {
     Write-Host "[$Stage] WINDOWS_CERTIFICATE not set — skipping Authenticode signing (non-blocking milestone)."
     Write-Host "[$Stage] Installer remains unsigned; see docs/windows-signing.md."
-    exit 0
+    # Do not `exit` — CI invokes this in-process with `&`.
+    return
 }
 
 Write-Stage "Import certificate and locate signtool"
@@ -125,4 +126,4 @@ finally {
 }
 
 Write-Host "[$Stage] Authenticode signing complete"
-exit 0
+return

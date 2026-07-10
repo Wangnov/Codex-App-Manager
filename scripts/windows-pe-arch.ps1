@@ -5,12 +5,17 @@
 # Cross-compilation ≠ runtime verification (see docs/windows-signing.md).
 #
 # Usage:
-#   pwsh scripts/windows-pe-arch.ps1 -Path path\to\codex-app-manager.exe
+#   & .\scripts\windows-pe-arch.ps1 -Path path\to\codex-app-manager.exe
+#   & .\scripts\windows-pe-arch.ps1 -Path $main -ExpectMachine 0xAA64
 
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [string[]]$Path
+    [string[]]$Path,
+
+    # Optional hard assert: every inspected PE must match this machine code
+    # (e.g. 0xAA64 for ARM64, 0x8664 for x64). Accepts int or hex string.
+    [string]$ExpectMachine = ""
 )
 
 Set-StrictMode -Version Latest
@@ -21,13 +26,13 @@ function Get-PeMachine([string]$FilePath) {
     try {
         $br = New-Object System.IO.BinaryReader($fs)
         if ($br.ReadUInt16() -ne 0x5A4D) {
-            return [pscustomobject]@{ Path = $FilePath; Machine = "not-MZ"; Label = "not a PE" }
+            return [pscustomobject]@{ Path = $FilePath; MachineValue = -1; Machine = "not-MZ"; Label = "not a PE" }
         }
         $fs.Seek(0x3C, [System.IO.SeekOrigin]::Begin) | Out-Null
         $peOffset = $br.ReadUInt32()
         $fs.Seek($peOffset, [System.IO.SeekOrigin]::Begin) | Out-Null
         if ($br.ReadUInt32() -ne 0x4550) {
-            return [pscustomobject]@{ Path = $FilePath; Machine = "bad-PE"; Label = "invalid PE signature" }
+            return [pscustomobject]@{ Path = $FilePath; MachineValue = -1; Machine = "bad-PE"; Label = "invalid PE signature" }
         }
         $machine = $br.ReadUInt16()
         $label = switch ($machine) {
@@ -38,9 +43,10 @@ function Get-PeMachine([string]$FilePath) {
             default { "unknown(0x{0:X4})" -f $machine }
         }
         return [pscustomobject]@{
-            Path    = $FilePath
-            Machine = ("0x{0:X4}" -f $machine)
-            Label   = $label
+            Path         = $FilePath
+            MachineValue = [int]$machine
+            Machine      = ("0x{0:X4}" -f $machine)
+            Label        = $label
         }
     }
     finally {
@@ -48,21 +54,46 @@ function Get-PeMachine([string]$FilePath) {
     }
 }
 
+$expectValue = $null
+if (-not [string]::IsNullOrWhiteSpace($ExpectMachine)) {
+    $expectValue = [int]($ExpectMachine.Trim())
+}
+
 $rows = @()
+$failed = $false
 foreach ($raw in $Path) {
     if (-not (Test-Path -LiteralPath $raw)) {
-        Write-Host "::warning::PE arch: missing $raw"
+        Write-Host "::error::PE arch: missing $raw"
+        $failed = $true
         continue
     }
     $info = Get-PeMachine (Resolve-Path -LiteralPath $raw).Path
     $rows += $info
     Write-Host ("PE {0}  machine={1}  {2}" -f (Split-Path $info.Path -Leaf), $info.Machine, $info.Label)
+
+    if ($null -ne $expectValue) {
+        if ($info.MachineValue -ne $expectValue) {
+            Write-Host ("::error::PE arch mismatch for {0}: expected 0x{1:X4}, got {2}" -f (Split-Path $info.Path -Leaf), $expectValue, $info.Machine)
+            $failed = $true
+        }
+    }
 }
 
 if ($rows.Count -eq 0) {
     Write-Host "::error::No PE files inspected"
-    exit 1
+    throw "No PE files inspected"
 }
 
 $rows | Format-Table -AutoSize | Out-String | Write-Host
-exit 0
+
+if ($failed) {
+    Write-Host "::error::PE architecture check failed"
+    throw "PE architecture check failed"
+}
+
+if ($null -ne $expectValue) {
+    Write-Host ("PE architecture assert OK (ExpectMachine=0x{0:X4}, files={1})" -f $expectValue, $rows.Count)
+}
+
+# Do not `exit` — CI invokes this in-process with `&`.
+return
