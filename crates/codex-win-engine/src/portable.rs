@@ -131,10 +131,16 @@ fn find_exe_named(root: &Path, name: &str) -> Result<Option<PathBuf>, EngineErro
     Ok(None)
 }
 
-/// Locate the app's entry executable in an extracted MSIX. The manifest's
-/// `Application@Executable` is authoritative (resolved as a package-root
-/// relative path, then by basename); known entry names are the fallback for
-/// odd payload layouts or a manifest without an `<Application>`.
+/// Locate the app's entry executable in an extracted MSIX.
+///
+/// The manifest's `Application@Executable` is authoritative: when declared it
+/// is resolved as a package-root relative path, then by basename — and a
+/// declared entry that cannot be found is a hard error, NOT a fallback case.
+/// Falling back would silently select a non-entry binary (e.g. the legacy
+/// `Codex.exe` shipped next to the real `ChatGPT.exe`) when the true entry is
+/// missing or quarantined, and the install would then health-check the wrong
+/// binary. The known-name candidates only serve manifests with no
+/// `<Application>` declaration at all.
 fn find_app_exe(root: &Path, manifest_xml: &str) -> Result<PathBuf, EngineError> {
     if let Some(declared) = crate::msix::parse_appx_application_executable(manifest_xml) {
         // Manifest paths use either separator; resolve component-wise.
@@ -148,6 +154,9 @@ fn find_app_exe(root: &Path, manifest_xml: &str) -> Result<PathBuf, EngineError>
                 return Ok(found);
             }
         }
+        return Err(EngineError::Msix(format!(
+            "MSIX manifest declares entry executable '{declared}' but it is missing from the payload"
+        )));
     }
     for name in APP_EXE_CANDIDATES {
         if let Some(found) = find_exe_named(root, name)? {
@@ -162,18 +171,17 @@ fn find_app_exe(root: &Path, manifest_xml: &str) -> Result<PathBuf, EngineError>
 /// The entry executable of an installed portable root. Reads the payload's
 /// `AppxManifest.xml` (written at install time) for the declared executable's
 /// basename — the payload root is the exe's directory, so only the basename
-/// applies — and falls back to probing known entry names for older installs.
+/// applies. A declared-but-missing entry returns `None` (the install is
+/// broken; picking a leftover non-entry binary would mask that). The known
+/// entry names are probed only for roots without a declaring manifest.
 pub fn installed_app_exe(install_root: &Path) -> Option<PathBuf> {
     let manifest = install_root.join("AppxManifest.xml");
     if let Ok(xml) = fs::read_to_string(&manifest) {
         if let Some(declared) = crate::msix::parse_appx_application_executable(&xml) {
             let basename = declared.replace('\\', "/");
-            if let Some(name) = basename.rsplit('/').next() {
-                let exe = install_root.join(name);
-                if exe.is_file() {
-                    return Some(exe);
-                }
-            }
+            let name = basename.rsplit('/').next()?;
+            let exe = install_root.join(name);
+            return exe.is_file().then_some(exe);
         }
     }
     APP_EXE_CANDIDATES
@@ -889,6 +897,59 @@ mod tests {
         )
         .unwrap();
         assert_eq!(installed_app_exe(&root), Some(root.join("Codex.exe")));
+
+        // A declared-but-missing entry means the install is broken: never
+        // silently fall back to a leftover binary that happens to exist.
+        fs::write(
+            root.join("AppxManifest.xml"),
+            br#"<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">
+  <Identity Name="OpenAI.Codex" Publisher="CN=X" Version="1.0.0.0" ProcessorArchitecture="x64" />
+  <Applications><Application Id="App" Executable="app\Gone.exe" /></Applications>
+</Package>"#,
+        )
+        .unwrap();
+        assert_eq!(installed_app_exe(&root), None);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn install_fails_when_declared_entry_is_missing_from_payload() {
+        // Manifest declares app/ChatGPT.exe but the payload only carries the
+        // legacy app/Codex.exe (e.g. the entry was quarantined). Selecting the
+        // leftover binary would health-check the wrong thing — must error out.
+        let root = std::env::temp_dir().join(format!(
+            "codex-portable-missing-entry-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let msix = root.join("codex.msix");
+        {
+            let file = fs::File::create(&msix).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let opts = SimpleFileOptions::default();
+            zip.start_file("AppxManifest.xml", opts).unwrap();
+            zip.write_all(
+                br#"<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">
+  <Identity Name="OpenAI.Codex" Publisher="CN=OpenAI OpCo, LLC" Version="26.707.3748.0" ProcessorArchitecture="x64" />
+  <Applications>
+    <Application Id="App" Executable="app/ChatGPT.exe" EntryPoint="Windows.FullTrustApplication" />
+  </Applications>
+</Package>"#,
+            )
+            .unwrap();
+            zip.start_file("app/Codex.exe", opts).unwrap();
+            zip.write_all(b"legacy only").unwrap();
+            zip.finish().unwrap();
+        }
+
+        let install_root = root.join("Codex");
+        let err = install_portable_from_msix_inner(&msix, &install_root, false, false).unwrap_err();
+        assert!(
+            err.to_string().contains("missing from the payload"),
+            "unexpected error: {err}"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }

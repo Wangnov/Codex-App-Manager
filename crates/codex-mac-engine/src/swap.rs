@@ -50,8 +50,15 @@ fn applescript_quote(literal: &str) -> String {
 /// several coexist. The main process's argv[0] is the bundle's
 /// `Contents/MacOS/<CFBundleExecutable>` absolute path, so a prefix match on
 /// that pins the exact instance we manage.
+///
+/// The path is canonicalized first: argv[0] holds the RESOLVED path, so a
+/// symlinked install root (or parent) would otherwise never match and the
+/// quit-before-swap protection would be silently skipped.
 pub fn codex_running_at(install_app: &Path) -> bool {
-    let app = install_app.to_string_lossy();
+    let canonical = install_app
+        .canonicalize()
+        .unwrap_or_else(|_| install_app.to_path_buf());
+    let app = canonical.to_string_lossy();
     let Some(exe) = crate::sys::read_bundle_executable(&app) else {
         // No readable bundle at the path (e.g. already removed) — not running.
         return false;
@@ -87,24 +94,29 @@ fn tell_codex_at(install_app: &Path, verb: &str) -> std::io::Result<std::process
 /// grace period we therefore `activate` Codex — bringing the pending dialog
 /// frontmost so the user can answer it — and keep waiting until the timeout.
 pub fn quit_codex_at(install_app: &Path, timeout_secs: u64) -> Result<(), EngineError> {
-    if !codex_running_at(install_app) {
+    // Resolve symlinks once so detection (argv[0] holds the real path) and the
+    // AppleScript address agree on the same concrete bundle.
+    let install_app = install_app
+        .canonicalize()
+        .unwrap_or_else(|_| install_app.to_path_buf());
+    if !codex_running_at(&install_app) {
         return Ok(());
     }
     log::info!(
         "requesting Codex graceful quit timeout={timeout_secs} path={}",
         install_app.display()
     );
-    let _ = tell_codex_at(install_app, "quit");
+    let _ = tell_codex_at(&install_app, "quit");
 
     // 250ms ticks; if Codex is still running after ~5s it is most likely
     // waiting on its quit-confirmation dialog — surface it.
     let activate_tick = 5 * 4;
     for tick in 0..(timeout_secs * 4) {
-        if !codex_running_at(install_app) {
+        if !codex_running_at(&install_app) {
             return Ok(());
         }
         if tick == activate_tick {
-            let _ = tell_codex_at(install_app, "activate");
+            let _ = tell_codex_at(&install_app, "activate");
         }
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
