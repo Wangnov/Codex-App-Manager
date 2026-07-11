@@ -66,6 +66,70 @@ jobs:
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings
       - name: Test (src-tauri)
         run: cargo test --manifest-path src-tauri/Cargo.toml --workspace
+      - name: Assert vendored tauri updater is active
+        shell: bash
+        run: |
+          set -euo pipefail
+          metadata_file="$(mktemp)"
+          trap 'rm -f "$metadata_file"' EXIT
+          cargo metadata --locked --format-version 1 \
+            --manifest-path src-tauri/Cargo.toml > "$metadata_file"
+          node --input-type=module - "$metadata_file" "$GITHUB_WORKSPACE" <<'NODE'
+          import { readFileSync, realpathSync } from "node:fs";
+          import { resolve } from "node:path";
+
+          const metadata = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          const workspace = realpathSync(process.argv[3]);
+          const expectedManifest = realpathSync(
+            resolve(workspace, "vendor/tauri-plugin-updater-2.10.1/Cargo.toml"),
+          );
+          const updaterPackages = metadata.packages.filter(
+            ({ name }) => name === "tauri-plugin-updater",
+          );
+          if (updaterPackages.length !== 1) {
+            throw new Error(
+              `expected exactly one tauri-plugin-updater package, found ${updaterPackages.length}`,
+            );
+          }
+          const [updater] = updaterPackages;
+          if (updater.version !== "2.10.1") {
+            throw new Error(`expected tauri-plugin-updater 2.10.1, found ${updater.version}`);
+          }
+          if (updater.source !== null) {
+            throw new Error(`tauri-plugin-updater resolved from registry source ${updater.source}`);
+          }
+          if (realpathSync(updater.manifest_path) !== expectedManifest) {
+            throw new Error(
+              `tauri-plugin-updater resolved from ${updater.manifest_path}, expected ${expectedManifest}`,
+            );
+          }
+
+          const app = metadata.packages.find(
+            ({ manifest_path: manifestPath, name }) =>
+              name === "codex-app-manager" &&
+              realpathSync(manifestPath) ===
+                realpathSync(resolve(workspace, "src-tauri/Cargo.toml")),
+          );
+          const updaterDeclarations =
+            app?.dependencies.filter(({ name }) => name === "tauri-plugin-updater") ?? [];
+          if (
+            updaterDeclarations.length !== 1 ||
+            updaterDeclarations[0].req !== "=2.10.1"
+          ) {
+            throw new Error("codex-app-manager must pin tauri-plugin-updater to =2.10.1");
+          }
+          const appNode = metadata.resolve?.nodes.find(({ id }) => id === app?.id);
+          const updaterEdges =
+            appNode?.deps.filter(({ name }) => name === "tauri_plugin_updater") ?? [];
+          if (updaterEdges.length !== 1 || updaterEdges[0].pkg !== updater.id) {
+            throw new Error("codex-app-manager does not resolve the expected vendored updater");
+          }
+          console.log(`verified vendored tauri updater: ${updater.manifest_path}`);
+          NODE
+      # The updater is a path-patched dependency, so its response-limit tests
+      # are not included in the application workspace test command above.
+      - name: Test vendored tauri updater bounds
+        run: cargo test --locked --manifest-path vendor/tauri-plugin-updater-2.10.1/Cargo.toml --lib
       # Path deps are not workspace members, so their unit/integration tests are
       # not covered by the step above. Run each engine crate explicitly so
       # mac/win pure-logic regressions fail required CI on every PR.

@@ -16,7 +16,10 @@ import {
   assertReleaseTagRuleset,
   verifyReleaseTagProtection,
 } from "./check-release-tag-protection.mjs";
-import { requiredReleaseAssetNames } from "./check-release-reuse.mjs";
+import {
+  REQUIRED_RELEASE_METADATA_ASSET_NAMES,
+  requiredReleaseAssetNames,
+} from "./check-release-reuse.mjs";
 import {
   assertReleaseBindingAttestation,
   createReleaseBinding,
@@ -27,6 +30,7 @@ import {
   assertLocalReleaseArtifactNames,
   assertReleaseSourceVersions,
 } from "./check-release-version.mjs";
+import { verifyDraftReleaseAssets } from "./check-release-draft-assets.mjs";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const workflow = await readFile(
@@ -63,6 +67,10 @@ describe("release workflow recovery invariants", () => {
       workflow.indexOf("  prepare:\n"),
       workflow.indexOf("  build:\n"),
     );
+    const build = workflow.slice(
+      workflow.indexOf("  build:\n"),
+      workflow.indexOf("  select_artifacts:\n"),
+    );
 
     expect(signalWorkflow).toContain("name: Release source");
     expect(signalWorkflow).toContain('tags: ["v*"]');
@@ -87,7 +95,9 @@ describe("release workflow recovery invariants", () => {
     expect(preflight).toContain(
       '[[ "$UPSTREAM_EVENT" == "push" && "$UPSTREAM_CONCLUSION" == "success" ]]',
     );
-    expect(preflight).toContain('[[ "$UPSTREAM_PATH" == ".github/workflows/release-source.yml"');
+    expect(preflight).toContain(
+      '[[ "$UPSTREAM_PATH" == ".github/workflows/release-source.yml"',
+    );
     expect(preflight).toContain('[[ "$UPSTREAM_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]');
     expect(preflight).toContain("UPSTREAM_ACTOR_LOGIN");
     expect(preflight).toContain("UPSTREAM_ACTOR_ID");
@@ -96,7 +106,9 @@ describe("release workflow recovery invariants", () => {
     expect(preflight).toContain("CURRENT_TRIGGERING_ACTOR_LOGIN");
     expect(preflight).toContain("AUTHORIZED_RELEASE_ACTOR_LOGIN");
     expect(preflight).toContain("AUTHORIZED_RELEASE_ACTOR_ID");
-    expect(preflight).toContain('[[ "$DISPATCH_REF" == "refs/heads/$DEFAULT_BRANCH" ]]');
+    expect(preflight).toContain(
+      '[[ "$DISPATCH_REF" == "refs/heads/$DEFAULT_BRANCH" ]]',
+    );
     expect(preflight).toContain("DISPATCH_ACTOR_ID");
     expect(preflight).toContain(
       "workflow_dispatch requires a non-empty target_tag",
@@ -106,7 +118,23 @@ describe("release workflow recovery invariants", () => {
     expect(preflight).not.toContain("${{ secrets.");
     expect(prepare).toContain("needs: preflight");
     expect(prepare).toContain("needs.preflight.result == 'success'");
-    expect(prepare).toContain("ref: ${{ steps.tag_source.outputs.release_source_sha }}");
+    expect(prepare).toContain(
+      "ref: ${{ steps.tag_source.outputs.release_source_sha }}",
+    );
+    expect(build).toContain(
+      "ref: ${{ needs.prepare.outputs.release_source_sha }}",
+    );
+    expect(build).toContain("path: release-source");
+    expect(build).toContain(
+      "& ..\\scripts\\assert-signpath-foundation-ready.ps1",
+    );
+    expect(
+      build.indexOf("- name: Re-check release source before build"),
+    ).toBeLessThan(
+      build.indexOf(
+        "- name: Assert SignPath Foundation readiness (fail closed)",
+      ),
+    );
     expect(workflow).not.toContain("github.ref_type == 'tag'");
     expect(workflow).toContain(
       "needs.preflight.outputs.trusted_invocation == 'tag-signal'",
@@ -115,7 +143,10 @@ describe("release workflow recovery invariants", () => {
 
   it("re-authorizes the current rerun actor before every credentialed job does work", () => {
     const credentialedJobs = [
-      workflow.slice(workflow.indexOf("  prepare:\n"), workflow.indexOf("  build:\n")),
+      workflow.slice(
+        workflow.indexOf("  prepare:\n"),
+        workflow.indexOf("  build:\n"),
+      ),
       workflow.slice(
         workflow.indexOf("  build:\n"),
         workflow.indexOf("  select_artifacts:\n"),
@@ -134,6 +165,9 @@ describe("release workflow recovery invariants", () => {
       expect(authorization).toBeGreaterThan(steps);
       expect(authorization).toBeLessThan(firstAction);
       expect(authorization).toBeLessThan(firstSecret);
+      expect(job.slice(steps, authorization)).not.toMatch(
+        /\n\s+- (?:name:|uses:)/,
+      );
       expect(job.slice(authorization, firstAction)).toContain(
         "CURRENT_TRIGGERING_ACTOR_LOGIN: ${{ github.triggering_actor }}",
       );
@@ -146,6 +180,14 @@ describe("release workflow recovery invariants", () => {
         );
       }
     }
+
+    const buildAuthorization = credentialedJobs[1].indexOf(
+      "- name: Authorize credentialed job rerun actor",
+    );
+    const buildFirstAction = credentialedJobs[1].indexOf("- uses:");
+    expect(
+      credentialedJobs[1].slice(buildAuthorization, buildFirstAction),
+    ).toContain("working-directory: ${{ github.workspace }}");
   });
 
   it("requires the exact release commit to remain an ancestor of the live default branch", async () => {
@@ -202,7 +244,9 @@ describe("release workflow recovery invariants", () => {
       );
       expect(prepare).toContain("check-release-source-ancestor.sh");
       expect(build).toContain("check-release-source-ancestor.sh");
-      expect(releaseJob.match(/check-release-source-ancestor\.sh/g).length).toBeGreaterThanOrEqual(4);
+      expect(
+        releaseJob.match(/check-release-source-ancestor\.sh/g).length,
+      ).toBeGreaterThanOrEqual(4);
     } finally {
       await rm(root, { force: true, recursive: true });
     }
@@ -362,6 +406,125 @@ describe("release workflow recovery invariants", () => {
     }
   });
 
+  it("requires the mutable Release draft to match the exact canonical local asset set", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cam-release-draft-assets-"));
+    const releaseTag = "v1.2.3";
+    const names = [
+      ...requiredReleaseAssetNames(releaseTag),
+      ...REQUIRED_RELEASE_METADATA_ASSET_NAMES,
+    ];
+    const paths = names.map((name) => join(root, name));
+    try {
+      await Promise.all(
+        paths.map((path, index) => writeFile(path, `canonical asset ${index}`)),
+      );
+      const release = {
+        assets: names.map((name, index) => ({
+          id: 101 + index,
+          name,
+          size: Buffer.byteLength(`canonical asset ${index}`),
+        })),
+        draft: true,
+        id: 77,
+        immutable: false,
+        tag_name: releaseTag,
+      };
+      expect(verifyDraftReleaseAssets(release, releaseTag, paths)).toMatchObject({
+        assets: expect.arrayContaining([
+          expect.objectContaining({
+            name: "CodexAppManager_1.2.3_x64-setup.exe",
+          }),
+          expect.objectContaining({ name: "latest.json" }),
+        ]),
+        releaseId: 77,
+      });
+
+      expect(() =>
+        verifyDraftReleaseAssets(
+          {
+            ...release,
+            assets: [
+              ...release.assets,
+              {
+                id: 103,
+                name: "CodexAppManager_1.2.3_unsigned-debug.exe",
+                size: 1,
+              },
+            ],
+          },
+          releaseTag,
+          paths,
+        ),
+      ).toThrow("unexpected: CodexAppManager_1.2.3_unsigned-debug.exe");
+      expect(() =>
+        verifyDraftReleaseAssets(
+          { ...release, assets: release.assets.slice(1) },
+          releaseTag,
+          paths,
+        ),
+      ).toThrow(`missing: ${names[0]}`);
+      expect(() =>
+        verifyDraftReleaseAssets(
+          {
+            ...release,
+            assets: release.assets.map((asset) =>
+              asset.name === "latest.json"
+                ? { ...asset, digest: `sha256:${"f".repeat(64)}` }
+                : asset,
+            ),
+          },
+          releaseTag,
+          paths,
+        ),
+      ).toThrow("draft release asset digest differs from local bytes: latest.json");
+      expect(() =>
+        verifyDraftReleaseAssets(
+          { ...release, draft: false, immutable: true },
+          releaseTag,
+          paths,
+        ),
+      ).toThrow("no longer the expected mutable draft");
+
+      const localExtra = join(root, "unsigned-debug.exe");
+      await writeFile(localExtra, "unsigned debug bytes");
+      expect(() =>
+        verifyDraftReleaseAssets(release, releaseTag, [...paths, localExtra]),
+      ).toThrow("local release asset is not in the canonical allowlist: unsigned-debug.exe");
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("resets stale draft assets and verifies an exact byte-for-byte draft before publish", () => {
+    const reset = releaseJob.indexOf(
+      "- name: Reset existing mutable Release draft assets",
+    );
+    const upload = releaseJob.indexOf("- name: Upload GitHub Release draft");
+    const verify = releaseJob.indexOf(
+      "- name: Verify exact GitHub Release draft assets",
+    );
+    const publish = releaseJob.indexOf("- name: Publish GitHub Release");
+    expect(reset).toBeGreaterThan(-1);
+    expect(reset).toBeLessThan(upload);
+    expect(upload).toBeLessThan(verify);
+    expect(verify).toBeLessThan(publish);
+
+    const resetStep = releaseJob.slice(reset, upload);
+    expect(resetStep).toContain("releases/assets/$asset_id");
+    expect(resetStep).toContain("(.assets | length) == 0");
+    expect(resetStep).toContain(".draft == true and .immutable != true");
+
+    const verifyStep = releaseJob.slice(verify, publish);
+    expect(verifyStep).toContain("check-release-draft-assets.mjs");
+    expect(verifyStep).toContain(
+      "canonical_assets=(dist/* latest.json release-binding.json SHA256SUMS release-assets/*)",
+    );
+    expect(verifyStep).toContain('Accept: application/octet-stream');
+    expect(verifyStep).toContain('sha256sum "$downloaded"');
+    expect(verifyStep).toContain('cmp -- "$local_path" "$downloaded"');
+    expect(verifyStep).toContain('cmp -- "$draft_plan" "$post_plan"');
+  });
+
   it("binds the release tag to all six source versions and exact local artifact names", async () => {
     const packageJson = JSON.parse(
       await readFile(join(repoRoot, "package.json"), "utf8"),
@@ -378,7 +541,10 @@ describe("release workflow recovery invariants", () => {
     );
     try {
       const expected = requiredReleaseAssetNames(releaseTag).filter(
-        (name) => name !== "latest.json" && name !== "release-binding.json",
+        (name) =>
+          name !== "latest.json" &&
+          name !== "release-binding.json" &&
+          !name.startsWith("release-identity.json"),
       );
       await Promise.all(
         expected.map((name) => writeFile(join(artifactsDir, name), "x")),
@@ -419,6 +585,9 @@ describe("release workflow recovery invariants", () => {
     );
     expect(manifestStep).toContain(
       "node scripts/validate-release-manifest.mjs",
+    );
+    expect(manifestStep).toContain(
+      'node scripts/gen-updater-manifest.mjs "$RELEASE_TAG" dist release-source',
     );
     expect(manifestStep).not.toContain('if [[ "$RELEASE_TAG" != *-* ]]');
   });
@@ -761,9 +930,7 @@ describe("release workflow recovery invariants", () => {
     expect(existingStep).toContain('gh release verify-asset "$RELEASE_TAG"');
     expect(existingStep).toContain('--signer-workflow "$signer_workflow"');
     expect(existingStep).toContain('--signer-digest "$RELEASE_SIGNER_SHA"');
-    expect(existingStep).toContain(
-      '--source-ref "refs/heads/$DEFAULT_BRANCH"',
-    );
+    expect(existingStep).toContain('--source-ref "refs/heads/$DEFAULT_BRANCH"');
     expect(existingStep).toContain(
       '--source-digest "$RELEASE_WORKFLOW_SOURCE_SHA"',
     );
@@ -803,6 +970,9 @@ describe("release workflow recovery invariants", () => {
     expect(sourceStep).toContain("gh release download");
     expect(sourceStep).toContain("--pattern 'CodexAppManager*'");
     expect(sourceStep).toContain("--pattern 'latest.json'");
+    expect(sourceStep).toMatch(
+      /--pattern 'release-identity\.json\*' \\\s+--pattern 'release-binding\.json'/,
+    );
     expect(sourceStep).toContain("--pattern 'release-binding.json'");
     expect(sourceStep).toContain('actual_digest="sha256:$(sha256sum "$file"');
     expect(sourceStep).toContain(

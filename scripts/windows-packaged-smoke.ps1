@@ -1,12 +1,13 @@
-# Windows x64 packaged lifecycle smoke test.
+# Windows packaged lifecycle and signature smoke test.
 #
 # Stages (each failure message is prefixed so CI logs pin the phase):
 #   build     — caller already built; this script only consumes the installer
 #   install   — passive NSIS install (/P)
-#   launch    — first start of the installed main executable
+#   launch    — first start of the installed main executable (or explicit skip
+#               for an ARM64 payload inspected on an x64 runner)
 #   upgrade   — re-run installer with /P /UPDATE (in-place upgrade path)
 #   uninstall — passive uninstall of the installed product (always attempted in finally)
-#   sign-verify — optional Authenticode probe on installer + installed PE files
+#   sign-verify — mode-controlled Authenticode check on installer + installed PE files
 #
 # Usage (prefer in-process from CI shell:pwsh steps — nested `pwsh -File` breaks
 # array binding for -Path on some runners):
@@ -24,7 +25,10 @@ param(
     [string]$MainBinaryName = "codex-app-manager",
     [int]$LaunchSeconds = 12,
     [ValidateSet("optional", "required", "skip")]
-    [string]$AuthenticodeMode = "optional"
+    [string]$AuthenticodeMode = "optional",
+    [string]$ExpectedSubject = "",
+    [switch]$RequireTimestamp,
+    [switch]$SkipLaunch
 )
 
 Set-StrictMode -Version Latest
@@ -97,7 +101,12 @@ try {
     # ── sign-verify (installer artifact, pre-install) ───────────────────────
     if ($AuthenticodeMode -ne "skip" -and (Test-Path $verifyScript)) {
         Write-Stage "sign-verify" "Probe Authenticode on installer ($AuthenticodeMode)"
-        & $verifyScript -Path $installerItem.FullName -Mode $AuthenticodeMode -Stage "sign-verify"
+        & $verifyScript `
+            -Path $installerItem.FullName `
+            -Mode $AuthenticodeMode `
+            -ExpectedSubject $ExpectedSubject `
+            -RequireTimestamp:$RequireTimestamp `
+            -Stage "sign-verify"
         Close-Stage
     }
 
@@ -129,33 +138,45 @@ try {
     # ── sign-verify (installed PE) ──────────────────────────────────────────
     if ($AuthenticodeMode -ne "skip" -and (Test-Path $verifyScript)) {
         Write-Stage "sign-verify" "Probe Authenticode on installed executable + uninstaller"
-        & $verifyScript -Path @($mainExe, $uninstaller) -Mode $AuthenticodeMode -Stage "sign-verify"
+        & $verifyScript `
+            -Path @($mainExe, $uninstaller) `
+            -Mode $AuthenticodeMode `
+            -ExpectedSubject $ExpectedSubject `
+            -RequireTimestamp:$RequireTimestamp `
+            -Stage "sign-verify"
         Close-Stage
     }
 
     # ── launch ──────────────────────────────────────────────────────────────
-    Write-Stage "launch" "First launch (${LaunchSeconds}s observe window)"
-    Stop-AppProcesses $MainBinaryName
-
-    $proc = Start-Process -FilePath $mainExe -PassThru -WindowStyle Minimized
-    Start-Sleep -Seconds $LaunchSeconds
-
-    if ($proc.HasExited) {
-        # A GUI app exiting immediately with non-zero is a real failure. Exit 0 can
-        # happen if single-instance hands off, but a brand-new install should stay up.
-        if ($proc.ExitCode -ne 0) {
-            Fail-Stage "launch" "process exited early with code $($proc.ExitCode)"
-        }
-        Write-Host "::warning::[launch] process exited during observe window with code 0 — treating as soft pass"
+    if ($SkipLaunch) {
+        Write-Stage "launch" "Skipped: cross-architecture signature install smoke"
+        Write-Host "[launch] main executable was installed and signature-verified but is not runnable on this host architecture"
+        Close-Stage
     }
     else {
-        Write-Host "[launch] process still running (pid=$($proc.Id)) — first launch OK"
-        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 2
+        Write-Stage "launch" "First launch (${LaunchSeconds}s observe window)"
+        Stop-AppProcesses $MainBinaryName
+
+        $proc = Start-Process -FilePath $mainExe -PassThru -WindowStyle Minimized
+        Start-Sleep -Seconds $LaunchSeconds
+
+        if ($proc.HasExited) {
+            # A GUI app exiting immediately with non-zero is a real failure. Exit 0 can
+            # happen if single-instance hands off, but a brand-new install should stay up.
+            if ($proc.ExitCode -ne 0) {
+                Fail-Stage "launch" "process exited early with code $($proc.ExitCode)"
+            }
+            Write-Host "::warning::[launch] process exited during observe window with code 0 — treating as soft pass"
+        }
+        else {
+            Write-Host "[launch] process still running (pid=$($proc.Id)) — first launch OK"
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+        }
+        # Ensure nothing leftover holds files open for upgrade.
+        Stop-AppProcesses $MainBinaryName
+        Close-Stage
     }
-    # Ensure nothing leftover holds files open for upgrade.
-    Stop-AppProcesses $MainBinaryName
-    Close-Stage
 
     # ── upgrade ─────────────────────────────────────────────────────────────
     Write-Stage "upgrade" "Re-run installer with /P /UPDATE"
@@ -170,6 +191,19 @@ try {
     }
     Write-Host "[upgrade] post-upgrade PE size=$((Get-Item -LiteralPath $mainExe).Length) bytes"
     Close-Stage
+
+    # The upgrade path rewrites both payload files. Verify the bytes that remain
+    # installed, not only the first-install copies.
+    if ($AuthenticodeMode -ne "skip" -and (Test-Path $verifyScript)) {
+        Write-Stage "sign-verify" "Verify post-upgrade executable + uninstaller"
+        & $verifyScript `
+            -Path @($mainExe, $uninstaller) `
+            -Mode $AuthenticodeMode `
+            -ExpectedSubject $ExpectedSubject `
+            -RequireTimestamp:$RequireTimestamp `
+            -Stage "sign-verify"
+        Close-Stage
+    }
 
     # ── uninstall (happy path) ──────────────────────────────────────────────
     Write-Stage "uninstall" "Passive uninstall (/P)"
@@ -187,7 +221,8 @@ try {
     $didInstall = $false
     Close-Stage
 
-    Write-Host "Packaged lifecycle smoke passed: install → launch → upgrade → uninstall"
+    $launchLabel = if ($SkipLaunch) { "signature-only launch skip" } else { "launch" }
+    Write-Host "Packaged lifecycle smoke passed: install → $launchLabel → upgrade → uninstall"
 }
 catch {
     $smokeFailed = $true

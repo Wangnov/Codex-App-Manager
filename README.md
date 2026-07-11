@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <a href="https://codexapp.agentsmirror.com"><b>官网 · Official Website</b></a> · <a href="#readme-cn">中文</a> · <a href="#readme-en">English</a>
+  <a href="https://codexapp.agentsmirror.com"><b>官网 · Official Website</b></a> · <a href="docs/code-signing-policy.md">代码签名政策 · Code signing policy</a> · <a href="docs/privacy.md">隐私政策 · Privacy policy</a> · <a href="#readme-cn">中文</a> · <a href="#readme-en">English</a>
 </p>
 
 ---
@@ -89,7 +89,7 @@ brew install --cask wangnov/tap/codex-app-manager
 | Windows x64 | `CodexAppManager_x64-setup.exe` | [⤓ 镜像下载](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x64-setup.exe) |
 | Windows ARM64 | `CodexAppManager_arm64-setup.exe` | [⤓ 镜像下载](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_arm64-setup.exe) |
 
-macOS 版本经 **Developer ID 签名 + Apple 公证**,首次打开不会被 Gatekeeper 拦截。Windows 安装器(`CodexAppManager_x64-setup.exe` / `CodexAppManager_arm64-setup.exe`)当前**没有 Authenticode 代码签名**,首次运行可能出现 SmartScreen 提示;应用内自更新使用的 Tauri updater 签名只校验下载字节,不代表 Windows 发行者信任。详情见 [Windows signing and verification](docs/windows-signing.md)。
+macOS 版本经 **Developer ID 签名 + Apple 公证**,首次打开不会被 Gatekeeper 拦截。Windows 安装器(`CodexAppManager_x64-setup.exe` / `CodexAppManager_arm64-setup.exe`)当前**没有 Authenticode 代码签名**,首次运行可能出现 SmartScreen 提示;应用内自更新使用的 Tauri updater 签名只校验下载字节,不代表 Windows 发行者信任。SignPath Foundation 仍在申请/迁移中,新的 Windows tag 发布在集成验证完成前保持 fail-closed。详情见 [代码签名政策](docs/code-signing-policy.md)与 [Windows signing and verification](docs/windows-signing.md)。
 
 下载后建议用同一 GitHub Release 的 `SHA256SUMS` 核验文件。Windows 可用 PowerShell,macOS 可用 `shasum`:
 
@@ -114,7 +114,7 @@ Manager 内置 Tauri updater,按以下顺序检查自身新版本:
 1. `https://codexapp.agentsmirror.com/manager/latest.json` —— 自有镜像,**全球走 R2、中国大陆自动分流到 IHEP S3**
 2. `https://github.com/Wangnov/Codex-App-Manager/releases/latest/download/latest.json` —— GitHub 兜底
 
-`latest.json` 里的签名签的是**安装包字节**而非 URL,镜像只是逐字节复制并改写下载地址,所以签名始终有效。每次正式发版,CI 会自动把产物与改写后的 `latest.json` 同步到两套镜像(安装包置于 `…/manager/<版本>/…` 的版本化路径,长缓存安全;`latest.json` 在固定根路径短缓存),因此**无需依赖 GitHub 也能自更新**——这对国内网络尤其重要。
+`latest.json` 里的签名签的是**安装包字节**而非 URL；Manager 会先验证固定根路径的签名 `release-identity.json(.sig)`，只接受其授权的 stable 版本、文件名与 SHA-256，再读取可因镜像改写 URL 的 `latest.json`。每次正式发版，CI 会把产物、版本化身份文件和根身份指针同步到 R2/IHEP；任一身份或清单不一致都会安全回退 GitHub，不会安装未授权版本。
 
 ## 管理与更新 Codex 本体
 
@@ -135,7 +135,7 @@ Manager 通过上游镜像管理 Codex 桌面应用本体:
 
 ### 发布流水线
 
-打 `v*` tag 触发 `release.yml`:四平台构建(瞬时下载失败自动重试)→ macOS inside-out Developer ID 签名 + 公证 + 重打 updater 包 → Windows updater 产物签名 → 发布 GitHub Release → 自动同步到 R2 + IHEP 镜像。
+打 `v*` tag 触发 `release.yml`。当前 Windows job 会在构建前由 SignPath Foundation readiness gate 主动失败,因此整个发布不会继续,也不会悄悄发布 unsigned Windows 或仅 macOS 的不完整版本。待申请获批并以真实工件验证 trusted-build、人工审批、NSIS 边界和最终签名后,再由独立 PR 接回四平台发布链路。
 
 ### 生态:codex-app-mirror
 
@@ -160,6 +160,11 @@ npm run tauri:build    # 本地构建(未签名)
 - 不绕过 OpenAI / Microsoft 的授权或本机安装策略
 - 不伪造或重算 Sparkle 签名(只字节级复制官方签名)
 - 不替代 OpenAI、Microsoft Store 的官方分发渠道
+
+## 政策与隐私
+
+- [代码签名政策](docs/code-signing-policy.md):SignPath Foundation 申请状态、项目角色、逐次人工审批、可签工件边界与发布硬门。
+- [隐私政策](docs/privacy.md):Manager 自身与 Codex 的更新检查、镜像/代理网络行为、本地数据和第三方连接元数据。
 
 ## 致谢
 
@@ -221,7 +226,7 @@ Grab your platform's file from the [latest GitHub Release](https://github.com/Wa
 | Windows x64 | `CodexAppManager_x64-setup.exe` | [⤓ mirror](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x64-setup.exe) |
 | Windows ARM64 | `CodexAppManager_arm64-setup.exe` | [⤓ mirror](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_arm64-setup.exe) |
 
-The macOS builds are **Developer ID signed + Apple notarized**, so Gatekeeper won't block first launch. The Windows installers (`CodexAppManager_x64-setup.exe` / `CodexAppManager_arm64-setup.exe`) are **not Authenticode-signed** yet, so SmartScreen may warn on first run; the Tauri updater signature used for in-app updates verifies bytes only and is not Windows publisher trust. See [Windows signing and verification](docs/windows-signing.md).
+The macOS builds are **Developer ID signed + Apple notarized**, so Gatekeeper won't block first launch. The Windows installers (`CodexAppManager_x64-setup.exe` / `CodexAppManager_arm64-setup.exe`) are **not Authenticode-signed** yet, so SmartScreen may warn on first run; the Tauri updater signature used for in-app updates verifies bytes only and is not Windows publisher trust. The SignPath Foundation application/migration is pending, and new Windows tag publication remains fail-closed until the integration is proven. See the [code signing policy](docs/code-signing-policy.md) and [Windows signing and verification](docs/windows-signing.md).
 
 After downloading, compare the file with `SHA256SUMS` from the same GitHub Release. Use PowerShell on Windows or `shasum` on macOS:
 
@@ -246,7 +251,7 @@ The Manager ships the Tauri updater and checks for new versions of itself in thi
 1. `https://codexapp.agentsmirror.com/manager/latest.json` — its own mirror: **R2 globally, auto-failover to IHEP S3 for mainland China**
 2. `https://github.com/Wangnov/Codex-App-Manager/releases/latest/download/latest.json` — GitHub fallback
 
-The signatures in `latest.json` sign the **installer bytes**, not the URL, so the mirror only re-hosts the bytes verbatim and rewrites the download URL — the signature stays valid. On every stable release, CI syncs the artifacts and a rewritten `latest.json` to both mirrors (installers under a versioned path `…/manager/<version>/…` so long caching is safe; `latest.json` at the fixed root with a short cache), so **self-update never depends on GitHub** — which matters most inside China.
+The signatures in `latest.json` sign the **installer bytes**, not the URL. Before trusting that URL-rewritten manifest, the Manager verifies a signed root `release-identity.json(.sig)` and accepts only the authorized stable version, artifact names, and SHA-256 values. Every stable release syncs the artifacts, immutable versioned identity, and root identity pointer to R2/IHEP; any mismatch safely falls back to GitHub instead of installing an unauthorized version.
 
 ## Managing & updating Codex itself
 
@@ -267,7 +272,7 @@ Self-update and payload downloads share the `codexapp.agentsmirror.com` link, fr
 
 ### Release pipeline
 
-Pushing a `v*` tag triggers `release.yml`: four-platform build (with automatic retry on transient download hiccups) → macOS inside-out Developer ID signing + notarization + updater repackage → Windows updater artifact signing → publish the GitHub Release → auto-sync to the R2 + IHEP mirror.
+Pushing a `v*` tag triggers `release.yml`. Today the Windows jobs deliberately fail at the SignPath Foundation readiness gate before building, so the full release cannot proceed and cannot silently publish unsigned Windows or a macOS-only partial set. A separate reviewed PR will restore the four-platform path only after real artifacts prove the trusted build, manual approval, NSIS boundary, and final signatures.
 
 ### Ecosystem: codex-app-mirror
 
@@ -292,6 +297,11 @@ npm run tauri:build    # local (unsigned) build
 - Does not bypass OpenAI / Microsoft authorization or local install policies
 - Does not forge or recompute Sparkle signatures (official signatures are copied verbatim)
 - Is not a replacement for official OpenAI / Microsoft Store distribution
+
+## Policies & privacy
+
+- [Code signing policy](docs/code-signing-policy.md):SignPath Foundation application state, project roles, per-release human approval, eligible-artifact boundaries, and release gates.
+- [Privacy policy](docs/privacy.md):Manager/Codex update checks, mirror and proxy behavior, local data, and ordinary third-party connection metadata.
 
 ## Acknowledgements
 

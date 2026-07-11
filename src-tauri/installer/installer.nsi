@@ -1,8 +1,9 @@
 ; ─────────────────────────────────────────────────────────────────────────────
 ; Codex App Manager — custom NSIS installer template.
-; Vendored verbatim from Tauri's default (@tauri-apps/cli v2.11.2) and lightly
-; customized; every {{handlebars}} variable and all Tauri install/uninstall logic
-; is preserved. Local changes are marked with "[codex-app-manager]".
+; Based on Tauri's default (@tauri-apps/cli v2.11.2) and lightly customized;
+; compatibility fragments are kept in sync with the pinned CLI. Every
+; {{handlebars}} variable and all Tauri install/uninstall logic is preserved.
+; Local changes are marked with "[codex-app-manager]".
 ; Re-sync with upstream when bumping the Tauri CLI. Branding (icon/header/sidebar)
 ; and the installer languages are driven from tauri.conf.json > bundle.windows.nsis;
 ; translated welcome/finish copy can be layered in here later (per-language LangStrings).

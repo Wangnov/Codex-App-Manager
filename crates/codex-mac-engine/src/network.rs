@@ -1,5 +1,22 @@
 use std::process::Command;
 
+use url::Url;
+
+/// Return only a URL's parsed origin for diagnostics. The original URL still
+/// goes to curl, but credentials, path, query, and fragment must never cross
+/// into persisted errors or logs.
+pub(crate) fn safe_url_origin(raw: &str) -> String {
+    let Ok(url) = Url::parse(raw.trim()) else {
+        return "<invalid-url>".to_string();
+    };
+    let origin = url.origin().ascii_serialization();
+    if origin == "null" {
+        "<invalid-url>".to_string()
+    } else {
+        origin
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProxyMode {
     System,
@@ -65,7 +82,22 @@ impl Default for NetworkConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::NetworkConfig;
+    use super::{safe_url_origin, NetworkConfig};
+
+    #[test]
+    fn diagnostic_origin_strips_all_sensitive_url_components() {
+        assert_eq!(
+            safe_url_origin(
+                "https://basic-user:basic-pass@downloads.example:8443/private/file.zip?X-Amz-Credential=secret#fragment-secret",
+            ),
+            "https://downloads.example:8443"
+        );
+        assert_eq!(
+            safe_url_origin("https://downloads.example/public/file.zip"),
+            "https://downloads.example"
+        );
+        assert_eq!(safe_url_origin("not a URL secret-token"), "<invalid-url>");
+    }
 
     #[test]
     fn direct_proxy_mode_disables_curl_proxy_resolution() {

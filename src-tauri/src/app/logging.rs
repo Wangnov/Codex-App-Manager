@@ -26,6 +26,17 @@ pub fn redact_url(raw: &str) -> String {
     redacted
 }
 
+/// Parsed host (plus an explicit non-default port) for user-facing source
+/// labels. Reuses the origin redactor so credentials, path, query, and fragment
+/// can never enter progress events or logs.
+pub fn redact_url_host(raw: &str) -> String {
+    let origin = redact_url(raw);
+    origin
+        .split_once("://")
+        .map(|(_, host)| host.to_string())
+        .unwrap_or(origin)
+}
+
 pub fn prune_old_logs(dir: &Path, keep: usize) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -66,7 +77,7 @@ pub fn prune_old_logs(dir: &Path, keep: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{prune_old_logs, redact_url};
+    use super::{prune_old_logs, redact_url, redact_url_host};
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("{name}-{}", std::process::id()))
@@ -81,6 +92,11 @@ mod tests {
         assert_eq!(redact_url("http://127.0.0.1/path"), "http://127.0.0.1");
         assert_eq!(redact_url("127.0.0.1/path"), "<invalid-url>");
         assert_eq!(redact_url("not a url"), "<invalid-url>");
+        assert_eq!(
+            redact_url_host("https://u:p@example.com:8443/a/b?x=1#frag"),
+            "example.com:8443"
+        );
+        assert_eq!(redact_url_host("not a url"), "<invalid-url>");
     }
 
     #[test]

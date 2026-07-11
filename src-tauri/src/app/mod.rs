@@ -6,6 +6,8 @@ pub mod disk;
 pub mod install_tx;
 pub mod logging;
 pub mod mac_update;
+pub mod manager_update_handoff;
+pub mod manager_update_runtime;
 pub mod op_phase;
 pub mod operation_outcome;
 pub mod oplock;

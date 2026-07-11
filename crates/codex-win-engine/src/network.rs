@@ -1,5 +1,66 @@
 use std::process::Command;
 
+use url::Url;
+
+/// Parsed host (plus explicit port) for diagnostics. The original URL remains
+/// available to curl, but credentials, path, query, and fragment never cross
+/// into progress events, errors, or persisted logs.
+pub(crate) fn safe_url_host(raw: &str) -> String {
+    let Ok(url) = Url::parse(raw.trim()) else {
+        return "<invalid-url>".to_string();
+    };
+    let origin = url.origin().ascii_serialization();
+    if origin == "null" {
+        return "<invalid-url>".to_string();
+    }
+    origin
+        .split_once("://")
+        .map(|(_, host)| host.to_string())
+        .unwrap_or_else(|| "<invalid-url>".to_string())
+}
+
+/// Convert curl stderr into a fixed diagnostic category. Raw stderr is used
+/// transiently for retry decisions, but must not be persisted because curl can
+/// repeat or normalize a credentialed/presigned URL in its message.
+pub(crate) fn safe_curl_failure_message(url: &str, exit_code: Option<i32>, stderr: &str) -> String {
+    let host = safe_url_host(url);
+    let exit = exit_code
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "signal".to_string());
+    let lower = stderr.to_ascii_lowercase();
+    let reason = if lower.contains("no space left")
+        || lower.contains("not enough space")
+        || lower.contains("disk is full")
+    {
+        Some("disk is full")
+    } else if lower.contains("access is denied") || lower.contains("permission denied") {
+        Some("permission denied")
+    } else if lower.contains("failure writing output") || lower.contains("write error") {
+        Some("write error")
+    } else if lower.contains("protocol") && lower.contains("disabled") {
+        Some("protocol disabled")
+    } else if lower.contains("could not resolve") {
+        Some("DNS resolution failed")
+    } else if lower.contains("failed to connect") || lower.contains("connection refused") {
+        Some("connection failed")
+    } else if lower.contains("timed out") || lower.contains("timeout") {
+        Some("timeout")
+    } else if lower.contains("schannel")
+        || lower.contains("ssl")
+        || lower.contains("tls")
+        || lower.contains("certificate")
+    {
+        Some("TLS failure")
+    } else {
+        None
+    };
+
+    match reason {
+        Some(reason) => format!("curl failed for host={host} exit={exit} reason='{reason}'"),
+        None => format!("curl failed for host={host} exit={exit}"),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SchannelRevocationCheck {
     Strict,
@@ -101,7 +162,35 @@ fn push_schannel_no_revoke(_args: &mut Vec<String>) {}
 
 #[cfg(test)]
 mod tests {
-    use super::{is_schannel_revocation_offline, NetworkConfig, SchannelRevocationCheck};
+    #[cfg(windows)]
+    use super::SchannelRevocationCheck;
+    use super::{
+        is_schannel_revocation_offline, safe_curl_failure_message, safe_url_host, NetworkConfig,
+    };
+
+    #[test]
+    fn diagnostic_host_and_curl_error_strip_sensitive_url_components() {
+        let raw = "https://basic-user:basic-pass@downloads.example:8443/private/Codex.msix?X-Amz-Signature=presigned-secret#fragment-secret";
+        assert_eq!(safe_url_host(raw), "downloads.example:8443");
+
+        let stderr = format!("curl: (23) No space left while requesting {raw}");
+        let message = safe_curl_failure_message(raw, Some(23), &stderr);
+        assert_eq!(
+            message,
+            "curl failed for host=downloads.example:8443 exit=23 reason='disk is full'"
+        );
+        for secret in [
+            "basic-user",
+            "basic-pass",
+            "/private/Codex.msix",
+            "X-Amz-Signature",
+            "presigned-secret",
+            "fragment-secret",
+        ] {
+            assert!(!message.contains(secret), "diagnostic leaked {secret}");
+        }
+        assert_eq!(safe_url_host("not a URL with-secret"), "<invalid-url>");
+    }
 
     #[test]
     fn direct_proxy_mode_disables_curl_proxy_resolution() {

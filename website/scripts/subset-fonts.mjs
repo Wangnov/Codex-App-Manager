@@ -3,7 +3,8 @@
 //
 //   node scripts/subset-fonts.mjs
 //
-// Inputs : assets/fonts-src/*.otf|ttf  (downloaded, git-ignored)
+// Inputs : assets/fonts-src/*.otf|ttf  (downloaded, git-ignored), or an
+//          explicit FONT_SOURCE_DIR for isolated git worktrees
 // Outputs: public/fonts/*.woff2
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
@@ -12,7 +13,9 @@ import { fileURLToPath } from "node:url";
 import subsetFont from "subset-font";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const SRC = path.join(root, "assets/fonts-src");
+const SRC = process.env.FONT_SOURCE_DIR
+  ? path.resolve(process.env.FONT_SOURCE_DIR)
+  : path.join(root, "assets/fonts-src");
 const OUT = path.join(root, "public/fonts");
 
 // Every file whose text can end up rendered in the display face.

@@ -10,6 +10,12 @@ import { Settings } from "./views/Settings";
 import { About } from "./views/About";
 import { Uninstall } from "./views/Uninstall";
 import { CodexConfig } from "./views/CodexConfig";
+import {
+  ManagerUpdateBanner,
+  ManagerUpdateProvider,
+  ManagerUpdateSheet,
+  useManagerUpdate,
+} from "./managerUpdate";
 
 type View = "home" | "settings" | "about" | "uninstall" | "config";
 
@@ -30,6 +36,7 @@ function focusPageTarget(root: ParentNode | null) {
 
 function Shell() {
   const [view, setView] = useState<View>("home");
+  const managerUpdate = useManagerUpdate();
   // Skip the first paint: NavBar / Home already own initial focus; stealing it
   // on mount is noisier than helpful for keyboard users.
   const skipInitialFocus = useRef(true);
@@ -61,34 +68,40 @@ function Shell() {
 
   return (
     <>
-      <div data-view="home" style={{ display: view === "home" ? "contents" : "none" }}>
-        <Home onOpenSettings={() => setView("settings")} />
-      </div>
-      {view === "settings" ? (
-        <div data-view="settings" style={{ display: "contents" }}>
-          <Settings
-            onBack={() => withViewTransition(() => setView("home"))}
-            onOpenAbout={() => setView("about")}
-            onOpenUninstall={() => setView("uninstall")}
-            onOpenConfig={() => setView("config")}
+      <div className="manager-app-content" inert={managerUpdate.detailsOpen ? true : undefined}>
+        <div data-view="home" style={{ display: view === "home" ? "contents" : "none" }}>
+          <Home
+            onOpenSettings={() => setView("settings")}
+            managerUpdateSlot={<ManagerUpdateBanner />}
           />
         </div>
-      ) : null}
-      {view === "about" ? (
-        <div data-view="about" style={{ display: "contents" }}>
-          <About onBack={() => setView("settings")} />
-        </div>
-      ) : null}
-      {view === "uninstall" ? (
-        <div data-view="uninstall" style={{ display: "contents" }}>
-          <Uninstall onBack={() => setView("settings")} />
-        </div>
-      ) : null}
-      {view === "config" ? (
-        <div data-view="config" style={{ display: "contents" }}>
-          <CodexConfig onBack={() => setView("settings")} />
-        </div>
-      ) : null}
+        {view === "settings" ? (
+          <div data-view="settings" style={{ display: "contents" }}>
+            <Settings
+              onBack={() => withViewTransition(() => setView("home"))}
+              onOpenAbout={() => setView("about")}
+              onOpenUninstall={() => setView("uninstall")}
+              onOpenConfig={() => setView("config")}
+            />
+          </div>
+        ) : null}
+        {view === "about" ? (
+          <div data-view="about" style={{ display: "contents" }}>
+            <About onBack={() => setView("settings")} />
+          </div>
+        ) : null}
+        {view === "uninstall" ? (
+          <div data-view="uninstall" style={{ display: "contents" }}>
+            <Uninstall onBack={() => setView("settings")} />
+          </div>
+        ) : null}
+        {view === "config" ? (
+          <div data-view="config" style={{ display: "contents" }}>
+            <CodexConfig onBack={() => setView("settings")} />
+          </div>
+        ) : null}
+      </div>
+      <ManagerUpdateSheet onOpenSettings={() => setView("settings")} />
     </>
   );
 }
@@ -101,7 +114,13 @@ export function App() {
     <ThemeProvider>
       <I18nProvider>
         <ErrorBoundary>
-          <Shell />
+          <ManagerUpdateProvider>
+            {/* Keep updater state alive when an unrelated view render fails;
+                the outer boundary still catches provider-level failures. */}
+            <ErrorBoundary>
+              <Shell />
+            </ErrorBoundary>
+          </ManagerUpdateProvider>
         </ErrorBoundary>
         <QuitConfirm />
       </I18nProvider>

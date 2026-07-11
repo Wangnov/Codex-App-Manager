@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::limits::MAX_PACKAGE_BYTES;
-use crate::network::NetworkConfig;
+use crate::network::{safe_url_origin, NetworkConfig};
 use crate::EngineError;
 
 const CURL: &str = "/usr/bin/curl";
@@ -113,11 +113,17 @@ fn partial_path(dest: &Path) -> PathBuf {
     dest.with_file_name(format!("{file_name}.part"))
 }
 
-fn url_host(url: &str) -> &str {
-    url.split("://")
-        .nth(1)
-        .and_then(|rest| rest.split('/').next())
-        .unwrap_or("")
+fn curl_download_failure(url: &str, exit: &str) -> EngineError {
+    let source = safe_url_origin(url);
+    EngineError::Io(format!("curl download failed exit={exit} source={source}"))
+}
+
+fn curl_download_stalled(url: &str) -> EngineError {
+    let source = safe_url_origin(url);
+    EngineError::Io(format!(
+        "curl download stalled for {} seconds source={source}",
+        STALL_TIMEOUT.as_secs()
+    ))
 }
 
 fn is_cancelled_error(err: &EngineError) -> bool {
@@ -132,7 +138,7 @@ fn run_curl(
     on_progress: &dyn Fn(u64),
     network: &NetworkConfig,
 ) -> Result<(), EngineError> {
-    let source = url_host(url);
+    let source = safe_url_origin(url);
     let dest_arg = dest.to_string_lossy().into_owned();
     let max_bytes = max_bytes.to_string();
     let mut args = vec![
@@ -189,13 +195,11 @@ fn run_curl(
                     // Carry the curl exit code so the app-layer classifier can
                     // tell a connect / timeout / write failure apart (stderr is
                     // not piped for the streamed download).
-                    return Err(EngineError::Io(format!(
-                        "curl download failed exit={} url={url}",
-                        status
-                            .code()
-                            .map(|c| c.to_string())
-                            .unwrap_or_else(|| "signal".to_string()),
-                    )));
+                    let exit = status
+                        .code()
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "signal".to_string());
+                    return Err(curl_download_failure(url, &exit));
                 }
                 break;
             }
@@ -211,10 +215,7 @@ fn run_curl(
                     log::warn!(
                         "macOS download stalled source={source} downloaded={downloaded} stall_secs={stall_secs}"
                     );
-                    return Err(EngineError::Io(format!(
-                        "curl download stalled for {} seconds: {url}",
-                        STALL_TIMEOUT.as_secs()
-                    )));
+                    return Err(curl_download_stalled(url));
                 }
                 on_progress(downloaded);
                 std::thread::sleep(Duration::from_millis(300));
@@ -258,7 +259,7 @@ pub fn download_to_with_progress_bounded_with_network(
 
     let part = partial_path(dest);
     let should_resume = part.metadata().map(|m| m.len() > 0).unwrap_or(false);
-    let source = url_host(url);
+    let source = safe_url_origin(url);
     let dest_name = dest
         .file_name()
         .and_then(|name| name.to_str())
@@ -311,6 +312,35 @@ pub fn read_file(path: &Path) -> Result<Vec<u8>, EngineError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failure_diagnostics_omit_url_credentials_path_query_and_fragment() {
+        let raw = "https://basic-user:basic-pass@downloads.example:8443/private/file.zip?X-Amz-Credential=secret#fragment-secret";
+        let failed = curl_download_failure(raw, "22").to_string();
+        let stalled = curl_download_stalled(raw).to_string();
+
+        assert_eq!(
+            failed,
+            "io error: curl download failed exit=22 source=https://downloads.example:8443"
+        );
+        assert_eq!(
+            stalled,
+            format!(
+                "io error: curl download stalled for {} seconds source=https://downloads.example:8443",
+                STALL_TIMEOUT.as_secs()
+            )
+        );
+        for secret in [
+            "basic-user",
+            "basic-pass",
+            "/private/file.zip",
+            "X-Amz-Credential",
+            "fragment-secret",
+        ] {
+            assert!(!failed.contains(secret), "failure leaked {secret}");
+            assert!(!stalled.contains(secret), "stall leaked {secret}");
+        }
+    }
 
     // Mirrors the Windows engine's guard test: the guard serializes downloads,
     // pause vs cancel set the discard flag correctly, and dropping the guard

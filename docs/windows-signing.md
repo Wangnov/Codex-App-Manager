@@ -1,208 +1,169 @@
 # Windows signing and verification
 
-This project currently ships a Windows NSIS installer without Authenticode code
-signing. The installer is still published through GitHub Releases and the
-agentsmirror download mirror, and every release includes `SHA256SUMS` so users
-can verify the bytes they downloaded.
+Windows publisher trust, Tauri updater signatures, and Microsoft SmartScreen
+reputation are independent mechanisms. A `.sig` file is not Authenticode, and a
+valid Authenticode signature cannot guarantee immediate SmartScreen reputation.
 
-CI already prepares the Authenticode **path** (sign script, verify script, optional
-release step, packaged lifecycle smoke). Certificate secrets are optional and
-non-blocking until budget/demand justify an OV/EV cert.
+Public policy: [code signing policy](./code-signing-policy.md) ·
+[privacy policy](./privacy.md)
 
 ## 中文
 
-### 当前状态
+### 当前状态（申请/迁移中）
 
-- macOS 构建已经使用 Developer ID 签名并完成 Apple 公证。
-- Windows 安装器 `CodexAppManager_x64-setup.exe` / `CodexAppManager_arm64-setup.exe` 当前没有 Authenticode 代码签名。
-- Windows 应用内自更新包带有 Tauri updater 签名,用于校验下载字节没有被篡改。
-- Windows 首次手动运行安装器时可能出现 SmartScreen 提示;这是预期风险,不是更新器签名失效。
-- CI 已接入安装包冒烟(x64:`install → launch → upgrade → uninstall`)与 Authenticode 探测;证书未配置时签名步骤跳过且校验为非阻塞。
+- 项目正在申请 **SignPath Foundation**。截至 2026-07-11，申请尚未获批，证书尚未签发，
+  GitHub trusted-build 签名集成尚未上线。
+- 当前已发布的 Windows x64 / ARM64 安装器**没有 Authenticode 发行者签名**，首次运行
+  可能出现 SmartScreen 提示。每个历史版本的实际状态以其 release note 为准。
+- `.sig` / `latest.json` 中已有的 Tauri updater 签名只校验应用内更新下载到的字节，不会
+  让 Windows 显示可信发行者。
+- tag 工作流中的 Windows job 当前会在构建前执行
+  `assert-signpath-foundation-ready.ps1` 并故意失败。因为发布 job 依赖所有 matrix build，
+  所以不会发布缺少 Windows 或 unsigned Windows 的不完整 release。
+- 仓库不再接受 `WINDOWS_CERTIFICATE`、PFX 密码或临时 Tauri thumbprint config。给
+  environment 填入一个证书 secret 不能绕过阻断。
 
-### 三个概念
+### 为什么没有直接接入 SignPath action
 
-**Tauri updater 签名:** `latest.json` 里的 `signature` 对安装包字节签名。它保护应用内自更新下载,确保镜像或网络传输没有改包。它不参与 Windows 系统的发行者信任判断,也不能消除 SmartScreen 提示。实现:`npx tauri signer sign` + `TAURI_SIGNING_PRIVATE_KEY`。
+SignPath Foundation 的公开 GitHub 流程是：可信 GitHub Actions 产生工件 → 把工件提交给
+SignPath → 对每次请求进行人工批准 → 下载签名后的工件。它不是本地 PFX，也不能直接当作
+Tauri `signCommand` 使用。
 
-**Authenticode 代码签名:** Windows 对 PE 文件和安装器使用的代码签名体系。拥有 OV 或 EV 证书后,安装器可以显示发行者身份,并更容易建立系统信任。本项目当前还没有给 Windows 安装器做 Authenticode 签名。实现路径见下文「CI / 发布管线」。
+当前 Tauri/NSIS 的 inside-out 签名路径会在打包期间处理主程序、卸载器、外层安装器，且
+可能准备已签名的第三方 NSIS 插件副本；而 Foundation 证书只能用于本项目允许的开源
+工件，不能把第三方插件冒充项目自有二进制直接签名。SignPath 对 PE 的工件模型也不能被
+未经验证地当成会递归处理 NSIS 内嵌 payload。因此，本仓库不会先猜一个“两轮签名”顺序
+并把它当作生产方案。
 
-**SmartScreen 信誉:** Microsoft Defender SmartScreen 会结合签名身份、下载量、历史信誉和风险信号做拦截判断。EV 证书通常能更快建立信誉;OV 证书和未签名分发都需要累积信誉,未签名安装器首次运行更容易被提示。
+### 启用前必须关闭的阻塞项
 
-### 如何核验下载
+一个独立 PR 必须提供真实的 SignPath 测试项目/证书证据，并完成：
 
-1. 从 [GitHub Releases](https://github.com/Wangnov/Codex-App-Manager/releases/latest) 或 agentsmirror 镜像下载对应安装包。
-2. 从同一个 release 的 Assets 下载 `SHA256SUMS`。
-3. 在本机计算哈希并与 `SHA256SUMS` 中的同名文件比对。
+1. **Trusted build**：签名请求绑定本公开仓库、受保护 tag、commit、workflow run 与准确
+   版本；任何 PR 代码都拿不到签名凭据。
+2. **人工批准**：每个 release 请求由明确的 SignPath approver 单独审核，不能自动批准。
+3. **工件配置**：明确哪些文件属于本项目，排除第三方 NSIS/Tauri 插件直接签名；产品名
+   与版本资源必须受 SignPath 规则约束。
+4. **可复现试签**：对 x64 与 ARM64 进行试签，证明最终安装器、安装后的主程序和
+   `uninstall.exe` 都得到预期的 SignPath Foundation 发行者身份及有效时间戳。
+5. **NSIS 顺序**：用真实工件证明可行的打包/签名顺序；在证据出现前，不实现两轮签名
+   流水线，也不声称 SignPath 会深入签署 NSIS payload。
+6. **发布字节绑定**：在 Authenticode 完成后生成 Tauri updater `.sig`，再核对 GitHub
+   Release、R2 与 IHEP 最终上传文件的 hash 与已验证工件一致。
+7. **运行验收**：x64 完整执行 install → launch → upgrade → uninstall；ARM64 至少完成
+   安装、签名、升级和卸载检查，并在 ARM64 设备或可信虚拟化上补主程序启动。
 
-Windows PowerShell:
+只有上述证据经过 review，才可以用已批准的 trusted-build action 替换 fail-closed 脚本。
+仅删除阻断脚本仍不够：后续 `required` 验证会拒绝 `NotSigned`、错误发行者或缺少时间戳的
+工件。
+
+### 预留的验证工具
+
+- [`scripts/assert-signpath-foundation-ready.ps1`](../scripts/assert-signpath-foundation-ready.ps1)
+  — 当前正式发布硬阻断；故意没有成功路径或 secret 开关。
+- [`scripts/verify-windows-authenticode.ps1`](../scripts/verify-windows-authenticode.ps1)
+  — `required` 模式验证 Windows 报告的签名状态、预期 subject 与时间戳；`optional` 只供
+  unsigned PR / 本地诊断。时间戳 countersigner 本身不足以证明所有 RFC3161 细节，试签还
+  必须检查 SignPath policy 与 `signtool verify /pa /all /v` 输出。
+- [`scripts/windows-packaged-smoke.ps1`](../scripts/windows-packaged-smoke.ps1)
+  — 安装后检查主程序与卸载器，并覆盖升级/卸载路径。
+- [`scripts/windows-pe-arch.ps1`](../scripts/windows-pe-arch.ps1)
+  — 断言 x64 / ARM64 主程序的 PE machine type；cross-build 不等同于 ARM64 运行验证。
+
+仓库中不存在生产可用的 SignPath token、organization/project slug、signing policy slug 或
+artifact configuration slug。在申请获批前不要猜测这些值，也不要新增 PFX fallback。
+
+### 用户如何核验现有版本
+
+当前版本预期会显示 `NotSigned`；下面的命令用于核对实际文件，而不是把 updater `.sig`
+误认成 Authenticode：
 
 ```powershell
+Get-AuthenticodeSignature .\CodexAppManager_x64-setup.exe |
+  Format-List Status,StatusMessage,SignerCertificate,TimeStamperCertificate
 Get-FileHash .\CodexAppManager_x64-setup.exe -Algorithm SHA256
-Get-FileHash .\CodexAppManager_arm64-setup.exe -Algorithm SHA256
 ```
 
-macOS:
-
-```bash
-shasum -a 256 CodexAppManager_aarch64.dmg
-shasum -a 256 CodexAppManager_x86_64.dmg
-```
-
-如果哈希不一致,不要运行该文件,请重新下载或在 issue 中反馈下载来源和文件名。
-
-### 分发渠道与成本评估
-
-**GitHub Releases + agentsmirror + SHA256SUMS:** 这是当前主渠道。优点是透明、可回溯、可独立核验;缺点是 Windows 无 Authenticode 时仍可能触发 SmartScreen。
-
-**winget:** `Wangnov.CodexAppManager` 已在 microsoft/winget-pkgs 中可用,本仓库会在稳定版发布后自动提交新版本。winget 可接受未签名 NSIS 安装器,但新增架构或元数据变化仍可能触发人工审查。
-
-**Microsoft Store / Partner Center:** 这是中期可选路径,需要开发者账号、MSIX 打包和商店审核。优点是用户信任更强,缺点是流程和维护成本更高。
-
-**OV / EV 代码签名证书:** 证书不是当前发布阻塞项。后续可在 Windows 下载量、企业用户需求或支持成本达到明确阈值后重新评估。EV 成本更高但信誉建立更快;OV 成本较低但仍需累积 SmartScreen 信誉。
-
-**不推荐的降本方式:** 不把私钥托管给不可信第三方,不合租硬件令牌,不把代码签名能力转交给无法审计的渠道。
-
-### 风险披露
-
-未签名 Windows 安装器意味着用户首次运行可能需要在 SmartScreen 中选择更多信息后继续。项目通过公开 release、镜像直链、`SHA256SUMS`、Tauri updater 签名和透明文档降低篡改与误解风险;这不能替代 Authenticode,但可以让用户在证书预算到位前做独立核验。
-
-### CI / 发布管线(Authenticode 路径)
-
-| 阶段 | 行为 | 阻塞? |
-|---|---|---|
-| `ci.yml` Rust | 独立跑 `codex-mac-engine` / `codex-win-engine` 测试 | 是(required) |
-| `win-installer-check.yml` | 构建 x64 NSIS → Authenticode 探测 → 安装/启动/升级/卸载冒烟 | 否(路径变更时跑) |
-| `release.yml` Windows | PE 架构诊断 → 可选 Authenticode 签名 → Authenticode 校验 → Tauri updater `.sig` → 收集**最终**工件 | updater `.sig` 与工件齐全为阻塞;Authenticode 默认非阻塞 |
-| ARM64 | 交叉构建 + PE machine=`0xAA64` 诊断;**不是**实机运行验证 | 交叉构建失败阻塞;运行验证见下 |
-
-**启用 Authenticode(证书就绪后):**
-
-1. 在 `release` environment 配置 secrets:
-   - `WINDOWS_CERTIFICATE` — base64 编码的 OV/EV `.pfx`
-   - `WINDOWS_CERTIFICATE_PASSWORD` — pfx 密码
-2. (可选) repo variable `WINDOWS_TIMESTAMP_URL` 覆盖默认 RFC3161 时间戳。
-3. 确认 `release.yml` 的 *Authenticode-sign Windows installer* 步骤对 `-setup.exe` 签出 `Valid`。
-4. 将 repo variable `AUTHENTICODE_REQUIRED=true`,使 `verify-windows-authenticode.ps1` 在 `required` 模式下失败即阻断发布。
-5. 中期目标:在 `tauri build` 前导入证书并配置 `bundle.windows.certificateThumbprint`,让主程序 + uninstaller + installer 在打包期一并签名(比只签外层 setup 更完整)。
-
-脚本:
-
-- [`scripts/sign-windows-authenticode.ps1`](../scripts/sign-windows-authenticode.ps1) — 有证书则签,无证书则跳过(exit 0)。
-- [`scripts/verify-windows-authenticode.ps1`](../scripts/verify-windows-authenticode.ps1) — `optional` / `required`。
-- [`scripts/windows-packaged-smoke.ps1`](../scripts/windows-packaged-smoke.ps1) — x64 生命周期冒烟。
-- [`scripts/windows-pe-arch.ps1`](../scripts/windows-pe-arch.ps1) — 读取 PE machine type。
-
-失败日志阶段标签:`[build]` / `[sign]` / `[sign-verify]` / `[install]` / `[launch]` / `[upgrade]` / `[uninstall]`。
-
-### ARM64 运行验证策略
-
-- GitHub-hosted `windows-latest` 是 **x64**。`aarch64-pc-windows-msvc` 目标是交叉编译,产物经 `windows-pe-arch.ps1` 确认 machine=`0xAA64`。
-- **交叉构建成功 ≠ 运行验证。** 完整 install/launch/upgrade/uninstall 冒烟只在 x64 runner 上对 x64 安装包执行。
-- ARM64 实机或可信虚拟化验收清单(人工 / 自备 runner):
-  1. 安装 `CodexAppManager_arm64-setup.exe`(被动 `/P` 或 UI)。
-  2. 确认 `%LOCALAPPDATA%\Codex App Manager\codex-app-manager.exe` 存在且 PE 为 ARM64。
-  3. 首次启动管理器 UI,无崩溃。
-  4. 再跑一遍安装器 `/P /UPDATE` 升级路径。
-  5. 卸载后主程序消失。
-  6. 若已配置 Authenticode,确认 installer / 主程序 / uninstaller 的 `Get-AuthenticodeSignature` 为 `Valid`。
+文件 hash 应与对应 GitHub Release 的 `SHA256SUMS` 比对。未来启用 SignPath 后，每个
+release note 仍必须按真实验证结果说明该版的 Windows 签名状态。
 
 ## English
 
-### Current status
+### Current state (application/migration pending)
 
-- macOS builds are Developer ID signed and Apple notarized.
-- The Windows installers `CodexAppManager_x64-setup.exe` / `CodexAppManager_arm64-setup.exe` are not Authenticode-signed yet.
-- Windows in-app update artifacts carry the Tauri updater signature, which verifies the downloaded bytes.
-- SmartScreen may warn when users manually run the Windows installer for the first time; that is the known distribution risk, not an updater-signature failure.
-- CI already runs x64 packaged lifecycle smoke (`install → launch → upgrade → uninstall`) and Authenticode probes; signing is skipped and verification is non-blocking until a certificate is configured.
+- The project is applying to **SignPath Foundation**. As of 2026-07-11, the
+  application has not been approved, no certificate has been issued, and no
+  GitHub trusted-build signing integration is active.
+- Published Windows x64/ARM64 installers are **not Authenticode-signed** today
+  and may trigger SmartScreen. The release note for each historical version is
+  the source of truth for that artifact.
+- Existing Tauri updater signatures in `.sig` / `latest.json` authenticate the
+  downloaded update bytes only; they do not establish a Windows publisher.
+- Windows tag jobs intentionally fail before building by running
+  `assert-signpath-foundation-ready.ps1`. The publish job requires the complete
+  build matrix, so it cannot produce a partial or silently unsigned release.
+- This repository no longer accepts `WINDOWS_CERTIFICATE`, PFX passwords, or a
+  generated Tauri thumbprint config. Adding a certificate secret cannot bypass
+  the blocker.
 
-### Three separate concepts
+### Why there is no SignPath action yet
 
-**Tauri updater signature:** The `signature` field in `latest.json` signs the installer bytes. It protects in-app self-update downloads from tampering across mirrors and network hops. It is not Windows publisher trust and does not remove SmartScreen warnings. Implementation: `npx tauri signer sign` + `TAURI_SIGNING_PRIVATE_KEY`.
+The public SignPath Foundation GitHub flow submits an artifact from a trusted
+GitHub Actions build, requires manual approval for each request, and returns a
+signed artifact. It is not a local PFX and cannot be used directly as Tauri's
+`signCommand`.
 
-**Authenticode code signing:** This is the Windows code-signing system for PE files and installers. With an OV or EV certificate, the installer can show a publisher identity and build operating-system trust. This project does not currently Authenticode-sign the Windows installer. The prepared CI path is documented below.
+Tauri/NSIS inside-out signing operates during packaging across the app,
+uninstaller, outer installer, and potentially prepared copies of third-party
+NSIS plugins. A Foundation certificate must not directly sign third-party
+plugins as project-owned binaries. SignPath's PE artifact model must also not be
+assumed to recursively sign an embedded NSIS payload without evidence. This
+repository therefore does not implement or claim an unverified two-pass flow.
 
-**SmartScreen reputation:** Microsoft Defender SmartScreen combines signing identity, download volume, historical reputation, and risk signals. EV certificates usually establish reputation faster; OV certificates and unsigned distribution still need reputation to build, and unsigned installers are more likely to warn on first run.
+### Blockers that must be closed before activation
 
-### How to verify downloads
+A separate PR must use a real SignPath test project/certificate to demonstrate:
 
-1. Download the installer from [GitHub Releases](https://github.com/Wangnov/Codex-App-Manager/releases/latest) or the agentsmirror mirror.
-2. Download `SHA256SUMS` from Assets on the same release.
-3. Compute the local hash and compare it with the matching filename in `SHA256SUMS`.
+1. trusted origin binding to this public repository, protected tag, commit,
+   workflow run, and exact version, without exposing credentials to PR code;
+2. manual approval of every release request by an explicit SignPath approver;
+3. artifact rules that bind product/version metadata and exclude direct signing
+   of third-party NSIS/Tauri plugins;
+4. reproducible x64 and ARM64 pilot signing for the final setup executable,
+   installed app, and `uninstall.exe`, with the expected SignPath Foundation
+   publisher and valid timestamp;
+5. a proven NSIS packaging/signing order rather than an assumed two-pass design;
+6. a Tauri updater `.sig` created only after Authenticode, followed by hash
+   equality across the verified artifact, GitHub Release, R2, and IHEP; and
+7. x64 install/launch/upgrade/uninstall smoke plus native ARM64 launch evidence.
 
-Windows PowerShell:
+Only reviewed evidence can replace the fail-closed script with the approved
+trusted-build action. Deleting the blocker alone is insufficient: downstream
+required checks must still reject `NotSigned`, an unexpected publisher, or a
+missing timestamp.
 
-```powershell
-Get-FileHash .\CodexAppManager_x64-setup.exe -Algorithm SHA256
-Get-FileHash .\CodexAppManager_arm64-setup.exe -Algorithm SHA256
-```
+### Reserved verification tools
 
-macOS:
+- `assert-signpath-foundation-ready.ps1` is the current hard blocker and has no
+  success path or secret-controlled bypass.
+- `verify-windows-authenticode.ps1` checks Windows signature status, expected
+  subject, and timestamp in required mode; optional mode is for intentionally
+  unsigned PR/local diagnostics. A timestamp countersigner alone does not prove
+  every RFC3161 detail, so the pilot must also review SignPath policy and
+  `signtool verify /pa /all /v` output.
+- `windows-packaged-smoke.ps1` verifies installed PE files and exercises the
+  package lifecycle.
+- `windows-pe-arch.ps1` asserts the app PE architecture; cross-building ARM64
+  does not replace a native ARM64 launch test.
 
-```bash
-shasum -a 256 CodexAppManager_aarch64.dmg
-shasum -a 256 CodexAppManager_x86_64.dmg
-```
+There is no production SignPath token, organization/project slug, signing
+policy slug, or artifact-configuration slug in this repository. Do not invent
+those values or add a PFX fallback before approval.
 
-If the hash does not match, do not run the file. Download it again or open an
-issue with the source URL and filename.
+### Verifying current releases
 
-### Distribution channels and cost
-
-**GitHub Releases + agentsmirror + SHA256SUMS:** This is the current primary channel. It is transparent, traceable, and independently verifiable, but the unsigned Windows installer can still trigger SmartScreen.
-
-**winget:** `Wangnov.CodexAppManager` is available in microsoft/winget-pkgs, and this repository auto-submits new stable releases. winget accepts unsigned NSIS installers, but a new architecture or metadata change can still receive manual review.
-
-**Microsoft Store / Partner Center:** This is a medium-term option. It requires a developer account, MSIX packaging, and Store review. It improves user trust but adds process and maintenance cost.
-
-**OV / EV code-signing certificate:** A certificate is not a release blocker today. Re-evaluate when Windows download volume, enterprise demand, or support cost crosses a clear threshold. EV costs more but establishes reputation faster; OV costs less but still needs SmartScreen reputation to build.
-
-**Cost shortcuts to avoid:** Do not custody private keys with untrusted third parties, share hardware tokens, or hand signing capability to channels that cannot be audited.
-
-### Risk disclosure
-
-An unsigned Windows installer means users may need to choose more information
-and continue through SmartScreen on first run. The project reduces tampering and
-confusion risk with public releases, mirror permalinks, `SHA256SUMS`, Tauri
-updater signatures, and transparent documentation. Those mitigations do not
-replace Authenticode, but they let users verify downloads independently until
-certificate budget and demand justify Windows code signing.
-
-### CI / release pipeline (Authenticode path)
-
-| Stage | Behavior | Blocking? |
-|---|---|---|
-| `ci.yml` Rust | Standalone `codex-mac-engine` / `codex-win-engine` tests | Yes (required) |
-| `win-installer-check.yml` | Build x64 NSIS → Authenticode probe → install/launch/upgrade/uninstall smoke | No (path-filtered) |
-| `release.yml` Windows | PE arch diagnostic → optional Authenticode sign → Authenticode verify → Tauri updater `.sig` → collect **final** artifacts | Updater `.sig` + artifact set block; Authenticode optional by default |
-| ARM64 | Cross-build + PE machine=`0xAA64` diagnostic; **not** runtime verification | Cross-build failure blocks; runtime verification below |
-
-**Turning on Authenticode (when a cert is available):**
-
-1. Add secrets on the `release` environment:
-   - `WINDOWS_CERTIFICATE` — base64-encoded OV/EV `.pfx`
-   - `WINDOWS_CERTIFICATE_PASSWORD` — pfx password
-2. Optionally set repo variable `WINDOWS_TIMESTAMP_URL` for the RFC3161 timestamp server.
-3. Confirm the *Authenticode-sign Windows installer* step produces `Valid` on `-setup.exe`.
-4. Set repo variable `AUTHENTICODE_REQUIRED=true` so `verify-windows-authenticode.ps1` runs in `required` mode and fails the release if unsigned.
-5. Medium-term: import the cert before `tauri build` and set `bundle.windows.certificateThumbprint` so the main binary, uninstaller, and installer are all signed during packaging (more complete than outer-setup-only signing).
-
-Scripts:
-
-- [`scripts/sign-windows-authenticode.ps1`](../scripts/sign-windows-authenticode.ps1) — signs when a cert is present; skips with exit 0 otherwise.
-- [`scripts/verify-windows-authenticode.ps1`](../scripts/verify-windows-authenticode.ps1) — `optional` / `required`.
-- [`scripts/windows-packaged-smoke.ps1`](../scripts/windows-packaged-smoke.ps1) — x64 lifecycle smoke.
-- [`scripts/windows-pe-arch.ps1`](../scripts/windows-pe-arch.ps1) — PE machine type probe.
-
-Failure log stage tags: `[build]` / `[sign]` / `[sign-verify]` / `[install]` / `[launch]` / `[upgrade]` / `[uninstall]`.
-
-### ARM64 runtime verification strategy
-
-- GitHub-hosted `windows-latest` is **x64**. The `aarch64-pc-windows-msvc` target is cross-compiled; `windows-pe-arch.ps1` asserts machine=`0xAA64`.
-- **A successful cross-build is not runtime verification.** Full install/launch/upgrade/uninstall smoke runs only for the x64 installer on x64 runners.
-- ARM64 bare-metal or trusted virtualization checklist (manual / self-hosted runner):
-  1. Install `CodexAppManager_arm64-setup.exe` (passive `/P` or UI).
-  2. Confirm `%LOCALAPPDATA%\Codex App Manager\codex-app-manager.exe` exists and is an ARM64 PE.
-  3. First-launch the manager UI without crash.
-  4. Re-run the installer with `/P /UPDATE` (upgrade path).
-  5. Uninstall and confirm the main binary is gone.
-  6. If Authenticode is configured, confirm installer / main / uninstaller `Get-AuthenticodeSignature` is `Valid`.
+Current artifacts are expected to report `NotSigned`. Use
+`Get-AuthenticodeSignature` to inspect the actual file and compare its SHA-256
+hash with the matching release's `SHA256SUMS`; do not treat a Tauri updater
+`.sig` as publisher identity. After SignPath activation, each release note must
+still state that release's observed Windows signing status.

@@ -106,6 +106,17 @@ if (mirrorStage || mirrorVerification || mirrorPromotion) {
         "not-run",
     )}**`,
   );
+  if (mirrorPromotion?.rootIdentity) {
+    rows.push(
+      `Stable root identity: local=**${cell(
+        mirrorPromotion.rootIdentity.localVerification || "not-run",
+      )}**, latest transaction=**${cell(
+        mirrorPromotion.rootIdentity.latestTransactionOutcome || "not-run",
+      )}**, public readback=**${cell(
+        mirrorPromotion.rootIdentity.publicRouteVerification || "not-run",
+      )}**`,
+    );
+  }
   if (mirrorPromotion?.error || mirrorVerification?.error || mirrorStage?.error) {
     rows.push(
       `Mirror error: \`${cell(
@@ -114,8 +125,8 @@ if (mirrorStage || mirrorVerification || mirrorPromotion) {
     );
   }
   rows.push("");
-  rows.push("| Backend | Candidate verification | Previous | Decision | Promotion | Supersession | Rollback | Final | Error |");
-  rows.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+  rows.push("| Backend | Candidate verification | Previous | Decision | Promotion | Root sig | Root JSON | Root direct | Root public | Supersession | Rollback | Final | Error |");
+  rows.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
   const backendRows =
     mirrorPromotion?.backends || mirrorVerification?.backends || mirrorStage?.backends || [];
   for (const backend of backendRows) {
@@ -123,6 +134,10 @@ if (mirrorStage || mirrorVerification || mirrorPromotion) {
       `| ${cell(backend.name)} | ${cell(backend.candidateVerification || backend.status)} | ${cell(
         backend.currentVersion || "absent",
       )} | ${cell(backend.decision)} | ${cell(backend.promotion)} | ${cell(
+        backend.rootIdentity?.signatureWrite,
+      )} | ${cell(backend.rootIdentity?.jsonWrite)} | ${cell(
+        backend.rootIdentity?.directVerification,
+      )} | ${cell(backend.rootIdentity?.publicVerification)} | ${cell(
         backend.supersession,
       )} | ${cell(
         backend.rollback,
@@ -155,6 +170,13 @@ if (mirrorStage || mirrorVerification || mirrorPromotion) {
   } else if (mirrorPromotion?.rollback?.complete === false) {
     rows.push(
       "**Manual intervention required:** promotion rollback was incomplete; inspect the per-backend errors before another release.",
+    );
+  } else if (
+    mirrorPromotion?.outcome === "failed" &&
+    mirrorPromotion?.rootIdentity?.latestTransactionOutcome
+  ) {
+    rows.push(
+      "**Retry required:** latest.json completed its monotonic transaction, but stable root identity publication or readback failed. Any mismatched identity/signature transition is rejected by clients, which fall back to GitHub; rerun the same release to repair both root pointers.",
     );
   } else if (["failed", "blocked-downgrade", "rolled-back"].includes(mirrorPromotion?.outcome)) {
     rows.push(

@@ -15,6 +15,10 @@ successful `workflow_run` invokes the current default-branch
 notarizes, and publishes the GitHub Release with the Tauri updater manifest.
 The signal has no checkout, secrets, environment, write permission, or artifact
 handoff; all credentialed jobs remain in the trusted default-branch workflow.
+The publish job normally consumes the full four-platform build matrix. Windows
+tag jobs currently fail closed while the SignPath Foundation application and
+trusted-build migration are pending, so a new tag cannot publish a partial or
+unsigned release. See the [code signing policy](./code-signing-policy.md).
 
 ## macOS signing pipeline
 
@@ -46,25 +50,76 @@ bash scripts/finalize-macos.sh aarch64-apple-darwin
 
 Omit the `AC_API_*` vars to skip notarization for a quick local dev finalize.
 
+## Manager updater trust and size limits
+
+`latest.json` contains provider-specific download URLs, so the R2/IHEP copy is
+intentionally not byte-identical to GitHub's copy and is not itself a trust
+anchor. `gen-updater-manifest.mjs` also emits a deterministic, URL-free
+`release-identity.json` containing the channel, version, release-note hash, exact
+target artifact names, and SHA-256 values. The release workflow signs that
+identity with the existing Tauri updater key, publishes it as a GitHub Release
+asset, stages immutable `<version>/` copies on R2/IHEP, and promotes a root
+`release-identity.json(.sig)` pair only after the immutable GitHub Release and
+mirror `latest.json` pointer are committed.
+
+Every `latest.json` platform entry must include a lowercase 64-character
+`sha256`. Fresh publication, immutable historical-release reuse, and mirror
+verification all fail closed when that field is missing or malformed, or when
+it differs from either the signed release identity or the local artifact bytes.
+Mirror same-version identity comparisons include the channel, release-note hash,
+and artifact digests, so a rerun cannot treat drifted notes or a byte-different
+artifact claim as idempotent.
+The one compatibility exception is a strictly older mirror baseline published
+before this field existed: a fully bound newer candidate may migrate it once.
+Legacy baselines are never accepted for same-version reuse or downgrade.
+
+The client still checks the mainland-friendly mirror first. It bounded-fetches
+and verifies that source's root identity **before** reading unsigned `latest.json`,
+accepts only a signed `stable` channel, then requires the manifest version,
+channel, notes, platform set, artifact basenames, and SHA-256 values to match.
+This prevents an unsigned manifest from selecting an old/prerelease signed
+identity. Artifact bytes then pass both the normal Tauri minisign check and the
+signed SHA-256 before `Update::install`. Any missing, oversized, invalid, or
+mismatched mirror response falls through to GitHub; installation still occurs at
+most once.
+
+Hard in-memory limits are 256 KiB for manifests/identity, 16 KiB for the identity
+signature, and 64 MiB for updater artifacts. For comparison, v0.3.1's largest
+updater artifact is about 10.9 MiB. The exact vendored
+`tauri-plugin-updater` 2.10.1 patch and its upgrade checklist live in
+[`vendor/tauri-plugin-updater-2.10.1/VENDORED.md`](../vendor/tauri-plugin-updater-2.10.1/VENDORED.md).
+Manifest/identity checks have a 30-second request deadline; artifact downloads
+also have 15-second connect, 30-second read-stall, and 15-minute total bounds.
+
+Because Tauri's minisign trusted comment contains a timestamp, a rerun would
+normally create a byte-different identity `.sig`. The workflow first reuses and
+verifies an existing GitHub Release asset (then the mirror copy), and the mirror
+sync refuses to overwrite byte-different versioned identity objects.
+
 ## Windows
 
 Windows has no light/dark adaptive app icon (`.ico` is static) — the single
 Default icon is used. NSIS installer + updater bundle are produced by `tauri
 build`; no Apple-style finalize step.
 
-Post-build on the Windows matrix (see [`release.yml`](../.github/workflows/release.yml)):
+Windows Authenticode is in an explicit **application/migration pending** state:
 
-1. **PE arch diagnostic** — `scripts/windows-pe-arch.ps1` records x64 vs ARM64
-   machine types. ARM64 is cross-built on x64 runners; this is **not** runtime
-   verification ([`docs/windows-signing.md`](./windows-signing.md)).
-2. **Optional Authenticode** — `scripts/sign-windows-authenticode.ps1` signs the
-   final `-setup.exe` when `WINDOWS_CERTIFICATE` is present; otherwise skips.
-3. **Authenticode verify** — `scripts/verify-windows-authenticode.ps1` in
-   `optional` mode by default; set `AUTHENTICODE_REQUIRED=true` to gate.
-4. **Tauri updater `.sig`** — `npx tauri signer sign` (always required for
-   Windows in-app update entries in `latest.json`).
-5. **Collect final artifacts** — space-stripped names under `dist-artifacts/`,
-   with an explicit check that both `-setup.exe` and `-setup.exe.sig` exist.
+1. The project is applying to SignPath Foundation; approval, certificate
+   issuance, and trusted-build project identifiers do not exist yet.
+2. `release.yml` runs `assert-signpath-foundation-ready.ps1` before a Windows
+   tag build. The script intentionally always fails and has no variable/secret
+   bypass. Because publish depends on the complete matrix, this blocks the
+   whole release rather than shipping an unsigned or macOS-only set.
+3. No `WINDOWS_CERTIFICATE` PFX, password, thumbprint config, or local
+   `signCommand` is supported. SignPath Foundation signs submitted trusted-build
+   artifacts and requires per-request human approval; it is not a PFX provider.
+4. A future PR must prove the NSIS packaging/signing order with real SignPath
+   pilot artifacts, exclude direct signing of third-party plugins, and verify
+   the final setup, installed app, uninstaller, timestamp, updater `.sig`, and
+   mirror hashes before replacing the blocker.
+5. The existing `required` Authenticode and packaged-smoke steps are a
+   post-integration verification contract, not evidence that signing is active.
+   Removing the blocker alone still leaves unsigned output failing closed.
 
 PR-time x64 packaged smoke lives in
 [`win-installer-check.yml`](../.github/workflows/win-installer-check.yml)
@@ -155,7 +210,8 @@ tagged commit, whereas the credentialed `workflow_run` workflow is read from the
 default branch. `release-source.yml` must stay an unprivileged signal and must
 never download or pass artifacts.
 
-Same-tag reruns reuse the artifacts and `latest.json` attached to a complete,
+Same-tag reruns reuse the artifacts, signed release identity, and `latest.json`
+attached to a complete,
 published GitHub Release only when GitHub reports `immutable: true` and a canonical
 `sha256:` digest for every required asset. The workflow re-hashes every downloaded
 asset against those API digests, and rejects a mutable release instead of calling
@@ -170,7 +226,13 @@ stages the same signed/notarized bytes. It never creates a second byte sequence 
 an immutable version key. New releases are uploaded as drafts first and published
 only after all assets succeed, including prereleases. Immediately after publish,
 the workflow requires the Release itself to report `immutable: true` and canonical
-digests for every required asset before any mirror pointer can advance. A
+digests for every required asset before any mirror pointer can advance.
+Before reusing a failed attempt's mutable draft, the workflow deletes every
+stale draft asset and proves the set is empty. After upload it requires an exact
+name/size match against the local canonical files, downloads every draft asset
+for byte-for-byte SHA-256 verification, and rechecks that the draft did not
+change before publication. Immutable reuse rejects every asset outside the
+fixed release/SBOM allowlist.
 Each fresh release also publishes `release-binding.json` and a custom GitHub
 attestation. `workflow_run` OIDC identifies `refs/heads/<default>` rather than the
 tag, so verification separately pins the trusted signer workflow digest and the
@@ -186,6 +248,11 @@ Historical Actions runs execute their historical workflow revision, so the
 release environment intentionally uses new `*_PROMOTION_*` credential names. The
 four legacy access-key secrets listed below must be deleted; the current workflow
 has a hard gate that rejects them if they are reintroduced.
+
+Stable mirror promotion commits `latest.json` first, then writes the root
+identity signature followed by its JSON. Any interrupted or mixed generation
+fails verification and makes the client fall back to GitHub; a rerun repairs the
+root pair and verifies both direct storage backends and both public Worker routes.
 
 ### Emergency mirror downgrade
 
@@ -225,34 +292,40 @@ used, and the run URL are written to the promotion audit and job summary.
 | `MANAGER_IHEP_S3_PROMOTION_ACCESS_KEY_ID` | IHEP write/read credential used only by the protected workflow |
 | `MANAGER_IHEP_S3_PROMOTION_SECRET_ACCESS_KEY` | IHEP write/read secret used only by the protected workflow |
 
+There are currently **no Windows signing secrets or variables to configure**.
+After Foundation approval, use only the exact organization/project/signing
+policy/artifact-configuration values provisioned by SignPath, in a separately
+reviewed trusted-build integration. Do not guess names and do not add a PFX
+fallback.
+
 After creating the promotion credentials, delete (and preferably revoke/rotate)
 `MANAGER_R2_ACCESS_KEY_ID`, `MANAGER_R2_SECRET_ACCESS_KEY`,
 `MANAGER_IHEP_S3_ACCESS_KEY_ID`, and `MANAGER_IHEP_S3_SECRET_ACCESS_KEY` from the
 repository and `release` environment. Historical workflow revisions reference
 those exact names; leaving any of them available defeats old-run isolation.
 
-### Optional signing secrets and release variables
+### Release variables
 
 | Name | What |
 |---|---|
-| `WINDOWS_CERTIFICATE` | base64 of OV/EV code-signing **.pfx** (release env) |
-| `WINDOWS_CERTIFICATE_PASSWORD` | password for that .pfx |
-| `AUTHENTICODE_REQUIRED` (repo **variable**) | `true` → fail release when PE is not `Valid` |
-| `WINDOWS_TIMESTAMP_URL` (repo **variable**) | optional RFC3161 timestamp URL |
 | `MANAGER_R2_BUCKET` (repo **variable**) | R2 bucket; defaults to `codex-app-manager` |
 | `MANAGER_IHEP_S3_ENDPOINT` (`release` environment **variable**) | IHEP S3-compatible endpoint |
 | `MANAGER_IHEP_S3_BUCKET` (`release` environment **variable**) | IHEP bucket |
 | `MANAGER_IHEP_S3_REGION` (`release` environment **variable**) | IHEP region; defaults to `auto` when empty |
 | `MANAGER_IHEP_S3_PREFIX` (`release` environment **variable**) | optional object-key prefix for IHEP |
 
-Export your local .p12 / .p8 / .pfx to base64 with `base64 -i file -o -`.
+Export Apple `.p12` / `.p8` files to base64 with `base64 -i file -o -`.
 
 > Artifact globs in the workflow's *Collect* step and the matcher regexes in
 > `gen-updater-manifest.mjs` assume the default Tauri bundler output names —
 > adjust them if your `productName`/bundler config changes the filenames.
 >
 > Keep **updater signature**, **Authenticode**, and **SmartScreen reputation**
-> conceptually separate — see [`docs/windows-signing.md`](./windows-signing.md).
+> conceptually separate. Current Windows installers remain unsigned and new tag
+> publication is blocked until the SignPath migration is proven. See
+> [`docs/windows-signing.md`](./windows-signing.md), the
+> [code signing policy](./code-signing-policy.md), and the
+> [privacy policy](./privacy.md).
 >
 > Before enabling promotion, seed both S3-compatible endpoints with a valid
 > `latest.json` baseline. R2 must enforce conditional `PutObject` requests

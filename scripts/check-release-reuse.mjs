@@ -14,6 +14,8 @@ export function requiredReleaseAssetNames(releaseTag) {
   return [
     "latest.json",
     "release-binding.json",
+    "release-identity.json",
+    "release-identity.json.sig",
     "CodexAppManager_aarch64.dmg",
     "CodexAppManager_x86_64.dmg",
     "CodexAppManager_aarch64.app.tar.gz",
@@ -27,19 +29,45 @@ export function requiredReleaseAssetNames(releaseTag) {
   ];
 }
 
+export const REQUIRED_RELEASE_METADATA_ASSET_NAMES = [
+  "SHA256SUMS",
+  "sbom-status.txt",
+];
+
+export const OPTIONAL_RELEASE_METADATA_ASSET_NAMES = [
+  "sbom-cargo.cdx.json",
+  "sbom-npm.cdx.json",
+];
+
+export function allowedReleaseAssetNames(releaseTag) {
+  return [
+    ...requiredReleaseAssetNames(releaseTag),
+    ...REQUIRED_RELEASE_METADATA_ASSET_NAMES,
+    ...OPTIONAL_RELEASE_METADATA_ASSET_NAMES,
+  ];
+}
+
 export function inspectReleaseForReuse(release, releaseTag) {
   if (!release || typeof release !== "object" || Array.isArray(release)) {
     throw new Error("GitHub release response must be a JSON object");
   }
   const required = requiredReleaseAssetNames(releaseTag);
+  const requiredPublished = [
+    ...required,
+    ...REQUIRED_RELEASE_METADATA_ASSET_NAMES,
+  ];
+  const allowed = new Set(allowedReleaseAssetNames(releaseTag));
   const assets = Array.isArray(release.assets) ? release.assets : [];
   const missing = [];
-  for (const name of required) {
+  for (const name of requiredPublished) {
     const matches = assets.filter((asset) => asset?.name === name);
     if (matches.length !== 1 || !Number.isFinite(matches[0]?.size) || matches[0].size <= 0) {
       missing.push(name);
     }
   }
+  const unexpected = assets
+    .map((asset) => asset?.name)
+    .filter((name) => typeof name !== "string" || !allowed.has(name));
 
   // Drafts are the only repairable state: their assets may still be replaced
   // before publication. Never route a published Release back through upload.
@@ -47,6 +75,7 @@ export function inspectReleaseForReuse(release, releaseTag) {
     return {
       digests: {},
       missing,
+      unexpected,
       reason: "draft",
       reusable: false,
     };
@@ -61,19 +90,18 @@ export function inspectReleaseForReuse(release, releaseTag) {
       `existing immutable release ${releaseTag} is missing required assets and cannot be repaired: ${missing.join(", ")}`,
     );
   }
+  if (unexpected.length > 0) {
+    throw new Error(
+      `existing immutable release ${releaseTag} has unexpected assets and cannot be trusted: ${unexpected.join(", ")}`,
+    );
+  }
 
-  const selectedAssets = assets.filter(
-    (asset) =>
-      asset?.name === "latest.json" ||
-      asset?.name === "release-binding.json" ||
-      asset?.name?.startsWith("CodexAppManager"),
-  );
   const selectedNames = new Set();
   const digests = {};
-  for (const asset of selectedAssets) {
+  for (const asset of assets) {
     const name = asset.name;
     if (selectedNames.has(name)) {
-      throw new Error(`immutable release has duplicate downloadable asset names: ${name}`);
+      throw new Error(`immutable release has duplicate asset names: ${name}`);
     }
     selectedNames.add(name);
     if (!Number.isFinite(asset.size) || asset.size <= 0) {
@@ -83,9 +111,11 @@ export function inspectReleaseForReuse(release, releaseTag) {
     if (typeof digest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(digest)) {
       throw new Error(`immutable release asset has no canonical SHA-256 digest: ${name}`);
     }
-    digests[name] = digest;
+    if (required.includes(name)) {
+      digests[name] = digest;
+    }
   }
-  return { digests, missing: [], reason: null, reusable: true };
+  return { digests, missing: [], unexpected: [], reason: null, reusable: true };
 }
 
 const isCli = process.argv[1]?.endsWith("check-release-reuse.mjs");

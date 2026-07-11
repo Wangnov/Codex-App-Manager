@@ -95,9 +95,15 @@ export default {
   },
 };
 
-// latest.json must refresh quickly so new releases are seen; the (immutable,
-// versioned) installers can cache hard.
+// The two root identity files are a coordinated signed pointer. Never cache
+// either half: promotion writes the signature first and JSON last, and stale
+// mixing must resolve to a quick verification failure/fallback instead of a
+// day-long mirror outage. Other JSON refreshes quickly; immutable versioned
+// installers and signatures can cache hard.
 function cacheControlForKey(key) {
+  if (key === "release-identity.json" || key === "release-identity.json.sig") {
+    return "no-store";
+  }
   if (key.endsWith(".json")) return "public, max-age=120, s-maxage=120";
   return "public, max-age=86400, s-maxage=86400";
 }

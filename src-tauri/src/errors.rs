@@ -66,7 +66,7 @@ impl ErrorKind {
 }
 
 /// Pull the curl exit code out of an engine message such as
-/// `"curl failed for host=… exit=23: stderr='…'"`. Uses the LAST `exit=` so a
+/// `"curl failed for host=… exit=23 reason='disk is full'"`. Uses the LAST `exit=` so a
 /// combined `resume failed (…exit=A…); fresh download failed (…exit=B…)` message
 /// classifies on the final (fresh) attempt the user must act on — not the resume,
 /// whose range/partial failure is incidental.
@@ -116,7 +116,9 @@ pub fn classify(message: &str) -> ErrorKind {
     {
         return ErrorKind::Signature;
     }
-    if m.contains("capability probe") || m.contains("sideload policy") || m.contains("developer mode")
+    if m.contains("capability probe")
+        || m.contains("sideload policy")
+        || m.contains("developer mode")
     {
         return ErrorKind::Incompatible;
     }
@@ -137,6 +139,8 @@ pub fn classify(message: &str) -> ErrorKind {
     }
 
     if m.contains("could not resolve")
+        || m.contains("network error")
+        || m.contains("error sending request")
         || m.contains("failed to connect")
         || m.contains("connection refused")
         || m.contains("connection reset")
@@ -194,7 +198,7 @@ impl From<OperationError> for AppError {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandError {
     pub code: String,
@@ -235,23 +239,71 @@ mod tests {
 
     #[test]
     fn curl_connect_and_timeout_codes() {
-        assert_eq!(classify("curl failed exit=7: stderr='Failed to connect'"), ErrorKind::Network);
-        assert_eq!(classify("curl failed exit=6: stderr='Could not resolve host'"), ErrorKind::Network);
-        assert_eq!(classify("curl failed exit=28: stderr='Operation timed out'"), ErrorKind::Timeout);
-        assert_eq!(classify("curl failed exit=35: stderr='SSL connect error'"), ErrorKind::Network);
-        assert_eq!(classify("curl failed exit=55: stderr='Failed sending network data'"), ErrorKind::Network);
-        assert_eq!(classify("curl failed exit=22: stderr='The requested URL returned error: 404'"), ErrorKind::Artifact);
+        assert_eq!(
+            classify("curl failed exit=7: stderr='Failed to connect'"),
+            ErrorKind::Network
+        );
+        assert_eq!(
+            classify("curl failed exit=6: stderr='Could not resolve host'"),
+            ErrorKind::Network
+        );
+        assert_eq!(
+            classify("curl failed exit=28: stderr='Operation timed out'"),
+            ErrorKind::Timeout
+        );
+        assert_eq!(
+            classify("curl failed exit=35: stderr='SSL connect error'"),
+            ErrorKind::Network
+        );
+        assert_eq!(
+            classify("curl failed exit=55: stderr='Failed sending network data'"),
+            ErrorKind::Network
+        );
+        assert_eq!(
+            classify("curl failed exit=22: stderr='The requested URL returned error: 404'"),
+            ErrorKind::Artifact
+        );
     }
 
     #[test]
     fn marker_based_classification_without_exit_code() {
-        assert_eq!(classify("Authenticode verification failed"), ErrorKind::Signature);
-        assert_eq!(classify("codesign verification failed: invalid signature"), ErrorKind::Signature);
-        assert_eq!(classify("Access is denied. (os error 5)"), ErrorKind::Permission);
-        assert_eq!(classify("hash mismatch for staged package"), ErrorKind::Artifact);
-        assert_eq!(classify("run Add-AppxPackage: deployment failed"), ErrorKind::Install);
-        assert_eq!(classify("capability probe error: sideloading is disabled"), ErrorKind::Incompatible);
+        assert_eq!(
+            classify("Authenticode verification failed"),
+            ErrorKind::Signature
+        );
+        assert_eq!(
+            classify("codesign verification failed: invalid signature"),
+            ErrorKind::Signature
+        );
+        assert_eq!(
+            classify("Access is denied. (os error 5)"),
+            ErrorKind::Permission
+        );
+        assert_eq!(
+            classify("hash mismatch for staged package"),
+            ErrorKind::Artifact
+        );
+        assert_eq!(
+            classify("run Add-AppxPackage: deployment failed"),
+            ErrorKind::Install
+        );
+        assert_eq!(
+            classify("capability probe error: sideloading is disabled"),
+            ErrorKind::Incompatible
+        );
         assert_eq!(classify("download cancelled"), ErrorKind::Cancelled);
+    }
+
+    #[test]
+    fn manager_updater_transport_errors_are_network_failures() {
+        assert_eq!(
+            classify("check manager update: network error: dns lookup failed"),
+            ErrorKind::Network
+        );
+        assert_eq!(
+            classify("install manager update: error sending request for url"),
+            ErrorKind::Network
+        );
     }
 
     #[test]
@@ -265,14 +317,20 @@ mod tests {
 
     #[test]
     fn unknown_engine_message_falls_back_to_generic() {
-        assert_eq!(classify("something unexpected happened"), ErrorKind::Generic);
+        assert_eq!(
+            classify("something unexpected happened"),
+            ErrorKind::Generic
+        );
         assert_eq!(code_of("something unexpected happened"), "engine_error");
     }
 
     #[test]
     fn non_engine_variants_keep_their_codes() {
         assert_eq!(AppError::UnsupportedPlatform.code(), "unsupported_platform");
-        assert_eq!(AppError::StaleExpectation("x".into()).code(), "stale_expectation");
+        assert_eq!(
+            AppError::StaleExpectation("x".into()).code(),
+            "stale_expectation"
+        );
         assert_eq!(AppError::Busy("x".into()).code(), "operation_busy");
         assert_eq!(AppError::Internal("x".into()).code(), "internal_error");
     }

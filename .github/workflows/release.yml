@@ -4,6 +4,9 @@ name: Release
 #   build (unsigned) → macOS finalize (adaptive icon + inside-out Developer ID
 #   sign + notarize + staple + repackage updater/dmg) → collect → publish a
 #   GitHub Release with the Tauri updater manifest (latest.json).
+# Windows jobs currently fail closed at the SignPath readiness gate, so the
+# dependent publish job cannot release a partial macOS-only set or unsigned
+# Windows artifacts until the approved trusted-build integration replaces it.
 #
 # Required `release` environment secrets (never repository/org secrets):
 #   APPLE_CERTIFICATE            base64 of your "Developer ID Application" .p12
@@ -42,11 +45,11 @@ name: Release
 # The old MANAGER_*_ACCESS_KEY_ID / SECRET_ACCESS_KEY names must stay deleted;
 # otherwise a historical workflow revision could still perform unconditional writes.
 #
-# Optional Windows Authenticode (non-blocking until configured; see docs/windows-signing.md):
-#   WINDOWS_CERTIFICATE          base64 of OV/EV code-signing .pfx
-#   WINDOWS_CERTIFICATE_PASSWORD password for that .pfx
-#   vars.AUTHENTICODE_REQUIRED   set to "true" to fail release when PE is unsigned
-#   vars.WINDOWS_TIMESTAMP_URL   optional RFC3161 timestamp URL override
+# Windows Authenticode status and migration contract:
+#   docs/code-signing-policy.md + docs/windows-signing.md
+# Do not add PFX secrets. SignPath Foundation approval and trusted-build
+# integration are pending; scripts/assert-signpath-foundation-ready.ps1 blocks
+# Windows tag jobs until a separately reviewed implementation replaces it.
 
 on:
   # `workflow_run` always loads this credentialed workflow from the repository
@@ -374,6 +377,18 @@ jobs:
           node ../scripts/check-release-version.mjs source "$RELEASE_TAG" .
           bash ../scripts/check-release-source-ancestor.sh . "$RELEASE_SOURCE_SHA" "$DEFAULT_BRANCH"
 
+      # Intentionally has no bypass or success path. The Windows matrix failure
+      # prevents the dependent publish job from releasing a partial macOS-only
+      # set or silently shipping unsigned Windows artifacts. Keep the guard in
+      # the trusted default-branch checkout, not the tag source. A future
+      # reviewed change must replace this step with the approved SignPath
+      # trusted-build request, approval, download, and verification flow.
+      - name: Assert SignPath Foundation readiness (fail closed)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          & ..\scripts\assert-signpath-foundation-ready.ps1
+
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 20
@@ -416,8 +431,11 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KC"
           security list-keychains -d user -s "$KC" $(security list-keychains -d user | sed s/\"//g)
 
-      # ── Build WITHOUT a tauri signingIdentity; we sign inside-out after ────
-      - name: Build (Tauri, unsigned)
+      # Build without an Authenticode configuration. The fail-closed readiness
+      # step above makes this unreachable for Windows today; even if that guard
+      # were removed alone, the required signature gates below would reject the
+      # unsigned output. Do not infer a two-pass SignPath design from this order.
+      - name: Build (Tauri, unsigned before platform finalization)
         shell: bash
         # Bundling downloads toolchains on the fly (e.g. the NSIS archive from
         # GitHub) which occasionally 504s and fails the whole release. Retry a
@@ -425,7 +443,7 @@ jobs:
         # output is cached, so a retry mostly just re-runs the bundling step.
         run: |
           for attempt in 1 2 3; do
-            npm run tauri build -- --target ${{ matrix.target }} && exit 0
+            npm run tauri build -- --target "${{ matrix.target }}" && exit 0
             echo "::warning::tauri build attempt ${attempt} failed (often a transient NSIS/toolchain download, e.g. HTTP 504) — retrying in 20s"
             sleep 20
           done
@@ -489,43 +507,46 @@ jobs:
             & .\scripts\windows-pe-arch.ps1 -Path @($setup | ForEach-Object { $_.FullName })
           }
           if ($target -like "aarch64-*") {
-            Write-Host "::notice::ARM64 main PE asserted machine=0xAA64 (cross-build on x64). Full install/launch smoke remains x64-only until ARM64 runners or trusted virtualization is available."
+            Write-Host "::notice::ARM64 main PE asserted machine=0xAA64 (cross-build on x64). Install/signature/upgrade/uninstall smoke runs below; only native ARM64 app launch still needs ARM64 hardware or trusted virtualization."
           }
 
-      # ── Windows: optional Authenticode (OV/EV) on final NSIS installer ────
-      #    Non-blocking until WINDOWS_CERTIFICATE is configured in the release
-      #    environment. When present, signs the published -setup.exe. Full
-      #    inside-out signing of main binary + uninstaller should eventually
-      #    move into tauri build via certificateThumbprint (docs/windows-signing.md).
-      #    This is independent of the Tauri updater minisign key below.
-      - name: Authenticode-sign Windows installer (optional)
+      # ── Windows: future SignPath Authenticode verification contract ──────
+      #    Tauri restores target/.../release/codex-app-manager.exe to its
+      #    unsigned, unpatched build input after bundling, so only the outer
+      #    installer is inspectable here. Packaged smoke installs each target and
+      #    verifies the signed embedded main executable and uninstall.exe. These
+      #    steps are intentionally unreachable until the readiness blocker is
+      #    replaced by an approved integration; unsigned output still fails.
+      - name: Verify Windows installer Authenticode (required)
         if: matrix.os == 'windows'
         shell: pwsh
-        env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
         run: |
-          $setup = Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe" -ErrorAction Stop
-          & .\scripts\sign-windows-authenticode.ps1 -Path $setup.FullName -Stage "sign"
-
-      - name: Verify Authenticode on Windows installer
-        if: matrix.os == 'windows'
-        shell: pwsh
-        env:
-          AUTHENTICODE_MODE: ${{ vars.AUTHENTICODE_REQUIRED == 'true' && 'required' || 'optional' }}
-        run: |
-          $setup = Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe" -ErrorAction Stop
+          $target = "${{ matrix.target }}"
+          $setup = Get-ChildItem "src-tauri/target/$target/release/bundle/nsis/*-setup.exe" -ErrorAction Stop
           & .\scripts\verify-windows-authenticode.ps1 `
             -Path $setup.FullName `
-            -Mode $env:AUTHENTICODE_MODE `
+            -Mode required `
+            -ExpectedSubject "SignPath Foundation" `
+            -RequireTimestamp `
             -Stage "sign-verify"
 
+      - name: Verify signed installed app and uninstaller (all Windows targets)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $skipLaunch = "${{ matrix.target }}" -like "aarch64-*"
+          $setup = Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe" -ErrorAction Stop
+          & .\scripts\windows-packaged-smoke.ps1 `
+            -Installer $setup.FullName `
+            -AuthenticodeMode required `
+            -ExpectedSubject "SignPath Foundation" `
+            -RequireTimestamp `
+            -SkipLaunch:$skipLaunch
+
       # ── Windows: sign the NSIS installer for the updater ──────────────────
-      #    The build is intentionally unsigned for Authenticode (until OV/EV is
-      #    configured), so Tauri emits no updater `.sig` during build. In Tauri 2
-      #    the Windows updater ships the `-setup.exe` itself, so signing it here
-      #    with the updater key — exactly what finalize-macos.sh does for the
+      #    The Windows updater ships the Authenticode-signed `-setup.exe` itself.
+      #    Signing those final bytes here with the updater key — exactly what
+      #    finalize-macos.sh does for the
       #    .app.tar.gz — is equivalent to `createUpdaterArtifacts` and is what
       #    gets windows-x86_64 and windows-aarch64 into latest.json. Without it
       #    the manifest has macOS platforms only and Windows in-app self-update
@@ -599,6 +620,18 @@ jobs:
             fi
           fi
           echo "::endgroup::"
+
+      - name: Verify final publishable Windows installer (required)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem "$env:GITHUB_WORKSPACE/dist-artifacts/*-setup.exe" -ErrorAction Stop
+          & .\scripts\verify-windows-authenticode.ps1 `
+            -Path $setup.FullName `
+            -Mode required `
+            -ExpectedSubject "SignPath Foundation" `
+            -RequireTimestamp `
+            -Stage "publish-sign-verify"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -719,6 +752,10 @@ jobs:
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 20
+          cache: npm
+
+      - name: Install release tooling
+        run: npm ci
 
       # Re-resolve tag policy on every release-job attempt. For manual recovery
       # this independently resolves the immutable tag; a signal run must still
@@ -862,6 +899,7 @@ jobs:
               --dir "$published" \
               --pattern 'CodexAppManager*' \
               --pattern 'latest.json' \
+              --pattern 'release-identity.json*' \
               --pattern 'release-binding.json'
             test -f "$published/latest.json" || {
               echo "::error::published $RELEASE_TAG has no latest.json"
@@ -951,7 +989,7 @@ jobs:
         env:
           ALLOW_PARTIAL_RELEASE: ${{ vars.ALLOW_PARTIAL_RELEASE }}
         run: |
-          node scripts/gen-updater-manifest.mjs "$RELEASE_TAG" dist
+          node scripts/gen-updater-manifest.mjs "$RELEASE_TAG" dist release-source
           cp latest.json "$RUNNER_TEMP/artifact-derived-latest.json"
           if [[ "${{ steps.release_source.outputs.existing }}" == "true" ]]; then
             cp "$RUNNER_TEMP/published-latest.json" latest.json
@@ -960,6 +998,49 @@ jobs:
             "$RELEASE_TAG" \
             latest.json \
             "$RUNNER_TEMP/artifact-derived-latest.json"
+
+      - name: Reuse or sign fresh canonical release identity
+        if: ${{ steps.release_source.outputs.existing != 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          status=0
+          node scripts/reuse-release-identity-signature.mjs \
+            release-identity.json release-identity.json.sig \
+            "$RELEASE_TAURI_CONFIG" || status=$?
+          if [ "$status" -eq 3 ]; then
+            echo "No reusable immutable identity signature; signing canonical identity."
+            npx tauri signer sign release-identity.json
+          elif [ "$status" -ne 0 ]; then
+            echo "::error::prior immutable release identity/signature is invalid or inconsistent" >&2
+            exit "$status"
+          fi
+          test -s release-identity.json.sig
+
+      # A published immutable release is the byte authority on rerun. Never use
+      # the private key to mint a new identity for historical artifacts.
+      - name: Restore signed identity from immutable release
+        if: ${{ steps.release_source.outputs.existing == 'true' }}
+        run: |
+          cp dist/release-identity.json release-identity.json
+          cp dist/release-identity.json.sig release-identity.json.sig
+
+      - name: Verify signed canonical release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s release-identity.json
+          test -s release-identity.json.sig
+          node scripts/minisign-verify.mjs \
+            release-identity.json release-identity.json.sig \
+            "$RELEASE_TAURI_CONFIG"
+          if [[ "${{ steps.release_source.outputs.existing }}" != "true" ]]; then
+            cp release-identity.json release-identity.json.sig dist/
+          fi
 
       # A wrong private/public updater-key pairing cannot be repaired after an
       # immutable GitHub Release is published. Verify the exact local payloads
@@ -1261,6 +1342,60 @@ jobs:
           bash scripts/check-release-source-ancestor.sh release-source "$RELEASE_SOURCE_SHA" "$DEFAULT_BRANCH"
           node scripts/check-release-tag-protection.mjs "$RELEASE_TAG" "$RELEASE_SOURCE_SHA"
 
+      # A failed attempt may leave a mutable draft with stale or attacker-named
+      # assets. action-gh-release replaces matching names but does not remove
+      # extras, which would otherwise become part of the immutable Release.
+      - name: Reset existing mutable Release draft assets
+        if: ${{ steps.provenance.outputs.ready == 'true' && steps.release_source.outputs.existing != 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          draft_json="$RUNNER_TEMP/existing-release-draft.json"
+          lookup_error="$RUNNER_TEMP/existing-release-draft-error.txt"
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" >"$draft_json" 2>"$lookup_error"; then
+            release_id="$(jq -er --arg tag "$RELEASE_TAG" '
+              select(.tag_name == $tag and .draft == true and .immutable != true)
+              | .id
+            ' "$draft_json")" || {
+              echo "::error::existing release is no longer the expected mutable draft"
+              exit 1
+            }
+            while IFS= read -r asset_id; do
+              [[ "$asset_id" =~ ^[0-9]+$ ]] || {
+                echo "::error::mutable draft returned an invalid asset id"
+                exit 1
+              }
+              gh api --method DELETE \
+                "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+            done < <(jq -r '.assets[]?.id' "$draft_json")
+
+            cleared=false
+            for attempt in 1 2 3 4 5; do
+              gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" >"$draft_json"
+              if jq -e \
+                --arg tag "$RELEASE_TAG" \
+                --argjson id "$release_id" \
+                '.id == $id and .tag_name == $tag and .draft == true and .immutable != true and (.assets | length) == 0' \
+                "$draft_json" >/dev/null; then
+                cleared=true
+                break
+              fi
+              sleep 2
+            done
+            [[ "$cleared" == "true" ]] || {
+              echo "::error::could not prove the mutable draft asset set was empty"
+              exit 1
+            }
+          elif grep -q 'HTTP 404' "$lookup_error"; then
+            echo "No existing Release draft to reset for $RELEASE_TAG"
+          else
+            cat "$lookup_error" >&2
+            echo "::error::could not inspect an existing Release before draft upload"
+            exit 1
+          fi
+
       # Explicit draft-first publication keeps asset upload ahead of publication
       # for both stable and prerelease tags. This is required when GitHub immutable
       # releases are enabled: a published release can no longer accept assets.
@@ -1284,6 +1419,71 @@ jobs:
             release-binding.json
             SHA256SUMS
             release-assets/*
+
+      - name: Verify exact GitHub Release draft assets
+        if: ${{ steps.provenance.outputs.ready == 'true' && steps.release_source.outputs.existing != 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          canonical_assets=(dist/* latest.json release-binding.json SHA256SUMS release-assets/*)
+          draft_json="$RUNNER_TEMP/uploaded-release-draft.json"
+          draft_plan="$RUNNER_TEMP/uploaded-release-draft-assets.json"
+          verification_log="$RUNNER_TEMP/uploaded-release-draft-verification.log"
+          verified=false
+          for attempt in 1 2 3 4 5; do
+            : >"$verification_log"
+            if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" >"$draft_json" 2>>"$verification_log" \
+              && node scripts/check-release-draft-assets.mjs \
+                "$RELEASE_TAG" "$draft_json" "$draft_plan" \
+                "${canonical_assets[@]}" >>"$verification_log" 2>&1; then
+              verified=true
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$verified" != "true" ]]; then
+            cat "$verification_log" >&2
+            echo "::error::uploaded Release draft does not contain the exact canonical asset set"
+            exit 1
+          fi
+          cat "$verification_log"
+
+          readback="$RUNNER_TEMP/uploaded-release-draft-readback"
+          rm -rf "$readback"
+          mkdir -p "$readback"
+          while IFS=$'\t' read -r asset_id name local_path expected_sha256; do
+            [[ "$asset_id" =~ ^[0-9]+$ && "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ && "$expected_sha256" =~ ^[0-9a-f]{64}$ ]] || {
+              echo "::error::draft verification plan contains invalid asset metadata"
+              exit 1
+            }
+            downloaded="$readback/$name"
+            gh api \
+              -H "Accept: application/octet-stream" \
+              "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" >"$downloaded"
+            actual_sha256="$(sha256sum "$downloaded" | cut -d' ' -f1)"
+            [[ -s "$downloaded" && "$actual_sha256" == "$expected_sha256" ]] || {
+              echo "::error::Release draft readback differs from canonical local bytes: $name"
+              exit 1
+            }
+            cmp -- "$local_path" "$downloaded" >/dev/null || {
+              echo "::error::Release draft byte comparison failed: $name"
+              exit 1
+            }
+          done < <(jq -r '.assets[] | [.id, .name, .localPath, .sha256] | @tsv' "$draft_plan")
+
+          post_json="$RUNNER_TEMP/uploaded-release-draft-post-readback.json"
+          post_plan="$RUNNER_TEMP/uploaded-release-draft-post-readback-assets.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" >"$post_json"
+          node scripts/check-release-draft-assets.mjs \
+            "$RELEASE_TAG" "$post_json" "$post_plan" \
+            "${canonical_assets[@]}"
+          cmp -- "$draft_plan" "$post_plan" >/dev/null || {
+            echo "::error::Release draft assets changed during canonical readback"
+            exit 1
+          }
 
       # Upload can take long enough for a repository policy regression to matter.
       # Fence the transition from mutable draft to immutable publication again.
@@ -1401,6 +1601,7 @@ jobs:
         run: |
           [ -f dist/latest.json ] || cp latest.json dist/latest.json
           bash scripts/sync-mirror.sh dist
+          rm -f dist/latest.json dist/latest.mirror.json
 
       # The release above is created with GITHUB_TOKEN, which by design does not
       # trigger other workflows — so winget.yml's `on: release` never fires.

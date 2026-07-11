@@ -5,7 +5,7 @@ export default {
       "一键安装、增量更新、干净卸载官方 OpenAI Codex 桌面应用。macOS Sparkle 增量更新、EdDSA 逐字节校验、R2 + IHEP 双镜像,国内免代理直连。Tauri v2 构建,MIT 开源。",
     ogTitle: "Codex App Manager — 一键装好官方 Codex,自动保持最新",
     ogDescription:
-      "原样镜像官方安装包,送达你的 Mac 与 PC,每一步都可校验。macOS 增量更新、失败自动回滚、国内直连可达。Developer ID 签名 + Apple 公证,开源可审计。",
+      "原样镜像官方安装包,送达你的 Mac 与 PC,每一步都可校验。macOS 增量更新、失败自动回滚、国内直连可达。macOS 版经 Developer ID 签名 + Apple 公证,开源可审计。",
   },
   nav: {
     why: "为什么",
@@ -270,6 +270,12 @@ export default {
       managerLabel: "Wangnov/Codex-App-Manager",
       mirrorLabel: "Wangnov/codex-app-mirror",
     },
+    signing: {
+      status: "Windows Authenticode 正在申请 SignPath Foundation；在 trusted-build 与真实工件验证完成前，新版 Windows 发布保持 fail-closed。",
+      attributionNote: "以下是获批启用后要求展示的归因，不代表当前下载已经签名：",
+      policy: "代码签名政策",
+      privacy: "隐私政策",
+    },
   },
   scope: {
     kicker: "边界声明",
@@ -298,6 +304,8 @@ export default {
     links: {
       manager: "Codex App Manager",
       mirror: "Codex App Mirror",
+      signingPolicy: "代码签名政策",
+      privacyPolicy: "隐私政策",
     },
   },
   ui: {

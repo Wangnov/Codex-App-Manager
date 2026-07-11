@@ -26,20 +26,27 @@ codex-win-engine = { path = "../crates/codex-win-engine" }
 directories = "6.0.0"
 fs4 = "1.1"
 log = "0.4"
-reqwest = { version = "0.13.4", default-features = false, features = ["socks", "system-proxy"] }
+futures-util = "0.3"
+reqwest = { version = "0.13.4", default-features = false, features = ["socks", "system-proxy", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 tauri = { version = "2.11.2", features = ["tray-icon", "image-png", "macos-private-api"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-log = "2"
-tauri-plugin-process = "2"
 tauri-plugin-single-instance = "2"
-tauri-plugin-updater = "2"
+tauri-plugin-updater = "=2.10.1"
 thiserror = "2.0"
 url = "2.5"
 uuid = { version = "1", features = ["v4"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+# Upstream 2.10.1 buffers manifest and artifact responses without a byte cap.
+# Keep the exact vendored patch until an upstream release exposes equivalent
+# Content-Length plus streaming limits; see the vendor VENDORED.md checklist.
+[patch.crates-io]
+tauri-plugin-updater = { path = "../vendor/tauri-plugin-updater-2.10.1" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

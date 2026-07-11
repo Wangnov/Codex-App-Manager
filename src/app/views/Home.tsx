@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import {
   errorCode,
@@ -35,11 +43,17 @@ import { useOperationReattach } from "./useOperationReattach";
 type Kind = "loading" | "error" | "none" | "idle" | "update" | "external" | "uptodate";
 
 /** Platform dispatcher — the backend command surface differs per OS. */
-export function Home(props: { onOpenSettings: () => void }) {
+export function Home(props: { onOpenSettings: () => void; managerUpdateSlot?: ReactNode }) {
   return currentPlatform() === "windows" ? <WinHome {...props} /> : <MacHome {...props} />;
 }
 
-function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
+function MacHome({
+  onOpenSettings,
+  managerUpdateSlot,
+}: {
+  onOpenSettings: () => void;
+  managerUpdateSlot?: ReactNode;
+}) {
   const { t, lang } = useI18n();
   const [report, setReport] = useState<MacUpdateReport | null>(null);
   const [status, setStatus] = useState<MacInstallStatus | null>(null);
@@ -628,6 +642,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         ref={scopeRef}
         inert={confirmOpen || manualExistingOpen ? true : undefined}
       >
+        {managerUpdateSlot}
         {perform ? (
           <ResultBanner
             tone={perform.rolledBack ? "err" : "ok"}

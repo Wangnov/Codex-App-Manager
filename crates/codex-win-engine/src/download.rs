@@ -5,7 +5,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use sha2::{Digest, Sha256};
 
 use crate::limits::MAX_PACKAGE_BYTES;
-use crate::network::{is_schannel_revocation_offline, NetworkConfig, SchannelRevocationCheck};
+use crate::network::{
+    is_schannel_revocation_offline, safe_curl_failure_message, safe_url_host, NetworkConfig,
+    SchannelRevocationCheck,
+};
 use crate::process::{
     curl_exe, hidden_command, run_with_progress, RunError, RunLimits, TimeoutKind,
 };
@@ -91,13 +94,6 @@ fn partial_path(dest: &Path) -> PathBuf {
     dest.with_file_name(format!("{file_name}.part"))
 }
 
-fn url_host(url: &str) -> &str {
-    url.split("://")
-        .nth(1)
-        .and_then(|rest| rest.split('/').next())
-        .unwrap_or("")
-}
-
 fn proxy_env_summary() -> String {
     let vars = ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY"];
     let configured = vars
@@ -116,14 +112,7 @@ fn proxy_env_summary() -> String {
 }
 
 fn curl_failure_message(url: &str, exit_code: Option<i32>, stderr: &str) -> String {
-    let base = format!(
-        "curl failed for host={} exit={}: stderr='{}'",
-        url_host(url),
-        exit_code
-            .map(|code| code.to_string())
-            .unwrap_or_else(|| "signal".to_string()),
-        stderr.trim(),
-    );
+    let base = safe_curl_failure_message(url, exit_code, stderr);
     // Append the proxy diagnostic only for connectivity failures — pasting it
     // onto write / disk / HTTP errors (e.g. exit 23) only misleads.
     if is_connectivity_exit(exit_code) {
@@ -230,9 +219,7 @@ fn run_curl_once(
             let downloaded = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
             return match kind {
                 TimeoutKind::Stall => {
-                    log::warn!(
-                        "Windows download stalled source={source} downloaded={downloaded}"
-                    );
+                    log::warn!("Windows download stalled source={source} downloaded={downloaded}");
                     Err(CurlAttemptError::Other(format!(
                         "curl download stalled (no progress) source={source} downloaded={downloaded}"
                     )))
@@ -274,8 +261,8 @@ struct CurlRun<'a> {
 }
 
 impl CurlRun<'_> {
-    fn source(&self) -> &str {
-        url_host(self.url)
+    fn source(&self) -> String {
+        safe_url_host(self.url)
     }
 }
 
@@ -293,7 +280,7 @@ fn run_curl_with_mode(
         run.network,
         revocation_check,
     );
-    run_curl_once(run.source(), run.dest, args, run.on_progress)
+    run_curl_once(&run.source(), run.dest, args, run.on_progress)
 }
 
 fn retry_with_schannel_no_revoke(
@@ -326,7 +313,7 @@ fn run_curl(
     on_progress: &dyn Fn(u64),
     network: &NetworkConfig,
 ) -> Result<(), String> {
-    let source = url_host(url);
+    let source = safe_url_host(url);
     let dest = dest.to_string_lossy().into_owned();
     let max_bytes = max_bytes.to_string();
     let run = CurlRun {
@@ -440,7 +427,7 @@ pub fn download_to_with_progress_bounded_with_network(
 
     let part = partial_path(dest);
     let should_resume = part.metadata().map(|m| m.len() > 0).unwrap_or(false);
-    let source = url_host(url);
+    let source = safe_url_host(url);
     let dest_name = dest
         .file_name()
         .and_then(|name| name.to_str())
@@ -533,6 +520,26 @@ mod tests {
     }
 
     #[test]
+    fn persisted_download_failure_uses_safe_host_and_reason_only() {
+        let raw = "https://basic-user:basic-pass@downloads.example/private/Codex.msix?token=presigned-secret#fragment-secret";
+        let stderr = format!("curl: (6) Could not resolve host while requesting {raw}");
+        let message = curl_failure_message(raw, Some(6), &stderr);
+
+        assert!(message.starts_with(
+            "curl failed for host=downloads.example exit=6 reason='DNS resolution failed'"
+        ));
+        for secret in [
+            "basic-user",
+            "basic-pass",
+            "/private/Codex.msix",
+            "presigned-secret",
+            "fragment-secret",
+        ] {
+            assert!(!message.contains(secret), "download error leaked {secret}");
+        }
+    }
+
+    #[test]
     fn curl_args_keep_modern_progress_flag_by_default() {
         let args = curl_args(
             "https://example.test/Codex.msix",
@@ -620,7 +627,7 @@ mod tests {
             seen.lock().unwrap().push(downloaded);
         });
         if let Err(EngineError::Io(message)) = &result {
-            if message.contains("Protocol \"file\" disabled") {
+            if message.contains("reason='protocol disabled'") {
                 let _ = std::fs::remove_dir_all(&root);
                 return;
             }

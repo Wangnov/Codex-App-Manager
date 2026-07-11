@@ -10,10 +10,13 @@ use crate::capability::WinCapabilityReport;
 use crate::capability::{CapabilityCheck, CapabilityState};
 use crate::limits::MAX_TEXT_BYTES;
 use crate::msix::parse_appx_manifest_xml;
-use crate::network::{is_schannel_revocation_offline, NetworkConfig, SchannelRevocationCheck};
+use crate::network::{
+    is_schannel_revocation_offline, safe_curl_failure_message, safe_url_host, NetworkConfig,
+    SchannelRevocationCheck,
+};
 use crate::process::{
-    curl_exe, hidden_command, run_capturing, spawn_and_require_liveness, LivenessResult,
-    RunError, RunLimits, TimeoutKind, MSIX_ACTIVATION_WINDOW_SECS, MSIX_LIVENESS_WINDOW_SECS,
+    curl_exe, hidden_command, run_capturing, spawn_and_require_liveness, LivenessResult, RunError,
+    RunLimits, TimeoutKind, MSIX_ACTIVATION_WINDOW_SECS, MSIX_LIVENESS_WINDOW_SECS,
     PORTABLE_LIVENESS_WINDOW,
 };
 use crate::EngineError;
@@ -190,12 +193,16 @@ fn fetch_text_output(
     ]);
     // curl's own --max-time is the primary budget; the outer deadline is a
     // backstop that also kills a hung curl that ignored max-time.
-    run_capturing(command, RunLimits::total(std::time::Duration::from_secs(75)), None)
-        .map_err(|e| EngineError::Io(format!("curl: {}", e.message())))
+    run_capturing(
+        command,
+        RunLimits::total(std::time::Duration::from_secs(75)),
+        None,
+    )
+    .map_err(|e| EngineError::Io(format!("curl: {}", e.message())))
 }
 
 pub fn fetch_text_with_network(url: &str, network: &NetworkConfig) -> Result<String, EngineError> {
-    let source = url_host(url);
+    let source = safe_url_host(url);
     log::debug!("fetch Windows text source={source}");
     let mut output = fetch_text_output(url, network, SchannelRevocationCheck::Strict)?;
     let should_retry_without_revocation = {
@@ -233,14 +240,7 @@ pub fn fetch_text_with_network(url: &str, network: &NetworkConfig) -> Result<Str
 }
 
 fn curl_failure_message(url: &str, exit_code: Option<i32>, stderr: &str) -> String {
-    let base = format!(
-        "curl failed for host={} exit={}: stderr='{}'",
-        url_host(url),
-        exit_code
-            .map(|code| code.to_string())
-            .unwrap_or_else(|| "signal".to_string()),
-        stderr.trim(),
-    );
+    let base = safe_curl_failure_message(url, exit_code, stderr);
     // Append the proxy diagnostic only for connectivity failures — pasting it
     // onto write / disk / HTTP errors (e.g. exit 23) only misleads.
     if is_connectivity_exit(exit_code) {
@@ -276,13 +276,6 @@ fn is_connectivity_exit(exit_code: Option<i32>) -> bool {
     )
 }
 
-fn url_host(url: &str) -> &str {
-    url.split("://")
-        .nth(1)
-        .and_then(|rest| rest.split('/').next())
-        .unwrap_or("")
-}
-
 fn proxy_env_summary() -> String {
     let vars = ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY"];
     let configured = vars
@@ -297,6 +290,30 @@ fn proxy_env_summary() -> String {
             "curl proxy environment variables set: {}",
             configured.join(", ")
         )
+    }
+}
+
+#[cfg(test)]
+mod curl_diagnostic_tests {
+    use super::curl_failure_message;
+
+    #[test]
+    fn text_fetch_failure_never_persists_url_or_raw_stderr_secrets() {
+        let raw = "https://basic-user:basic-pass@manifest.example/latest/manifest?token=presigned-secret#fragment-secret";
+        let stderr = format!("curl: (35) TLS failed while requesting {raw}");
+        let message = curl_failure_message(raw, Some(35), &stderr);
+
+        assert!(message
+            .starts_with("curl failed for host=manifest.example exit=35 reason='TLS failure'"));
+        for secret in [
+            "basic-user",
+            "basic-pass",
+            "/latest/manifest",
+            "presigned-secret",
+            "fragment-secret",
+        ] {
+            assert!(!message.contains(secret), "text error leaked {secret}");
+        }
     }
 }
 
@@ -1016,9 +1033,7 @@ if ($statusOk -and $aumidResolved -and $missing.Count -eq 0) {{
     let parsed = match &run_result {
         Ok(json) => serde_json::from_str::<serde_json::Value>(json).ok(),
         Err(PowerShellRunError::Timeout(kind)) => {
-            log::info!(
-                "MSIX health check result healthy=false status=timeout kind={kind:?}"
-            );
+            log::info!("MSIX health check result healthy=false status=timeout kind={kind:?}");
             // Start-Process detaches; kill any process the timed-out probe left running.
             best_effort_close_msix_after_probe();
             return MsixHealthReport {
@@ -1252,7 +1267,8 @@ pub fn detect_portable_install(portable_root: &Path) -> Option<InstalledWindowsC
             }
         },
         Err(_) => {
-            let asar_name = crate::app_version::read_asar_package_name_from_install_root(portable_root);
+            let asar_name =
+                crate::app_version::read_asar_package_name_from_install_root(portable_root);
             if asar_name.as_deref() != Some(crate::app_version::CODEX_ASAR_PACKAGE_NAME) {
                 log::debug!(
                     "portable root at {} has no manifest and its app payload name is {:?} (expected {}); not a Codex install",
@@ -1297,13 +1313,12 @@ pub fn launch_codex_with_options(
 ) -> Result<(), EngineError> {
     if installed.source == "portable" {
         let root = Path::new(&installed.path);
-        let exe = crate::portable::installed_app_exe(root)
-            .ok_or_else(|| {
-                EngineError::Io(format!(
-                    "no app entry executable (ChatGPT.exe / Codex.exe) in {}",
-                    root.display()
-                ))
-            })?;
+        let exe = crate::portable::installed_app_exe(root).ok_or_else(|| {
+            EngineError::Io(format!(
+                "no app entry executable (ChatGPT.exe / Codex.exe) in {}",
+                root.display()
+            ))
+        })?;
         // CREATE_NO_WINDOW only suppresses a console flash; the GUI still shows.
         // Require a short liveness window so an immediate crash is reported as a
         // launch failure instead of a silent no-op.
@@ -1321,10 +1336,7 @@ pub fn launch_codex_with_options(
                 code.map(|c| c.to_string())
                     .unwrap_or_else(|| "signal".to_string())
             ))),
-            Err(err) => Err(EngineError::Io(format!(
-                "launch Codex: {}",
-                err.message()
-            ))),
+            Err(err) => Err(EngineError::Io(format!("launch Codex: {}", err.message()))),
         }
     } else {
         if options.disable_codex_self_updates {

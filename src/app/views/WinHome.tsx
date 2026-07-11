@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import {
   errorCode,
@@ -35,7 +43,13 @@ type Kind = "loading" | "error" | "none" | "idle" | "update" | "external" | "upt
 
 // Windows counterpart of MacHome — same design system + state machine, driven by
 // the win_* backend (codex-win-engine): MSIX sideload or portable fallback.
-export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
+export function WinHome({
+  onOpenSettings,
+  managerUpdateSlot,
+}: {
+  onOpenSettings: () => void;
+  managerUpdateSlot?: ReactNode;
+}) {
   const { t, lang } = useI18n();
   const [report, setReport] = useState<WinUpdateReport | null>(null);
   const [status, setStatus] = useState<WinInstallStatus | null>(null);
@@ -640,6 +654,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         ref={scopeRef}
         inert={confirmOpen || installDirOpen || manualExistingOpen ? true : undefined}
       >
+        {managerUpdateSlot}
         {perform ? (
           <ResultBanner
             tone={perform.success ? "ok" : "err"}

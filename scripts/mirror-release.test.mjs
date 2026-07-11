@@ -28,13 +28,17 @@ import {
   downgradeOverrideFromEnv,
   promoteCandidateTransaction,
   promoteMirrors,
+  stageMirrors,
   verifyBackendCandidate,
   verifyLocalUpdaterArtifacts,
+  verifyLocalReleaseIdentity,
   verifyMirrors,
   verifyPublicMirrorRoute,
   verifyTauriUpdaterSignature,
 } from "./mirror-release.mjs";
 import {
+  OPTIONAL_RELEASE_METADATA_ASSET_NAMES,
+  REQUIRED_RELEASE_METADATA_ASSET_NAMES,
   inspectReleaseForReuse,
   requiredReleaseAssetNames,
 } from "./check-release-reuse.mjs";
@@ -68,6 +72,7 @@ function manifest(version, signature = "test-signature") {
     pub_date: "2026-01-01T00:00:00.000Z",
     platforms: {
       "windows-x86_64": {
+        sha256: "a".repeat(64),
         signature,
         url: `https://mirror.example/manager/${version}/manager-${version}.exe`,
       },
@@ -78,6 +83,7 @@ function manifest(version, signature = "test-signature") {
 function completeManifest(version, signature = "test-signature") {
   return {
     version,
+    channel: "stable",
     notes: `release ${version}`,
     pub_date: "2026-01-01T00:00:00.000Z",
     platforms: Object.fromEntries(
@@ -89,6 +95,7 @@ function completeManifest(version, signature = "test-signature") {
       ].map((platform) => [
         platform,
         {
+          sha256: "a".repeat(64),
           signature,
           url: `https://mirror.example/manager/${version}/manager-${platform}-${version}.bin`,
         },
@@ -102,7 +109,10 @@ function completeRelease(releaseTag, overrides = {}) {
   return {
     draft: false,
     immutable: true,
-    assets: requiredReleaseAssetNames(releaseTag).map((name) => ({
+    assets: [
+      ...requiredReleaseAssetNames(releaseTag),
+      ...REQUIRED_RELEASE_METADATA_ASSET_NAMES,
+    ].map((name) => ({
       digest,
       name,
       size: 1,
@@ -233,6 +243,20 @@ class MemoryBackend {
     return { etag: stored.etag, size: stored.body.length };
   }
 
+  async putRootIdentityPointer(localPath, key, promotionToken = "") {
+    this.onRootIdentityWrite?.(`${this.name}:${key}`);
+    if (this.failRootIdentityKey === key) {
+      throw new Error(`${this.name}: simulated root identity write failure for ${key}`);
+    }
+    this.set(
+      key,
+      await readFile(localPath),
+      promotionToken ? { "cam-promotion-token": promotionToken } : {},
+    );
+    const stored = this.objects.get(key);
+    return { etag: stored.etag, size: stored.body.length };
+  }
+
   async deleteLatestConditional(expectedEtag) {
     const current = this.objects.get("latest.json");
     if (!current || current.etag !== expectedEtag) {
@@ -290,7 +314,43 @@ function updaterFixture(artifact) {
   return {
     publicKey: Buffer.from(`${publicText}\n`).toString("base64"),
     signature: encodedUpdaterSignature(privateKey, keyId, artifact),
+    sign: (value) => encodedUpdaterSignature(privateKey, keyId, value),
   };
+}
+
+async function writeReleaseIdentity(
+  dist,
+  candidate,
+  fixture,
+  { channel = candidate.channel, mutate } = {},
+) {
+  const identity = {
+    schema: 1,
+    version: candidate.version,
+    channel,
+    notes_sha256: hash(Buffer.from(candidate.notes, "utf8")),
+    platforms: {},
+  };
+  for (const [platform, entry] of Object.entries(candidate.platforms)) {
+    const artifact = decodeURIComponent(
+      new URL(entry.url).pathname.split("/").filter(Boolean).at(-1),
+    );
+    identity.platforms[platform] = {
+      artifact,
+      sha256: hash(await readFile(join(dist, artifact))),
+    };
+  }
+  mutate?.(identity);
+  const identityPath = await writeManifest(
+    dist,
+    "release-identity.json",
+    identity,
+  );
+  const identityBytes = await readFile(identityPath);
+  const signature = fixture.sign(identityBytes);
+  const signaturePath = join(dist, "release-identity.json.sig");
+  await writeFile(signaturePath, `${signature}\n`);
+  return { identity, identityBytes, identityPath, signature, signaturePath };
 }
 
 function testIhepRedirect(workerUrl, overrides = {}) {
@@ -352,6 +412,100 @@ function publicRouteFetch(
   };
 }
 
+function liveBackendPublicRouteFetch(r2, ihep, requests = []) {
+  const keyFromUrl = (url) => {
+    const pathname = url.pathname
+      .replace(/^\/root\/mirror-bucket\/manager\//, "")
+      .replace(/^\/manager\//, "");
+    return pathname
+      .split("/")
+      .map((segment) => decodeURIComponent(segment))
+      .join("/");
+  };
+  return async (value) => {
+    const url = new URL(value);
+    requests.push(url);
+    if (url.hostname === "ihep.example") {
+      const body = ihep.body(keyFromUrl(url));
+      return body === undefined
+        ? new Response("not found", { status: 404 })
+        : new Response(body, { status: 200 });
+    }
+    const backend = url.searchParams.get("cam_backend");
+    if (backend === "ihep") {
+      return new Response(null, {
+        status: 302,
+        headers: {
+          Location: testIhepRedirect(url),
+          "X-Codex-Mirror-Backend": "ihep",
+        },
+      });
+    }
+    const body = r2.body(keyFromUrl(url));
+    return body === undefined
+      ? new Response("not found", { status: 404 })
+      : new Response(body, {
+          status: 200,
+          headers: { "X-Codex-Mirror-Backend": "r2" },
+        });
+  };
+}
+
+async function prepareMirrorPromotionFixture(
+  root,
+  {
+    channel = "stable",
+    preexistingR2 = {},
+    version = "1.2.3",
+  } = {},
+) {
+  const dist = join(root, "dist");
+  await mkdir(dist, { recursive: true });
+  const artifact = Buffer.from(`stable updater payload for ${version}`);
+  const fixture = updaterFixture(artifact);
+  const candidate = completeManifest(version, fixture.signature);
+  for (const entry of Object.values(candidate.platforms)) {
+    entry.sha256 = hash(artifact);
+  }
+  candidate.channel = channel;
+  for (const entry of Object.values(candidate.platforms)) {
+    const name = new URL(entry.url).pathname.split("/").at(-1);
+    await writeFile(join(dist, name), artifact);
+    await writeFile(join(dist, `${name}.sig`), `${fixture.signature}\n`);
+  }
+  const releaseIdentity = await writeReleaseIdentity(dist, candidate, fixture, {
+    channel,
+  });
+  const candidatePath = await writeManifest(dist, "latest.mirror.json", candidate);
+  const candidateKey = candidateKeyFor(version, "root-identity-run");
+  const current = Buffer.from(`${JSON.stringify(manifest("0.9.0"))}\n`);
+  const r2 = new MemoryBackend("r2", {
+    "latest.json": current,
+    ...preexistingR2,
+  });
+  const ihep = new MemoryBackend("ihep", { "latest.json": current });
+  await stageMirrors({
+    backends: [r2, ihep],
+    candidateKey,
+    candidatePath,
+    distDir: dist,
+    summaryPath: join(root, "stage-summary.json"),
+    version,
+    override: overrideOff(),
+  });
+  return {
+    artifact,
+    candidate,
+    candidateKey,
+    candidatePath,
+    dist,
+    fixture,
+    ihep,
+    r2,
+    releaseIdentity,
+  };
+}
+
 describe("semantic release ordering", () => {
   it("orders stable and prerelease versions without lexical mistakes", () => {
     expect(compareSemver("1.10.0", "1.9.9")).toBe(1);
@@ -386,7 +540,25 @@ describe("release candidate binding", () => {
     const changedSignature = structuredClone(candidate);
     changedSignature.platforms["windows-x86_64"].signature = "different-signature";
     expect(() => assertCandidateMatchesRelease(changedSignature, derived, "v1.2.3")).toThrow(
-      "platforms/signatures do not match",
+      "channel/notes/platforms/signatures/sha256 do not match",
+    );
+
+    const missingSha256 = structuredClone(candidate);
+    delete missingSha256.platforms["windows-x86_64"].sha256;
+    expect(() => assertCandidateMatchesRelease(missingSha256, derived, "v1.2.3")).toThrow(
+      "sha256 must be a lowercase SHA-256 digest",
+    );
+
+    const invalidSha256 = structuredClone(candidate);
+    invalidSha256.platforms["windows-x86_64"].sha256 = "A".repeat(64);
+    expect(() => assertCandidateMatchesRelease(invalidSha256, derived, "v1.2.3")).toThrow(
+      "sha256 must be a lowercase SHA-256 digest",
+    );
+
+    const changedSha256 = structuredClone(candidate);
+    changedSha256.platforms["windows-x86_64"].sha256 = "b".repeat(64);
+    expect(() => assertCandidateMatchesRelease(changedSha256, derived, "v1.2.3")).toThrow(
+      "channel/notes/platforms/signatures/sha256 do not match",
     );
   });
 });
@@ -396,7 +568,9 @@ describe("existing GitHub Release reuse", () => {
     const releaseTag = "v1.2.3";
     const valid = inspectReleaseForReuse(completeRelease(releaseTag), releaseTag);
     expect(valid.reusable).toBe(true);
-    expect(Object.keys(valid.digests)).toHaveLength(12);
+    expect(Object.keys(valid.digests)).toHaveLength(
+      requiredReleaseAssetNames(releaseTag).length,
+    );
 
     expect(() =>
       inspectReleaseForReuse(completeRelease(releaseTag, { immutable: false }), releaseTag),
@@ -425,11 +599,25 @@ describe("existing GitHub Release reuse", () => {
       "has no canonical SHA-256 digest",
     );
 
-    const unpinnedExtra = completeRelease(releaseTag);
-    unpinnedExtra.assets.push({ name: "CodexAppManager_extra.zip", size: 10 });
-    expect(() => inspectReleaseForReuse(unpinnedExtra, releaseTag)).toThrow(
-      "has no canonical SHA-256 digest",
+    const unexpectedExecutable = completeRelease(releaseTag);
+    unexpectedExecutable.assets.push({
+      digest: `sha256:${"b".repeat(64)}`,
+      name: "CodexAppManager_1.2.3_unsigned-debug.exe",
+      size: 10,
+    });
+    expect(() => inspectReleaseForReuse(unexpectedExecutable, releaseTag)).toThrow(
+      "has unexpected assets and cannot be trusted",
     );
+
+    const optionalSbom = completeRelease(releaseTag);
+    optionalSbom.assets.push({
+      digest: `sha256:${"c".repeat(64)}`,
+      name: OPTIONAL_RELEASE_METADATA_ASSET_NAMES[0],
+      size: 10,
+    });
+    expect(inspectReleaseForReuse(optionalSbom, releaseTag)).toMatchObject({
+      reusable: true,
+    });
   });
 });
 
@@ -456,6 +644,7 @@ describe("Tauri updater verification", () => {
     const artifact = Buffer.from("locally signed updater bytes");
     const fixture = updaterFixture(artifact);
     const candidate = manifest("1.2.3", fixture.signature);
+    candidate.platforms["windows-x86_64"].sha256 = hash(artifact);
     const artifactName = "manager-1.2.3.exe";
     await writeFile(join(root, artifactName), artifact);
     await writeFile(join(root, `${artifactName}.sig`), `${fixture.signature}\n`);
@@ -476,6 +665,121 @@ describe("Tauri updater verification", () => {
         publicKey: wrongKey,
       }),
     ).rejects.toThrow("artifact signature is invalid");
+
+    candidate.platforms["windows-x86_64"].sha256 = "b".repeat(64);
+    await expect(
+      verifyLocalUpdaterArtifacts({
+        manifest: candidate,
+        distDir: root,
+        publicKey: fixture.publicKey,
+      }),
+    ).rejects.toThrow("artifact sha256 does not match manifest");
+  });
+});
+
+describe("local signed release identity verification", () => {
+  it("verifies an explicitly expected prerelease identity without making it root-promotable", async () => {
+    const root = await tempRoot("local-prerelease-identity");
+    const artifact = Buffer.from("prerelease updater payload");
+    const fixture = updaterFixture(artifact);
+    const candidate = completeManifest("1.2.3-rc.1", fixture.signature);
+    for (const entry of Object.values(candidate.platforms)) {
+      entry.sha256 = hash(artifact);
+    }
+    candidate.channel = "prerelease";
+    for (const entry of Object.values(candidate.platforms)) {
+      const name = new URL(entry.url).pathname.split("/").at(-1);
+      await writeFile(join(root, name), artifact);
+    }
+    const releaseIdentity = await writeReleaseIdentity(root, candidate, fixture, {
+      channel: "prerelease",
+    });
+
+    await expect(
+      verifyLocalReleaseIdentity({
+        candidateManifest: candidate,
+        distDir: root,
+        expectedChannel: "prerelease",
+        publicKey: fixture.publicKey,
+      }),
+    ).resolves.toMatchObject({
+      identity: releaseIdentity.identity,
+      identityPath: releaseIdentity.identityPath,
+    });
+    await expect(
+      verifyLocalReleaseIdentity({
+        candidateManifest: candidate,
+        distDir: root,
+        expectedChannel: "stable",
+        publicKey: fixture.publicKey,
+      }),
+    ).rejects.toThrow("version 1.2.3-rc.1 is prerelease");
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["invalid", "A".repeat(64)],
+  ])(
+    "rejects historical immutable reuse with a %s manifest sha256 even when its signed identity is valid",
+    async (_case, manifestSha256) => {
+      const root = await tempRoot(`historical-${_case}-manifest-sha256`);
+      const artifact = Buffer.from("historical immutable updater payload");
+      const fixture = updaterFixture(artifact);
+      const candidate = completeManifest("1.2.3", fixture.signature);
+      for (const entry of Object.values(candidate.platforms)) {
+        entry.sha256 = hash(artifact);
+        const name = new URL(entry.url).pathname.split("/").at(-1);
+        await writeFile(join(root, name), artifact);
+        await writeFile(join(root, `${name}.sig`), `${fixture.signature}\n`);
+      }
+      await writeReleaseIdentity(root, candidate, fixture);
+
+      const publishedManifest = structuredClone(candidate);
+      if (manifestSha256 === undefined) {
+        delete publishedManifest.platforms["windows-x86_64"].sha256;
+      } else {
+        publishedManifest.platforms["windows-x86_64"].sha256 = manifestSha256;
+      }
+
+      await expect(
+        verifyLocalUpdaterArtifacts({
+          manifest: publishedManifest,
+          distDir: root,
+          publicKey: fixture.publicKey,
+        }),
+      ).rejects.toThrow("sha256 must be a lowercase SHA-256 digest");
+      await expect(
+        verifyLocalReleaseIdentity({
+          candidateManifest: publishedManifest,
+          distDir: root,
+          expectedChannel: "stable",
+          publicKey: fixture.publicKey,
+        }),
+      ).rejects.toThrow("sha256 must be a lowercase SHA-256 digest");
+    },
+  );
+
+  it("rejects a valid-looking manifest sha256 that differs from its signed identity", async () => {
+    const root = await tempRoot("historical-mismatched-manifest-sha256");
+    const artifact = Buffer.from("historical updater payload with signed identity");
+    const fixture = updaterFixture(artifact);
+    const candidate = completeManifest("1.2.3", fixture.signature);
+    for (const entry of Object.values(candidate.platforms)) {
+      entry.sha256 = hash(artifact);
+      const name = new URL(entry.url).pathname.split("/").at(-1);
+      await writeFile(join(root, name), artifact);
+    }
+    await writeReleaseIdentity(root, candidate, fixture);
+    candidate.platforms["windows-x86_64"].sha256 = "b".repeat(64);
+
+    await expect(
+      verifyLocalReleaseIdentity({
+        candidateManifest: candidate,
+        distDir: root,
+        expectedChannel: "stable",
+        publicKey: fixture.publicKey,
+      }),
+    ).rejects.toThrow("sha256 does not match candidate manifest");
   });
 });
 
@@ -485,6 +789,9 @@ describe("public mirror route verification", () => {
     const artifact = Buffer.from("public updater payload");
     const fixture = updaterFixture(artifact);
     const candidate = completeManifest("1.2.3", fixture.signature);
+    for (const entry of Object.values(candidate.platforms)) {
+      entry.sha256 = hash(artifact);
+    }
     const candidateKey = candidateKeyFor("1.2.3", "public-run");
     const candidatePath = await writeManifest(root, "candidate.json", candidate);
     const objects = new Map([
@@ -557,6 +864,9 @@ describe("public mirror route verification", () => {
     const artifact = Buffer.from("identical public updater payload");
     const fixture = updaterFixture(artifact);
     const candidate = completeManifest("1.2.3", fixture.signature);
+    for (const entry of Object.values(candidate.platforms)) {
+      entry.sha256 = hash(artifact);
+    }
     const candidateKey = candidateKeyFor("1.2.3", "binding-run");
     const candidatePath = await writeManifest(root, "candidate.json", candidate);
     const objects = new Map([[`/manager/${candidateKey}`, await readFile(candidatePath)]]);
@@ -684,6 +994,7 @@ describe("backend candidate verification", () => {
     const artifact = Buffer.from("release artifact from object storage");
     const fixture = updaterFixture(artifact);
     const candidate = manifest("1.2.3", fixture.signature);
+    candidate.platforms["windows-x86_64"].sha256 = hash(artifact);
     const artifactName = "manager-1.2.3.exe";
     const dmgName = "CodexAppManager_aarch64.dmg";
     const signatureName = `${artifactName}.sig`;
@@ -770,6 +1081,7 @@ describe("backend candidate verification", () => {
     const artifact = Buffer.from("release artifact from object storage");
     const fixture = updaterFixture(artifact);
     const candidate = manifest("1.2.3", fixture.signature);
+    candidate.platforms["windows-x86_64"].sha256 = hash(artifact);
     const artifactName = "manager-1.2.3.exe";
     await writeFile(join(dist, artifactName), artifact);
     await writeFile(join(dist, `${artifactName}.sig`), "different-signature\n");
@@ -802,6 +1114,9 @@ describe("pre-publication mirror verification", () => {
     const artifact = Buffer.from("stable updater payload");
     const fixture = updaterFixture(artifact);
     const candidate = completeManifest("1.2.3", fixture.signature);
+    for (const entry of Object.values(candidate.platforms)) {
+      entry.sha256 = hash(artifact);
+    }
     const candidatePath = await writeManifest(dist, "latest.mirror.json", candidate);
     const candidateKey = candidateKeyFor("1.2.3", "verify-run");
     const candidateBytes = await readFile(candidatePath);
@@ -816,6 +1131,11 @@ describe("pre-publication mirror verification", () => {
       stagedObjects[`1.2.3/${name}.sig`] = sidecar;
       publicObjects.set(`/manager/1.2.3/${name}`, artifact);
     }
+    const releaseIdentity = await writeReleaseIdentity(dist, candidate, fixture);
+    stagedObjects["1.2.3/release-identity.json"] = releaseIdentity.identityBytes;
+    stagedObjects["1.2.3/release-identity.json.sig"] = await readFile(
+      releaseIdentity.signaturePath,
+    );
     const current = Buffer.from(`${JSON.stringify(manifest("1.0.0"))}\n`);
     const r2 = new MemoryBackend("r2", {
       "latest.json": current,
@@ -877,6 +1197,189 @@ describe("pre-publication mirror verification", () => {
       }),
     ).rejects.toThrow(`public mirror ihep size mismatch for ${corruptedName}`);
     expect([r2.latestPutAttempts, ihep.latestPutAttempts]).toEqual([0, 0]);
+  });
+});
+
+describe("stable root release identity promotion", () => {
+  it("writes both signatures before either JSON pointer and verifies direct and public readback", async () => {
+    const root = await tempRoot("root-identity-success");
+    const setup = await prepareMirrorPromotionFixture(root);
+    const writes = [];
+    setup.r2.onRootIdentityWrite = (entry) => writes.push(entry);
+    setup.ihep.onRootIdentityWrite = (entry) => writes.push(entry);
+    const requests = [];
+    const summaryPath = join(root, "promotion-summary.json");
+
+    const summary = await promoteMirrors({
+      backends: [setup.r2, setup.ihep],
+      candidateKey: setup.candidateKey,
+      candidateManifest: setup.candidate,
+      candidatePath: setup.candidatePath,
+      distDir: setup.dist,
+      mirrorBase: "https://mirror.example/manager",
+      override: overrideOff(),
+      publicKey: setup.fixture.publicKey,
+      summaryPath,
+      tempRoot: join(root, "promote"),
+      fetchImpl: liveBackendPublicRouteFetch(setup.r2, setup.ihep, requests),
+    });
+
+    expect(summary.outcome).toBe("promoted");
+    expect(writes).toEqual([
+      "r2:release-identity.json.sig",
+      "ihep:release-identity.json.sig",
+      "r2:release-identity.json",
+      "ihep:release-identity.json",
+    ]);
+    for (const backend of [setup.r2, setup.ihep]) {
+      expect(backend.body("release-identity.json")).toEqual(
+        setup.releaseIdentity.identityBytes,
+      );
+      expect(backend.body("release-identity.json.sig")).toEqual(
+        await readFile(setup.releaseIdentity.signaturePath),
+      );
+    }
+    expect(summary.rootIdentity).toMatchObject({
+      channel: "stable",
+      localVerification: "passed",
+      publicRouteVerification: "passed",
+      version: "1.2.3",
+    });
+    expect(summary.backends.map((backend) => backend.rootIdentity)).toEqual([
+      expect.objectContaining({
+        directVerification: "passed",
+        jsonWrite: "written-and-verified",
+        publicVerification: "passed",
+        signatureWrite: "written-and-verified",
+      }),
+      expect.objectContaining({
+        directVerification: "passed",
+        jsonWrite: "written-and-verified",
+        publicVerification: "passed",
+        signatureWrite: "written-and-verified",
+      }),
+    ]);
+    const rootRequests = requests.filter((url) =>
+      url.pathname.includes("release-identity.json"),
+    );
+    expect(rootRequests.some((url) => url.searchParams.get("cam_backend") === "r2")).toBe(
+      true,
+    );
+    expect(
+      rootRequests.some((url) => url.searchParams.get("cam_backend") === "ihep"),
+    ).toBe(true);
+    expect(JSON.parse(await readFile(summaryPath, "utf8")).outcome).toBe("promoted");
+  });
+
+  it("never overwrites a mismatched versioned identity and fails before latest promotion", async () => {
+    const root = await tempRoot("versioned-identity-mismatch");
+    const staleBytes = Buffer.from("pre-existing mismatched identity bytes");
+    const setup = await prepareMirrorPromotionFixture(root, {
+      preexistingR2: { "1.2.3/release-identity.json": staleBytes },
+    });
+
+    expect(setup.r2.body("1.2.3/release-identity.json")).toEqual(staleBytes);
+    await expect(
+      promoteMirrors({
+        backends: [setup.r2, setup.ihep],
+        candidateKey: setup.candidateKey,
+        candidateManifest: setup.candidate,
+        candidatePath: setup.candidatePath,
+        distDir: setup.dist,
+        mirrorBase: "https://mirror.example/manager",
+        override: overrideOff(),
+        publicKey: setup.fixture.publicKey,
+        summaryPath: join(root, "promotion-summary.json"),
+        tempRoot: join(root, "promote"),
+      }),
+    ).rejects.toThrow(/(?:size|sha256) mismatch for release-identity\.json/);
+    expect(setup.r2.body("1.2.3/release-identity.json")).toEqual(staleBytes);
+    expect([setup.r2.latestPutAttempts, setup.ihep.latestPutAttempts]).toEqual([0, 0]);
+    expect(setup.r2.body("release-identity.json")).toBeUndefined();
+    expect(setup.ihep.body("release-identity.json")).toBeUndefined();
+  });
+
+  it("rejects prerelease identities before any mutable pointer write", async () => {
+    const root = await tempRoot("prerelease-root-identity");
+    const setup = await prepareMirrorPromotionFixture(root, {
+      channel: "prerelease",
+      version: "1.2.3-rc.1",
+    });
+
+    await expect(
+      promoteMirrors({
+        backends: [setup.r2, setup.ihep],
+        candidateKey: setup.candidateKey,
+        candidateManifest: setup.candidate,
+        candidatePath: setup.candidatePath,
+        distDir: setup.dist,
+        mirrorBase: "https://mirror.example/manager",
+        override: overrideOff(),
+        publicKey: setup.fixture.publicKey,
+        summaryPath: join(root, "promotion-summary.json"),
+        tempRoot: join(root, "promote"),
+      }),
+    ).rejects.toThrow("root release identity accepts only channel=stable");
+    expect([setup.r2.latestPutAttempts, setup.ihep.latestPutAttempts]).toEqual([0, 0]);
+    expect(setup.r2.body("release-identity.json")).toBeUndefined();
+    expect(setup.ihep.body("release-identity.json.sig")).toBeUndefined();
+  });
+
+  it("fails on stale public pointer bytes and a retry repairs the same signed pair", async () => {
+    const root = await tempRoot("root-identity-public-readback");
+    const setup = await prepareMirrorPromotionFixture(root);
+    const liveFetch = liveBackendPublicRouteFetch(setup.r2, setup.ihep);
+    const stalePublicFetch = async (value) => {
+      const url = new URL(value);
+      const response = await liveFetch(value);
+      if (
+        url.hostname === "ihep.example" &&
+        url.pathname.endsWith("/release-identity.json")
+      ) {
+        await response.body?.cancel().catch(() => {});
+        return new Response("stale cached identity", { status: 200 });
+      }
+      return response;
+    };
+    const failedSummaryPath = join(root, "failed-summary.json");
+
+    await expect(
+      promoteMirrors({
+        backends: [setup.r2, setup.ihep],
+        candidateKey: setup.candidateKey,
+        candidateManifest: setup.candidate,
+        candidatePath: setup.candidatePath,
+        distDir: setup.dist,
+        mirrorBase: "https://mirror.example/manager",
+        override: overrideOff(),
+        publicKey: setup.fixture.publicKey,
+        summaryPath: failedSummaryPath,
+        tempRoot: join(root, "failed-promote"),
+        fetchImpl: stalePublicFetch,
+      }),
+    ).rejects.toThrow(
+      "public mirror ihep root release identity does not match this release run",
+    );
+    expect(JSON.parse(await readFile(failedSummaryPath, "utf8"))).toMatchObject({
+      outcome: "failed",
+      rootIdentity: { publicRouteVerification: "failed" },
+    });
+
+    const repaired = await promoteMirrors({
+      backends: [setup.r2, setup.ihep],
+      candidateKey: setup.candidateKey,
+      candidateManifest: setup.candidate,
+      candidatePath: setup.candidatePath,
+      distDir: setup.dist,
+      mirrorBase: "https://mirror.example/manager",
+      override: overrideOff(),
+      publicKey: setup.fixture.publicKey,
+      summaryPath: join(root, "repaired-summary.json"),
+      tempRoot: join(root, "repaired-promote"),
+      fetchImpl: liveBackendPublicRouteFetch(setup.r2, setup.ihep),
+    });
+    expect(repaired.outcome).toBe("idempotent");
+    expect(repaired.rootIdentity.publicRouteVerification).toBe("passed");
   });
 });
 
@@ -966,6 +1469,84 @@ describe("monotonic mirror promotion", () => {
     expect(JSON.parse(ihep.body("latest.json")).version).toBe("1.1.0");
   });
 
+  it("migrates a strictly older legacy baseline that predates manifest sha256", async () => {
+    const root = await tempRoot("legacy-baseline-forward-migration");
+    const legacy = manifest("1.0.0");
+    delete legacy.platforms["windows-x86_64"].sha256;
+    const candidate = manifest("1.1.0");
+    const candidatePath = await writeManifest(root, "candidate.json", candidate);
+    const initial = `${JSON.stringify(legacy)}\n`;
+    const r2 = new MemoryBackend("r2", { "latest.json": initial });
+    const ihep = new ConditionIgnoringMemoryBackend("ihep", { "latest.json": initial });
+    const backends = [r2, ihep];
+
+    await expect(
+      promoteCandidateTransaction({
+        backends,
+        candidateManifest: candidate,
+        candidatePath,
+        override: overrideOff(),
+        promotionToken: "legacy-forward-migration",
+        summary: summaryFor(backends),
+        workDir: join(root, "transaction"),
+      }),
+    ).resolves.toEqual(expect.objectContaining({ outcome: "promoted" }));
+
+    expect(JSON.parse(r2.body("latest.json"))).toEqual(candidate);
+    expect(JSON.parse(ihep.body("latest.json"))).toEqual(candidate);
+  });
+
+  it("rejects same-version reuse of a legacy baseline without sha256", async () => {
+    const root = await tempRoot("legacy-baseline-same-version");
+    const legacy = manifest("1.0.0");
+    delete legacy.platforms["windows-x86_64"].sha256;
+    const candidate = manifest("1.0.0");
+    const candidatePath = await writeManifest(root, "candidate.json", candidate);
+    const original = Buffer.from(`${JSON.stringify(legacy)}\n`);
+    const backends = [
+      new MemoryBackend("r2", { "latest.json": original }),
+      new MemoryBackend("ihep", { "latest.json": original }),
+    ];
+
+    await expect(
+      promoteCandidateTransaction({
+        backends,
+        candidateManifest: candidate,
+        candidatePath,
+        override: overrideOff(),
+        summary: summaryFor(backends),
+        workDir: join(root, "transaction"),
+      }),
+    ).rejects.toThrow("sha256 must be a lowercase SHA-256 digest");
+    expect(backends.map((backend) => backend.latestPutAttempts)).toEqual([0, 0]);
+    expect(backends.every((backend) => backend.body("latest.json").equals(original))).toBe(true);
+  });
+
+  it("rejects an invalid legacy digest even for a forward promotion", async () => {
+    const root = await tempRoot("legacy-baseline-invalid-digest");
+    const invalid = manifest("1.0.0");
+    invalid.platforms["windows-x86_64"].sha256 = "A".repeat(64);
+    const candidate = manifest("1.1.0");
+    const candidatePath = await writeManifest(root, "candidate.json", candidate);
+    const original = Buffer.from(`${JSON.stringify(invalid)}\n`);
+    const backends = [
+      new MemoryBackend("r2", { "latest.json": original }),
+      new MemoryBackend("ihep", { "latest.json": original }),
+    ];
+
+    await expect(
+      promoteCandidateTransaction({
+        backends,
+        candidateManifest: candidate,
+        candidatePath,
+        override: overrideOff(),
+        summary: summaryFor(backends),
+        workDir: join(root, "transaction"),
+      }),
+    ).rejects.toThrow("sha256 must be a lowercase SHA-256 digest");
+    expect(backends.map((backend) => backend.latestPutAttempts)).toEqual([0, 0]);
+  });
+
   it("does not let an R2 CAS loser touch condition-ignoring IHEP", async () => {
     const root = await tempRoot("r2-cas-loser");
     const candidate = manifest("1.1.0");
@@ -1028,6 +1609,61 @@ describe("monotonic mirror promotion", () => {
     });
 
     expect(result.outcome).toBe("idempotent");
+    expect(backends.map((backend) => backend.latestPutAttempts)).toEqual([0, 0]);
+    expect(backends.every((backend) => backend.body("latest.json").equals(original))).toBe(true);
+  });
+
+  it("does not treat a same-version manifest with a different sha256 as idempotent", async () => {
+    const root = await tempRoot("same-version-sha256-mismatch");
+    const current = manifest("2.0.0");
+    const candidate = structuredClone(current);
+    candidate.platforms["windows-x86_64"].sha256 = "b".repeat(64);
+    const candidatePath = await writeManifest(root, "candidate.json", candidate);
+    const original = Buffer.from(`${JSON.stringify(current)}\n`);
+    const backends = [
+      new MemoryBackend("r2", { "latest.json": original }),
+      new MemoryBackend("ihep", { "latest.json": original }),
+    ];
+
+    await expect(
+      promoteCandidateTransaction({
+        backends,
+        candidateManifest: candidate,
+        candidatePath,
+        override: overrideOff(),
+        summary: summaryFor(backends),
+        workDir: join(root, "transaction"),
+      }),
+    ).rejects.toThrow("different channel/notes/artifact/signature/sha256 identity");
+    expect(backends.map((backend) => backend.latestPutAttempts)).toEqual([0, 0]);
+  });
+
+  it.each([
+    ["release notes", (current) => { current.notes = "tampered release notes"; }],
+    ["channel", (current) => { current.channel = "prerelease"; }],
+  ])("does not treat same-version %s drift as idempotent", async (_field, mutate) => {
+    const root = await tempRoot(`same-version-${_field.replaceAll(" ", "-")}-mismatch`);
+    const candidate = manifest("2.0.0");
+    candidate.channel = "stable";
+    const current = structuredClone(candidate);
+    mutate(current);
+    const candidatePath = await writeManifest(root, "candidate.json", candidate);
+    const original = Buffer.from(`${JSON.stringify(current)}\n`);
+    const backends = [
+      new MemoryBackend("r2", { "latest.json": original }),
+      new MemoryBackend("ihep", { "latest.json": original }),
+    ];
+
+    await expect(
+      promoteCandidateTransaction({
+        backends,
+        candidateManifest: candidate,
+        candidatePath,
+        override: overrideOff(),
+        summary: summaryFor(backends),
+        workDir: join(root, "transaction"),
+      }),
+    ).rejects.toThrow("different channel/notes/artifact/signature/sha256 identity");
     expect(backends.map((backend) => backend.latestPutAttempts)).toEqual([0, 0]);
     expect(backends.every((backend) => backend.body("latest.json").equals(original))).toBe(true);
   });
@@ -1812,6 +2448,9 @@ describe("monotonic mirror promotion", () => {
     const artifact = Buffer.from("valid release artifact");
     const fixture = updaterFixture(artifact);
     const candidate = completeManifest("1.1.0", fixture.signature);
+    for (const entry of Object.values(candidate.platforms)) {
+      entry.sha256 = hash(artifact);
+    }
     const artifactNames = Object.values(candidate.platforms).map((entry) =>
       new URL(entry.url).pathname.split("/").at(-1),
     );
@@ -1819,6 +2458,7 @@ describe("monotonic mirror promotion", () => {
       await writeFile(join(dist, name), artifact);
       await writeFile(join(dist, `${name}.sig`), `${fixture.signature}\n`);
     }
+    const releaseIdentity = await writeReleaseIdentity(dist, candidate, fixture);
     const candidatePath = await writeManifest(dist, "latest.mirror.json", candidate);
     const candidateKey = candidateKeyFor("1.1.0", "run-2");
     const current = Buffer.from(`${JSON.stringify(manifest("1.0.0"))}\n`);
@@ -1827,6 +2467,10 @@ describe("monotonic mirror promotion", () => {
         [`1.1.0/${name}`, artifact],
         [`1.1.0/${name}.sig`, Buffer.from(`${fixture.signature}\n`)],
       ]),
+    );
+    stagedObjects["1.1.0/release-identity.json"] = releaseIdentity.identityBytes;
+    stagedObjects["1.1.0/release-identity.json.sig"] = await readFile(
+      releaseIdentity.signaturePath,
     );
     const r2 = new MemoryBackend("r2", {
       "latest.json": current,
@@ -1995,6 +2639,11 @@ describe("release audit summary", () => {
       candidateKey: "candidates/4.0.0/42-1.json",
       candidateVersion: "4.0.0",
       outcome: "downgrade-override-promoted",
+      rootIdentity: {
+        latestTransactionOutcome: "downgrade-override-promoted",
+        localVerification: "passed",
+        publicRouteVerification: "passed",
+      },
       override: {
         actor: "incident-commander",
         originalActor: "release-admin",
@@ -2010,6 +2659,12 @@ describe("release audit summary", () => {
           currentVersion: "5.0.0",
           decision: "promote-downgrade-override",
           promotion: "verified",
+          rootIdentity: {
+            directVerification: "passed",
+            jsonWrite: "written-and-verified",
+            publicVerification: "passed",
+            signatureWrite: "written-and-verified",
+          },
           rollback: "not-needed",
           finalVersion: "4.0.0",
         },
@@ -2019,6 +2674,12 @@ describe("release audit summary", () => {
           currentVersion: "5.0.0",
           decision: "promote-downgrade-override",
           promotion: "verified",
+          rootIdentity: {
+            directVerification: "passed",
+            jsonWrite: "written-and-verified",
+            publicVerification: "passed",
+            signatureWrite: "written-and-verified",
+          },
           rollback: "not-needed",
           finalVersion: "4.0.0",
         },
@@ -2039,9 +2700,45 @@ describe("release audit summary", () => {
     expect(rendered).toContain("Promotion outcome: **downgrade-override-promoted**");
     expect(rendered).toContain("Pre-publish verification: **verified**");
     expect(rendered).toContain("Public route verification: **passed**");
+    expect(rendered).toContain(
+      "Stable root identity: local=**passed**, latest transaction=**downgrade-override-promoted**, public readback=**passed**",
+    );
     expect(rendered).toContain("| r2 | passed | 5.0.0 | promote-downgrade-override | verified");
     expect(rendered).toContain("rollback broken production release");
     expect(rendered).toContain("by `incident-commander` (original workflow actor: `release-admin`)");
     expect(rendered).toContain("https://github.com/owner/repo/actions/runs/42");
+  });
+
+  it("reports a committed latest transaction as retryable when root identity readback fails", async () => {
+    const root = await tempRoot("release-summary-root-retry");
+    const summaryPath = join(root, "github-summary.md");
+    await writeManifest(root, "latest.json", manifest("4.0.0"));
+    await writeManifest(root, "mirror-promotion-summary.json", {
+      candidateKey: "candidates/4.0.0/42-1.json",
+      candidateVersion: "4.0.0",
+      error: "public identity readback mismatch",
+      outcome: "failed",
+      rootIdentity: {
+        latestTransactionOutcome: "promoted",
+        localVerification: "passed",
+        publicRouteVerification: "failed",
+      },
+      backends: [],
+    });
+
+    await execFileAsync(process.execPath, [join(process.cwd(), "scripts/write-release-summary.mjs")], {
+      cwd: root,
+      env: {
+        ...process.env,
+        GITHUB_REF_NAME: "v4.0.0",
+        GITHUB_REPOSITORY: "owner/repo",
+        GITHUB_STEP_SUMMARY: summaryPath,
+      },
+    });
+
+    const rendered = await readFile(summaryPath, "utf8");
+    expect(rendered).toContain("**Retry required:** latest.json completed its monotonic transaction");
+    expect(rendered).toContain("clients, which fall back to GitHub");
+    expect(rendered).not.toContain("left no owned mirror-pointer advance");
   });
 });

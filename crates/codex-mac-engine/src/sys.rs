@@ -10,7 +10,7 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::limits::MAX_TEXT_BYTES;
-use crate::network::NetworkConfig;
+use crate::network::{safe_url_origin, NetworkConfig};
 use crate::EngineError;
 
 const CURL: &str = "/usr/bin/curl";
@@ -20,15 +20,12 @@ fn text_from_curl(url: &str, output: std::process::Output) -> Result<String, Eng
     if !output.status.success() {
         // Keep the exit code in the message so the app-layer classifier can tell
         // a connect / timeout / TLS failure apart (mirrors the Windows engine).
-        return Err(EngineError::Io(format!(
-            "curl failed for {url} exit={}: stderr='{}'",
-            output
-                .status
-                .code()
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "signal".to_string()),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
+        let exit = output
+            .status
+            .code()
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "signal".to_string());
+        return Err(text_curl_failure(url, &exit));
     }
     if output.stdout.len() > MAX_TEXT_BYTES as usize {
         return Err(EngineError::Io(format!(
@@ -36,6 +33,14 @@ fn text_from_curl(url: &str, output: std::process::Output) -> Result<String, Eng
         )));
     }
     String::from_utf8(output.stdout).map_err(|e| EngineError::Io(e.to_string()))
+}
+
+fn text_curl_failure(url: &str, exit: &str) -> EngineError {
+    let source = safe_url_origin(url);
+    // Do not carry curl stderr across the persisted-log boundary: curl may
+    // repeat or normalize a credentialed/presigned URL there. Exit code plus
+    // safe origin preserve the classifier and actionable source diagnostics.
+    EngineError::Io(format!("curl failed for source={source} exit={exit}"))
 }
 
 /// Fetch a small text resource (the appcast) over HTTPS via system `curl`.
@@ -296,9 +301,7 @@ fn quarantine_flags_indicate_translocation(value: &str) -> bool {
     const QTN_FLAG_DO_NOT_TRANSLOCATE: u32 = 0x0100;
     let flags_hex = value.split(';').next().unwrap_or("").trim();
     match u32::from_str_radix(flags_hex, 16) {
-        Ok(flags) => {
-            flags & QTN_FLAG_TRANSLOCATE != 0 && flags & QTN_FLAG_DO_NOT_TRANSLOCATE == 0
-        }
+        Ok(flags) => flags & QTN_FLAG_TRANSLOCATE != 0 && flags & QTN_FLAG_DO_NOT_TRANSLOCATE == 0,
         Err(_) => true,
     }
 }
@@ -374,6 +377,32 @@ pub fn read_bundle_short_version(app: &str) -> Option<String> {
 }
 
 #[cfg(test)]
+mod url_diagnostic_tests {
+    use super::text_curl_failure;
+
+    #[test]
+    fn text_fetch_failure_keeps_only_safe_origin_and_exit_code() {
+        let raw = "https://basic-user:basic-pass@appcast.example/feed.xml?token=presigned#private";
+        let error = text_curl_failure(raw, "22");
+        let diagnostic = error.to_string();
+
+        assert_eq!(
+            diagnostic,
+            "io error: curl failed for source=https://appcast.example exit=22"
+        );
+        for secret in [
+            "basic-user",
+            "basic-pass",
+            "/feed.xml",
+            "presigned",
+            "private",
+        ] {
+            assert!(!diagnostic.contains(secret), "diagnostic leaked {secret}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod quarantine_tests {
     use super::quarantine_flags_indicate_translocation;
 
@@ -442,7 +471,10 @@ mod tests {
             installed_codex_build_at_path(&renamed),
             Some((renamed.clone(), 5059))
         );
-        assert_eq!(read_bundle_identifier(&renamed).as_deref(), Some(CODEX_BUNDLE_ID));
+        assert_eq!(
+            read_bundle_identifier(&renamed).as_deref(),
+            Some(CODEX_BUNDLE_ID)
+        );
 
         let _ = fs::remove_dir_all(&root);
     }

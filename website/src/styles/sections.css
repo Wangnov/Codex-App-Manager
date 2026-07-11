@@ -1609,6 +1609,26 @@ body[data-lang="en"] .hero-title {
   font-family: var(--font-mono);
 }
 
+.dl-signing-note {
+  max-width: 920px;
+  margin: 22px auto 0;
+  color: var(--ink-2);
+  font-size: 13.5px;
+  line-height: 1.65;
+  text-align: center;
+}
+
+.dl-signing-note a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, var(--ink) 35%, transparent);
+  text-underline-offset: 0.22em;
+}
+
+.dl-signing-note a:hover {
+  text-decoration-color: currentColor;
+}
+
 .footer {
   border-top: 1px solid var(--line);
   background: var(--bg-deep);

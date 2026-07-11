@@ -170,10 +170,7 @@ pub fn cleanup_stale_staging(ops: &OperationManager) -> CleanupSummary {
             }
             summary.scanned += 1;
             if crate::app::install_tx::path_is_protected(&path, &protected) {
-                log::info!(
-                    "staging cleanup skipped protected path={}",
-                    path.display()
-                );
+                log::info!("staging cleanup skipped protected path={}", path.display());
                 continue;
             }
             if !is_stale(&path, now) {
@@ -214,13 +211,14 @@ pub fn cleanup_stale_staging(ops: &OperationManager) -> CleanupSummary {
             match std::fs::remove_file(&path) {
                 Ok(()) => {
                     summary.removed += 1;
-                    let path_display = path.display();
-                    log::debug!("download cache cleanup removed path={path_display}");
+                    // Older releases derived the cache suffix from the raw URL
+                    // tail, so a historical filename can contain a presigned
+                    // query. Never carry cache paths across the log boundary.
+                    log::debug!("download cache cleanup removed artifact");
                 }
                 Err(err) => {
                     summary.failed += 1;
-                    let path_display = path.display();
-                    log::debug!("download cache cleanup failed path={path_display} error={err}");
+                    log::debug!("download cache cleanup failed error={err}");
                 }
             }
         }

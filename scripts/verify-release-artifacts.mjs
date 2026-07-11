@@ -3,7 +3,10 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import { verifyLocalUpdaterArtifacts } from "./mirror-release.mjs";
+import {
+  verifyLocalReleaseIdentity,
+  verifyLocalUpdaterArtifacts,
+} from "./mirror-release.mjs";
 
 function usage() {
   return "usage: verify-release-artifacts.mjs <latest.json> <dist-dir> <tauri.conf.json>";
@@ -34,6 +37,15 @@ async function main() {
     distDir: resolve(distArg),
     publicKey: publicKey.trim(),
   });
+  const expectedChannel = String(manifest.version).split("+", 1)[0].includes("-")
+    ? "prerelease"
+    : "stable";
+  const identity = await verifyLocalReleaseIdentity({
+    candidateManifest: manifest,
+    distDir: resolve(distArg),
+    expectedChannel,
+    publicKey: publicKey.trim(),
+  });
   const summaryPath = resolve(
     process.env.UPDATER_SIGNATURE_SUMMARY_PATH ||
       "updater-signature-verification.json",
@@ -43,6 +55,12 @@ async function main() {
     `${JSON.stringify(
       {
         ...report,
+        identity: {
+          channel: identity.identity.channel,
+          sha256: identity.identitySha256,
+          signatureSha256: identity.signatureSha256,
+          version: identity.identity.version,
+        },
         manifestVersion: manifest.version,
         verifiedAt: new Date().toISOString(),
       },

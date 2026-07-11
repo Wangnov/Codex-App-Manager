@@ -227,6 +227,9 @@ body {
 #root {
   padding: var(--window-gutter-top) var(--window-gutter-x) var(--window-gutter-bottom);
 }
+.manager-app-content {
+  display: contents;
+}
 button {
   font-family: inherit;
   cursor: pointer;
@@ -1761,6 +1764,22 @@ button.row.danger:hover {
   opacity: 0.5;
   cursor: default;
 }
+.manager-update-banner > .banner {
+  flex-wrap: wrap;
+}
+.manager-update-banner > .banner > [role="status"] {
+  flex: 1;
+  min-width: 190px;
+}
+.manager-update-banner-actions {
+  width: 100%;
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.manager-update-banner-actions .linkbtn {
+  margin-inline-start: 0;
+}
 
 /* ── Result strip (update / install outcome) ─────────────────────────────── */
 /* Owns its lifecycle (auto-dismiss + ✕), unlike the static .banner notes. A
@@ -2041,6 +2060,74 @@ button.row.danger:hover {
   color: var(--text-soft);
   font-size: var(--fs-sm);
   line-height: 1.55;
+}
+.manager-update-version {
+  margin: var(--space-sm) auto 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--text-soft);
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+.manager-update-version span[aria-hidden="true"] {
+  color: var(--accent-deep);
+}
+.manager-update-notes {
+  margin-top: var(--space-sm);
+  text-align: start;
+}
+.manager-update-notes strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: var(--fs-sm);
+}
+.manager-update-notes pre {
+  max-height: 170px;
+  overflow: auto;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  color: var(--text-soft);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font);
+  font-size: var(--fs-caption);
+  line-height: 1.5;
+  user-select: text;
+}
+.manager-update-empty-notes,
+.manager-update-network-hint {
+  color: var(--text-faint) !important;
+  font-size: var(--fs-caption) !important;
+}
+.manager-update-progress {
+  margin-top: var(--space-sm);
+}
+.manager-update-progress-head {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  color: var(--text-soft);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+.manager-update-progress .bar {
+  margin-top: 8px;
+}
+.sheet .manager-update-progress + .failure-banner,
+.sheet .manager-update-notes + .failure-banner {
+  margin-top: var(--space-sm);
+}
+.about-action-message {
+  padding: 0 14px 10px;
+  color: var(--text-soft);
 }
 .sheet-path {
   margin-top: var(--space-sm);

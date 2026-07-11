@@ -1,11 +1,10 @@
 # Verify Authenticode signatures on Windows PE files (installer, app, uninstaller).
 #
 # Modes:
-#   optional  — report status; unsigned/NotSigned exits 0 (current milestone while
-#               OV/EV cert budget is not in place). Fail only if a path is missing
-#               or Get-AuthenticodeSignature itself errors.
-#   required  — every path must have Status -eq Valid. Use after cert is wired
-#               into release (repo var AUTHENTICODE_REQUIRED=true).
+#   optional  — PR/local diagnostic for builds that intentionally receive no
+#               release certificate. Reports unsigned files without blocking.
+#   required  — release gate: every path must have Status -eq Valid. Can also
+#               pin the SignPath subject and require timestamp evidence.
 #
 # Usage:
 #   pwsh scripts/verify-windows-authenticode.ps1 -Path a.exe,b.exe -Mode optional
@@ -24,6 +23,11 @@ param(
 
     # When set (required mode), SignerCertificate.Subject must contain this.
     [string]$ExpectedSubject = "",
+
+    # Requires a timestamp countersigner on the artifact. This property alone
+    # does not distinguish RFC3161 from every legacy timestamp form; the future
+    # SignPath pilot must also validate its policy and verbose signtool output.
+    [switch]$RequireTimestamp,
 
     [string]$Stage = "sign-verify"
 )
@@ -66,19 +70,21 @@ foreach ($raw in $Path) {
 
     $sig = Get-AuthenticodeSignature -LiteralPath $item.FullName
     $subject = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { "" }
+    $thumbprint = if ($sig.SignerCertificate) { $sig.SignerCertificate.Thumbprint.Replace(" ", "").ToUpperInvariant() } else { "" }
+    $timestampSubject = if ($sig.TimeStamperCertificate) { $sig.TimeStamperCertificate.Subject } else { "" }
     $status = [string]$sig.Status
     $ok = $false
 
     switch ($Mode) {
         "optional" {
-            # NotSigned is expected until OV/EV is configured. HashMismatch /
+            # PR builds intentionally receive no release secret. HashMismatch /
             # NotTrusted / UnknownError still surface as warnings for visibility.
             if ($status -eq "Valid") {
                 $ok = $true
             }
             elseif ($status -eq "NotSigned") {
                 $ok = $true
-                Write-Host "::warning::[$Stage] unsigned (expected until Authenticode cert is configured): $($item.Name)"
+                Write-Host "::warning::[$Stage] unsigned (expected only for PR/local diagnostics): $($item.Name)"
             }
             else {
                 # Soft-fail in optional mode: report but do not block release.
@@ -95,6 +101,10 @@ foreach ($raw in $Path) {
                 $ok = $false
                 Write-Host "::error::[$Stage] $($item.Name): subject '$subject' does not contain '$ExpectedSubject'"
             }
+            elseif ($RequireTimestamp -and -not $sig.TimeStamperCertificate) {
+                $ok = $false
+                Write-Host "::error::[$Stage] $($item.Name): no RFC3161 timestamp countersigner"
+            }
             else {
                 $ok = $true
             }
@@ -107,10 +117,12 @@ foreach ($raw in $Path) {
         Path    = $item.FullName
         Status  = $status
         Subject = $subject
+        Thumbprint = $thumbprint
+        TimestampSubject = $timestampSubject
         Ok      = $ok
     }
 
-    Write-Host ("  {0,-12} {1}  {2}" -f $status, $item.Name, $subject)
+    Write-Host ("  {0,-12} {1}  signer={2} timestamp={3}" -f $status, $item.Name, $subject, $timestampSubject)
 }
 
 $results | Format-Table -AutoSize | Out-String | Write-Host

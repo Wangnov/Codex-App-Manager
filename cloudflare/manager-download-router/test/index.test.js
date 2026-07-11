@@ -157,6 +157,30 @@ describe("manager download router", () => {
     expect(installerRes.headers.get("Cache-Control")).toBe("public, max-age=86400, s-maxage=86400");
   });
 
+  it("never caches mutable root identity pointers while keeping versioned signatures immutable", async () => {
+    const env = {
+      BUCKET: bucket({
+        "release-identity.json": r2Object("{}", { contentType: "application/json" }),
+        "release-identity.json.sig": r2Object("root-signature"),
+        "0.1.18/release-identity.json.sig": r2Object("versioned-signature"),
+      }),
+    };
+
+    for (const key of ["release-identity.json", "release-identity.json.sig"]) {
+      const response = await worker.fetch(request(`/manager/${key}`), env);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+    }
+
+    const versioned = await worker.fetch(
+      request("/manager/0.1.18/release-identity.json.sig"),
+      env,
+    );
+    expect(versioned.headers.get("Cache-Control")).toBe(
+      "public, max-age=86400, s-maxage=86400",
+    );
+  });
+
   it("redirects CN requests to a presigned IHEP URL when secondary S3 is configured", async () => {
     const env = {
       BUCKET: bucket({}),

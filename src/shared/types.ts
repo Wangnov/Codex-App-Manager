@@ -1,6 +1,12 @@
 export type OperatingSystem = "windows" | "macos" | "linux" | "unknown";
 export type Architecture = "x64" | "arm64" | "unknown";
-export type OperationKind = "install" | "update" | "uninstall" | "set-install-root" | "adopt";
+export type OperationKind =
+  | "install"
+  | "update"
+  | "manager-update"
+  | "uninstall"
+  | "set-install-root"
+  | "adopt";
 export type OperationToken = string;
 /** Lifecycle phase of a backend operation lease (mirrors Rust `OperationPhase`). */
 export type OperationPhase =
@@ -24,6 +30,30 @@ export interface OperationSnapshot {
   paused: boolean;
   cancellable: boolean;
   interruptible: boolean;
+}
+
+export interface ManagerUpdateMetadata {
+  version: string;
+  currentVersion: string;
+  body?: string | null;
+}
+
+export interface ManagerUpdateProgress {
+  phase: "downloading" | "installing" | "installed";
+  downloaded: number;
+  total: number | null;
+}
+
+export interface ManagerUpdateRuntimeSnapshot {
+  revision: number;
+  version: string;
+  currentVersion: string;
+  body?: string | null;
+  phase: "downloading" | "installing" | "installed" | "error";
+  downloaded: number;
+  total: number | null;
+  failure: CommandError | null;
+  handoffStartedAt?: number | null;
 }
 
 /**

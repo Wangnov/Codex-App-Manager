@@ -116,6 +116,83 @@ describe("settings API", () => {
   });
 });
 
+describe("manager updater API", () => {
+  it("keeps check and confirmed install as separate Tauri commands", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    const metadata = {
+      version: "2.0.0",
+      currentVersion: "1.0.0",
+      body: "release notes",
+    };
+    invokeMock.mockResolvedValueOnce(metadata).mockResolvedValueOnce(undefined);
+
+    await expect(managerApi.checkManagerUpdate()).resolves.toEqual({
+      kind: "available",
+      ...metadata,
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "manager_check_update");
+
+    await expect(managerApi.installManagerUpdate(metadata)).resolves.toBeUndefined();
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "manager_install_update", {
+      expectedVersion: "2.0.0",
+      expectedCurrentVersion: "1.0.0",
+      expectedBody: "release notes",
+    });
+  });
+
+  it("exposes renderer-independent manager update runtime state", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    const snapshot = {
+      revision: 4,
+      version: "2.0.0",
+      currentVersion: "1.0.0",
+      body: "release notes",
+      phase: "downloading",
+      downloaded: 5,
+      total: 10,
+      failure: null,
+    } as const;
+    invokeMock.mockResolvedValueOnce(snapshot);
+
+    await expect(managerApi.getManagerUpdateRuntime()).resolves.toEqual(snapshot);
+    expect(invokeMock).toHaveBeenCalledWith("manager_get_update_runtime");
+  });
+
+  it("acknowledges terminal runtime state with revision and target CAS fields", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    invokeMock.mockResolvedValueOnce(true);
+
+    await expect(
+      managerApi.acknowledgeManagerUpdateRuntime({
+        revision: 7,
+        version: "2.0.0",
+        currentVersion: "1.0.0",
+      }),
+    ).resolves.toBe(true);
+    expect(invokeMock).toHaveBeenCalledWith("manager_ack_update_runtime", {
+      revision: 7,
+      version: "2.0.0",
+      currentVersion: "1.0.0",
+    });
+  });
+
+  it("routes manager relaunch through the shared backend operation lock", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    invokeMock.mockResolvedValueOnce(undefined);
+
+    await expect(managerApi.relaunchManager()).resolves.toBeUndefined();
+    expect(invokeMock).toHaveBeenCalledWith("manager_relaunch");
+  });
+
+  it("preserves updater command failures for structured recovery UI", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    const failure = { code: "network", message: "offline" };
+    invokeMock.mockRejectedValueOnce(failure);
+
+    await expect(managerApi.checkManagerUpdate()).rejects.toEqual(failure);
+  });
+});
+
 describe("diagnostics API", () => {
   it("returns browser fallbacks without invoking Tauri", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});

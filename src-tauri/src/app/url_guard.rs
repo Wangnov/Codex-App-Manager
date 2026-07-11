@@ -12,6 +12,8 @@ pub enum UrlRejectReason {
     BareIp,
     #[error("自定义源不能包含用户名/密码")]
     HasUserinfo,
+    #[error("自定义源必须是基础 URL，不能包含查询参数或片段")]
+    HasQueryOrFragment,
     #[error("自定义源缺少有效主机名")]
     MissingHost,
     #[error("无法解析该 URL")]
@@ -58,6 +60,9 @@ pub fn validate_custom_source(raw: &str) -> Result<String, UrlRejectReason> {
     }
     if !url.username().is_empty() || url.password().is_some() {
         return Err(UrlRejectReason::HasUserinfo);
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(UrlRejectReason::HasQueryOrFragment);
     }
 
     match url.host() {
@@ -211,6 +216,22 @@ mod tests {
             validate_custom_source("https://example.com\t/feed"),
             Err(UrlRejectReason::Unparsable)
         );
+    }
+
+    #[test]
+    fn rejects_query_and_fragment_on_custom_source_base_urls() {
+        for raw in [
+            "https://mirror.example.com?token=secret",
+            "https://mirror.example.com/feed?token=secret",
+            "https://mirror.example.com/#private",
+            "https://mirror.example.com/feed#private",
+        ] {
+            assert_eq!(
+                validate_custom_source(raw),
+                Err(UrlRejectReason::HasQueryOrFragment),
+                "{raw}"
+            );
+        }
     }
 
     #[test]

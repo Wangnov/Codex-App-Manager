@@ -12,6 +12,10 @@ export default defineConfig({
   test: {
     exclude: [...configDefaults.exclude, ".claude/**"],
     environment: "jsdom",
+    // The suite mixes jsdom-heavy UI tests with release tests that create real
+    // Git repositories. Bounding file workers avoids CPU starvation turning
+    // Testing Library's behavioral waits into false timeout failures.
+    maxWorkers: 4,
     environmentOptions: {
       jsdom: {
         url: "http://localhost/",

@@ -20,6 +20,7 @@ export default tseslint.config(
       "src-tauri/",
       "website/",
       "cloudflare/",
+      "vendor/",
       "scripts/",
       "docs/",
       "*.config.*",

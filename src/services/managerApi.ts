@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { relaunch } from "@tauri-apps/plugin-process";
 
 import type {
   AncillaryRetryReport,
@@ -14,6 +13,8 @@ import type {
   MacPerformReport,
   MacUninstallReport,
   MacUpdateReport,
+  ManagerUpdateMetadata,
+  ManagerUpdateRuntimeSnapshot,
   OperationKind,
   OperationSnapshot,
   OperationToken,
@@ -34,7 +35,6 @@ const MAX_PERIODIC_CHECK_INTERVAL_SECONDS = 7 * 24 * 60 * 60;
 
 export type ManagerUpdateCheck =
   | { kind: "development" }
-  | { kind: "unavailable" }
   | { kind: "none" }
   | ManagerUpdateAvailable;
 
@@ -42,15 +42,7 @@ export interface ManagerUpdateAvailable {
   kind: "available";
   version: string;
   currentVersion: string;
-  body?: string;
-  installAndRelaunch: () => Promise<void>;
-  discard: () => Promise<void>;
-}
-
-interface ManagerUpdateMetadata {
-  version: string;
-  currentVersion: string;
-  body?: string;
+  body?: string | null;
 }
 
 export interface FrontendErrorPayload {
@@ -554,18 +546,40 @@ export const managerApi = {
     if (!hasTauriRuntime()) {
       return { kind: "development" };
     }
-    // A routine check shouldn't surface a scary error when the release feed
-    // isn't published yet or is unreachable.
-    const update = await invoke<ManagerUpdateMetadata | null>("manager_check_update").catch(
-      () => undefined,
-    );
-    if (update === undefined) {
-      return { kind: "unavailable" };
-    }
+    const update = await invoke<ManagerUpdateMetadata | null>("manager_check_update");
     if (!update) {
       return { kind: "none" };
     }
     return managerUpdateAvailable(update);
+  },
+  installManagerUpdate(update: ManagerUpdateMetadata): Promise<void> {
+    if (!hasTauriRuntime()) return Promise.resolve();
+    return invoke<void>("manager_install_update", {
+      expectedVersion: update.version,
+      expectedCurrentVersion: update.currentVersion,
+      expectedBody: update.body ?? null,
+    });
+  },
+  getManagerUpdateRuntime(): Promise<ManagerUpdateRuntimeSnapshot | null> {
+    if (!hasTauriRuntime()) return Promise.resolve(null);
+    return invoke<ManagerUpdateRuntimeSnapshot | null>("manager_get_update_runtime");
+  },
+  acknowledgeManagerUpdateRuntime(
+    snapshot: Pick<
+      ManagerUpdateRuntimeSnapshot,
+      "revision" | "version" | "currentVersion"
+    >,
+  ): Promise<boolean> {
+    if (!hasTauriRuntime()) return Promise.resolve(true);
+    return invoke<boolean>("manager_ack_update_runtime", {
+      revision: snapshot.revision,
+      version: snapshot.version,
+      currentVersion: snapshot.currentVersion,
+    });
+  },
+  relaunchManager(): Promise<void> {
+    if (!hasTauriRuntime()) return Promise.resolve();
+    return invoke<void>("manager_relaunch");
   },
   macStatus(): Promise<MacInstallStatus> {
     if (!hasTauriRuntime()) {
@@ -959,13 +973,5 @@ function managerUpdateAvailable(update: ManagerUpdateMetadata): ManagerUpdateAva
     version: update.version,
     currentVersion: update.currentVersion,
     body: update.body,
-    installAndRelaunch: async () => {
-      await invoke<void>("manager_install_update", {
-        expectedVersion: update.version,
-        expectedCurrentVersion: update.currentVersion,
-      });
-      await relaunch();
-    },
-    discard: async () => {},
   };
 }

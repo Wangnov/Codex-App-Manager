@@ -24,6 +24,7 @@ use codex_mac_engine::{
 
 use crate::app::disk;
 use crate::app::install_tx::{ActiveInstallTx, InstallTxKind};
+use crate::app::logging::redact_url_host;
 use crate::app::op_phase::OperationPhase;
 use crate::app::operation_outcome::{recovery, OperationOutcome, StepOutcome};
 use crate::app::provenance::ProvenanceStore;
@@ -456,11 +457,60 @@ pub struct DownloadProgress {
 
 /// Host portion of a URL, for showing the user which source is downloading.
 fn host_of(url: &str) -> String {
-    url.split("://")
-        .nth(1)
-        .and_then(|rest| rest.split('/').next())
-        .unwrap_or("")
-        .to_string()
+    redact_url_host(url)
+}
+
+fn download_file_name(url: &str) -> String {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|parsed| {
+            parsed
+                .path_segments()?
+                .rev()
+                .find(|segment| !segment.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "payload.bin".to_string())
+}
+
+#[cfg(test)]
+mod download_diagnostic_tests {
+    use super::{download_file_name, host_of, DownloadProgress};
+
+    #[test]
+    fn malicious_enclosure_never_reaches_progress_or_log_material() {
+        let raw = "https://basic-user:basic-pass@downloads.example/private/Codex.zip?X-Amz-Credential=presigned-secret#fragment-secret";
+        let source = host_of(raw);
+        let progress = DownloadProgress {
+            downloaded: 1,
+            total: 2,
+            source: source.clone(),
+        };
+        let progress_json = serde_json::to_string(&progress).unwrap();
+        let start_log = format!("macOS download and verify start source={source}");
+        let file_name = download_file_name(raw);
+        let complete_log = "macOS download and verify complete";
+
+        assert_eq!(source, "downloads.example");
+        assert_eq!(file_name, "Codex.zip");
+        for secret in [
+            "basic-user",
+            "basic-pass",
+            "X-Amz-Credential",
+            "presigned-secret",
+            "fragment-secret",
+        ] {
+            assert!(!progress_json.contains(secret), "progress leaked {secret}");
+            assert!(!start_log.contains(secret), "start log leaked {secret}");
+            assert!(
+                !complete_log.contains(secret),
+                "complete log leaked {secret}"
+            );
+        }
+
+        assert_eq!(host_of("not a URL with-secret"), "<invalid-url>");
+        assert_eq!(download_file_name("not a URL with-secret"), "payload.bin");
+    }
 }
 
 /// No-op progress sink for downloads whose progress isn't surfaced (e.g. stage).
@@ -496,12 +546,12 @@ fn download_and_verify(
             "artifact size {size} exceeds {max_size} byte limit"
         )));
     }
-    let file_name = url.rsplit('/').next().unwrap_or("payload.bin");
+    let file_name = download_file_name(url);
     // Download into the PERSISTENT cache (not a per-run staging dir): a paused
     // `.part` survives here, so the next perform/install resumes it instead of
     // restarting at 0. The artifact is consumed (verified → unpacked/applied)
     // from here; success clears the cache (see perform/install tails).
-    let dest = staging::download_cache_path(url, file_name)?;
+    let dest = staging::download_cache_path(url, &file_name)?;
     let source = host_of(url);
 
     let already = std::fs::metadata(&dest)
@@ -553,8 +603,7 @@ fn download_and_verify(
         return Err(err);
     }
 
-    let path = dest.display();
-    log::info!("macOS download and verify complete path={path}");
+    log::info!("macOS download and verify complete");
     Ok(dest)
 }
 
@@ -815,13 +864,7 @@ pub fn perform_macos_update_with_network(
     progress: &dyn Fn(DownloadProgress),
     network: &NetworkConfig,
 ) -> Result<MacPerformReport, AppError> {
-    perform_macos_update_with_network_and_phase(
-        binary_delta,
-        expected,
-        progress,
-        network,
-        None,
-    )
+    perform_macos_update_with_network_and_phase(binary_delta, expected, progress, network, None)
 }
 
 pub fn perform_macos_update_with_network_and_phase(
@@ -1438,7 +1481,8 @@ fn install_macos_in_staging(
     } else {
         outcome.path = Some(install_path.to_string_lossy().into_owned());
         outcome.provenance = StepOutcome::failed("安装后未能读取 bundle 版本，托管记录未写入");
-        outcome.push_warning("已写入应用，但未能确认版本；请重新检查状态或「开始管理」".to_string());
+        outcome
+            .push_warning("已写入应用，但未能确认版本；请重新检查状态或「开始管理」".to_string());
         outcome.push_recovery(recovery::RECORD_PROVENANCE);
         outcome.install_class = Some("external".to_string());
         // Honest: app may be present but we couldn't classify it as managed.
@@ -1683,11 +1727,7 @@ pub fn retry_macos_ancillary(
         match detect_managed_installed().or_else(detect_installed) {
             Some(installed) => {
                 let mut store = ProvenanceStore::load();
-                store.record(
-                    installed.path.clone(),
-                    installed.build,
-                    "manager-installed",
-                );
+                store.record(installed.path.clone(), installed.build, "manager-installed");
                 match store.save() {
                     Ok(()) => {
                         outcome.provenance = StepOutcome::ok();
