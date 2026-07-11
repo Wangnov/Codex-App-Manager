@@ -282,7 +282,7 @@ fn request_codex_close_filtered(timeout_secs: u64, root: &Path) -> Result<(), En
     let script = format!(
         r#"
 $RootFilter = {root_filter}
-try {{ $RootFilter = [System.IO.Path]::GetFullPath($RootFilter).TrimEnd('\') }} catch {{}}
+try {{ $RootFilter = ([string](Convert-Path -LiteralPath $RootFilter -ErrorAction Stop)).TrimEnd('\') }} catch {{}}
 function Get-ProcessExePath($p) {{
   try {{
     $path = [string]$p.Path
@@ -303,13 +303,13 @@ function Get-ProcessExePath($p) {{
 function Test-UnderRoot($p) {{
   $path = Get-ProcessExePath $p
   if ([string]::IsNullOrWhiteSpace($path) -or [string]::IsNullOrWhiteSpace($RootFilter)) {{ return $false }}
+  $full = [string]$path
   try {{
-    $full = [System.IO.Path]::GetFullPath($path)
-    return ($full.Equals($RootFilter, [System.StringComparison]::OrdinalIgnoreCase) -or
-            $full.StartsWith($RootFilter + '\', [System.StringComparison]::OrdinalIgnoreCase))
-  }} catch {{
-    return $false
-  }}
+    $resolved = [string](Convert-Path -LiteralPath $path -ErrorAction Stop)
+    if (-not [string]::IsNullOrWhiteSpace($resolved)) {{ $full = $resolved }}
+  }} catch {{}}
+  return ($full.Equals($RootFilter, [System.StringComparison]::OrdinalIgnoreCase) -or
+          $full.StartsWith($RootFilter + '\', [System.StringComparison]::OrdinalIgnoreCase))
 }}
 function Get-TargetCodexProcess {{
   $all = Get-Process -Name Codex, ChatGPT -ErrorAction SilentlyContinue
@@ -317,7 +317,6 @@ function Get-TargetCodexProcess {{
     if (Test-UnderRoot $p) {{ $p }}
   }}
 }}
-$deadline = (Get-Date).AddSeconds({timeout})
 $procs = @(Get-TargetCodexProcess)
 if ($procs.Count -eq 0) {{
   'no-targets'
@@ -329,6 +328,7 @@ foreach ($p in $procs) {{
     if ($p.MainWindowHandle -ne 0) {{ [void]$p.CloseMainWindow() }}
   }} catch {{}}
 }}
+$deadline = (Get-Date).AddSeconds({timeout})
 while ((Get-Date) -lt $deadline) {{
   Start-Sleep -Milliseconds 250
   $remaining = @()

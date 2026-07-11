@@ -386,45 +386,48 @@ fn run_powershell_json_with_limits(
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+// Plain hashtables keep the same JSON contract as PSCustomObject without using
+// a type conversion that PowerShell ConstrainedLanguage rejects.
 #[cfg(windows)]
-pub fn install_msix_sideload(path: &Path) -> Result<MsixSideloadReport, EngineError> {
-    let path_display = path.display();
-    log::info!("MSIX sideload start path={path_display}");
-    let script = format!(
+const INSTALLED_MSIX_OBJECT: &str = r#"@{
+  path = [string]$p.InstallLocation
+  version = [string]$p.Version
+  arch = $null
+  source = 'msix'
+  packageFamilyName = [string]$p.PackageFamilyName
+}"#;
+
+#[cfg(windows)]
+fn install_msix_script(path: &Path) -> String {
+    format!(
         r#"
 $ErrorActionPreference = 'Stop'
 try {{
   $cmd = Get-Command Add-AppxPackage -ErrorAction Stop
   $args = @{{ ErrorAction = 'Stop' }}
-  if ($cmd.Parameters.ContainsKey('LiteralPath')) {{
+  if ($cmd.Parameters.Keys -contains 'LiteralPath') {{
     $args['LiteralPath'] = {path}
   }} else {{
     $args['Path'] = {path}
   }}
-  if ($cmd.Parameters.ContainsKey('ForceUpdateFromAnyVersion')) {{
+  if ($cmd.Parameters.Keys -contains 'ForceUpdateFromAnyVersion') {{
     $args['ForceUpdateFromAnyVersion'] = $true
   }}
   Add-AppxPackage @args
   $p = Get-AppxPackage -Name {name} -ErrorAction SilentlyContinue |
     Sort-Object -Property Version -Descending |
     Select-Object -First 1
-  [pscustomobject]@{{
+  @{{
     success = $true
     message = 'Add-AppxPackage succeeded'
     fallbackRecommended = $false
     rawError = $null
     installed = if ($null -ne $p) {{
-      [pscustomobject]@{{
-        path = [string]$p.InstallLocation
-        version = [string]$p.Version
-        arch = $null
-        source = 'msix'
-        packageFamilyName = [string]$p.PackageFamilyName
-      }}
+      {installed_msix_object}
     }} else {{ $null }}
   }} | ConvertTo-Json -Compress -Depth 4
 }} catch {{
-  [pscustomobject]@{{
+  @{{
     success = $false
     message = [string]$_.Exception.Message
     fallbackRecommended = $true
@@ -434,8 +437,16 @@ try {{
 }}
 "#,
         path = ps_quote(&path.to_string_lossy()),
-        name = ps_quote(crate::OPENAI_PACKAGE_IDENTITY)
-    );
+        name = ps_quote(crate::OPENAI_PACKAGE_IDENTITY),
+        installed_msix_object = INSTALLED_MSIX_OBJECT,
+    )
+}
+
+#[cfg(windows)]
+pub fn install_msix_sideload(path: &Path) -> Result<MsixSideloadReport, EngineError> {
+    let path_display = path.display();
+    log::info!("MSIX sideload start path={path_display}");
+    let script = install_msix_script(path);
     let json = run_powershell_json_with_limits(&script, RunLimits::install())
         .map_err(|e| EngineError::Install(format!("run Add-AppxPackage: {}", e.message())))?;
     let mut report: MsixSideloadReport = serde_json::from_str(&json)
@@ -511,7 +522,7 @@ pub fn precheck_msix_dependencies(path: &Path) -> MsixDependencyPrecheck {
         .iter()
         .map(|dep| {
             format!(
-                "[pscustomobject]@{{ Name = {name}; Publisher = {publisher}; MinVersion = {min_version}; ProcessorArchitecture = {arch} }}",
+                "@{{ Name = {name}; Publisher = {publisher}; MinVersion = {min_version}; ProcessorArchitecture = {arch} }}",
                 name = ps_quote(&dep.name),
                 publisher = ps_nullable(dep.publisher.as_deref()),
                 min_version = ps_nullable(dep.min_version.as_deref()),
@@ -580,7 +591,7 @@ pub fn precheck_msix_dependencies(path: &Path) -> MsixDependencyPrecheck {
 	    $missing += "$name >= $minText required (installed $($depPkg.Version))"
 	  }}
 	}}
-	[pscustomobject]@{{
+	@{{
 	  missing = ($missing -join ', ')
 	}} | ConvertTo-Json -Compress
 	"#,
@@ -675,7 +686,7 @@ pub fn remove_msix_package() -> Result<MsixRemoveReport, EngineError> {
 	  $packages = Get-AppxPackage -Name {name} -ErrorAction SilentlyContinue
 	  if (-not $packages) {{
 	    Add-ResidualNotes
-	    [pscustomobject]@{{
+	    @{{
 	      success = $true
 	      message = 'MSIX package was not installed'
 	      rawError = $null
@@ -687,14 +698,14 @@ pub fn remove_msix_package() -> Result<MsixRemoveReport, EngineError> {
 	    Remove-AppxPackage -Package $p.PackageFullName -ErrorAction Stop
 	  }}
 	  Add-ResidualNotes
-	  [pscustomobject]@{{
+	  @{{
 	    success = $true
 	    message = 'Remove-AppxPackage succeeded'
 	    rawError = $null
 	    notes = $script:notes
 	  }} | ConvertTo-Json -Compress
 	}} catch {{
-	  [pscustomobject]@{{
+	  @{{
 	    success = $false
 	    message = [string]$_.Exception.Message
 	    rawError = [string]$_
@@ -746,7 +757,7 @@ $pkg = Get-AppxPackage -Name {name} |
 if ($null -eq $pkg) {{ 'no-package'; exit 0 }}
 $loc = [string]$pkg.InstallLocation
 if ([string]::IsNullOrWhiteSpace($loc)) {{ 'no-location'; exit 0 }}
-try {{ $loc = [System.IO.Path]::GetFullPath($loc).TrimEnd('\') }} catch {{}}
+try {{ $loc = ([string](Convert-Path -LiteralPath $loc -ErrorAction Stop)).TrimEnd('\') }} catch {{}}
 Write-Output $loc
 "#,
         name = ps_quote(crate::OPENAI_PACKAGE_IDENTITY)
@@ -799,7 +810,7 @@ $pkg = Get-AppxPackage -Name {name} |
   Sort-Object -Property Version -Descending |
   Select-Object -First 1
 if ($null -eq $pkg) {{
-  [pscustomobject]@{{
+  @{{
     packageRegistered = $false
     statusOk = $false
     status = 'not-registered'
@@ -863,13 +874,13 @@ function Test-UnderInstall($p, [string]$root) {{
   if ([string]::IsNullOrWhiteSpace($root)) {{ return $false }}
   $path = Get-ProcessExePath $p
   if ([string]::IsNullOrWhiteSpace($path)) {{ return $false }}
+  $full = [string]$path
   try {{
-    $full = [System.IO.Path]::GetFullPath($path)
-    return ($full.Equals($root, [System.StringComparison]::OrdinalIgnoreCase) -or
-            $full.StartsWith($root + '\', [System.StringComparison]::OrdinalIgnoreCase))
-  }} catch {{
-    return $false
-  }}
+    $resolved = [string](Convert-Path -LiteralPath $path -ErrorAction Stop)
+    if (-not [string]::IsNullOrWhiteSpace($resolved)) {{ $full = $resolved }}
+  }} catch {{}}
+  return ($full.Equals($root, [System.StringComparison]::OrdinalIgnoreCase) -or
+          $full.StartsWith($root + '\', [System.StringComparison]::OrdinalIgnoreCase))
 }}
 function Get-PackageProcesses([string]$root) {{
   $found = @()
@@ -933,7 +944,7 @@ if ($statusOk -and $aumidResolved -and $missing.Count -eq 0) {{
   if ([string]::IsNullOrEmpty($appId)) {{ $appId = 'App' }}
   $aumid = [string]$pkg.PackageFamilyName + '!' + $appId
   $installLoc = [string]$pkg.InstallLocation
-  try {{ $installLoc = [System.IO.Path]::GetFullPath($installLoc).TrimEnd('\') }} catch {{}}
+  try {{ $installLoc = ([string](Convert-Path -LiteralPath $installLoc -ErrorAction Stop)).TrimEnd('\') }} catch {{}}
   $activationAttempted = $true
   try {{
     Start-Process ("shell:AppsFolder\" + $aumid) -ErrorAction Stop | Out-Null
@@ -996,7 +1007,7 @@ if ($statusOk -and $aumidResolved -and $missing.Count -eq 0) {{
   }}
 }}
 
-[pscustomobject]@{{
+@{{
   packageRegistered = $true
   statusOk = $statusOk
   status = $statusStr
@@ -1184,24 +1195,24 @@ pub fn verify_msix_health() -> MsixHealthReport {
 }
 
 #[cfg(windows)]
-fn detect_msix_install() -> Option<InstalledWindowsCodex> {
-    let script = format!(
+fn detect_msix_script() -> String {
+    format!(
         r#"
 $p = Get-AppxPackage -Name {name} -ErrorAction SilentlyContinue |
   Sort-Object -Property Version -Descending |
   Select-Object -First 1
 if ($null -ne $p) {{
-  [pscustomobject]@{{
-    path = [string]$p.InstallLocation
-    version = [string]$p.Version
-    arch = $null
-    source = 'msix'
-    packageFamilyName = [string]$p.PackageFamilyName
-  }} | ConvertTo-Json -Compress
+  {installed_msix_object} | ConvertTo-Json -Compress
 }}
 "#,
-        name = ps_quote(crate::OPENAI_PACKAGE_IDENTITY)
-    );
+        name = ps_quote(crate::OPENAI_PACKAGE_IDENTITY),
+        installed_msix_object = INSTALLED_MSIX_OBJECT,
+    )
+}
+
+#[cfg(windows)]
+fn detect_msix_install() -> Option<InstalledWindowsCodex> {
+    let script = detect_msix_script();
     let json = run_powershell_json(&script).ok()?;
     if json.trim().is_empty() {
         return None;
@@ -1367,9 +1378,10 @@ fn launch_msix_app() -> Result<(), EngineError> {
 }
 
 #[cfg(windows)]
-pub fn probe_capabilities() -> WinCapabilityReport {
-    let script = r#"
+const CAPABILITY_PROBE_SCRIPT: &str = r#"
 $ErrorActionPreference = 'SilentlyContinue'
+$languageMode = [string]$ExecutionContext.SessionState.LanguageMode
+$isConstrained = $languageMode -eq 'ConstrainedLanguage'
 $add = Get-Command Add-AppxPackage -ErrorAction SilentlyContinue
 $svc = Get-Service AppXSvc -ErrorAction SilentlyContinue
 $appInstaller = Get-AppxPackage -Name Microsoft.DesktopAppInstaller -ErrorAction SilentlyContinue |
@@ -1392,36 +1404,43 @@ foreach ($p in @(
 $meteredKnown = $false
 $metered = $null
 $costType = ''
-try {
-  $profile = [Windows.Networking.Connectivity.NetworkInformation,Windows.Networking.Connectivity,ContentType=WindowsRuntime]::GetInternetConnectionProfile()
-  if ($null -ne $profile) {
-    $cost = $profile.GetConnectionCost()
-    $meteredKnown = $true
-    $costType = [string]$cost.NetworkCostType
-    $metered = [bool]($cost.NetworkCostType -ne 'Unrestricted' -or $cost.Roaming -or $cost.OverDataLimit)
-  }
-} catch {}
+if (-not $isConstrained) {
+  try {
+    $profile = [Windows.Networking.Connectivity.NetworkInformation,Windows.Networking.Connectivity,ContentType=WindowsRuntime]::GetInternetConnectionProfile()
+    if ($null -ne $profile) {
+      $cost = $profile.GetConnectionCost()
+      $meteredKnown = $true
+      $costType = [string]$cost.NetworkCostType
+      $metered = [bool]($cost.NetworkCostType -ne 'Unrestricted' -or $cost.Roaming -or $cost.OverDataLimit)
+    }
+  } catch {}
+}
 
 $msixDeploymentKnown = $false
 $msixDeploymentOk = $false
 $msixDeploymentError = ''
-try {
-  $pm = New-Object -TypeName Windows.Management.Deployment.PackageManager -ErrorAction Stop
-  $msixDeploymentKnown = $true
-  $msixDeploymentOk = ($null -ne $pm)
-} catch {
-  $msixDeploymentKnown = $true
-  $msixDeploymentOk = $false
-  $hr = 0
-  try { $hr = [int]$_.Exception.HResult } catch {}
-  if ($hr -ne 0) {
-    $msixDeploymentError = ('{0} (HRESULT=0x{1:X8})' -f $_.Exception.Message, $hr)
-  } else {
-    $msixDeploymentError = [string]$_.Exception.Message
+if ($isConstrained) {
+  $msixDeploymentError = 'PackageManager probe skipped in ConstrainedLanguage'
+} else {
+  try {
+    $pm = New-Object -TypeName Windows.Management.Deployment.PackageManager -ErrorAction Stop
+    $msixDeploymentKnown = $true
+    $msixDeploymentOk = ($null -ne $pm)
+  } catch {
+    $msixDeploymentKnown = $true
+    $msixDeploymentOk = $false
+    $hr = 0
+    try { $hr = [int]$_.Exception.HResult } catch {}
+    if ($hr -ne 0) {
+      $msixDeploymentError = ('{0} (HRESULT=0x{1:X8})' -f $_.Exception.Message, $hr)
+    } else {
+      $msixDeploymentError = [string]$_.Exception.Message
+    }
   }
 }
 
-[pscustomobject]@{
+@{
+  languageMode = $languageMode
   addAppxPackage = [bool]$add
   appxSvcExists = [bool]$svc
   appxSvcStatus = if ($svc) { [string]$svc.Status } else { '' }
@@ -1439,7 +1458,9 @@ try {
 } | ConvertTo-Json -Compress
 "#;
 
-    match run_powershell_json(script)
+#[cfg(windows)]
+pub fn probe_capabilities() -> WinCapabilityReport {
+    match run_powershell_json(CAPABILITY_PROBE_SCRIPT)
         .ok()
         .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
     {
@@ -1576,6 +1597,18 @@ fn capabilities_from_probe_json(value: &serde_json::Value) -> WinCapabilityRepor
         ))
     };
 
+    let mut notes = vec!["Certificate trust is verified after the MSIX is staged.".to_string()];
+    if value
+        .get("languageMode")
+        .and_then(|v| v.as_str())
+        .is_some_and(|mode| mode.eq_ignore_ascii_case("ConstrainedLanguage"))
+    {
+        notes.push(
+            "PowerShell is running in ConstrainedLanguage; restricted WinRT probes remain unknown."
+                .to_string(),
+        );
+    }
+
     WinCapabilityReport::from_checks(
         add,
         appx_service,
@@ -1583,7 +1616,7 @@ fn capabilities_from_probe_json(value: &serde_json::Value) -> WinCapabilityRepor
         app_installer,
         msix_deployment,
         metered_network,
-        vec!["Certificate trust is verified after the MSIX is staged.".to_string()],
+        notes,
     )
 }
 
@@ -1591,6 +1624,27 @@ fn capabilities_from_probe_json(value: &serde_json::Value) -> WinCapabilityRepor
 mod tests {
     #[cfg(windows)]
     use super::*;
+
+    #[cfg(windows)]
+    const CONSTRAINED_APPX_MOCKS: &str = r#"
+$ErrorActionPreference = 'Stop'
+$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'
+if ($ExecutionContext.SessionState.LanguageMode -ne 'ConstrainedLanguage') {
+  throw 'failed to enter ConstrainedLanguage'
+}
+function Add-AppxPackage {
+  param($LiteralPath, $Path, $ForceUpdateFromAnyVersion, $ErrorAction)
+  if ($LiteralPath -ne 'C:\staging\Codex.msix' -or $null -ne $Path -or -not $ForceUpdateFromAnyVersion) {
+    throw 'unexpected Add-AppxPackage arguments'
+  }
+}
+function Get-AppxPackage {
+  param($Name, $ErrorAction)
+  if ($Name -ne 'OpenAI.Codex') { throw 'unexpected Get-AppxPackage name' }
+  '{"InstallLocation":"C:\\Program Files\\WindowsApps\\OpenAI.Codex","Version":"26.707.3748.0","PackageFamilyName":"OpenAI.Codex_2p2nqsd0c76g0"}' |
+    ConvertFrom-Json
+}
+"#;
 
     #[cfg(windows)]
     #[test]
@@ -1649,6 +1703,74 @@ mod tests {
             report.msix_deployment.state,
             crate::capability::CapabilityState::Unavailable
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn constrained_language_capability_probe_keeps_restricted_checks_unknown() {
+        let script = format!(
+            "$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'; if ($ExecutionContext.SessionState.LanguageMode -ne 'ConstrainedLanguage') {{ throw 'CLM was not enabled' }}; {}",
+            super::CAPABILITY_PROBE_SCRIPT
+        );
+        let json = run_powershell_json(&script).expect("run constrained-language capability probe");
+        let value: serde_json::Value =
+            serde_json::from_str(&json).expect("parse constrained-language capability JSON");
+        assert_eq!(
+            value.get("languageMode").and_then(|v| v.as_str()),
+            Some("ConstrainedLanguage")
+        );
+        assert_eq!(
+            value.get("msixDeploymentKnown").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            value.get("msixDeploymentOk").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+        assert!(value
+            .get("msixDeploymentError")
+            .and_then(|v| v.as_str())
+            .is_some_and(|error| error.contains("skipped")));
+        assert_eq!(
+            value.get("meteredKnown").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+        let report = capabilities_from_probe_json(&value);
+        assert_eq!(report.msix_deployment.state, CapabilityState::Unknown);
+        assert_eq!(report.metered_network.state, CapabilityState::Unknown);
+        assert!(report
+            .notes
+            .iter()
+            .any(|note| note.contains("ConstrainedLanguage")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn constrained_language_msix_install_script_preserves_json_contract() {
+        let production = install_msix_script(std::path::Path::new(r"C:\staging\Codex.msix"));
+        let script = format!("{}\n{}", CONSTRAINED_APPX_MOCKS, production);
+        let json = run_powershell_json(&script).expect("run constrained-language MSIX install");
+        let report: MsixSideloadReport =
+            serde_json::from_str(&json).expect("parse constrained-language install report");
+        assert!(report.success);
+        let installed = report.installed.expect("mock install should be detected");
+        assert_eq!(installed.version, "26.707.3748.0");
+        assert_eq!(installed.source, "msix");
+        assert_eq!(
+            installed.package_family_name.as_deref(),
+            Some("OpenAI.Codex_2p2nqsd0c76g0")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn constrained_language_msix_detection_preserves_json_contract() {
+        let script = format!("{}\n{}", CONSTRAINED_APPX_MOCKS, detect_msix_script());
+        let json = run_powershell_json(&script).expect("run constrained-language MSIX detection");
+        let installed: InstalledWindowsCodex =
+            serde_json::from_str(&json).expect("parse constrained-language detected install");
+        assert_eq!(installed.version, "26.707.3748.0");
+        assert_eq!(installed.source, "msix");
     }
 
     #[test]

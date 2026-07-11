@@ -107,25 +107,39 @@ fn powershell_exe() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("powershell.exe"))
 }
 
+// PowerShell custom-object casts are rejected by ConstrainedLanguage. A plain
+// hashtable serializes to the same JSON shape while remaining usable under
+// AppLocker / WDAC-managed sessions.
 #[cfg(windows)]
-pub fn verify_openai_authenticode(path: &Path) -> Result<AuthenticodeReport, EngineError> {
-    log::info!("Authenticode verification start");
-    let script = format!(
+const AUTHENTICODE_REPORT_PROJECTION: &str = r#"
+@{
+  status = [string]$sig.Status
+  statusMessage = [string]$sig.StatusMessage
+  subject = if ($sig.SignerCertificate) { [string]$sig.SignerCertificate.Subject } else { '' }
+  issuer = if ($sig.SignerCertificate) { [string]$sig.SignerCertificate.Issuer } else { '' }
+  thumbprint = if ($sig.SignerCertificate) { [string]$sig.SignerCertificate.Thumbprint } else { '' }
+} | ConvertTo-Json -Compress
+"#;
+
+#[cfg(windows)]
+fn authenticode_script(path: &Path) -> String {
+    format!(
         r#"
 $ErrorActionPreference = 'Stop'
 $securityModule = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1'
 Import-Module $securityModule -ErrorAction Stop
 $sig = Get-AuthenticodeSignature -LiteralPath {path}
-[pscustomobject]@{{
-  status = [string]$sig.Status
-  statusMessage = [string]$sig.StatusMessage
-  subject = if ($sig.SignerCertificate) {{ [string]$sig.SignerCertificate.Subject }} else {{ '' }}
-  issuer = if ($sig.SignerCertificate) {{ [string]$sig.SignerCertificate.Issuer }} else {{ '' }}
-  thumbprint = if ($sig.SignerCertificate) {{ [string]$sig.SignerCertificate.Thumbprint }} else {{ '' }}
-}} | ConvertTo-Json -Compress
+{report_projection}
 "#,
-        path = ps_quote(&path.to_string_lossy())
-    );
+        path = ps_quote(&path.to_string_lossy()),
+        report_projection = AUTHENTICODE_REPORT_PROJECTION,
+    )
+}
+
+#[cfg(windows)]
+pub fn verify_openai_authenticode(path: &Path) -> Result<AuthenticodeReport, EngineError> {
+    log::info!("Authenticode verification start");
+    let script = authenticode_script(path);
 
     let mut command = hidden_command(powershell_exe());
     command.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
@@ -218,5 +232,34 @@ mod tests {
         )
         .unwrap();
         assert!(!report.is_valid_openai());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn authenticode_script_runs_in_constrained_language() {
+        let path = std::env::current_exe().expect("resolve current test executable");
+        let production_script = super::authenticode_script(&path);
+        let script = format!(
+            r#"$ErrorActionPreference = 'Stop'
+$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'
+if ($ExecutionContext.SessionState.LanguageMode -ne 'ConstrainedLanguage') {{
+  throw 'failed to enter ConstrainedLanguage'
+}}
+{production_script}
+"#,
+            production_script = production_script,
+        );
+        let output = super::hidden_command(super::powershell_exe())
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .output()
+            .expect("run constrained-language Authenticode script");
+        assert!(
+            output.status.success(),
+            "Authenticode script failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report = report_from_json(String::from_utf8_lossy(&output.stdout).trim())
+            .expect("parse constrained-language Authenticode report");
+        assert!(!report.status.is_empty());
     }
 }

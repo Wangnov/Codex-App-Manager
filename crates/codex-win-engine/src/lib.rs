@@ -87,3 +87,20 @@ pub enum EngineError {
     #[error("io error: {0}")]
     Io(String),
 }
+
+#[cfg(test)]
+mod constrained_language_regressions {
+    #[test]
+    fn runtime_powershell_avoids_custom_object_casts() {
+        let forbidden = ["[pscustom", "object]"].concat();
+        for (name, source) in [
+            ("authenticode.rs", include_str!("authenticode.rs")),
+            ("sys.rs", include_str!("sys.rs")),
+        ] {
+            assert!(
+                !source.to_ascii_lowercase().contains(&forbidden),
+                "{name} contains a PowerShell custom-object cast that fails in ConstrainedLanguage"
+            );
+        }
+    }
+}
