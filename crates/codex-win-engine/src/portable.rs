@@ -244,8 +244,8 @@ fn powershell_exe() -> PathBuf {
 
 #[cfg(windows)]
 fn run_powershell(script: &str) -> Result<String, EngineError> {
-    // Close/shortcut/uninstall scripts can wait on processes; use the install
-    // budget so a stuck AppX/policy machine cannot hang forever.
+    // Shortcut/uninstall metadata scripts can wait on COM or registry work; use
+    // the install budget so a stuck policy machine cannot hang forever.
     run_powershell_with_limits(script, RunLimits::install())
 }
 
@@ -267,128 +267,8 @@ fn run_powershell_with_limits(
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-// The process filter matches by executable path under `root`, never by name
-// alone: post-merge the Codex entry process is `ChatGPT`, which is also the
-// process name of ChatGPT Classic — an unrooted name match would close the
-// wrong product. That is why there is no unfiltered close variant.
-//
-// Path resolution falls through Get-Process.Path → MainModule.FileName →
-// Win32_Process.ExecutablePath: AppX / protected processes often leave `.Path`
-// empty even when the process is clearly ours under InstallLocation.
-#[cfg(windows)]
-fn request_codex_close_filtered(timeout_secs: u64, root: &Path) -> Result<(), EngineError> {
-    let root_filter = ps_quote(&root.to_string_lossy());
-    let timeout = timeout_secs;
-    let script = format!(
-        r#"
-$RootFilter = {root_filter}
-try {{ $RootFilter = ([string](Convert-Path -LiteralPath $RootFilter -ErrorAction Stop)).TrimEnd('\') }} catch {{}}
-function Get-ProcessExePath($p) {{
-  try {{
-    $path = [string]$p.Path
-    if (-not [string]::IsNullOrWhiteSpace($path)) {{ return $path }}
-  }} catch {{}}
-  try {{
-    $path = [string]$p.MainModule.FileName
-    if (-not [string]::IsNullOrWhiteSpace($path)) {{ return $path }}
-  }} catch {{}}
-  try {{
-    $cim = Get-CimInstance -ClassName Win32_Process -Filter ("ProcessId=" + $p.Id) -ErrorAction SilentlyContinue
-    if ($null -ne $cim -and -not [string]::IsNullOrWhiteSpace([string]$cim.ExecutablePath)) {{
-      return [string]$cim.ExecutablePath
-    }}
-  }} catch {{}}
-  return $null
-}}
-function Test-UnderRoot($p) {{
-  $path = Get-ProcessExePath $p
-  if ([string]::IsNullOrWhiteSpace($path) -or [string]::IsNullOrWhiteSpace($RootFilter)) {{ return $false }}
-  $full = [string]$path
-  try {{
-    $resolved = [string](Convert-Path -LiteralPath $path -ErrorAction Stop)
-    if (-not [string]::IsNullOrWhiteSpace($resolved)) {{ $full = $resolved }}
-  }} catch {{}}
-  return ($full.Equals($RootFilter, [System.StringComparison]::OrdinalIgnoreCase) -or
-          $full.StartsWith($RootFilter + '\', [System.StringComparison]::OrdinalIgnoreCase))
-}}
-function Get-TargetCodexProcess {{
-  $all = Get-Process -Name Codex, ChatGPT -ErrorAction SilentlyContinue
-  foreach ($p in $all) {{
-    if (Test-UnderRoot $p) {{ $p }}
-  }}
-}}
-$procs = @(Get-TargetCodexProcess)
-if ($procs.Count -eq 0) {{
-  'no-targets'
-  exit 0
-}}
-$targetIds = @($procs | ForEach-Object {{ $_.Id }})
-foreach ($p in $procs) {{
-  try {{
-    if ($p.MainWindowHandle -ne 0) {{ [void]$p.CloseMainWindow() }}
-  }} catch {{}}
-}}
-$deadline = (Get-Date).AddSeconds({timeout})
-while ((Get-Date) -lt $deadline) {{
-  Start-Sleep -Milliseconds 250
-  $remaining = @()
-  foreach ($id in $targetIds) {{
-    $p = Get-Process -Id $id -ErrorAction SilentlyContinue
-    if ($null -ne $p) {{ $remaining += $p }}
-  }}
-  if ($remaining.Count -eq 0) {{
-    'closed'
-    exit 0
-  }}
-}}
-$forceIds = @($remaining | ForEach-Object {{ $_.Id }})
-foreach ($id in $forceIds) {{
-  try {{ Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }} catch {{}}
-}}
-$forceDeadline = (Get-Date).AddSeconds(5)
-while ((Get-Date) -lt $forceDeadline) {{
-  Start-Sleep -Milliseconds 250
-  $remaining = @()
-  foreach ($id in $forceIds) {{
-    $p = Get-Process -Id $id -ErrorAction SilentlyContinue
-    if ($null -ne $p) {{ $remaining += $p }}
-  }}
-  if ($remaining.Count -eq 0) {{
-    'force-closed:' + ($forceIds -join ',')
-    exit 0
-  }}
-}}
-'running:' + (($remaining | ForEach-Object {{ $_.Id }}) -join ',')
-"#
-    );
-    let result = run_powershell(&script)?;
-    let trimmed = result.trim();
-    if trimmed.ends_with("closed") || trimmed.ends_with("no-targets") {
-        Ok(())
-    } else if trimmed.starts_with("force-closed:") {
-        log::warn!("target Codex processes required forced close result={trimmed}");
-        Ok(())
-    } else {
-        Err(EngineError::Install(
-            format!(
-                "target Codex process is still running after graceful close request ({result}); no files were replaced"
-            ),
-        ))
-    }
-}
-
-#[cfg(windows)]
-fn request_codex_close_for_root(timeout_secs: u64, root: &Path) -> Result<(), EngineError> {
-    request_codex_close_filtered(timeout_secs, root)
-}
-
-#[cfg(not(windows))]
-fn request_codex_close_for_root(_timeout_secs: u64, _root: &Path) -> Result<(), EngineError> {
-    Ok(())
-}
-
 pub fn close_codex_gracefully_for_root(timeout_secs: u64, root: &Path) -> Result<(), EngineError> {
-    request_codex_close_for_root(timeout_secs, root)
+    crate::windows_process::close_codex_processes_for_root(timeout_secs, root)
 }
 
 #[cfg(windows)]
@@ -768,7 +648,7 @@ pub fn install_portable_from_msix_with_observer(
     let mut notes = Vec::new();
 
     if manage_process {
-        request_codex_close_for_root(30, install_root)?;
+        close_codex_gracefully_for_root(30, install_root)?;
     }
 
     let fault = take_portable_fault();
@@ -1009,7 +889,7 @@ pub fn uninstall_portable(
 ) -> Result<PortableUninstallReport, EngineError> {
     let path = install_root.display();
     log::info!("portable uninstall start path={path}");
-    request_codex_close_for_root(30, install_root)?;
+    close_codex_gracefully_for_root(30, install_root)?;
 
     let removed_files = if install_root.exists() {
         fs::remove_dir_all(install_root).map_err(|e| io_err("remove portable install", e))?;

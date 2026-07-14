@@ -25,6 +25,7 @@ pub mod portable;
 mod process;
 pub mod sys;
 pub mod version;
+mod windows_process;
 
 pub use app_version::{
     read_codex_app_version_from_asar, read_codex_app_version_from_install_root,
