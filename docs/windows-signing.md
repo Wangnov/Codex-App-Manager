@@ -5,9 +5,12 @@ signing. The installer is still published through GitHub Releases and the
 agentsmirror download mirror, and every release includes `SHA256SUMS` so users
 can verify the bytes they downloaded.
 
-CI already prepares the Authenticode **path** (sign script, verify script, optional
-release step, packaged lifecycle smoke). Certificate secrets are optional and
-non-blocking until budget/demand justify an OV/EV cert.
+CI already contains a legacy optional PFX-based Authenticode scaffold (sign
+script, verify script, optional release step, and packaged lifecycle smoke).
+That scaffold is not the SignPath integration. A SignPath Foundation application
+was submitted on 2026-07-11 and is still pending; the current Windows artifacts
+remain unsigned. See the public [code-signing policy](code-signing-policy.md) and
+[privacy policy](privacy.md).
 
 ## 中文
 
@@ -18,12 +21,13 @@ non-blocking until budget/demand justify an OV/EV cert.
 - Windows 应用内自更新包带有 Tauri updater 签名,用于校验下载字节没有被篡改。
 - Windows 首次手动运行安装器时可能出现 SmartScreen 提示;这是预期风险,不是更新器签名失效。
 - CI 已接入安装包冒烟(x64:`install → launch → upgrade → uninstall`)与 Authenticode 探测;证书未配置时签名步骤跳过且校验为非阻塞。
+- SignPath Foundation 免费代码签名申请已于 2026-07-11 提交,目前仍在审核;尚未获得服务批准或启用签名流水线。公开规则见[代码签名政策](code-signing-policy.md),数据边界见[隐私政策](privacy.md)。
 
 ### 三个概念
 
 **Tauri updater 签名:** `latest.json` 里的 `signature` 对安装包字节签名。它保护应用内自更新下载,确保镜像或网络传输没有改包。它不参与 Windows 系统的发行者信任判断,也不能消除 SmartScreen 提示。实现:`npx tauri signer sign` + `TAURI_SIGNING_PRIVATE_KEY`。
 
-**Authenticode 代码签名:** Windows 对 PE 文件和安装器使用的代码签名体系。拥有 OV 或 EV 证书后,安装器可以显示发行者身份,并更容易建立系统信任。本项目当前还没有给 Windows 安装器做 Authenticode 签名。实现路径见下文「CI / 发布管线」。
+**Authenticode 代码签名:** Windows 对 PE 文件和安装器使用的代码签名体系。由可信证书提供方签名后,安装器可以显示发行者身份,并逐步建立系统信任。本项目当前还没有给 Windows 安装器做 Authenticode 签名;已选择 SignPath Foundation 作为申请中的公开方案。
 
 **SmartScreen 信誉:** Microsoft Defender SmartScreen 会结合签名身份、下载量、历史信誉和风险信号做拦截判断。EV 证书通常能更快建立信誉;OV 证书和未签名分发都需要累积信誉,未签名安装器首次运行更容易被提示。
 
@@ -57,13 +61,13 @@ shasum -a 256 CodexAppManager_x86_64.dmg
 
 **Microsoft Store / Partner Center:** 这是中期可选路径,需要开发者账号、MSIX 打包和商店审核。优点是用户信任更强,缺点是流程和维护成本更高。
 
-**OV / EV 代码签名证书:** 证书不是当前发布阻塞项。后续可在 Windows 下载量、企业用户需求或支持成本达到明确阈值后重新评估。EV 成本更高但信誉建立更快;OV 成本较低但仍需累积 SmartScreen 信誉。
+**SignPath Foundation:** 本项目已提交免费代码签名申请,但审核通过前不会声称安装器已签名。若获批,接入会在单独 PR 中完成 trusted build、人工批准与 installer / 主程序 / uninstaller 三层验证;当前的可选 PFX 占位并不等于 SignPath 集成。
 
 **不推荐的降本方式:** 不把私钥托管给不可信第三方,不合租硬件令牌,不把代码签名能力转交给无法审计的渠道。
 
 ### 风险披露
 
-未签名 Windows 安装器意味着用户首次运行可能需要在 SmartScreen 中选择更多信息后继续。项目通过公开 release、镜像直链、`SHA256SUMS`、Tauri updater 签名和透明文档降低篡改与误解风险;这不能替代 Authenticode,但可以让用户在证书预算到位前做独立核验。
+未签名 Windows 安装器意味着用户首次运行可能需要在 SmartScreen 中选择更多信息后继续。项目通过公开 release、镜像直链、`SHA256SUMS`、Tauri updater 签名和透明文档降低篡改与误解风险;这不能替代 Authenticode,但可以让用户在 SignPath Foundation 审核与独立接入完成前做独立核验。
 
 ### CI / 发布管线(Authenticode 路径)
 
@@ -74,7 +78,12 @@ shasum -a 256 CodexAppManager_x86_64.dmg
 | `release.yml` Windows | PE 架构诊断 → 可选 Authenticode 签名 → Authenticode 校验 → Tauri updater `.sig` → 收集**最终**工件 | updater `.sig` 与工件齐全为阻塞;Authenticode 默认非阻塞 |
 | ARM64 | 交叉构建 + PE machine=`0xAA64` 诊断;**不是**实机运行验证 | 交叉构建失败阻塞;运行验证见下 |
 
-**启用 Authenticode(证书就绪后):**
+**现有 PFX 占位路径(不是 SignPath 接入):**
+
+下面记录的是仓库当前已有的可选 PFX 代码路径,不是推荐的 Foundation
+接入方式,也不应被配置成 Foundation 方案。若 SignPath 申请获批,会通过
+单独、可审查的 PR 接入其 trusted build 与人工审批流程,并在发布前验证
+installer、主程序和 uninstaller 三层 PE 签名。
 
 1. 在 `release` environment 配置 secrets:
    - `WINDOWS_CERTIFICATE` — base64 编码的 OV/EV `.pfx`
@@ -114,12 +123,13 @@ shasum -a 256 CodexAppManager_x86_64.dmg
 - Windows in-app update artifacts carry the Tauri updater signature, which verifies the downloaded bytes.
 - SmartScreen may warn when users manually run the Windows installer for the first time; that is the known distribution risk, not an updater-signature failure.
 - CI already runs x64 packaged lifecycle smoke (`install → launch → upgrade → uninstall`) and Authenticode probes; signing is skipped and verification is non-blocking until a certificate is configured.
+- The free SignPath Foundation code-signing application was submitted on 2026-07-11 and remains pending. No service approval or signing pipeline is in place. See the public [code-signing policy](code-signing-policy.md) and [privacy policy](privacy.md).
 
 ### Three separate concepts
 
 **Tauri updater signature:** The `signature` field in `latest.json` signs the installer bytes. It protects in-app self-update downloads from tampering across mirrors and network hops. It is not Windows publisher trust and does not remove SmartScreen warnings. Implementation: `npx tauri signer sign` + `TAURI_SIGNING_PRIVATE_KEY`.
 
-**Authenticode code signing:** This is the Windows code-signing system for PE files and installers. With an OV or EV certificate, the installer can show a publisher identity and build operating-system trust. This project does not currently Authenticode-sign the Windows installer. The prepared CI path is documented below.
+**Authenticode code signing:** This is the Windows code-signing system for PE files and installers. A trusted certificate provider can let the installer show a publisher identity and build operating-system trust. This project does not currently Authenticode-sign the Windows installer; SignPath Foundation is the public path under application.
 
 **SmartScreen reputation:** Microsoft Defender SmartScreen combines signing identity, download volume, historical reputation, and risk signals. EV certificates usually establish reputation faster; OV certificates and unsigned distribution still need reputation to build, and unsigned installers are more likely to warn on first run.
 
@@ -154,7 +164,7 @@ issue with the source URL and filename.
 
 **Microsoft Store / Partner Center:** This is a medium-term option. It requires a developer account, MSIX packaging, and Store review. It improves user trust but adds process and maintenance cost.
 
-**OV / EV code-signing certificate:** A certificate is not a release blocker today. Re-evaluate when Windows download volume, enterprise demand, or support cost crosses a clear threshold. EV costs more but establishes reputation faster; OV costs less but still needs SmartScreen reputation to build.
+**SignPath Foundation:** The project has submitted an application for free code signing, but will not claim signed installers before approval. If approved, a separate PR will integrate trusted builds, manual approval, and three-layer verification for the installer, main executable, and uninstaller. The current optional PFX scaffold is not a SignPath integration.
 
 **Cost shortcuts to avoid:** Do not custody private keys with untrusted third parties, share hardware tokens, or hand signing capability to channels that cannot be audited.
 
@@ -165,7 +175,7 @@ and continue through SmartScreen on first run. The project reduces tampering and
 confusion risk with public releases, mirror permalinks, `SHA256SUMS`, Tauri
 updater signatures, and transparent documentation. Those mitigations do not
 replace Authenticode, but they let users verify downloads independently until
-certificate budget and demand justify Windows code signing.
+the SignPath Foundation review and a separately reviewed integration are complete.
 
 ### CI / release pipeline (Authenticode path)
 
@@ -176,7 +186,13 @@ certificate budget and demand justify Windows code signing.
 | `release.yml` Windows | PE arch diagnostic → optional Authenticode sign → Authenticode verify → Tauri updater `.sig` → collect **final** artifacts | Updater `.sig` + artifact set block; Authenticode optional by default |
 | ARM64 | Cross-build + PE machine=`0xAA64` diagnostic; **not** runtime verification | Cross-build failure blocks; runtime verification below |
 
-**Turning on Authenticode (when a cert is available):**
+**Existing PFX scaffold (not the SignPath integration):**
+
+The steps below document the repository's current optional PFX code path. They
+are not the recommended Foundation integration and must not be configured as a
+substitute for it. If the SignPath application is approved, a separate,
+reviewable PR will integrate its trusted-build and manual-approval workflow and
+verify all three PE layers: installer, main executable, and uninstaller.
 
 1. Add secrets on the `release` environment:
    - `WINDOWS_CERTIFICATE` — base64-encoded OV/EV `.pfx`

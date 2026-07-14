@@ -5,7 +5,7 @@ export default {
       "One-click install, Sparkle delta updates on macOS, and clean uninstall for the official OpenAI Codex desktop app. Verified byte by byte, mirrored verbatim, and reachable from mainland China without a proxy. Open source, MIT licensed.",
     ogTitle: "Codex App Manager — official Codex, installed in one click",
     ogDescription:
-      "Install, update, and uninstall the official Codex desktop app — macOS delta updates with automatic rollback, verbatim mirrors reachable from mainland China. Signed, notarized, open source.",
+      "Install, update, and uninstall the official Codex desktop app — macOS delta updates with automatic rollback, verbatim mirrors reachable from mainland China. The macOS build is signed and notarized; the project is open source.",
   },
   nav: {
     why: "Why",
@@ -32,7 +32,7 @@ export default {
       win: "Download for Windows (x64)",
     },
     scrollHint: "See how it works",
-    badges: ["Signed & notarized", "MIT licensed", "Tauri v2", "11 languages"],
+    badges: ["macOS signed & notarized", "MIT licensed", "Tauri v2", "11 languages"],
   },
   demo: {
     window: "Codex App Manager",
@@ -266,6 +266,12 @@ export default {
       managerLabel: "Wangnov/Codex-App-Manager",
       mirrorLabel: "Wangnov/codex-app-mirror",
     },
+    signing: {
+      status: "The SignPath Foundation application for Windows Authenticode is still under review; the current Windows installers are unsigned.",
+      attributionNote: "If approved and separately integrated, the project will display the required attribution:",
+      policy: "Code signing policy",
+      privacy: "Privacy policy",
+    },
   },
   scope: {
     kicker: "Scope",
@@ -295,6 +301,8 @@ export default {
     links: {
       manager: "Codex App Manager",
       mirror: "Codex App Mirror",
+      signingPolicy: "Code signing policy",
+      privacyPolicy: "Privacy policy",
     },
   },
   ui: {

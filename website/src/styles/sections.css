@@ -1478,6 +1478,39 @@ body[data-lang="en"] .hero-title {
   border-color: color-mix(in oklch, var(--amber) 38%, transparent);
 }
 
+.dl-signing-note {
+  margin-top: 20px;
+  padding: 20px 22px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: color-mix(in oklch, var(--surface) 88%, transparent);
+  color: var(--ink-2);
+  font-size: 13.5px;
+}
+
+.dl-signing-note p {
+  margin: 0;
+}
+
+.dl-signing-note p + p {
+  margin-top: 8px;
+}
+
+.dl-signing-note a {
+  color: var(--ink);
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.dl-signing-note a:hover {
+  border-color: var(--amber);
+}
+
+.dl-policy-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
 .dl-alt {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);

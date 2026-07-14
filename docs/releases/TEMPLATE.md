@@ -43,8 +43,10 @@
 | Windows · x64 | [CodexAppManager_x64-setup.exe](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x64-setup.exe) |
 | Windows · ARM64 | [CodexAppManager_arm64-setup.exe](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_arm64-setup.exe) |
 
-**Windows 签名状态:** `CodexAppManager_x64-setup.exe` / `CodexAppManager_arm64-setup.exe` 当前没有 Authenticode 代码签名,首次运行可能出现 SmartScreen 提示;`.sig` / `latest.json` 里的 Tauri updater 签名只用于应用内自更新的字节校验,不代表 Windows 发行者信任。详情见 [Windows signing and verification](https://github.com/Wangnov/Codex-App-Manager/blob/main/docs/windows-signing.md)。
-**Windows signing status:** `CodexAppManager_x64-setup.exe` / `CodexAppManager_arm64-setup.exe` are not Authenticode-signed yet, so SmartScreen may warn on first run; the Tauri updater signature in `.sig` / `latest.json` verifies in-app update bytes only and is not Windows publisher trust. See [Windows signing and verification](https://github.com/Wangnov/Codex-App-Manager/blob/main/docs/windows-signing.md).
+**Windows 签名状态（本版必须据实填写）:** 当前安装器没有 Authenticode 代码签名,首次运行可能出现 SmartScreen 提示;不得把 `.sig` / `latest.json` 的 Tauri updater 字节签名写成 Windows 发行者身份。SignPath Foundation 申请仍在审核。参见 [代码签名政策](https://github.com/Wangnov/Codex-App-Manager/blob/main/docs/code-signing-policy.md)与 [Windows signing and verification](https://github.com/Wangnov/Codex-App-Manager/blob/main/docs/windows-signing.md)。
+**Windows signing status (replace with this release's verified facts):** The current installers are not Authenticode-signed, so SmartScreen may warn on first run. Never describe a Tauri updater signature in `.sig` / `latest.json` as Windows publisher identity. The SignPath Foundation application is pending. See the [code signing policy](https://github.com/Wangnov/Codex-App-Manager/blob/main/docs/code-signing-policy.md) and [Windows signing and verification](https://github.com/Wangnov/Codex-App-Manager/blob/main/docs/windows-signing.md).
+
+**隐私 · Privacy:** [隐私政策 · Privacy policy](https://github.com/Wangnov/Codex-App-Manager/blob/main/docs/privacy.md)
 
 **核验下载:** 本页 Assets 带有 `SHA256SUMS`;Windows 用 `Get-FileHash .\CodexAppManager_x64-setup.exe -Algorithm SHA256` 或替换为 ARM64 文件名,macOS 用 `shasum -a 256 CodexAppManager_aarch64.dmg`,再与 `SHA256SUMS` 比对。
 **Verify downloads:** This release includes `SHA256SUMS` in Assets; on Windows run `Get-FileHash .\CodexAppManager_x64-setup.exe -Algorithm SHA256` or swap in the ARM64 filename, and on macOS run `shasum -a 256 CodexAppManager_aarch64.dmg`, then compare with `SHA256SUMS`.

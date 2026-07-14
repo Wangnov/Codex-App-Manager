@@ -12,7 +12,7 @@
     <meta property="og:title" content="Codex App Manager — 一键装好官方 Codex,自动保持最新" />
     <meta
       property="og:description"
-      content="原样镜像官方安装包,送达你的 Mac 与 PC,每一步都可校验。macOS 增量更新、失败自动回滚、国内直连可达。Developer ID 签名 + Apple 公证,开源可审计。"
+      content="原样镜像官方安装包,送达你的 Mac 与 PC,每一步都可校验。macOS 增量更新、失败自动回滚、国内直连可达。macOS 版本已通过 Developer ID 签名和 Apple 公证,项目开源可审计。"
     />
     <link rel="canonical" href="https://codexapp.agentsmirror.com/" />
     <meta property="og:url" content="https://codexapp.agentsmirror.com/" />
@@ -213,7 +213,7 @@
                 <a href="#download"><span data-i18n="hero.allOptions">全部下载方式</span><span aria-hidden="true"> ↓</span></a>
               </p>
               <ul class="hero-badges" data-reveal>
-                <li class="chip" data-i18n="hero.badges.0">Developer ID 签名 + Apple 公证</li>
+                <li class="chip" data-i18n="hero.badges.0">macOS Developer ID 签名 + Apple 公证</li>
                 <li class="chip" data-i18n="hero.badges.1">MIT 开源</li>
                 <li class="chip" data-i18n="hero.badges.2">Tauri v2</li>
                 <li class="chip" data-i18n="hero.badges.3">11 种语言</li>
@@ -519,6 +519,20 @@
               >
             </article>
           </div>
+
+          <aside class="dl-signing-note" data-reveal>
+            <p data-i18n="download.signing.status">
+              Windows Authenticode 的 SignPath Foundation 申请仍在审核;当前 Windows 安装器未签名。
+            </p>
+            <p>
+              <span data-i18n="download.signing.attributionNote">若申请获批并完成独立接入,项目将按要求标注:</span>
+              <span>Free code signing provided by <a href="https://about.signpath.io/" target="_blank" rel="noopener">SignPath.io</a>, certificate by <a href="https://signpath.org/" target="_blank" rel="noopener">SignPath Foundation</a></span>
+            </p>
+            <p class="dl-policy-links">
+              <a href="https://github.com/Wangnov/Codex-App-Manager/blob/main/docs/code-signing-policy.md" target="_blank" rel="noopener" data-i18n="download.signing.policy">Code signing policy · 代码签名政策</a>
+              <a href="https://github.com/Wangnov/Codex-App-Manager/blob/main/docs/privacy.md" target="_blank" rel="noopener" data-i18n="download.signing.privacy">Privacy policy</a>
+            </p>
+          </aside>
 
           <div class="dl-alt">
             <article class="card brew-card" data-reveal>
@@ -891,6 +905,8 @@
             <ul>
               <li><a href="https://github.com/Wangnov/Codex-App-Manager" target="_blank" rel="noopener" data-i18n="footer.links.manager">Codex App Manager</a></li>
               <li><a href="https://github.com/Wangnov/codex-app-mirror" target="_blank" rel="noopener" data-i18n="footer.links.mirror">Codex App Mirror</a></li>
+              <li><a href="https://github.com/Wangnov/Codex-App-Manager/blob/main/docs/code-signing-policy.md" target="_blank" rel="noopener" data-i18n="footer.links.signingPolicy">Code signing policy · 代码签名政策</a></li>
+              <li><a href="https://github.com/Wangnov/Codex-App-Manager/blob/main/docs/privacy.md" target="_blank" rel="noopener" data-i18n="footer.links.privacyPolicy">Privacy policy</a></li>
             </ul>
           </div>
           <div class="footer-col">
