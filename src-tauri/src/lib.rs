@@ -785,6 +785,8 @@ pub fn run() {
             commands::get_diagnostics,
             commands::open_logs_dir,
             commands::open_codex_home,
+            commands::read_codex_file,
+            commands::write_codex_file,
             commands::log_frontend_error,
         ])
         .setup(|app| {

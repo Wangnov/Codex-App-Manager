@@ -1701,6 +1701,88 @@ button.row.danger:hover {
   font-variant-numeric: tabular-nums;
 }
 
+/* Codex config editor (~/.codex auth.json / config.toml) */
+.codex-config {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 28px;
+}
+.config-lead {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-soft);
+  line-height: 1.45;
+}
+.config-note {
+  margin: 0;
+  font-size: var(--fs-label);
+  color: var(--text-faint);
+  line-height: 1.45;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  background: var(--accent-tint);
+  border: 1px solid color-mix(in oklch, var(--accent) 22%, transparent);
+}
+.config-tabs {
+  margin-top: 4px;
+}
+.config-path-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-label);
+}
+.config-path-label {
+  color: var(--text-faint);
+  font-weight: 600;
+}
+.config-path {
+  color: var(--text-soft);
+  word-break: break-all;
+  flex: 1 1 120px;
+}
+.config-editor-label {
+  margin: 4px 0 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+.config-editor-hint {
+  margin: 0;
+  font-size: var(--fs-label);
+  color: var(--text-faint);
+  line-height: 1.4;
+}
+textarea.config-editor {
+  min-height: 220px;
+  max-height: min(42vh, 360px);
+  resize: vertical;
+  line-height: 1.45;
+  white-space: pre;
+  tab-size: 2;
+  overflow: auto;
+}
+.config-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.config-actions .btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.config-actions .btn svg {
+  width: 14px;
+  height: 14px;
+}
+
 /* ── Banner / note ───────────────────────────────────────────────────────── */
 .banner {
   display: flex;

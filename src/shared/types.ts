@@ -239,6 +239,18 @@ export interface ConfigHealth {
 
 export type ConfigWhich = "settings" | "provenance";
 
+/** User-facing Codex home file managed by the config editor. */
+export type CodexFileWhich = "auth" | "config";
+
+/** Snapshot of `~/.codex/auth.json` or `~/.codex/config.toml`. */
+export interface CodexFileSnapshot {
+  which: CodexFileWhich;
+  path: string;
+  content: string;
+  exists: boolean;
+  bytes: number;
+}
+
 export interface Diagnostics {
   appVersion: string;
   os: string;

@@ -7,6 +7,8 @@ import type {
   AppSettings,
   CommandError,
   CodexUpdatePlatform,
+  CodexFileSnapshot,
+  CodexFileWhich,
   ConfigHealth,
   ConfigWhich,
   Diagnostics,
@@ -684,6 +686,38 @@ export const managerApi = {
       return Promise.resolve();
     }
     return invoke<void>("open_codex_home");
+  },
+  readCodexFile(which: CodexFileWhich): Promise<CodexFileSnapshot> {
+    if (!hasTauriRuntime()) {
+      const path =
+        which === "auth"
+          ? "~/.codex/auth.json"
+          : "~/.codex/config.toml";
+      const content =
+        which === "auth"
+          ? '{\n  "OPENAI_API_KEY": "sk-demo",\n  "OPENAI_BASE_URL": "https://example.com/v1"\n}\n'
+          : '# browser mock\nmodel = "gpt-5"\nmodel_provider = "custom"\n\n[model_providers.custom]\nname = "sub2api"\nbase_url = "https://example.com/v1"\nwire_api = "responses"\n';
+      return Promise.resolve({
+        which,
+        path,
+        content,
+        exists: true,
+        bytes: content.length,
+      });
+    }
+    return invoke<CodexFileSnapshot>("read_codex_file", { which });
+  },
+  writeCodexFile(which: CodexFileWhich, content: string): Promise<CodexFileSnapshot> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve({
+        which,
+        path: which === "auth" ? "~/.codex/auth.json" : "~/.codex/config.toml",
+        content,
+        exists: true,
+        bytes: content.length,
+      });
+    }
+    return invoke<CodexFileSnapshot>("write_codex_file", { which, content });
   },
   reportFrontendError(payload: FrontendErrorPayload): Promise<void> {
     if (!hasTauriRuntime()) {

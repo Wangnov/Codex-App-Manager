@@ -8,6 +8,7 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_updater::UpdaterExt;
 
 use crate::app::atomic_file;
+use crate::app::codex_files::{self, CodexFileKind, CodexFileSnapshot};
 use crate::app::config_health::ConfigHealth;
 use crate::app::diagnostics::Diagnostics;
 use crate::app::disk::available_space;
@@ -1602,6 +1603,21 @@ pub fn open_codex_home() -> Result<(), CommandError> {
     log::info!("open Codex home path={path}");
     open_dir_platform(&dir)
         .map_err(|e| AppError::Internal(format!("打开 Codex 数据目录失败: {e}")).into())
+}
+
+/// Read `~/.codex/auth.json` or `~/.codex/config.toml` for the in-app editor.
+#[tauri::command]
+pub fn read_codex_file(which: String) -> Result<CodexFileSnapshot, CommandError> {
+    let kind = CodexFileKind::parse(&which)?;
+    codex_files::read_file(kind).map_err(Into::into)
+}
+
+/// Atomically write `auth.json` / `config.toml` (JSON validated for auth).
+/// Intended for pasting sub2api / custom provider credentials and TOML.
+#[tauri::command]
+pub fn write_codex_file(which: String, content: String) -> Result<CodexFileSnapshot, CommandError> {
+    let kind = CodexFileKind::parse(&which)?;
+    codex_files::write_file(kind, &content).map_err(Into::into)
 }
 
 #[tauri::command]

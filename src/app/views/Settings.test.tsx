@@ -228,13 +228,28 @@ describe("Settings runtime contract", () => {
     expect(screen.getByText("尽量遵循系统代理；不保证完整 PAC 行为")).toBeInTheDocument();
   });
 
-  it("disables the unfinished Codex config entry", async () => {
+  it("enables the Codex config entry for auth.json / config.toml", async () => {
+    const user = userEvent.setup();
+    const onOpenConfig = vi.fn();
     api.getSettings.mockResolvedValue(settings());
-    renderSettings();
+    render(
+      <ThemeProvider>
+        <I18nProvider>
+          <Settings
+            onBack={vi.fn()}
+            onOpenAbout={vi.fn()}
+            onOpenUninstall={vi.fn()}
+            onOpenConfig={onOpenConfig}
+          />
+        </I18nProvider>
+      </ThemeProvider>,
+    );
     await waitFor(() => expect(screen.queryByText("正在加载设置…")).not.toBeInTheDocument());
     const config = screen.getByRole("button", { name: /Codex 配置管理/ });
-    expect(config).toBeDisabled();
-    expect(screen.getByText("当前版本尚未提供")).toBeInTheDocument();
+    expect(config).not.toBeDisabled();
+    expect(screen.getByText(/auth\.json 与 config\.toml/)).toBeInTheDocument();
+    await user.click(config);
+    expect(onOpenConfig).toHaveBeenCalledTimes(1);
   });
 
   it("ignores a late hydrate after the user already edited", async () => {

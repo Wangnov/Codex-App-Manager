@@ -114,12 +114,12 @@ export function Settings({
   onBack,
   onOpenAbout,
   onOpenUninstall,
-  onOpenConfig: _onOpenConfig,
+  onOpenConfig,
 }: {
   onBack: () => void;
   onOpenAbout: () => void;
   onOpenUninstall: () => void;
-  /** Reserved: Codex config is not shippable yet; entry stays disabled. */
+  /** Opens the ~/.codex auth.json / config.toml editor. */
   onOpenConfig: () => void;
 }) {
   const { t, lang, setLang } = useI18n();
@@ -870,19 +870,13 @@ export function Settings({
         <div className="group">
           <div className="group-h">{t("settings.more.header")}</div>
           <div className="list">
-            <button
-              className="row"
-              type="button"
-              disabled
-              aria-disabled="true"
-              title={t("settings.more.configUnavailable")}
-            >
+            <button className="row" type="button" onClick={onOpenConfig}>
               <Icon name="sliders" className="ricon" />
               <span className="rtext">
                 <span className="rtitle">{t("settings.more.config")}</span>
-                <span className="rsub">{t("settings.more.configUnavailable")}</span>
+                <span className="rsub">{t("settings.more.configSub")}</span>
               </span>
-              <span className="tag soon">{t("settings.more.soon")}</span>
+              <Icon name="chevron" className="chev" />
             </button>
             <button className="row" onClick={onOpenAbout}>
               <Icon name="info" className="ricon" />
