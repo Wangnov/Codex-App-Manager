@@ -273,6 +273,7 @@ fn mac_existing_install_start_dir() -> PathBuf {
 }
 
 const MIN_PORTABLE_FREE_SPACE_BYTES: u64 = 1_073_741_824;
+const INSTALL_LOCATION_PROBE_PREFIX: &str = ".codex-manager-install-test-";
 
 fn begin_guard(state: &ManagerState, kind: OperationKind) -> Result<OperationGuard, CommandError> {
     state
@@ -533,6 +534,70 @@ fn directory_is_empty(path: &Path) -> Result<bool, AppError> {
     Ok(entries.next().is_none())
 }
 
+/// Probe the operation the portable installer ultimately needs: create a
+/// non-empty child directory and atomically rename it beside the install root.
+/// A plain file write inside an existing install only proves file creation; it
+/// does not prove the parent grants directory replacement/delete-child rights.
+fn probe_install_parent_replace(path: &Path) -> Result<PathBuf, AppError> {
+    let requested_parent = path.parent().unwrap_or(path);
+    let probe_dir = nearest_existing_dir(requested_parent);
+    let probe_id = uuid::Uuid::new_v4();
+    let source = probe_dir.join(format!("{INSTALL_LOCATION_PROBE_PREFIX}{probe_id}-source"));
+    let destination =
+        probe_dir.join(format!("{INSTALL_LOCATION_PROBE_PREFIX}{probe_id}-destination"));
+
+    let probe_result = (|| -> std::io::Result<()> {
+        std::fs::create_dir(&source)?;
+        std::fs::write(source.join("probe"), b"ok")?;
+        codex_win_engine::rename_directory_with_retry(
+            "probe install parent directory rename",
+            &source,
+            &destination,
+        )?;
+        Ok(())
+    })();
+
+    // Validation must remain side-effect free. Clean both names because the
+    // probe can fail before or after the rename boundary.
+    let source_cleanup = if source.exists() {
+        codex_win_engine::remove_directory_all_with_retry(
+            "clean install parent source probe",
+            &source,
+        )
+    } else {
+        Ok(())
+    };
+    let destination_cleanup = if destination.exists() {
+        codex_win_engine::remove_directory_all_with_retry(
+            "clean install parent destination probe",
+            &destination,
+        )
+    } else {
+        Ok(())
+    };
+
+    let cleanup_result = source_cleanup.and(destination_cleanup);
+    match (probe_result, cleanup_result) {
+        (Ok(()), Ok(())) => {}
+        (Err(probe_err), Ok(())) => {
+            return Err(AppError::Internal(format!(
+                "安装位置父目录不可写或不支持目录替换: {probe_err}"
+            )));
+        }
+        (Ok(()), Err(cleanup_err)) => {
+            return Err(AppError::Internal(format!(
+                "安装位置探测目录清理失败: {cleanup_err}"
+            )));
+        }
+        (Err(probe_err), Err(cleanup_err)) => {
+            return Err(AppError::Internal(format!(
+                "安装位置父目录不可写或不支持目录替换: {probe_err}; 探测目录清理也失败: {cleanup_err}"
+            )));
+        }
+    }
+    Ok(probe_dir)
+}
+
 fn validate_install_root_path(raw: &str) -> Result<String, AppError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -555,17 +620,10 @@ fn validate_install_root_path(raw: &str) -> Result<String, AppError> {
             "安装位置必须是空文件夹，或已有的 Codex 免安装版目录".to_string(),
         ));
     }
-    // Probe writability and free space WITHOUT creating the target directory:
-    // merely validating or remembering a location must not leave folders on
-    // disk. We probe the nearest existing ancestor — it shares the volume (so
-    // the free-space figure matches) and a writable parent means the installer
-    // can create the leaf later. The directory is created at install time by
-    // install_portable_from_msix, not here.
-    let probe_dir = nearest_existing_dir(&path);
-    let probe = probe_dir.join(format!(".codex-manager-write-test-{}", std::process::id()));
-    std::fs::write(&probe, b"ok")
-        .map_err(|e| AppError::Internal(format!("安装位置不可写: {e}")))?;
-    let _ = std::fs::remove_file(&probe);
+    // Probe parent-level directory creation and rename WITHOUT creating the
+    // requested target itself. This mirrors the install swap and also gives us
+    // the same-volume ancestor for the free-space check.
+    let probe_dir = probe_install_parent_replace(&path)?;
     if let Some(free) = available_space(&probe_dir)? {
         if free < MIN_PORTABLE_FREE_SPACE_BYTES {
             return Err(AppError::Internal(
@@ -1307,11 +1365,15 @@ pub async fn win_pick_install_dir(
     })
     .await
     .map_err(|e| AppError::Internal(format!("join: {e}")))??;
-    selected
-        .as_deref()
-        .map(install_root_from_picked_dir)
-        .transpose()
-        .map_err(Into::into)
+    match selected {
+        Some(path) => tauri::async_runtime::spawn_blocking(move || {
+            install_root_from_picked_dir(&path).map(Some)
+        })
+        .await
+        .map_err(|e| AppError::Internal(format!("join: {e}")))?
+        .map_err(Into::into),
+        None => Ok(None),
+    }
 }
 
 /// Windows-only: let the user pick an existing portable/self-extracted Codex directory.
@@ -1362,7 +1424,7 @@ pub fn win_adopt_path(
 
 /// Windows-only: persist a validated portable install root.
 #[tauri::command]
-pub fn win_set_install_root(
+pub async fn win_set_install_root(
     state: State<'_, ManagerState>,
     path: String,
 ) -> Result<PersistedAppSettings, CommandError> {
@@ -1370,7 +1432,10 @@ pub fn win_set_install_root(
         return Err(AppError::UnsupportedPlatform.into());
     }
     let _op = begin_guard(&state, OperationKind::SetInstallRoot)?;
-    let install_root = validate_install_root_path(&path)?;
+    let install_root =
+        tauri::async_runtime::spawn_blocking(move || validate_install_root_path(&path))
+            .await
+            .map_err(|e| AppError::Internal(format!("join: {e}")))??;
     let mut settings = PersistedAppSettings::load();
     settings.install_root = install_root;
     settings.normalize();
@@ -1382,14 +1447,19 @@ pub fn win_set_install_root(
 
 /// Windows-only: reset the remembered portable install root to the per-user default.
 #[tauri::command]
-pub fn win_reset_install_root(
+pub async fn win_reset_install_root(
     state: State<'_, ManagerState>,
 ) -> Result<PersistedAppSettings, CommandError> {
     if !matches!(state.target.os, OperatingSystem::Windows) {
         return Err(AppError::UnsupportedPlatform.into());
     }
     let _op = begin_guard(&state, OperationKind::SetInstallRoot)?;
-    let install_root = validate_install_root_path(&PersistedAppSettings::default().install_root)?;
+    let default_install_root = PersistedAppSettings::default().install_root;
+    let install_root = tauri::async_runtime::spawn_blocking(move || {
+        validate_install_root_path(&default_install_root)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("join: {e}")))??;
     let mut settings = PersistedAppSettings::load();
     settings.install_root = install_root;
     settings.normalize();
@@ -1800,7 +1870,10 @@ pub async fn win_perform_update(
     // so a failed or cancelled attempt never changes the user's saved location.
     let pending_install_root = match install_root {
         Some(raw) => {
-            let validated = validate_install_root_path(&raw)?;
+            let validated =
+                tauri::async_runtime::spawn_blocking(move || validate_install_root_path(&raw))
+                    .await
+                    .map_err(|e| AppError::Internal(format!("join: {e}")))??;
             settings.install_root = validated.clone();
             Some(validated)
         }
@@ -1915,7 +1988,7 @@ pub async fn win_uninstall(
 mod tests {
     use super::{
         install_root_from_picked_dir, manager_update_matches_confirmation,
-        normalize_windows_source_base, validate_install_root_path,
+        normalize_windows_source_base, validate_install_root_path, INSTALL_LOCATION_PROBE_PREFIX,
         validated_custom_proxy_for_settings,
     };
     use std::fs;
@@ -2062,6 +2135,27 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
+    fn validation_removes_parent_replace_probe() {
+        let parent = temp_path("codex-manager-validate-probe-cleanup");
+        let root = parent.join("Codex");
+        let _ = fs::remove_dir_all(&parent);
+        fs::create_dir_all(&parent).unwrap();
+
+        validate_install_root_path(&root.to_string_lossy()).unwrap();
+
+        assert!(!fs::read_dir(&parent).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(INSTALL_LOCATION_PROBE_PREFIX)
+        }));
+        assert!(!root.exists());
+
+        let _ = fs::remove_dir_all(parent);
     }
 
     #[cfg(windows)]

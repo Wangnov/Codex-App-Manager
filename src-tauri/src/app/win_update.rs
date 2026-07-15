@@ -1439,7 +1439,13 @@ fn install_portable_after_stage(
         true,
         &mut observer,
     )
-    .map_err(engine_err)?;
+    .map_err(|err| {
+        log::error!(
+            "Windows portable install failed install_root={} error={err}",
+            install_root_path.display()
+        );
+        engine_err(err)
+    })?;
     if let Some(active) = tx.take() {
         active.succeed()?;
     }

@@ -1,6 +1,8 @@
 use std::fs;
-use std::io::Read;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -49,6 +51,118 @@ struct PreparedPortable {
 
 fn io_err(context: &str, err: impl ToString) -> EngineError {
     EngineError::Io(format!("{context}: {}", err.to_string()))
+}
+
+// Directory replacement can briefly race process teardown, Windows Defender,
+// or another file scanner even after every managed process has exited. Retry
+// only the Windows errors that describe transient handle/lock contention; all
+// other failures still return immediately.
+const WINDOWS_FS_RETRY_DELAYS_MS: [u64; 8] = [50, 100, 200, 400, 800, 1_600, 2_500, 5_000];
+
+fn is_transient_windows_fs_error(err: &io::Error) -> bool {
+    // ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION.
+    #[cfg(any(windows, test))]
+    {
+        matches!(err.raw_os_error(), Some(5 | 32 | 33))
+    }
+    #[cfg(not(any(windows, test)))]
+    {
+        let _ = err;
+        false
+    }
+}
+
+fn filesystem_operation_with_retry<F, S>(
+    operation: &str,
+    source: &Path,
+    destination: Option<&Path>,
+    mut action: F,
+    mut sleep: S,
+) -> io::Result<()>
+where
+    F: FnMut() -> io::Result<()>,
+    S: FnMut(Duration),
+{
+    let destination_text = destination
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let mut attempt = 1usize;
+    loop {
+        match action() {
+            Ok(()) => {
+                if attempt > 1 {
+                    log::info!(
+                        "portable filesystem operation succeeded after retry operation={operation} attempts={attempt} source={} destination={destination_text}",
+                        source.display()
+                    );
+                }
+                return Ok(());
+            }
+            Err(err) => {
+                let retryable = is_transient_windows_fs_error(&err);
+                let next_delay = WINDOWS_FS_RETRY_DELAYS_MS.get(attempt - 1).copied();
+                let retry_delay = if retryable { next_delay } else { None };
+                if let Some(delay_ms) = retry_delay {
+                    log::warn!(
+                        "portable filesystem operation temporarily blocked operation={operation} attempt={attempt} raw_os_error={:?} source_exists={} destination_exists={} source={} destination={destination_text} error={err}; retrying_in_ms={delay_ms}",
+                        err.raw_os_error(),
+                        source.exists(),
+                        destination.is_some_and(Path::exists),
+                        source.display()
+                    );
+                    sleep(Duration::from_millis(delay_ms));
+                    attempt += 1;
+                    continue;
+                }
+
+                log::error!(
+                    "portable filesystem operation failed operation={operation} attempts={attempt} retryable={retryable} raw_os_error={:?} source_exists={} destination_exists={} source={} destination={destination_text} error={err}",
+                    err.raw_os_error(),
+                    source.exists(),
+                    destination.is_some_and(Path::exists),
+                    source.display()
+                );
+                return Err(err);
+            }
+        }
+    }
+}
+
+fn rename_with_retry<F, S>(
+    operation: &str,
+    from: &Path,
+    to: &Path,
+    rename: F,
+    sleep: S,
+) -> io::Result<()>
+where
+    F: FnMut() -> io::Result<()>,
+    S: FnMut(Duration),
+{
+    filesystem_operation_with_retry(operation, from, Some(to), rename, sleep)
+}
+
+/// Rename a portable-install directory, retrying only transient Windows lock
+/// errors with the same bounded backoff used by the real install swap.
+pub fn rename_directory_with_retry(operation: &str, from: &Path, to: &Path) -> io::Result<()> {
+    rename_with_retry(operation, from, to, || fs::rename(from, to), thread::sleep)
+}
+
+/// Remove a portable-install directory with bounded retries for transient
+/// Windows scanner/handle contention.
+pub fn remove_directory_all_with_retry(operation: &str, path: &Path) -> io::Result<()> {
+    filesystem_operation_with_retry(
+        operation,
+        path,
+        None,
+        || fs::remove_dir_all(path),
+        thread::sleep,
+    )
+}
+
+fn rename_portable_dir(operation: &str, from: &Path, to: &Path) -> Result<(), EngineError> {
+    rename_directory_with_retry(operation, from, to)
+        .map_err(|err| io_err(operation, err))
 }
 
 fn copy_dir_all(from: &Path, to: &Path) -> Result<(), EngineError> {
@@ -446,8 +560,7 @@ fn restore_previous_install(
             .map_err(|e| io_err("remove failed portable install", e))?;
     }
     if had_previous {
-        fs::rename(backup, install_root)
-            .map_err(|e| io_err("restore portable rollback backup", e))?;
+        rename_portable_dir("restore portable rollback backup", backup, install_root)?;
     }
     Ok(())
 }
@@ -666,8 +779,7 @@ pub fn install_portable_from_msix_with_observer(
     }
 
     if had_previous {
-        fs::rename(install_root, &backup)
-            .map_err(|e| io_err("move current install to rollback", e))?;
+        rename_portable_dir("move current install to rollback", install_root, &backup)?;
     }
 
     // Observer must persist OldMoved. On failure: restore previous install when
@@ -708,7 +820,7 @@ pub fn install_portable_from_msix_with_observer(
         ));
     }
 
-    match fs::rename(&payload, install_root) {
+    match rename_portable_dir("install portable payload", &payload, install_root) {
         Ok(()) => {
             if let Err(obs_err) = observer(PortableBoundary::AfterMoveNew {
                 install_root: install_root.to_path_buf(),
@@ -726,7 +838,7 @@ pub fn install_portable_from_msix_with_observer(
                 &backup,
                 had_previous,
                 observer,
-                io_err("install portable payload", err),
+                err,
             ));
         }
     }
@@ -915,6 +1027,7 @@ pub fn uninstall_portable(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::{Cell, RefCell};
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
     use zip::write::SimpleFileOptions;
@@ -930,6 +1043,91 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn portable_directory_rename_retries_transient_windows_lock_errors() {
+        let attempts = Cell::new(0usize);
+        let sleeps = RefCell::new(Vec::new());
+
+        rename_with_retry(
+            "test rename",
+            Path::new("source"),
+            Path::new("destination"),
+            || {
+                let attempt = attempts.get() + 1;
+                attempts.set(attempt);
+                if attempt < 3 {
+                    Err(io::Error::from_raw_os_error(32))
+                } else {
+                    Ok(())
+                }
+            },
+            |duration| sleeps.borrow_mut().push(duration),
+        )
+        .unwrap();
+
+        assert_eq!(attempts.get(), 3);
+        assert_eq!(
+            sleeps.into_inner(),
+            vec![Duration::from_millis(50), Duration::from_millis(100)]
+        );
+    }
+
+    #[test]
+    fn portable_directory_rename_recognizes_all_transient_windows_codes() {
+        for code in [5, 32, 33] {
+            assert!(is_transient_windows_fs_error(
+                &io::Error::from_raw_os_error(code)
+            ));
+        }
+        assert!(!is_transient_windows_fs_error(
+            &io::Error::from_raw_os_error(2)
+        ));
+    }
+
+    #[test]
+    fn portable_directory_rename_does_not_retry_permanent_errors() {
+        let attempts = Cell::new(0usize);
+        let sleeps = Cell::new(0usize);
+
+        let err = rename_with_retry(
+            "test rename",
+            Path::new("source"),
+            Path::new("destination"),
+            || {
+                attempts.set(attempts.get() + 1);
+                Err(io::Error::from_raw_os_error(2))
+            },
+            |_| sleeps.set(sleeps.get() + 1),
+        )
+        .unwrap_err();
+
+        assert_eq!(err.raw_os_error(), Some(2));
+        assert_eq!(attempts.get(), 1);
+        assert_eq!(sleeps.get(), 0);
+    }
+
+    #[test]
+    fn portable_directory_rename_retry_is_bounded() {
+        let attempts = Cell::new(0usize);
+        let sleeps = Cell::new(0usize);
+
+        let err = rename_with_retry(
+            "test rename",
+            Path::new("source"),
+            Path::new("destination"),
+            || {
+                attempts.set(attempts.get() + 1);
+                Err(io::Error::from_raw_os_error(5))
+            },
+            |_| sleeps.set(sleeps.get() + 1),
+        )
+        .unwrap_err();
+
+        assert_eq!(err.raw_os_error(), Some(5));
+        assert_eq!(attempts.get(), WINDOWS_FS_RETRY_DELAYS_MS.len() + 1);
+        assert_eq!(sleeps.get(), WINDOWS_FS_RETRY_DELAYS_MS.len());
     }
 
     /// When `~/.codex` is a file (not a directory), purge fails — must stay

@@ -53,8 +53,9 @@ pub use plan::{plan_update, WinInstallRoute, WindowsUpdatePlan};
 pub use portable::{
     cleanup_portable_metadata, close_codex_gracefully_for_root, inject_portable_fault,
     install_portable_from_msix, install_portable_from_msix_with_observer, installed_app_exe,
-    purge_codex_user_data, uninstall_portable, PortableBoundary, PortableFault,
-    PortableInstallReport, PortableUninstallReport,
+    purge_codex_user_data, remove_directory_all_with_retry, rename_directory_with_retry,
+    uninstall_portable, PortableBoundary, PortableFault, PortableInstallReport,
+    PortableUninstallReport,
 };
 pub use sys::{
     close_msix_codex_processes, detect_installed_codex, detect_portable_install, fetch_text,

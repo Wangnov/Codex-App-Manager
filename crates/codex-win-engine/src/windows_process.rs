@@ -3,15 +3,13 @@
 //! The pre-replacement close gate must not add a PowerShell dependency: policy
 //! can block a later PowerShell launch even after an artifact was staged and
 //! verified. Keep the close path in process and pin every target to its
-//! executable path so the post-rebrand `ChatGPT.exe` never causes us to close
-//! the separate ChatGPT product.
+//! executable path. Every process loaded from the managed install root is a
+//! target, regardless of filename, while a separate ChatGPT product remains
+//! out of scope because its executable lives outside that root.
 
 use std::path::Path;
 
 use crate::EngineError;
-
-#[cfg(windows)]
-const TARGET_EXE_NAMES: [&str; 2] = ["Codex.exe", "ChatGPT.exe"];
 
 #[cfg(any(windows, test))]
 fn normalize_windows_path_text(value: &str) -> String {
@@ -68,7 +66,7 @@ mod imp {
         EnumWindows, GetWindowThreadProcessId, PostMessageW, WM_CLOSE,
     };
 
-    use super::{path_is_within_root, EngineError, TARGET_EXE_NAMES};
+    use super::{path_is_within_root, EngineError};
 
     const PROCESS_SYNCHRONIZE: u32 = 0x0010_0000;
     const FORCE_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -110,12 +108,12 @@ mod imp {
                 WAIT_OBJECT_0 => false,
                 WAIT_TIMEOUT => true,
                 WAIT_FAILED => {
-                    log::warn!("wait for target Codex process failed pid={}", self.pid);
+                    log::warn!("wait for managed install process failed pid={}", self.pid);
                     true
                 }
                 status => {
                     log::warn!(
-                        "wait for target Codex process returned unexpected status pid={} status={status}",
+                        "wait for managed install process returned unexpected status pid={} status={status}",
                         self.pid
                     );
                     true
@@ -128,60 +126,42 @@ mod imp {
         EngineError::Install(format!("{context}: {}", std::io::Error::last_os_error()))
     }
 
-    fn process_name(entry: &PROCESSENTRY32W) -> String {
-        let end = entry
-            .szExeFile
-            .iter()
-            .position(|unit| *unit == 0)
-            .unwrap_or(entry.szExeFile.len());
-        String::from_utf16_lossy(&entry.szExeFile[..end])
-    }
-
-    fn open_target_process(pid: u32, root: &Path) -> Option<TargetProcess> {
-        let full_access =
-            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE;
-        // SAFETY: access flags and PID come from the process snapshot.
-        let mut handle = unsafe { OpenProcess(full_access, 0, pid) };
-        let can_terminate = !handle.is_null();
-        if handle.is_null() {
-            // Query-only access still lets us identify and gracefully close a
-            // process when policy denies PROCESS_TERMINATE.
-            handle = unsafe {
-                OpenProcess(
-                    PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
-                    0,
-                    pid,
-                )
-            };
-        }
-        let handle = match OwnedHandle::new(handle) {
-            Some(handle) => handle,
-            None => {
-                log::debug!(
-                    "skip Codex-name process whose image path cannot be queried pid={pid} error={}",
-                    std::io::Error::last_os_error()
-                );
-                return None;
-            }
-        };
+    fn open_process_under_root(pid: u32, root: &Path) -> Option<TargetProcess> {
+        let query_access = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE;
+        // Query every snapshot entry without requesting termination rights on
+        // unrelated system processes. Escalate access only after the image path
+        // has matched the managed root.
+        // Access-denied and already-exited processes are routine while walking
+        // the system-wide snapshot, so an unavailable query handle is skipped.
+        let query_handle = OwnedHandle::new(unsafe { OpenProcess(query_access, 0, pid) })?;
 
         let mut buffer = vec![0u16; MAX_PROCESS_PATH_UTF16];
         let mut length = buffer.len() as u32;
         // SAFETY: buffer is writable for `length` UTF-16 units and the process
         // handle has PROCESS_QUERY_LIMITED_INFORMATION access.
-        if unsafe { QueryFullProcessImageNameW(handle.raw(), 0, buffer.as_mut_ptr(), &mut length) }
-            == 0
+        if unsafe {
+            QueryFullProcessImageNameW(query_handle.raw(), 0, buffer.as_mut_ptr(), &mut length)
+        } == 0
         {
-            log::debug!(
-                "skip Codex-name process whose image path query failed pid={pid} error={}",
-                std::io::Error::last_os_error()
-            );
             return None;
         }
         let image_path = PathBuf::from(OsString::from_wide(&buffer[..length as usize]));
         if !path_is_within_root(&image_path, root) {
             return None;
         }
+
+        log::info!(
+            "managed install process discovered pid={pid} image={}",
+            image_path.display()
+        );
+
+        let full_access = query_access | PROCESS_TERMINATE;
+        // SAFETY: access flags and PID come from the process snapshot. If
+        // policy denies termination, keep the query/synchronize handle so a
+        // graceful close can still succeed.
+        let terminate_handle = OwnedHandle::new(unsafe { OpenProcess(full_access, 0, pid) });
+        let can_terminate = terminate_handle.is_some();
+        let handle = terminate_handle.unwrap_or(query_handle);
 
         Some(TargetProcess {
             pid,
@@ -211,15 +191,17 @@ mod imp {
         }
 
         let mut targets = Vec::new();
+        let manager_pid = std::process::id();
         loop {
-            let name = process_name(&entry);
-            if TARGET_EXE_NAMES
-                .iter()
-                .any(|candidate| name.eq_ignore_ascii_case(candidate))
-            {
-                if let Some(target) = open_target_process(entry.th32ProcessID, root) {
-                    targets.push(target);
-                }
+            // The Manager itself can be installed under a user-selected tree;
+            // never include the process performing the replacement.
+            let target = if entry.th32ProcessID != manager_pid {
+                open_process_under_root(entry.th32ProcessID, root)
+            } else {
+                None
+            };
+            if let Some(target) = target {
+                targets.push(target);
             }
 
             // SAFETY: same valid snapshot and entry buffer as Process32FirstW.
@@ -298,7 +280,7 @@ mod imp {
         for target in targets.iter().filter(|target| target.is_running()) {
             if !target.can_terminate {
                 log::warn!(
-                    "target Codex process cannot be force-closed without PROCESS_TERMINATE access pid={}",
+                    "managed install process cannot be force-closed without PROCESS_TERMINATE access pid={}",
                     target.pid
                 );
                 continue;
@@ -306,7 +288,7 @@ mod imp {
             // SAFETY: handle was opened with PROCESS_TERMINATE and is still owned.
             if unsafe { TerminateProcess(target.handle.raw(), 1) } == 0 {
                 log::warn!(
-                    "force-close target Codex process failed pid={} error={}",
+                    "force-close managed install process failed pid={} error={}",
                     target.pid,
                     std::io::Error::last_os_error()
                 );
@@ -315,7 +297,7 @@ mod imp {
 
         if wait_until_exited(&targets, FORCE_CLOSE_TIMEOUT) {
             log::warn!(
-                "target Codex processes required native force-close pids={:?}",
+                "managed install processes required native force-close pids={:?}",
                 force_ids
             );
             return Ok(());
@@ -327,7 +309,7 @@ mod imp {
             .map(|target| target.pid)
             .collect();
         Err(EngineError::Install(format!(
-            "target Codex process is still running after native close request (pids={remaining:?}); no files were replaced"
+            "managed install process is still running after native close request (pids={remaining:?}); no files were replaced"
         )))
     }
 
@@ -340,7 +322,7 @@ mod imp {
         const HELPER_ENV: &str = "CODEX_APP_MANAGER_PROCESS_HELPER";
 
         #[test]
-        fn closes_matching_process_without_powershell() {
+        fn closes_unlisted_helper_process_without_powershell() {
             if std::env::var_os(HELPER_ENV).is_some() {
                 thread::sleep(Duration::from_secs(30));
                 return;
@@ -352,12 +334,14 @@ mod imp {
                 uuid::Uuid::new_v4()
             ));
             std::fs::create_dir_all(&root).unwrap();
-            let helper = root.join("Codex.exe");
+            // The scanner must not depend on the two known entrypoint names:
+            // Chromium/Electron helpers can hold payload files open too.
+            let helper = root.join("Codex.Helper.exe");
             std::fs::copy(std::env::current_exe().unwrap(), &helper).unwrap();
             let mut child = Command::new(&helper)
                 .args([
                     "--exact",
-                    "windows_process::imp::windows_tests::closes_matching_process_without_powershell",
+                    "windows_process::imp::windows_tests::closes_unlisted_helper_process_without_powershell",
                     "--nocapture",
                 ])
                 .env(HELPER_ENV, "1")
