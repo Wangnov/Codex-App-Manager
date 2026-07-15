@@ -609,7 +609,7 @@ dependencies = [
 
 [[package]]
 name = "codex-app-manager"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "codex-mac-engine",
  "codex-win-engine",
