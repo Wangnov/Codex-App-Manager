@@ -29,6 +29,7 @@ pub const THEME_CDP_PORT: u16 = 9345;
 /// persists its in-memory config on exit *after* the process count reaches
 /// zero (measured in the studio; writing earlier gets clobbered).
 const CONFIG_SETTLE: Duration = Duration::from_secs(2);
+#[cfg(target_os = "macos")]
 const QUIT_TIMEOUT_SECS: u64 = 30;
 const CDP_WAIT: Duration = Duration::from_secs(45);
 
