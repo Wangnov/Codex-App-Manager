@@ -42,7 +42,7 @@ pub struct TargetInfo {
 /// Reject anything that is not `ws://<loopback>:<port>/...` — the daemon must
 /// never follow a debugger URL onto the network.
 pub fn validated_debugger_url(target: &TargetInfo, port: u16) -> Result<String> {
-    let url = reqwest::Url::parse(&target.web_socket_debugger_url)
+    let url = url::Url::parse(&target.web_socket_debugger_url)
         .map_err(|e| err(format!("invalid CDP WebSocket URL: {e}")))?;
     let loopback = matches!(url.host_str(), Some("127.0.0.1") | Some("localhost") | Some("[::1]"))
         || url.host_str() == Some("::1");
@@ -226,28 +226,104 @@ impl CdpSession {
     }
 }
 
-fn loopback_client(timeout: Duration) -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .no_proxy()
-        .timeout(timeout)
-        .build()
-        .map_err(|e| err(format!("http client: {e}")))
+const HTTP_HEADER_CAP: usize = 64 * 1024;
+const HTTP_BODY_CAP: usize = 8 * 1024 * 1024;
+
+/// Minimal loopback HTTP GET over a raw socket. Deliberately not reqwest: a
+/// full HTTP client drags TLS feature-unification along (in the manager
+/// workspace reqwest resolves to `rustls-no-provider` and its Client::build
+/// panics without an installed crypto provider — which, inside a tauri async
+/// command, turns into an invoke that never settles).
+///
+/// Wire notes, measured against Chromium's DevTools HTTP endpoint: it refuses
+/// HTTP/1.0 outright (empty reply) and ignores `Connection: close`, so this
+/// speaks HTTP/1.1 and reads exactly `Content-Length` bytes — these endpoints
+/// always answer identity-encoded with an explicit length; anything else is
+/// rejected rather than mis-parsed.
+async fn loopback_http_get(port: u16, path: &str, timeout: Duration) -> Result<Vec<u8>> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let io = async {
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .map_err(|e| err(format!("connect 127.0.0.1:{port}: {e}")))?;
+        stream
+            .write_all(
+                format!(
+                    "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .map_err(|e| err(format!("request write: {e}")))?;
+
+        // Accumulate until the header terminator, then drain the body by
+        // declared length (an early EOF from a server that *does* honor the
+        // close is also accepted once the body is complete).
+        let mut response: Vec<u8> = Vec::with_capacity(8 * 1024);
+        let mut buf = [0u8; 8 * 1024];
+        let header_end = loop {
+            if let Some(pos) = response.windows(4).position(|w| w == b"\r\n\r\n") {
+                break pos;
+            }
+            if response.len() > HTTP_HEADER_CAP {
+                return Err(err(format!("GET {path}: oversized response header")));
+            }
+            let n = stream
+                .read(&mut buf)
+                .await
+                .map_err(|e| err(format!("response read: {e}")))?;
+            if n == 0 {
+                return Err(err(format!("GET {path}: connection closed mid-header")));
+            }
+            response.extend_from_slice(&buf[..n]);
+        };
+
+        let headers = String::from_utf8_lossy(&response[..header_end]).to_string();
+        let status_line = headers.lines().next().unwrap_or("").to_string();
+        if status_line.split(' ').nth(1) != Some("200") {
+            return Err(err(format!("GET {path}: {status_line}")));
+        }
+        let mut content_length: Option<usize> = None;
+        for line in headers.lines().skip(1) {
+            let lower = line.to_ascii_lowercase();
+            if lower.starts_with("transfer-encoding:") && lower.contains("chunked") {
+                return Err(err(format!("GET {path}: unsupported chunked response")));
+            }
+            if let Some(value) = lower.strip_prefix("content-length:") {
+                content_length = value.trim().parse::<usize>().ok();
+            }
+        }
+        let length = content_length
+            .ok_or_else(|| err(format!("GET {path}: missing Content-Length")))?;
+        if length > HTTP_BODY_CAP {
+            return Err(err(format!("GET {path}: oversized response body")));
+        }
+
+        let mut body = response.split_off(header_end + 4);
+        while body.len() < length {
+            let n = stream
+                .read(&mut buf)
+                .await
+                .map_err(|e| err(format!("response read: {e}")))?;
+            if n == 0 {
+                return Err(err(format!("GET {path}: connection closed mid-body")));
+            }
+            body.extend_from_slice(&buf[..n]);
+        }
+        body.truncate(length);
+        Ok::<Vec<u8>, ThemeEngineError>(body)
+    };
+    tokio::time::timeout(timeout, io)
+        .await
+        .map_err(|_| err(format!("GET {path} timed out")))?
 }
 
 /// Enumerate verified `app://` page targets, main window first (auxiliary
 /// prewarm/panel targets carry query-string routes and sort after it).
 pub async fn list_app_targets(port: u16) -> Result<Vec<TargetInfo>> {
-    let client = loopback_client(LIST_TIMEOUT)?;
-    let body = client
-        .get(format!("http://127.0.0.1:{port}/json/list"))
-        .send()
+    let body = loopback_http_get(port, "/json/list", LIST_TIMEOUT)
         .await
-        .map_err(|e| err(format!("target list failed: {e}")))?
-        .error_for_status()
-        .map_err(|e| err(format!("target list failed: {e}")))?
-        .bytes()
-        .await
-        .map_err(|e| err(format!("target list read failed: {e}")))?;
+        .map_err(|e| err(format!("target list failed: {e}")))?;
     let targets: Vec<TargetInfo> = serde_json::from_slice(&body)
         .map_err(|e| err(format!("target list parse failed: {e}")))?;
     let mut filtered: Vec<TargetInfo> = targets
@@ -266,17 +342,7 @@ pub async fn list_app_targets(port: u16) -> Result<Vec<TargetInfo>> {
 /// Whether a CDP HTTP endpoint answers on the port (does NOT prove it is
 /// Codex — pair with a shell probe before injecting).
 pub async fn cdp_http_ready(port: u16) -> bool {
-    let Ok(client) = loopback_client(VERSION_TIMEOUT) else {
-        return false;
-    };
-    let Ok(response) = client
-        .get(format!("http://127.0.0.1:{port}/json/version"))
-        .send()
-        .await
-    else {
-        return false;
-    };
-    let Ok(bytes) = response.bytes().await else {
+    let Ok(bytes) = loopback_http_get(port, "/json/version", VERSION_TIMEOUT).await else {
         return false;
     };
     let Ok(body) = serde_json::from_slice::<Value>(&bytes) else {
