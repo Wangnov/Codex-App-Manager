@@ -123,6 +123,27 @@ pub fn resolve_theme_for_keep(settings: &AppSettings, theme_ref: &str) -> Result
     Ok(theme.config.id)
 }
 
+/// Cover preview as a data URL; None when the theme has no preview, can't be
+/// resolved, or the image fails to read (gallery falls back to swatch art).
+pub fn preview_data_url(settings: &AppSettings, theme_ref: &str) -> Option<String> {
+    use base64::Engine as _;
+    let dir = resolve_theme(settings, theme_ref).ok()?;
+    let theme = load_theme(&dir).ok()?;
+    let rel = theme.meta.previews.first()?;
+    let path = dir.join(rel);
+    let mime = match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => return None,
+    };
+    let bytes = std::fs::read(&path).ok()?;
+    Some(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
 impl ThemeService {
     /// Ensure the reconciliation daemon is running and return its directive
     /// handle. One daemon per manager process, lazily started.

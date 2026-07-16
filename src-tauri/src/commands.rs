@@ -1675,6 +1675,64 @@ pub async fn codex_theme_apply(
     Ok(state.codex_theme.status(&updated).await)
 }
 
+/// Pick a `.codexskin` archive and install it into the managed theme root.
+/// Returns None when the user cancels the picker.
+#[tauri::command]
+pub async fn codex_theme_import(
+    app: tauri::AppHandle,
+) -> Result<Option<codex_theme_engine::theme::ThemeSummary>, CommandError> {
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("导入 Codex 主题包")
+            .add_filter("Codex Skin", &["codexskin", "zip"])
+            .blocking_pick_file()
+            .and_then(|path| path.into_path().ok())
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("join: {e}")))?;
+    let Some(archive) = picked else {
+        return Ok(None);
+    };
+    import_codexskin_at(&archive).map(Some)
+}
+
+/// Install a `.codexskin` from an explicit path (drag-and-drop delivery).
+#[tauri::command]
+pub async fn codex_theme_import_path(
+    path: String,
+) -> Result<codex_theme_engine::theme::ThemeSummary, CommandError> {
+    tauri::async_runtime::spawn_blocking(move || import_codexskin_at(Path::new(&path)))
+        .await
+        .map_err(|e| AppError::Internal(format!("join: {e}")))?
+}
+
+fn import_codexskin_at(
+    archive: &Path,
+) -> Result<codex_theme_engine::theme::ThemeSummary, CommandError> {
+    let themes_root = crate::app::paths::data_dir()
+        .ok_or_else(|| AppError::Internal("无法定位数据目录".to_string()))?
+        .join("themes");
+    let summary = codex_theme_engine::import::import_codexskin(archive, &themes_root)
+        .map_err(|e| AppError::Engine(e.to_string()))?;
+    log::info!(
+        "imported codexskin id={} version={:?} from={}",
+        summary.id,
+        summary.meta.version,
+        archive.display()
+    );
+    Ok(summary)
+}
+
+/// Cover preview of a theme as a data URL (None when the package ships no
+/// preview). Served through invoke rather than the asset protocol so dev-dir
+/// themes — whose location is user-chosen — need no protocol scope.
+#[tauri::command]
+pub fn codex_theme_preview(theme_ref: String) -> Result<Option<String>, CommandError> {
+    let settings = PersistedAppSettings::load();
+    Ok(crate::app::codex_theme::preview_data_url(&settings, &theme_ref))
+}
+
 /// Turn the theme off. `full` additionally restores the original config.toml
 /// appearance sections (restarting Codex plainly if it was running).
 #[tauri::command]

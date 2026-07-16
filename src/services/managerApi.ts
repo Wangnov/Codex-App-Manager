@@ -437,6 +437,16 @@ const FALLBACK_DIAGNOSTICS: Diagnostics = {
 
 // Browser-preview stand-ins so the theme gallery can be developed and styled
 // without a Tauri backend (mirrors guts-terminal / asuka-eva02 palettes).
+const FALLBACK_THEME_META: import("../shared/types").CodexThemeMeta = {
+  version: "1.0.0",
+  author: "wangnov",
+  codexVerified: "26.707.91948",
+  appearance: "dual",
+  tags: [],
+  license: "personal-use",
+  previews: [],
+};
+
 const BROWSER_FALLBACK_THEMES: CodexThemeSummary[] = [
   {
     id: "guts-terminal",
@@ -452,6 +462,8 @@ const BROWSER_FALLBACK_THEMES: CodexThemeSummary[] = [
       glow: "#e8a33d",
       line: "#3a4150",
     },
+    preview: null,
+    meta: { ...FALLBACK_THEME_META },
   },
   {
     id: "asuka-eva02",
@@ -467,6 +479,8 @@ const BROWSER_FALLBACK_THEMES: CodexThemeSummary[] = [
       glow: "#c8300e",
       line: "#453343",
     },
+    preview: null,
+    meta: { ...FALLBACK_THEME_META },
   },
 ];
 
@@ -872,6 +886,27 @@ export const managerApi = {
       return Promise.resolve({ ...BROWSER_FALLBACK_THEME_STATUS, activeTheme: null });
     }
     return invoke<CodexThemeStatusReport>("codex_theme_off", { full });
+  },
+  /** Pick and install a .codexskin; null when the user cancels the picker. */
+  codexThemeImport(): Promise<CodexThemeSummary | null> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve(null);
+    }
+    return invoke<CodexThemeSummary | null>("codex_theme_import");
+  },
+  /** Install a .codexskin from an explicit path (drag-and-drop). */
+  codexThemeImportPath(path: string): Promise<CodexThemeSummary> {
+    if (!hasTauriRuntime()) {
+      return Promise.reject(new Error("import requires the desktop app"));
+    }
+    return invoke<CodexThemeSummary>("codex_theme_import_path", { path });
+  },
+  /** Cover preview as a data URL; null when the package ships none. */
+  codexThemePreview(themeRef: string): Promise<string | null> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve(null);
+    }
+    return invoke<string | null>("codex_theme_preview", { themeRef });
   },
   /** Switch the native window between compact and expanded. `size` is the
    *  remembered expanded size (logical px); the report echoes what was applied

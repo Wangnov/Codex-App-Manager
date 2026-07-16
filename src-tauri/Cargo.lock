@@ -611,6 +611,7 @@ dependencies = [
 name = "codex-app-manager"
 version = "0.3.3"
 dependencies = [
+ "base64 0.22.1",
  "codex-mac-engine",
  "codex-theme-engine",
  "codex-win-engine",
@@ -666,6 +667,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "url",
+ "zip 2.4.2",
 ]
 
 [[package]]

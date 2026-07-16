@@ -556,6 +556,19 @@ export interface WinInstallStatus {
   status: InstallClass;
 }
 
+/** Delivery metadata (optional schemaVersion-2 fields; packer enforces). */
+export interface CodexThemeMeta {
+  version: string | null;
+  author: string | null;
+  /** Codex version the theme was verified against at build time. */
+  codexVerified: string | null;
+  appearance: "dark" | "light" | "dual" | null;
+  tags: string[];
+  license: string | null;
+  /** Package-relative preview images; first is the cover. */
+  previews: string[];
+}
+
 /** A locally installed Codex UI theme package (codex-theme-engine). */
 export interface CodexThemeSummary {
   id: string;
@@ -563,8 +576,11 @@ export interface CodexThemeSummary {
   description: string;
   dir: string;
   hasNativeTheme: boolean;
-  /** Color tokens from theme.json — theme cards render from these. */
+  /** Color tokens from theme.json — swatch/fallback card art. */
   colors: Record<string, string>;
+  /** Absolute path of the cover preview when the package ships one. */
+  preview: string | null;
+  meta: CodexThemeMeta;
 }
 
 export interface CodexThemeDaemonStatus {

@@ -81,6 +81,29 @@ pub struct ThemeConfig {
     pub strings: BTreeMap<String, String>,
 }
 
+/// Delivery metadata (still schemaVersion 2 — every field optional, unknown
+/// to older loaders). Deliberately NOT part of [`ThemeConfig`]: the renderer
+/// never consumes it, so it stays out of the injected payload and out of the
+/// stamp (a new preview screenshot must not force re-injection). Loading is
+/// lenient (invalid entries dropped); the studio's `pack` tool is where
+/// delivery requirements are enforced strictly.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThemeMeta {
+    /// The package's own semver — the basis for update distribution.
+    pub version: Option<String>,
+    /// Display author (a bare string, or an object's `name`).
+    pub author: Option<String>,
+    /// Codex version the theme was verified against at build time.
+    pub codex_verified: Option<String>,
+    /// "dark" | "light" | "dual" — gallery badge/sorting.
+    pub appearance: Option<String>,
+    pub tags: Vec<String>,
+    pub license: Option<String>,
+    /// Package-relative preview images, first one is the cover.
+    pub previews: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct AssetRef {
     pub path: PathBuf,
@@ -92,6 +115,7 @@ pub struct AssetRef {
 pub struct LoadedTheme {
     pub dir: PathBuf,
     pub config: ThemeConfig,
+    pub meta: ThemeMeta,
     pub css: String,
     pub chrome_html: Option<String>,
     pub assets: BTreeMap<String, AssetRef>,
@@ -109,8 +133,12 @@ pub struct ThemeSummary {
     pub dir: PathBuf,
     pub has_native_theme: bool,
     /// The package's color tokens — the UI renders theme cards from these
-    /// (swatch strip + abstract mini-preview) without any bundled artwork.
+    /// (swatch strip + abstract mini-preview) when no preview image ships.
     pub colors: BTreeMap<String, String>,
+    /// Absolute path of the cover preview (first valid `meta.previews`
+    /// entry), when the package ships one.
+    pub preview: Option<PathBuf>,
+    pub meta: ThemeMeta,
 }
 
 fn err(message: impl Into<String>) -> ThemeEngineError {
@@ -145,6 +173,75 @@ fn mime_for(path: &Path) -> Option<&'static str> {
         "jpg" | "jpeg" => Some("image/jpeg"),
         "webp" => Some("image/webp"),
         _ => None,
+    }
+}
+
+/// Preview images may be larger than the spec's 500 KB recommendation but
+/// anything past this is a packaging mistake, not a screenshot.
+const MAX_PREVIEW_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Lenient delivery-metadata extraction: absent/invalid entries drop out
+/// silently — strict enforcement is the packer's job, not the loader's.
+fn extract_meta(raw: &serde_json::Value, dir: &Path) -> ThemeMeta {
+    let text_field = |key: &str, max: usize| -> Option<String> {
+        raw.get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.chars().take(max).collect())
+    };
+    let author = match raw.get("author") {
+        Some(serde_json::Value::String(s)) if !s.trim().is_empty() => {
+            Some(s.trim().chars().take(80).collect())
+        }
+        Some(serde_json::Value::Object(map)) => map
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().chars().take(80).collect()),
+        _ => None,
+    };
+    let appearance = text_field("appearance", 8)
+        .filter(|value| matches!(value.as_str(), "dark" | "light" | "dual"));
+    let tags = raw
+        .get("tags")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|v| v.as_str())
+                .filter(|s| name_pattern(s))
+                .take(8)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let previews = raw
+        .get("previews")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|v| v.as_str())
+                .filter_map(|rel| {
+                    let path = resolve_inside(dir, rel, "preview").ok()?;
+                    let mime = mime_for(&path)?;
+                    let _ = mime;
+                    let meta = std::fs::metadata(&path).ok()?;
+                    (meta.is_file() && meta.len() >= 1 && meta.len() <= MAX_PREVIEW_BYTES)
+                        .then(|| rel.to_string())
+                })
+                .take(4)
+                .collect()
+        })
+        .unwrap_or_default();
+    ThemeMeta {
+        version: text_field("version", 32),
+        author,
+        codex_verified: text_field("codexVerified", 32),
+        appearance,
+        tags,
+        license: text_field("license", 80),
+        previews,
     }
 }
 
@@ -256,10 +353,12 @@ pub fn load_theme(theme_dir: &Path) -> Result<LoadedTheme> {
     }
 
     let codex_theme = raw.get("codexTheme").filter(|v| v.is_object()).cloned();
+    let meta = extract_meta(&raw, &dir);
 
     Ok(LoadedTheme {
         dir,
         config,
+        meta,
         css,
         chrome_html,
         assets,
@@ -280,6 +379,25 @@ pub fn inline_assets(theme: &LoadedTheme) -> Result<BTreeMap<String, String>> {
     Ok(data_urls)
 }
 
+/// Collapse a loaded theme into its gallery summary.
+pub fn summarize(theme: LoadedTheme) -> ThemeSummary {
+    let preview = theme
+        .meta
+        .previews
+        .first()
+        .map(|rel| theme.dir.join(rel));
+    ThemeSummary {
+        id: theme.config.id.clone(),
+        name: theme.config.name.clone(),
+        description: theme.config.description.clone(),
+        dir: theme.dir.clone(),
+        has_native_theme: theme.codex_theme.is_some(),
+        colors: theme.config.colors.clone(),
+        preview,
+        meta: theme.meta,
+    }
+}
+
 /// Enumerate valid theme packages under a directory; invalid ones are skipped
 /// (matching the studio's listing behavior).
 pub fn list_themes(themes_root: &Path) -> Vec<ThemeSummary> {
@@ -290,14 +408,7 @@ pub fn list_themes(themes_root: &Path) -> Vec<ThemeSummary> {
         .flatten()
         .filter(|e| e.path().is_dir())
         .filter_map(|e| load_theme(&e.path()).ok())
-        .map(|theme| ThemeSummary {
-            id: theme.config.id.clone(),
-            name: theme.config.name.clone(),
-            description: theme.config.description.clone(),
-            dir: theme.dir.clone(),
-            has_native_theme: theme.codex_theme.is_some(),
-            colors: theme.config.colors.clone(),
-        })
+        .map(summarize)
         .collect();
     themes.sort_by(|a, b| a.id.cmp(&b.id));
     themes

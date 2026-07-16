@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { errorMessage, managerApi, SETTINGS_CHANGED_EVENT } from "../../services/managerApi";
 import type {
@@ -9,6 +9,13 @@ import type {
 import { NavBar, StatusBanner } from "../components";
 import { Icon } from "../icons";
 import { useI18n } from "../i18n";
+
+function isTauri(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)
+  );
+}
 
 /** Parse #rgb/#rrggbb/rgb() far enough for luminance/saturation ranking. */
 function parseColor(value: string): { r: number; g: number; b: number } | null {
@@ -75,6 +82,35 @@ function ThemeCardArt({ colors }: { colors: Record<string, string> }) {
       </span>
     </div>
   );
+}
+
+/** Real screenshot when the package ships one (delivered lazily as a data
+ *  URL), abstract swatch art otherwise — so undelivered/in-development
+ *  themes still have a face. */
+function ThemeCardCover({ theme }: { theme: CodexThemeSummary }) {
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const hasPreview = Boolean(theme.preview);
+  useEffect(() => {
+    if (!hasPreview) return;
+    let cancelled = false;
+    void managerApi
+      .codexThemePreview(theme.id)
+      .then((url) => {
+        if (!cancelled) setDataUrl(url);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [hasPreview, theme.id]);
+  if (dataUrl) {
+    return (
+      <div className="themecard-art themecard-art-photo">
+        <img src={dataUrl} alt="" draggable={false} />
+      </div>
+    );
+  }
+  return <ThemeCardArt colors={theme.colors} />;
 }
 
 export function CodexThemes({ onBack }: { onBack: () => void }) {
@@ -154,9 +190,58 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
       });
     });
 
+  const importSkin = () =>
+    run("import", async () => {
+      await managerApi.codexThemeImport();
+    });
+
+  // Drag-and-drop delivery: Tauri intercepts native file drops and rebroadcasts
+  // them as webview events; install every dropped .codexskin.
+  const dropHandler = useRef<(paths: string[]) => void>(() => undefined);
+  dropHandler.current = (paths) => {
+    const skins = paths.filter((p) => p.toLowerCase().endsWith(".codexskin"));
+    if (!skins.length) return;
+    void run("import", async () => {
+      for (const skin of skins) {
+        await managerApi.codexThemeImportPath(skin);
+      }
+    });
+  };
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void import("@tauri-apps/api/webview")
+      .then(({ getCurrentWebview }) =>
+        getCurrentWebview().onDragDropEvent((event) => {
+          if (event.payload.type === "drop") {
+            dropHandler.current(event.payload.paths);
+          }
+        }),
+      )
+      .then((dispose) => {
+        if (disposed) dispose();
+        else unlisten = dispose;
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   return (
     <div className="pop">
-      <NavBar title={t("themes.title")} onBack={onBack} disableBack={busy === "apply"} />
+      <NavBar title={t("themes.title")} onBack={onBack} disableBack={busy === "apply"}>
+        <button
+          className="iconbtn"
+          title={t("themes.import")}
+          disabled={busy !== null}
+          onClick={() => void importSkin()}
+        >
+          <Icon name="download" />
+        </button>
+      </NavBar>
       <div className="scroll scroll-wide view">
         {status && !status.supported ? (
           <StatusBanner tone="info">{t("themes.status.unsupported")}</StatusBanner>
@@ -233,15 +318,26 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
             const isTrying = theme.id === tryingId;
             return (
               <article key={theme.id} className={`themecard${isActive ? " active" : ""}`}>
-                <ThemeCardArt colors={theme.colors} />
+                <ThemeCardCover theme={theme} />
                 <div className="themecard-body">
                   <div className="themecard-head">
                     <span className="themecard-name">{theme.name}</span>
+                    {theme.meta.version ? (
+                      <span className="themecard-version">v{theme.meta.version}</span>
+                    ) : null}
                     {isActive ? <span className="tag ok">{t("themes.inUse")}</span> : null}
                     {isTrying ? <span className="tag soon">{t("themes.trying")}</span> : null}
                     {theme.hasNativeTheme ? (
                       <span className="tag" title={t("themes.nativeHint")}>
                         {t("themes.native")}
+                      </span>
+                    ) : null}
+                    {theme.meta.codexVerified ? (
+                      <span
+                        className="tag soon"
+                        title={t("themes.verifiedHint", { v: theme.meta.codexVerified })}
+                      >
+                        @{theme.meta.codexVerified.split(".").slice(0, 2).join(".")}
                       </span>
                     ) : null}
                   </div>

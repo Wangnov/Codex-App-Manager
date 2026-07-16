@@ -38,6 +38,8 @@ const ZH = {
   "rail.nav": "导航",
 
   "themes.title": "Codex 主题",
+  "themes.import": "导入主题包（.codexskin）",
+  "themes.verifiedHint": "制作时在 Codex {v} 上验收通过",
   "themes.settingsSub": "素材化 UI 皮肤，随开随关",
   "themes.tryOn": "试穿",
   "themes.busy.tryOn": "正在试穿…",
@@ -358,6 +360,8 @@ const EN: Record<Key, string> = {
   "rail.nav": "Navigation",
 
   "themes.title": "Codex Themes",
+  "themes.import": "Import theme package (.codexskin)",
+  "themes.verifiedHint": "Verified against Codex {v} at build time",
   "themes.settingsSub": "Asset-based UI skins, on and off at will",
   "themes.tryOn": "Try on",
   "themes.busy.tryOn": "Trying on…",
@@ -675,6 +679,8 @@ const FR: Record<Key, string> = {
   "rail.nav": "Navigation",
 
   "themes.title": "Thèmes Codex",
+  "themes.import": "Importer un pack de thème (.codexskin)",
+  "themes.verifiedHint": "Vérifié avec Codex {v} à la création",
   "themes.settingsSub": "Habillages d'interface à base d'assets, activables à volonté",
   "themes.tryOn": "Essayer",
   "themes.busy.tryOn": "Essai en cours…",
@@ -992,6 +998,8 @@ const ZH_TW: Record<Key, string> = {
   "rail.nav": "導覽",
 
   "themes.title": "Codex 主題",
+  "themes.import": "匯入主題包（.codexskin）",
+  "themes.verifiedHint": "製作時在 Codex {v} 上驗收通過",
   "themes.settingsSub": "素材化 UI 面板，隨開隨關",
   "themes.tryOn": "試穿",
   "themes.busy.tryOn": "試穿中…",
@@ -1320,6 +1328,8 @@ const DE: Record<Key, string> = {
   "rail.nav": "Navigation",
 
   "themes.title": "Codex-Themes",
+  "themes.import": "Theme-Paket importieren (.codexskin)",
+  "themes.verifiedHint": "Bei Erstellung mit Codex {v} verifiziert",
   "themes.settingsSub": "Asset-basierte UI-Skins, jederzeit an und aus",
   "themes.tryOn": "Anprobieren",
   "themes.busy.tryOn": "Anprobe läuft…",
@@ -1648,6 +1658,8 @@ const KO: Record<Key, string> = {
   "rail.nav": "탐색",
 
   "themes.title": "Codex 테마",
+  "themes.import": "테마 패키지 가져오기 (.codexskin)",
+  "themes.verifiedHint": "제작 시 Codex {v}에서 검증됨",
   "themes.settingsSub": "에셋 기반 UI 스킨, 언제든 켜고 끄기",
   "themes.tryOn": "미리 입기",
   "themes.busy.tryOn": "미리 입는 중…",
@@ -1974,6 +1986,8 @@ const JA: Record<Key, string> = {
   "rail.nav": "ナビゲーション",
 
   "themes.title": "Codex テーマ",
+  "themes.import": "テーマパッケージを読み込む（.codexskin）",
+  "themes.verifiedHint": "作成時に Codex {v} で検証済み",
   "themes.settingsSub": "アセットベースの UI スキン、いつでもオン／オフ",
   "themes.tryOn": "試着",
   "themes.busy.tryOn": "試着中…",
@@ -2282,6 +2296,8 @@ const RU: Record<Key, string> = {
   "rail.nav": "Навигация",
 
   "themes.title": "Темы Codex",
+  "themes.import": "Импортировать пакет темы (.codexskin)",
+  "themes.verifiedHint": "Проверено на Codex {v} при сборке",
   "themes.settingsSub": "UI-скины на основе ассетов — включайте и выключайте когда угодно",
   "themes.tryOn": "Примерить",
   "themes.busy.tryOn": "Примерка…",
@@ -2590,6 +2606,8 @@ const AR: Record<Key, string> = {
   "rail.nav": "التنقّل",
 
   "themes.title": "سمات Codex",
+  "themes.import": "استيراد حزمة سمة (.codexskin)",
+  "themes.verifiedHint": "تم التحقق على Codex {v} عند الإنشاء",
   "themes.settingsSub": "أغلفة واجهة قائمة على الأصول، تعمل وتتوقف متى شئت",
   "themes.tryOn": "تجربة",
   "themes.busy.tryOn": "جارٍ التجربة…",
@@ -2898,6 +2916,8 @@ const ES: Record<Key, string> = {
   "rail.nav": "Navegación",
 
   "themes.title": "Temas de Codex",
+  "themes.import": "Importar paquete de tema (.codexskin)",
+  "themes.verifiedHint": "Verificado con Codex {v} al crearlo",
   "themes.settingsSub": "Skins de interfaz basados en assets, actívalos y desactívalos a voluntad",
   "themes.tryOn": "Probar",
   "themes.busy.tryOn": "Probando…",
@@ -3206,6 +3226,8 @@ const PT_BR: Record<Key, string> = {
   "rail.nav": "Navegação",
 
   "themes.title": "Temas do Codex",
+  "themes.import": "Importar pacote de tema (.codexskin)",
+  "themes.verifiedHint": "Verificado no Codex {v} na criação",
   "themes.settingsSub": "Skins de interface baseados em assets, ligue e desligue à vontade",
   "themes.tryOn": "Experimentar",
   "themes.busy.tryOn": "Experimentando…",

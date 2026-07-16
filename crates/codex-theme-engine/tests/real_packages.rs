@@ -121,3 +121,24 @@ fn live_inject_verify_revert_when_stock() {
         println!("live loop OK: inject → verify → revert, renderers back to stock");
     });
 }
+
+/// Import verification for a real packed `.codexskin` (path via CODEXSKIN
+/// env). Pairs with the studio's `pack` command as the delivery loop's
+/// receiving end.
+#[test]
+#[ignore = "provide CODEXSKIN=/path/to/pkg.codexskin"]
+fn imports_env_provided_codexskin() {
+    let path = std::env::var("CODEXSKIN").expect("set CODEXSKIN=/path/to/pkg.codexskin");
+    let tmp = std::env::temp_dir().join(format!("codexskin-import-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let summary =
+        codex_theme_engine::import::import_codexskin(std::path::Path::new(&path), &tmp)
+            .expect("import");
+    println!(
+        "imported id={} version={:?} preview={:?} verified={:?}",
+        summary.id, summary.meta.version, summary.preview, summary.meta.codex_verified
+    );
+    assert!(summary.meta.version.is_some(), "packed skins carry a version");
+    assert!(summary.preview.is_some(), "packed skins carry a cover preview");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
