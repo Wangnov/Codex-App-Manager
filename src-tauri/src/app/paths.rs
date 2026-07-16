@@ -130,6 +130,20 @@ pub fn codex_home_dir() -> Option<PathBuf> {
     directories::UserDirs::new().map(|dirs| dirs.home_dir().join(".codex"))
 }
 
+/// Default Codex-skin store. macOS keeps it beside the manager's data
+/// (Application Support is the platform-correct home for app-managed
+/// content); Windows uses the LOCAL app-data root instead of the roaming
+/// one — skins are megabytes of re-downloadable content that must not ride
+/// a domain roaming profile.
+pub fn default_skins_store_dir() -> Option<PathBuf> {
+    let dirs = directories::ProjectDirs::from("io.github", "wangnov", "codexappmanager")?;
+    if cfg!(target_os = "windows") {
+        Some(dirs.data_local_dir().join("themes"))
+    } else {
+        Some(dirs.data_dir().join("themes"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

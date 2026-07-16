@@ -7,7 +7,7 @@
 //! `--remote-debugging-port` needs `open -n`); the commands report
 //! `supported: false` elsewhere so the UI can say so instead of erroring.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use codex_theme_engine::daemon::{run_daemon, DaemonStatus, Directive};
@@ -59,14 +59,32 @@ pub struct ThemeStatusReport {
     pub codex_running: bool,
     /// A pristine config.toml appearance backup exists (full restore possible).
     pub native_backup_present: bool,
+    /// Where managed skins currently live (downloads/imports land here).
+    pub store_dir: Option<PathBuf>,
 }
 
 fn theme_supported() -> bool {
     cfg!(target_os = "macos")
 }
 
-/// Managed theme root (downloads land here later) + optional dev root from
-/// settings. Dev packages shadow managed ones by id.
+/// Where managed skins live: the user-chosen store from settings, else the
+/// platform default (macOS: Application Support; Windows: LOCALAPPDATA —
+/// megabytes of re-downloadable content must not roam with a domain profile).
+pub fn store_dir(settings: &AppSettings) -> Result<PathBuf, AppError> {
+    if let Some(dir) = settings
+        .codex_theme_store_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+    {
+        return Ok(PathBuf::from(dir));
+    }
+    paths::default_skins_store_dir()
+        .ok_or_else(|| AppError::Internal("无法定位主题存储目录".to_string()))
+}
+
+/// Managed skin store + optional dev root from settings. Dev packages shadow
+/// managed ones by id.
 fn theme_roots(settings: &AppSettings) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Some(dir) = settings
@@ -76,10 +94,77 @@ fn theme_roots(settings: &AppSettings) -> Vec<PathBuf> {
     {
         roots.push(PathBuf::from(dir));
     }
-    if let Some(data) = paths::data_dir() {
-        roots.push(data.join("themes"));
+    if let Ok(store) = store_dir(settings) {
+        roots.push(store);
     }
     roots
+}
+
+/// Move one directory across an arbitrary boundary: fast rename first,
+/// recursive copy + delete when the rename crosses filesystems.
+fn move_dir(src: &Path, dst: &Path) -> Result<(), AppError> {
+    if std::fs::rename(src, dst).is_ok() {
+        return Ok(());
+    }
+    fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(dst)?;
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            let target = dst.join(entry.file_name());
+            if entry.file_type()?.is_dir() {
+                copy_tree(&entry.path(), &target)?;
+            } else {
+                std::fs::copy(entry.path(), &target)?;
+            }
+        }
+        Ok(())
+    }
+    copy_tree(src, dst).map_err(|e| AppError::Internal(format!("迁移 {} 失败: {e}", src.display())))?;
+    std::fs::remove_dir_all(src)
+        .map_err(|e| AppError::Internal(format!("清理旧目录失败: {e}")))?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoreMigrationReport {
+    pub from: PathBuf,
+    pub to: PathBuf,
+    pub moved: Vec<String>,
+    /// Ids skipped because the destination already had them.
+    pub skipped: Vec<String>,
+}
+
+/// Migrate every valid skin package from `old` to `new`. Conflicting ids are
+/// left in place (destination wins — never destroy what the user already has
+/// at the target). Leftover staging debris is not migrated.
+pub fn migrate_store(old: &Path, new: &Path) -> Result<StoreMigrationReport, AppError> {
+    std::fs::create_dir_all(new)
+        .map_err(|e| AppError::Internal(format!("创建主题目录失败: {e}")))?;
+    let mut report = StoreMigrationReport {
+        from: old.to_path_buf(),
+        to: new.to_path_buf(),
+        moved: Vec::new(),
+        skipped: Vec::new(),
+    };
+    let Ok(entries) = std::fs::read_dir(old) else {
+        return Ok(report); // old store never materialized — nothing to move
+    };
+    for entry in entries.flatten() {
+        let src = entry.path();
+        if !src.is_dir() || load_theme(&src).is_err() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let dst = new.join(&name);
+        if dst.exists() {
+            report.skipped.push(name);
+            continue;
+        }
+        move_dir(&src, &dst)?;
+        report.moved.push(name);
+    }
+    Ok(report)
 }
 
 fn native_paths() -> Result<NativeThemePaths, AppError> {
@@ -274,9 +359,7 @@ pub fn install_from_catalog(skin_id: &str) -> Result<codex_theme_engine::theme::
     ));
     std::fs::write(&staging, &bytes)
         .map_err(|e| AppError::Internal(format!("写入临时包失败: {e}")))?;
-    let themes_root = paths::data_dir()
-        .ok_or_else(|| AppError::Internal("无法定位数据目录".to_string()))?
-        .join("themes");
+    let themes_root = store_dir(&AppSettings::load())?;
     let outcome = codex_theme_engine::import::import_codexskin(&staging, &themes_root)
         .map_err(|e| AppError::Engine(e.to_string()));
     let _ = std::fs::remove_file(&staging);
@@ -342,6 +425,7 @@ impl ThemeService {
             cdp_ready,
             codex_running: codex_running(),
             native_backup_present: native_backup,
+            store_dir: store_dir(settings).ok(),
         }
     }
 
@@ -374,6 +458,25 @@ impl ThemeService {
             let _ = tx.send(None);
         }
         Ok(())
+    }
+
+    /// After a store migration, re-point a live directive whose theme dir
+    /// moved with the store (the daemon rebuilds its payload from the new
+    /// path on the next tick; injected renderers are untouched either way).
+    pub async fn rebase_directive(&self, old_root: &Path, new_root: &Path) {
+        let inner = self.inner.lock().await;
+        let Some(tx) = &inner.directive_tx else {
+            return;
+        };
+        let current = tx.borrow().clone();
+        if let Some(dir) = current {
+            if let Ok(rel) = dir.strip_prefix(old_root) {
+                let rebased = new_root.join(rel);
+                if rebased.join("theme.json").is_file() {
+                    let _ = tx.send(Some(rebased));
+                }
+            }
+        }
     }
 
     /// Full apply: quiesce Codex, write the native appearance sections, then

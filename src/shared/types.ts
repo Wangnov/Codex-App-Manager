@@ -230,6 +230,8 @@ export interface AppSettings {
   codexTheme: string | null;
   /** Extra local directory scanned for theme packages (dev workflow). */
   codexThemeDir: string | null;
+  /** Managed skin store; null = platform default. */
+  codexThemeStoreDir: string | null;
 }
 
 export interface ConfigHealth {
@@ -277,6 +279,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   skippedCodexUpdate: null,
   codexTheme: null,
   codexThemeDir: null,
+  codexThemeStoreDir: null,
 };
 
 export interface MacUninstallReport {
@@ -603,6 +606,17 @@ export interface CodexThemeStatusReport {
   codexRunning: boolean;
   /** A pristine config.toml appearance backup exists (full restore possible). */
   nativeBackupPresent: boolean;
+  /** Where managed skins currently live (downloads/imports land here). */
+  storeDir: string | null;
+}
+
+/** Result of relocating the skin store. */
+export interface StoreMigrationReport {
+  from: string;
+  to: string;
+  moved: string[];
+  /** Ids left untouched because the destination already had them. */
+  skipped: string[];
 }
 
 /** One entry of the online skin catalog (skins.agentsmirror.com). */

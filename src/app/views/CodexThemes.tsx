@@ -148,6 +148,7 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
   const [loaded, setLoaded] = useState(false);
   const [catalog, setCatalog] = useState<CatalogSkin[] | null>(null);
   const [catalogFailed, setCatalogFailed] = useState(false);
+  const [storeNote, setStoreNote] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -505,6 +506,50 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
             )}
           </>
         ) : null}
+
+        <div className="group-h">{t("themes.storage.header")}</div>
+        <div className="list">
+          <div className="row">
+            <Icon name="folder" className="ricon" />
+            <span className="rtext">
+              <span className="rtitle">{t("themes.storage.title")}</span>
+              <span className="rsub mono-path">{status?.storeDir ?? "…"}</span>
+            </span>
+            <span className="row2" style={{ gap: 8 }}>
+              <button
+                className="btn ghost sm"
+                disabled={busy !== null}
+                onClick={() => void run("store", async () => {
+                  const report = await managerApi.codexThemePickStoreDir();
+                  if (report) {
+                    setActionError(null);
+                    setStoreNote(
+                      t("themes.storage.migrated", {
+                        n: String(report.moved.length),
+                        skipped: report.skipped.length
+                          ? t("themes.storage.skipped", { m: String(report.skipped.length) })
+                          : "",
+                      }),
+                    );
+                  }
+                })}
+              >
+                {t("themes.storage.change")}
+              </button>
+              <button
+                className="btn ghost sm"
+                onClick={() => void managerApi.codexThemeOpenStore()}
+              >
+                {t("themes.storage.open")}
+              </button>
+            </span>
+          </div>
+          {storeNote ? (
+            <div className="row" style={{ display: "block" }}>
+              <span className="rsub" role="status">{storeNote}</span>
+            </div>
+          ) : null}
+        </div>
 
         <div className="group-h">{t("themes.devdir.title")}</div>
         <div className="list">

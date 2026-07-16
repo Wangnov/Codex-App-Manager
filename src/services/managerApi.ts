@@ -7,6 +7,7 @@ import type {
   AppSettings,
   CatalogSkin,
   CodexThemeStatusReport,
+  StoreMigrationReport,
   CodexThemeSummary,
   CommandError,
   CodexUpdatePlatform,
@@ -138,6 +139,10 @@ function normalizeSettings(raw: Partial<AppSettings>): AppSettings {
     codexThemeDir:
       typeof raw.codexThemeDir === "string" && raw.codexThemeDir.trim()
         ? raw.codexThemeDir
+        : null,
+    codexThemeStoreDir:
+      typeof raw.codexThemeStoreDir === "string" && raw.codexThemeStoreDir.trim()
+        ? raw.codexThemeStoreDir
         : null,
   };
 }
@@ -492,6 +497,7 @@ const BROWSER_FALLBACK_THEME_STATUS: CodexThemeStatusReport = {
   cdpReady: false,
   codexRunning: false,
   nativeBackupPresent: false,
+  storeDir: null,
 };
 
 // ── Contract guards ──────────────────────────────────────────────────────────
@@ -922,6 +928,20 @@ export const managerApi = {
       return Promise.reject(new Error("catalog requires the desktop app"));
     }
     return invoke<string>("codex_theme_catalog_preview", { preview });
+  },
+  /** Pick a new skin-store directory and migrate skins; null on cancel. */
+  codexThemePickStoreDir(): Promise<StoreMigrationReport | null> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve(null);
+    }
+    return invoke<StoreMigrationReport | null>("codex_theme_pick_store_dir");
+  },
+  /** Reveal the current skin store in Finder/Explorer. */
+  codexThemeOpenStore(): Promise<void> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve();
+    }
+    return invoke<void>("codex_theme_open_store");
   },
   /** Download, verify and install one catalog skin. */
   codexThemeInstallOnline(skinId: string): Promise<CodexThemeSummary> {

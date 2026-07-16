@@ -511,6 +511,16 @@ input {
   font-size: var(--fs-caption);
   color: var(--text-faint);
 }
+/* Long store paths: keep the row shape, ellipsize the middle content. */
+.rsub.mono-path {
+  font-family: var(--mono);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
 .tca-side {
   position: absolute;
   inset: 0 auto 0 0;

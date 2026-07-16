@@ -781,6 +781,8 @@ pub fn run() {
             commands::codex_theme_catalog,
             commands::codex_theme_catalog_preview,
             commands::codex_theme_install_online,
+            commands::codex_theme_pick_store_dir,
+            commands::codex_theme_open_store,
             commands::open_url,
             commands::win_plan_update,
             commands::win_stage_update,

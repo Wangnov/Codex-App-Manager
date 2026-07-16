@@ -158,6 +158,11 @@ pub struct AppSettings {
     /// checkout during development). Packages here shadow managed ones by id.
     #[serde(default)]
     pub codex_theme_dir: Option<String>,
+    /// Where managed skins live (downloads, imports). None = the platform
+    /// default (`paths::default_skins_store_dir`). Changed via the theme
+    /// page, which migrates existing skins to the new location.
+    #[serde(default)]
+    pub codex_theme_store_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -195,6 +200,8 @@ struct RawAppSettings {
     codex_theme: Option<String>,
     #[serde(default)]
     codex_theme_dir: Option<String>,
+    #[serde(default)]
+    codex_theme_store_dir: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -234,6 +241,7 @@ impl Default for AppSettings {
             skipped_codex_update: None,
             codex_theme: None,
             codex_theme_dir: None,
+            codex_theme_store_dir: None,
         }
     }
 }
@@ -281,6 +289,7 @@ impl RawAppSettings {
                 skipped_codex_update: self.skipped_codex_update,
                 codex_theme: self.codex_theme,
                 codex_theme_dir: self.codex_theme_dir,
+                codex_theme_store_dir: self.codex_theme_store_dir,
             },
             unknown_source,
             newer_schema,

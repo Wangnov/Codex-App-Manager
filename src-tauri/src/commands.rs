@@ -1710,9 +1710,7 @@ pub async fn codex_theme_import_path(
 fn import_codexskin_at(
     archive: &Path,
 ) -> Result<codex_theme_engine::theme::ThemeSummary, CommandError> {
-    let themes_root = crate::app::paths::data_dir()
-        .ok_or_else(|| AppError::Internal("无法定位数据目录".to_string()))?
-        .join("themes");
+    let themes_root = crate::app::codex_theme::store_dir(&PersistedAppSettings::load())?;
     let summary = codex_theme_engine::import::import_codexskin(archive, &themes_root)
         .map_err(|e| AppError::Engine(e.to_string()))?;
     log::info!(
@@ -1767,6 +1765,70 @@ pub async fn codex_theme_install_online(
     .await
     .map_err(|e| AppError::Internal(format!("join: {e}")))?
     .map_err(Into::into)
+}
+
+/// Pick a new skin-store directory and migrate existing skins into it.
+/// Returns None when the user cancels the picker. Conflicting ids stay at
+/// the destination (never clobbered); a live daemon directive pointing into
+/// the old store is re-based onto the new one.
+#[tauri::command]
+pub async fn codex_theme_pick_store_dir(
+    app: tauri::AppHandle,
+    state: State<'_, ManagerState>,
+) -> Result<Option<crate::app::codex_theme::StoreMigrationReport>, CommandError> {
+    let settings = PersistedAppSettings::load();
+    let current = crate::app::codex_theme::store_dir(&settings)?;
+    let start_dir = current.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("选择主题存储目录")
+            .set_directory(start_dir)
+            .blocking_pick_folder()
+            .and_then(|path| path.into_path().ok())
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("join: {e}")))?;
+    let Some(new_dir) = picked else {
+        return Ok(None);
+    };
+    if new_dir == current {
+        return Ok(None);
+    }
+    if new_dir.starts_with(&current) || current.starts_with(&new_dir) {
+        return Err(AppError::Engine("新目录不能嵌套在当前主题目录内".to_string()).into());
+    }
+
+    let report = {
+        let current = current.clone();
+        let new_dir = new_dir.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::app::codex_theme::migrate_store(&current, &new_dir)
+        })
+        .await
+        .map_err(|e| AppError::Internal(format!("join: {e}")))??
+    };
+
+    let mut updated = PersistedAppSettings::load();
+    updated.codex_theme_store_dir = Some(new_dir.to_string_lossy().into_owned());
+    updated.save()?;
+    state.codex_theme.rebase_directive(&current, &new_dir).await;
+    log::info!(
+        "skin store migrated from={} to={} moved={} skipped={}",
+        current.display(),
+        new_dir.display(),
+        report.moved.len(),
+        report.skipped.len()
+    );
+    Ok(Some(report))
+}
+
+/// Reveal the current skin store in Finder/Explorer.
+#[tauri::command]
+pub fn codex_theme_open_store() -> Result<(), CommandError> {
+    let dir = crate::app::codex_theme::store_dir(&PersistedAppSettings::load())?;
+    let _ = std::fs::create_dir_all(&dir);
+    open_dir_platform(&dir).map_err(|e| AppError::Internal(format!("打开主题目录失败: {e}")).into())
 }
 
 /// Turn the theme off. `full` additionally restores the original config.toml
