@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { errorMessage, managerApi, SETTINGS_CHANGED_EVENT } from "../../services/managerApi";
 import type {
   AppSettings,
+  CatalogSkin,
   CodexThemeStatusReport,
   CodexThemeSummary,
 } from "../../shared/types";
@@ -84,6 +85,29 @@ function ThemeCardArt({ colors }: { colors: Record<string, string> }) {
   );
 }
 
+/** Online catalog cover: fetched through the backend (pinned origin, curl)
+ *  as a data URL, so the CSP needs no remote img-src. */
+function CatalogCardCover({ preview }: { preview: string }) {
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void managerApi
+      .codexThemeCatalogPreview(preview)
+      .then((url) => {
+        if (!cancelled) setDataUrl(url);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [preview]);
+  return (
+    <div className="themecard-art themecard-art-photo">
+      {dataUrl ? <img src={dataUrl} alt="" draggable={false} /> : null}
+    </div>
+  );
+}
+
 /** Real screenshot when the package ships one (delivered lazily as a data
  *  URL), abstract swatch art otherwise — so undelivered/in-development
  *  themes still have a face. */
@@ -122,6 +146,8 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [devDirDraft, setDevDirDraft] = useState("");
   const [loaded, setLoaded] = useState(false);
+  const [catalog, setCatalog] = useState<CatalogSkin[] | null>(null);
+  const [catalogFailed, setCatalogFailed] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -147,6 +173,24 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
     window.addEventListener(SETTINGS_CHANGED_EVENT, onSettings);
     return () => window.removeEventListener(SETTINGS_CHANGED_EVENT, onSettings);
   }, [refresh]);
+
+  // The online catalog loads independently of the local gallery — network
+  // latency (or being offline) must never hold the local list hostage.
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    void managerApi
+      .codexThemeCatalog()
+      .then((skins) => {
+        if (!cancelled) setCatalog(skins);
+      })
+      .catch(() => {
+        if (!cancelled) setCatalogFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Keep the status line live while the view is open (daemon connects targets
   // asynchronously after an apply).
@@ -399,6 +443,67 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
             </div>
             <div className="desc">{t("themes.empty.sub")}</div>
           </section>
+        ) : null}
+
+        {catalog !== null || catalogFailed ? (
+          <>
+            <div className="group-h">{t("themes.online.header")}</div>
+            {catalogFailed ? (
+              <StatusBanner tone="info">{t("themes.online.offline")}</StatusBanner>
+            ) : (
+              <div className="themegrid">
+                {(catalog ?? []).map((skin) => {
+                  const installed = themes.find((theme) => theme.id === skin.id);
+                  const upToDate = installed && installed.meta.version === skin.version;
+                  const isUpgrade = installed && installed.meta.version !== skin.version;
+                  return (
+                    <article key={skin.id} className="themecard">
+                      <CatalogCardCover preview={skin.preview} />
+                      <div className="themecard-body">
+                        <div className="themecard-head">
+                          <span className="themecard-name">{skin.name}</span>
+                          <span className="themecard-version">v{skin.version}</span>
+                          {skin.codexVerified ? (
+                            <span
+                              className="tag soon"
+                              title={t("themes.verifiedHint", { v: skin.codexVerified })}
+                            >
+                              @{skin.codexVerified.split(".").slice(0, 2).join(".")}
+                            </span>
+                          ) : null}
+                          {upToDate ? (
+                            <span className="tag ok">{t("themes.online.installed")}</span>
+                          ) : null}
+                        </div>
+                        {skin.description ? (
+                          <p className="themecard-desc">{skin.description}</p>
+                        ) : null}
+                        <div className="themecard-actions">
+                          {!upToDate ? (
+                            <button
+                              className="btn primary sm"
+                              disabled={busy !== null}
+                              onClick={() =>
+                                void run("online", () =>
+                                  managerApi.codexThemeInstallOnline(skin.id),
+                                )
+                              }
+                            >
+                              {busy === "online"
+                                ? t("themes.online.installing")
+                                : isUpgrade
+                                  ? t("themes.online.update", { v: skin.version })
+                                  : t("themes.online.install")}
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </>
         ) : null}
 
         <div className="group-h">{t("themes.devdir.title")}</div>

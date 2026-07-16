@@ -10,11 +10,34 @@ export default {
   nav: {
     why: "为什么",
     manager: "管理器",
+    skins: "皮肤",
     pipeline: "镜像链路",
     trust: "可信验证",
     download: "下载",
     scope: "边界声明",
     cta: "下载",
+  },
+  skins: {
+    kicker: "主题皮肤",
+    title: "给 Codex 换一身素材化 UI",
+    sub: "在线皮肤库一键安装,运行中的 Codex 秒级试穿、随时还原——不修改任何应用文件,签名完好。",
+    altGuts: "TPC GUTS 指挥终端皮肤(迪迦奥特曼)",
+    altRei: "NERV 零号机 绫波丽皮肤",
+    points: [
+      {
+        title: "真机截图,真机质量门",
+        body: "每张预览都是注入后运行中 Codex 的真实截图,经自动化验收产出——没有效果图。",
+      },
+      {
+        title: "完全可逆",
+        body: "皮肤经 CDP 注入,不改 app.asar、不破坏签名;关闭即刻回到原生外观。",
+      },
+      {
+        title: "开放标准与生产线",
+        body: ".codexskin 是公开标准;用仓库里的 Agent Skill(Claude Code / Codex 通用),几小时做出你自己的皮肤。",
+      },
+    ],
+    cta: "浏览 awesome-codex-skins 皮肤画廊 →",
   },
   hero: {
     eyebrow: "开源项目 · macOS 与 Windows",

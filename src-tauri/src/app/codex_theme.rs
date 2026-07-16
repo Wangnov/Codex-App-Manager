@@ -123,6 +123,171 @@ pub fn resolve_theme_for_keep(settings: &AppSettings, theme_ref: &str) -> Result
     Ok(theme.config.id)
 }
 
+// ── Online catalog (skins.agentsmirror.com) ────────────────────────────────
+// The catalog is published by awesome-codex-skins' CI; URLs inside it are
+// relative and resolved ONLY against this fixed base — a hostile catalog
+// cannot redirect downloads elsewhere. All transfers go through the system
+// curl (the repo's networking idiom; Windows 10+ ships curl.exe) with https
+// pinned, size caps, and a sha256 gate before anything reaches the importer.
+
+const SKINS_BASE: &str = "https://skins.agentsmirror.com";
+const CATALOG_MAX_BYTES: &str = "1048576"; // 1 MB index.json cap
+const PACK_MAX_BYTES: &str = "52428800"; // 50 MB archive cap (importer re-checks)
+
+#[derive(Debug, Clone, serde::Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogSkin {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub appearance: Option<String>,
+    #[serde(default)]
+    pub license: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub codex_verified: Option<String>,
+    #[serde(default)]
+    pub bytes: u64,
+    #[serde(default)]
+    pub sha256: String,
+    #[serde(default)]
+    pub pack: String,
+    #[serde(default)]
+    pub preview: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct CatalogIndex {
+    #[serde(default)]
+    skins: Vec<CatalogSkin>,
+}
+
+/// A catalog-relative path is plain (`packs/x.codexskin`) — no scheme, no
+/// authority, no parent hops. Everything else is rejected before URL joining.
+fn safe_catalog_path(rel: &str) -> Result<String, AppError> {
+    let ok = !rel.is_empty()
+        && !rel.contains("://")
+        && !rel.starts_with('/')
+        && !rel.contains("..")
+        && rel
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/-_.".contains(&b));
+    if ok {
+        Ok(format!("{SKINS_BASE}/{rel}"))
+    } else {
+        Err(AppError::Engine(format!("目录条目路径非法: {rel}")))
+    }
+}
+
+fn curl_bin() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "curl.exe"
+    } else {
+        "/usr/bin/curl"
+    }
+}
+
+/// Fetch a URL to stdout via system curl: https only, no retries into other
+/// protocols, hard timeout and size cap.
+fn curl_fetch(url: &str, max_bytes: &str, timeout_secs: &str) -> Result<Vec<u8>, AppError> {
+    let output = std::process::Command::new(curl_bin())
+        .args([
+            "-sfL",
+            "--proto",
+            "=https",
+            "--max-time",
+            timeout_secs,
+            "--max-filesize",
+            max_bytes,
+            url,
+        ])
+        .output()
+        .map_err(|e| AppError::Engine(format!("curl 不可用: {e}")))?;
+    if !output.status.success() {
+        return Err(AppError::Engine(format!(
+            "下载失败 ({}): {}",
+            output.status,
+            crate::app::logging::redact_url(url)
+        )));
+    }
+    Ok(output.stdout)
+}
+
+pub fn fetch_catalog() -> Result<Vec<CatalogSkin>, AppError> {
+    let bytes = curl_fetch(&format!("{SKINS_BASE}/index.json"), CATALOG_MAX_BYTES, "15")?;
+    let index: CatalogIndex = serde_json::from_slice(&bytes)
+        .map_err(|e| AppError::Engine(format!("皮肤目录解析失败: {e}")))?;
+    let mut skins: Vec<CatalogSkin> = index
+        .skins
+        .into_iter()
+        .filter(|s| !s.id.is_empty() && !s.pack.is_empty() && s.sha256.len() == 64)
+        .collect();
+    skins.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(skins)
+}
+
+/// Catalog cover preview as a data URL (WebP, ≤ 2 MB by convention).
+pub fn catalog_preview_data_url(preview_rel: &str) -> Result<String, AppError> {
+    use base64::Engine as _;
+    let url = safe_catalog_path(preview_rel)?;
+    let bytes = curl_fetch(&url, "2097152", "15")?;
+    Ok(format!(
+        "data:image/webp;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
+/// Download + sha256-gate + install one catalog skin. Returns the installed
+/// summary (the importer re-validates everything structurally).
+pub fn install_from_catalog(skin_id: &str) -> Result<codex_theme_engine::theme::ThemeSummary, AppError> {
+    use sha2::Digest as _;
+    let skin = fetch_catalog()?
+        .into_iter()
+        .find(|s| s.id == skin_id)
+        .ok_or_else(|| AppError::Engine(format!("目录中没有该皮肤: {skin_id}")))?;
+    let url = safe_catalog_path(&skin.pack)?;
+    let bytes = curl_fetch(&url, PACK_MAX_BYTES, "120")?;
+
+    let digest = sha2::Sha256::digest(&bytes);
+    let hex = digest
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    if !hex.eq_ignore_ascii_case(&skin.sha256) {
+        return Err(AppError::Engine(format!(
+            "校验失败：{skin_id} 的 sha256 与目录不符"
+        )));
+    }
+
+    let staging = std::env::temp_dir().join(format!(
+        "codexskin-online-{}-{}.codexskin",
+        std::process::id(),
+        skin_id
+    ));
+    std::fs::write(&staging, &bytes)
+        .map_err(|e| AppError::Internal(format!("写入临时包失败: {e}")))?;
+    let themes_root = paths::data_dir()
+        .ok_or_else(|| AppError::Internal("无法定位数据目录".to_string()))?
+        .join("themes");
+    let outcome = codex_theme_engine::import::import_codexskin(&staging, &themes_root)
+        .map_err(|e| AppError::Engine(e.to_string()));
+    let _ = std::fs::remove_file(&staging);
+    log::info!(
+        "online skin install id={skin_id} version={} ok={}",
+        skin.version,
+        outcome.is_ok()
+    );
+    outcome
+}
+
 /// Cover preview as a data URL; None when the theme has no preview, can't be
 /// resolved, or the image fails to read (gallery falls back to swatch art).
 pub fn preview_data_url(settings: &AppSettings, theme_ref: &str) -> Option<String> {

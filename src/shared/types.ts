@@ -605,6 +605,24 @@ export interface CodexThemeStatusReport {
   nativeBackupPresent: boolean;
 }
 
+/** One entry of the online skin catalog (skins.agentsmirror.com). */
+export interface CatalogSkin {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  author: string;
+  appearance: "dark" | "light" | "dual" | null;
+  license: string | null;
+  tags: string[];
+  codexVerified: string | null;
+  bytes: number;
+  sha256: string;
+  /** Catalog-relative paths, resolved backend-side against the pinned origin. */
+  pack: string;
+  preview: string;
+}
+
 /** Main-window form factor: `compact` is the fixed 400×640 dashboard,
  *  `expanded` the resizable desktop-sized workbench. */
 export type WindowMode = "compact" | "expanded";

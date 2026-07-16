@@ -1733,6 +1733,42 @@ pub fn codex_theme_preview(theme_ref: String) -> Result<Option<String>, CommandE
     Ok(crate::app::codex_theme::preview_data_url(&settings, &theme_ref))
 }
 
+/// The online skin catalog (skins.agentsmirror.com, published by
+/// awesome-codex-skins CI).
+#[tauri::command]
+pub async fn codex_theme_catalog(
+) -> Result<Vec<crate::app::codex_theme::CatalogSkin>, CommandError> {
+    tauri::async_runtime::spawn_blocking(crate::app::codex_theme::fetch_catalog)
+        .await
+        .map_err(|e| AppError::Internal(format!("join: {e}")))?
+        .map_err(Into::into)
+}
+
+/// Catalog cover preview as a data URL (relative path resolved only against
+/// the pinned catalog origin).
+#[tauri::command]
+pub async fn codex_theme_catalog_preview(preview: String) -> Result<String, CommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::app::codex_theme::catalog_preview_data_url(&preview)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("join: {e}")))?
+    .map_err(Into::into)
+}
+
+/// Download, sha256-verify and install one catalog skin.
+#[tauri::command]
+pub async fn codex_theme_install_online(
+    skin_id: String,
+) -> Result<codex_theme_engine::theme::ThemeSummary, CommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::app::codex_theme::install_from_catalog(&skin_id)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("join: {e}")))?
+    .map_err(Into::into)
+}
+
 /// Turn the theme off. `full` additionally restores the original config.toml
 /// appearance sections (restarting Codex plainly if it was running).
 #[tauri::command]

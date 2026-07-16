@@ -10,11 +10,34 @@ export default {
   nav: {
     why: "Why",
     manager: "The Manager",
+    skins: "Skins",
     pipeline: "The Pipeline",
     trust: "Trust",
     download: "Download",
     scope: "Scope",
     cta: "Download",
+  },
+  skins: {
+    kicker: "Skins",
+    title: "Dress Codex in an asset-based UI",
+    sub: "One-click installs from the online library; try skins on a running Codex and revert anytime — no app files modified, signature intact.",
+    altGuts: "TPC GUTS Command Terminal skin (Ultraman Tiga)",
+    altRei: "NERV EVA-00 Rei skin",
+    points: [
+      {
+        title: "Real screenshots, real quality gate",
+        body: "Every preview is an actual screenshot of a themed, running Codex, produced under automated acceptance — no mockups.",
+      },
+      {
+        title: "Fully reversible",
+        body: "Skins inject over CDP — app.asar untouched, signature intact; turn them off and you are back to stock instantly.",
+      },
+      {
+        title: "An open standard and a production line",
+        body: ".codexskin is a public spec; the bundled agent skill (Claude Code & Codex) builds a new skin in hours.",
+      },
+    ],
+    cta: "Browse the awesome-codex-skins gallery →",
   },
   hero: {
     eyebrow: "Open source · macOS & Windows",

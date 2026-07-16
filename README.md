@@ -123,6 +123,19 @@ Manager 通过上游镜像管理 Codex 桌面应用本体:
 - **macOS**:读取镜像的 Sparkle appcast(arm64 / x64),对照本机已装版本规划更新,优先下载 delta 差量包,校验 Sparkle 签名后**原地替换**,失败回滚;无匹配 delta 时回退完整包。
 - **Windows**:从镜像获取 MSIX / 便携版并暂存更新,支持自定义安装目录,安装后做健康检查。
 
+## Codex 主题皮肤(素材化 UI)
+
+Manager 内置 [awesome-codex-skins](https://github.com/Wangnov/awesome-codex-skins)(`.codexskin` 标准、工具链与画廊)的官方运行时:
+
+<p align="center">
+  <a href="https://github.com/Wangnov/awesome-codex-skins"><img src="https://raw.githubusercontent.com/Wangnov/awesome-codex-skins/main/skins/guts-terminal/previews/home.webp" width="49%" alt="TPC GUTS 指挥终端"><img src="https://raw.githubusercontent.com/Wangnov/awesome-codex-skins/main/skins/rei-eva00/previews/home.webp" width="49%" alt="NERV 零号机 绫波丽"></a>
+</p>
+
+- **在线皮肤库**:主题页直连 [skins.agentsmirror.com](https://skins.agentsmirror.com/index.json),一键安装(下载后 sha256 校验);
+- **试穿**:对运行中的 Codex 秒级热切换,不落盘、随时还原;**应用**:持久生效,含 Codex 原生 accent/字体配置;**还原**:一键回到原生外观;
+- **导入**:`.codexskin` 文件选择或直接拖入主题页;
+- 皮肤经 CDP 注入,**不修改任何应用文件、签名完好**;每张预览都是质量门下的真机截图。想自己做一款?生产线(Claude Code / Codex 通用的 Agent Skill)就在 [awesome-codex-skins](https://github.com/Wangnov/awesome-codex-skins)。
+
 ## 工作原理
 
 ### 检测 → 规划 → 执行
@@ -259,6 +272,19 @@ The Manager manages the Codex desktop payload through the upstream mirror:
 
 - **macOS**: reads the mirror's Sparkle appcast (arm64 / x64), plans against the installed build, prefers the delta enclosure, verifies the Sparkle signature, then **swaps in place** with rollback on failure; falls back to the full archive when no delta matches.
 - **Windows**: fetches the MSIX / portable build from the mirror and stages the update, with a configurable install directory and a post-install health check.
+
+## Codex skins (asset-based UI themes)
+
+The Manager is the official runtime for [awesome-codex-skins](https://github.com/Wangnov/awesome-codex-skins) — the `.codexskin` standard, toolchain & gallery:
+
+<p align="center">
+  <a href="https://github.com/Wangnov/awesome-codex-skins"><img src="https://raw.githubusercontent.com/Wangnov/awesome-codex-skins/main/skins/guts-terminal/previews/home.webp" width="49%" alt="TPC GUTS Command Terminal"><img src="https://raw.githubusercontent.com/Wangnov/awesome-codex-skins/main/skins/rei-eva00/previews/home.webp" width="49%" alt="NERV EVA-00 Rei"></a>
+</p>
+
+- **Online skin library**: the theme page pulls [skins.agentsmirror.com](https://skins.agentsmirror.com/index.json) for one-click installs (sha256-verified downloads);
+- **Try-on**: live hot-swap on a running Codex, nothing persisted, instantly revertible; **Apply**: persistent, incl. native accent/font config; **Restore**: one click back to stock;
+- **Import**: pick or drag a `.codexskin` straight onto the theme page;
+- Skins inject over CDP — **no app file is modified, the signature stays intact**; every preview is a real screenshot taken under an automated quality gate. Want to make your own? The production line (an agent skill for both Claude Code and Codex) lives in [awesome-codex-skins](https://github.com/Wangnov/awesome-codex-skins).
 
 ## How it works
 

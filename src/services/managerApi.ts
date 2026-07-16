@@ -5,6 +5,7 @@ import type {
   AncillaryRetryReport,
   AncillaryRetryRequest,
   AppSettings,
+  CatalogSkin,
   CodexThemeStatusReport,
   CodexThemeSummary,
   CommandError,
@@ -907,6 +908,27 @@ export const managerApi = {
       return Promise.resolve(null);
     }
     return invoke<string | null>("codex_theme_preview", { themeRef });
+  },
+  /** Online skin catalog (skins.agentsmirror.com). */
+  codexThemeCatalog(): Promise<CatalogSkin[]> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve([]);
+    }
+    return invoke<CatalogSkin[]>("codex_theme_catalog");
+  },
+  /** Catalog cover preview as a data URL. */
+  codexThemeCatalogPreview(preview: string): Promise<string> {
+    if (!hasTauriRuntime()) {
+      return Promise.reject(new Error("catalog requires the desktop app"));
+    }
+    return invoke<string>("codex_theme_catalog_preview", { preview });
+  },
+  /** Download, verify and install one catalog skin. */
+  codexThemeInstallOnline(skinId: string): Promise<CodexThemeSummary> {
+    if (!hasTauriRuntime()) {
+      return Promise.reject(new Error("catalog requires the desktop app"));
+    }
+    return invoke<CodexThemeSummary>("codex_theme_install_online", { skinId });
   },
   /** Switch the native window between compact and expanded. `size` is the
    *  remembered expanded size (logical px); the report echoes what was applied
