@@ -142,6 +142,7 @@ export function Settings({
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [langSheet, setLangSheet] = useState(false);
   const [customIntervalOpen, setCustomIntervalOpen] = useState(false);
+  const [maintenanceOpen, setMaintenanceOpen] = useState(false);
   const [configHealth, setConfigHealth] = useState<ConfigHealth>(OK_HEALTH);
   const [healthBusy, setHealthBusy] = useState<string | null>(null);
   const [healthNotice, setHealthNotice] = useState<string | null>(null);
@@ -149,6 +150,7 @@ export function Settings({
     null | { kind: "restore" | "reset"; which: ConfigWhich }
   >(null);
   const langTitleId = useId();
+  const maintenancePanelId = useId();
   const healthConfirmTitleId = useId();
   const healthConfirmBodyId = useId();
   // Prefix for the switch-row title ids — each Toggle names itself off its
@@ -346,81 +348,6 @@ export function Settings({
             <span>{healthNotice}</span>
           </div>
         ) : null}
-
-        {/* 配置健康 — persistent, with restore/reset consequence flows */}
-        <div className="group">
-          <div className="group-h">{t("settings.health.header")}</div>
-          <div className="list">
-            {(
-              [
-                {
-                  which: "settings" as const,
-                  status: configHealth.settingsStatus,
-                  backup: configHealth.settingsBackupAvailable,
-                },
-                {
-                  which: "provenance" as const,
-                  status: configHealth.provenanceStatus,
-                  backup: configHealth.provenanceBackupAvailable,
-                },
-              ] as const
-            ).map((row) => (
-              <div key={row.which} className="row" style={{ display: "block" }}>
-                <div className="rtext" style={{ marginBottom: 8 }}>
-                  <span className="rtitle">
-                    {whichLabel(row.which)}
-                    <span className="tag" style={{ marginInlineStart: 8 }}>
-                      {healthLabel(row.status, t)}
-                    </span>
-                  </span>
-                  {!row.backup ? (
-                    <span className="rsub">{t("settings.health.noBackup")}</span>
-                  ) : null}
-                </div>
-                <div className="install-root-actions">
-                  <button
-                    className="mini-action"
-                    disabled={Boolean(healthBusy) || !row.backup}
-                    onClick={() => setHealthConfirm({ kind: "restore", which: row.which })}
-                  >
-                    {healthBusy === `restore:${row.which}`
-                      ? t("settings.health.working")
-                      : t("settings.health.restore")}
-                  </button>
-                  <button
-                    className="mini-action"
-                    disabled={Boolean(healthBusy)}
-                    onClick={() => setHealthConfirm({ kind: "reset", which: row.which })}
-                  >
-                    {healthBusy === `reset:${row.which}`
-                      ? t("settings.health.working")
-                      : t(
-                          row.which === "provenance"
-                            ? "settings.health.clearProvenance"
-                            : "settings.health.reset",
-                        )}
-                  </button>
-                </div>
-              </div>
-            ))}
-            {configHealth.unknownSource ? (
-              <div className="row">
-                <span className="rtext">
-                  <span className="rtitle">{t("settings.health.unknownSource")}</span>
-                  <span className="rsub mono">{configHealth.unknownSource}</span>
-                </span>
-              </div>
-            ) : null}
-            {configHealth.detail ? (
-              <div className="row">
-                <span className="rtext">
-                  <span className="rtitle">{t("settings.health.detail")}</span>
-                  <span className="rsub">{configHealth.detail}</span>
-                </span>
-              </div>
-            ) : null}
-          </div>
-        </div>
 
         {/* 更新源 */}
         <div className="group">
@@ -871,6 +798,107 @@ export function Settings({
           <div className="group-h">{t("settings.more.header")}</div>
           <div className="list">
             <button
+              className="row maintenance-toggle"
+              type="button"
+              aria-label={t("settings.health.header")}
+              aria-expanded={maintenanceOpen}
+              aria-controls={maintenancePanelId}
+              onClick={() => setMaintenanceOpen((open) => !open)}
+            >
+              <Icon name="gear" className="ricon" />
+              <span className="rtext">
+                <span className="rtitle">{t("settings.health.header")}</span>
+                <span className="rsub">{t("settings.health.description")}</span>
+              </span>
+              <span className={`tag ${healthNeedsAttention(configHealth) ? "attention" : ""}`}>
+                {healthNeedsAttention(configHealth)
+                  ? t("settings.health.needsAttention")
+                  : t("settings.health.ok")}
+              </span>
+              <Icon name="chevron" className="chev" />
+            </button>
+            <div
+              id={maintenancePanelId}
+              className={`maintenance-panel ${maintenanceOpen ? "open" : ""}`}
+              aria-hidden={!maintenanceOpen}
+              inert={maintenanceOpen ? undefined : true}
+            >
+              <div className="maintenance-panel-inner">
+                <div className="maintenance-panel-content">
+                  {(
+                    [
+                      {
+                        which: "settings" as const,
+                        status: configHealth.settingsStatus,
+                        backup: configHealth.settingsBackupAvailable,
+                      },
+                      {
+                        which: "provenance" as const,
+                        status: configHealth.provenanceStatus,
+                        backup: configHealth.provenanceBackupAvailable,
+                      },
+                    ] as const
+                  ).map((row) => (
+                    <div key={row.which} className="maintenance-item">
+                      <div className="maintenance-item-head">
+                        <span className="rtext">
+                          <span className="rtitle">{whichLabel(row.which)}</span>
+                          {!row.backup ? (
+                            <span className="rsub">{t("settings.health.noBackup")}</span>
+                          ) : null}
+                        </span>
+                        <span className={`tag ${row.status === "corrupt" ? "attention" : ""}`}>
+                          {healthLabel(row.status, t)}
+                        </span>
+                      </div>
+                      <div className="maintenance-actions">
+                        <button
+                          className="maintenance-action"
+                          disabled={Boolean(healthBusy) || !row.backup}
+                          onClick={() => setHealthConfirm({ kind: "restore", which: row.which })}
+                        >
+                          <Icon name="refresh" />
+                          <span>
+                            {healthBusy === `restore:${row.which}`
+                              ? t("settings.health.working")
+                              : t("settings.health.restore")}
+                          </span>
+                        </button>
+                        <button
+                          className="maintenance-action destructive"
+                          disabled={Boolean(healthBusy)}
+                          onClick={() => setHealthConfirm({ kind: "reset", which: row.which })}
+                        >
+                          <Icon name={row.which === "provenance" ? "trash" : "refresh"} />
+                          <span>
+                            {healthBusy === `reset:${row.which}`
+                              ? t("settings.health.working")
+                              : t(
+                                  row.which === "provenance"
+                                    ? "settings.health.clearProvenance"
+                                    : "settings.health.reset",
+                                )}
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {configHealth.unknownSource ? (
+                    <div className="maintenance-note">
+                      <span className="rtitle">{t("settings.health.unknownSource")}</span>
+                      <span className="rsub mono">{configHealth.unknownSource}</span>
+                    </div>
+                  ) : null}
+                  {configHealth.detail ? (
+                    <div className="maintenance-note">
+                      <span className="rtitle">{t("settings.health.detail")}</span>
+                      <span className="rsub">{configHealth.detail}</span>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+            <button
               className="row"
               type="button"
               disabled
@@ -934,7 +962,7 @@ export function Settings({
                 {t("confirm.cancel")}
               </button>
               <button
-                className="btn danger"
+                className={`btn ${healthConfirm.kind === "restore" ? "primary" : "danger"}`}
                 onClick={() =>
                   void runHealthAction(healthConfirm.kind, healthConfirm.which)
                 }

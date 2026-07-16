@@ -193,9 +193,9 @@ describe("safety-critical catalog copy", () => {
 
   it("ships native safety-copy sentinels for the required flow locales", () => {
     expect(CATALOG.fr["install.partial.note"]).toContain("enregistrement de gestion");
-    expect(CATALOG.ar["settings.health.resetConfirm.body.provenance"]).toContain("سجلات التثبيت");
+    expect(CATALOG.ar["settings.health.resetConfirm.body.provenance"]).toContain("سجلات إدارة");
     expect(CATALOG.es["uninstall.partial.retryPurge"]).toContain("datos de usuario");
-    expect(CATALOG["zh-TW"]["settings.health.restoreConfirm.body"]).toContain("目前損毀");
+    expect(CATALOG["zh-TW"]["settings.health.restoreConfirm.body"]).toContain("目前內容會被取代");
   });
 });
 

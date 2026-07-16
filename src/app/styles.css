@@ -1383,6 +1383,140 @@ button.row.danger:hover {
   width: 14px;
   height: 14px;
 }
+
+/* Advanced recovery stays quiet until explicitly opened from “More”. */
+.maintenance-toggle[aria-expanded="true"] {
+  background: color-mix(in oklch, var(--accent) 5%, var(--surface-2));
+}
+.maintenance-toggle[aria-expanded="true"] .chev {
+  transform: rotate(90deg);
+  color: var(--text-soft);
+}
+.maintenance-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: translateY(-4px);
+  border-top: 0 solid transparent;
+  background: color-mix(in oklch, var(--surface-2) 58%, transparent);
+  transition: grid-template-rows 0.28s var(--ease-out), opacity 0.2s var(--ease),
+    transform 0.24s var(--ease), border-color 0.18s var(--ease);
+}
+.maintenance-panel.open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: translateY(0);
+  border-top-width: 1px;
+  border-top-color: var(--line);
+}
+.maintenance-panel-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+.maintenance-panel-content {
+  padding: var(--space-sm) 14px var(--space-md);
+}
+.maintenance-item {
+  display: grid;
+  gap: var(--space-sm);
+  padding: var(--space-sm) 0 var(--space-md);
+}
+.maintenance-item:first-child {
+  padding-top: 0;
+}
+.maintenance-item + .maintenance-item {
+  border-top: 1px solid var(--line);
+}
+.maintenance-item-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+}
+.maintenance-item-head .rtext,
+.maintenance-note {
+  min-width: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+.maintenance-item-head .rtitle,
+.maintenance-note .rtitle {
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 650;
+}
+.maintenance-item-head .rsub,
+.maintenance-note .rsub {
+  margin-top: 3px;
+  color: var(--text-faint);
+  font-size: var(--fs-label);
+  line-height: 1.45;
+}
+.maintenance-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+  gap: var(--space-xs);
+}
+.maintenance-action {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 8px 12px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-md);
+  background: linear-gradient(180deg, var(--surface-2-top), var(--surface-2));
+  color: var(--text-soft);
+  font-size: var(--fs-label);
+  font-weight: 650;
+  line-height: 1.3;
+  text-align: center;
+  box-shadow: var(--elev-1);
+  transition: background 0.16s var(--ease), border-color 0.16s var(--ease),
+    color 0.16s var(--ease), box-shadow 0.16s var(--ease);
+}
+.maintenance-action:hover:not(:disabled) {
+  border-color: color-mix(in oklch, var(--accent) 28%, var(--line-2));
+  background: linear-gradient(180deg, var(--surface-3-top), var(--surface-3));
+  color: var(--text);
+}
+.maintenance-action.destructive:hover:not(:disabled) {
+  border-color: color-mix(in oklch, var(--danger) 35%, var(--line-2));
+  background: var(--danger-tint);
+  color: var(--danger);
+}
+.maintenance-action:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+.maintenance-action svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+.maintenance-note {
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--line);
+}
+.tag.attention {
+  color: var(--danger);
+  background: var(--danger-tint);
+  border-color: color-mix(in oklch, var(--danger) 24%, transparent);
+}
+@media (max-width: 520px) {
+  .maintenance-actions {
+    grid-template-columns: 1fr;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .maintenance-panel,
+  .maintenance-toggle .chev {
+    transition: none;
+  }
+}
 .update-skip {
   display: flex;
   align-items: center;

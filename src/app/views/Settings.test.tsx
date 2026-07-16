@@ -237,6 +237,22 @@ describe("Settings runtime contract", () => {
     expect(screen.getByText("当前版本尚未提供")).toBeInTheDocument();
   });
 
+  it("keeps repair actions collapsed under More until requested", async () => {
+    const user = userEvent.setup();
+    api.getSettings.mockResolvedValue(settings());
+    renderSettings();
+
+    await waitFor(() => expect(screen.queryByText("正在加载设置…")).not.toBeInTheDocument());
+    const repair = screen.getByRole("button", { name: "修复与恢复" });
+    expect(repair).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: "清除管理记录" })).not.toBeInTheDocument();
+
+    await user.click(repair);
+
+    expect(repair).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "清除管理记录" })).toBeInTheDocument();
+  });
+
   it("ignores a late hydrate after the user already edited", async () => {
     const user = userEvent.setup();
     const load = deferred<AppSettings>();
@@ -269,6 +285,9 @@ describe("Settings runtime contract", () => {
 
       expect(await screen.findByText(CATALOG[lang]["settings.health.banner"])).toBeInTheDocument();
       const resetLabel = CATALOG[lang]["settings.health.clearProvenance"];
+      await user.click(
+        screen.getByRole("button", { name: CATALOG[lang]["settings.health.header"] }),
+      );
       expect(
         screen.getByRole("button", { name: CATALOG[lang]["settings.health.reset"] }),
       ).toBeInTheDocument();
