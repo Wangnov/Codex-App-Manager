@@ -16,6 +16,7 @@ import type { FailureSurface } from "./errorCopy";
 import { Icon, type IconName, CodexMark } from "./icons";
 import { useI18n } from "./i18n";
 import { Sheet } from "./Sheet";
+import { useWindowModeOptional } from "./windowMode";
 
 const FRONTEND_READY_EVENT = "cam:frontend-readiness";
 
@@ -79,6 +80,26 @@ function MinimizeButton() {
       }}
     >
       <Icon name="minimize" />
+    </button>
+  );
+}
+
+/** Expand-to-workbench control, sitting with the window controls while the
+ *  window is compact. The reverse lives on the rail (its 收起 item), so this
+ *  renders nothing once expanded — and nothing at all without a
+ *  WindowModeProvider (isolated component tests). */
+function ExpandButton() {
+  const { t } = useI18n();
+  const windowMode = useWindowModeOptional();
+  if (!windowMode || windowMode.mode !== "compact") return null;
+  return (
+    <button
+      className="iconbtn"
+      title={t("nav.expand")}
+      disabled={windowMode.switching}
+      onClick={() => windowMode.setMode("expanded")}
+    >
+      <Icon name="expand" />
     </button>
   );
 }
@@ -334,6 +355,7 @@ export function TopBar({ children }: { children?: ReactNode }) {
       {/* First interactive child is the preferred home focus target after a
           view transition (see App focus restore + data-page-focus). */}
       {children}
+      <ExpandButton />
       <MinimizeButton />
       <CloseButton />
     </div>
@@ -382,6 +404,7 @@ export function NavBar({
       </div>
       <div className="spacer" style={{ flex: 1 }} data-tauri-drag-region />
       {children}
+      <ExpandButton />
       <MinimizeButton />
       <CloseButton />
     </div>

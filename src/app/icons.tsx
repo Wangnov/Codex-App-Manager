@@ -28,6 +28,9 @@ export type IconName =
   | "copy"
   | "globe"
   | "external"
+  | "expand"
+  | "collapse"
+  | "house"
   | "minimize"
   | "close";
 
@@ -129,6 +132,36 @@ const PATHS: Record<IconName, ReactNode> = {
       <path className="cam-external-arrow" d="M14 5h5v5" />
       <path className="cam-external-arrow" d="M19 5l-8 8" />
       <path d="M18 14v4.5A1.5 1.5 0 0 1 16.5 20h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10" />
+    </>
+  ),
+  expand: (
+    <>
+      <g className="cam-expand-ne">
+        <polyline points="14.5 4.5 19.5 4.5 19.5 9.5" />
+        <line x1="19" y1="5" x2="13.5" y2="10.5" />
+      </g>
+      <g className="cam-expand-sw">
+        <polyline points="9.5 19.5 4.5 19.5 4.5 14.5" />
+        <line x1="5" y1="19" x2="10.5" y2="13.5" />
+      </g>
+    </>
+  ),
+  collapse: (
+    <>
+      <g className="cam-collapse-ne">
+        <polyline points="19 10 14 10 14 5" />
+        <line x1="14.5" y1="9.5" x2="20" y2="4" />
+      </g>
+      <g className="cam-collapse-sw">
+        <polyline points="5 14 10 14 10 19" />
+        <line x1="9.5" y1="14.5" x2="4" y2="20" />
+      </g>
+    </>
+  ),
+  house: (
+    <>
+      <path className="cam-house-roof" d="M3.5 10.8 12 3.8l8.5 7" />
+      <path d="M6 9.2v9.3A1.5 1.5 0 0 0 7.5 20h9a1.5 1.5 0 0 0 1.5-1.5V9.2" />
     </>
   ),
   minimize: <line className="cam-minimize" x1="6" y1="12" x2="18" y2="12" />,

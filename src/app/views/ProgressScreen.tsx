@@ -1,4 +1,4 @@
-import type { RefObject } from "react";
+import { useEffect, type RefObject } from "react";
 
 import type { DownloadProgress } from "../../shared/types";
 import type { FailureSurface } from "../errorCopy";
@@ -6,6 +6,7 @@ import { Icon } from "../icons";
 import { useI18n } from "../i18n";
 import { FailureBanner, Ring, TopBar } from "../components";
 import { mib } from "../format";
+import { acquireNavLock } from "../navLock";
 
 export type DownloadStopIntent = "pause" | "cancel";
 
@@ -54,6 +55,11 @@ export function ProgressScreen({
   onCancel: () => void;
 }) {
   const { t } = useI18n();
+
+  // This screen is the operation's isolation chamber: while it is mounted,
+  // navigation elsewhere (the expanded rail) must not offer an exit that could
+  // start a concurrent operation or unmount the progress listeners.
+  useEffect(() => acquireNavLock(), []);
 
   // Paused reads from its captured snapshot; live runs from the eased `dl`.
   const snap = paused ? paused.dl : dl;

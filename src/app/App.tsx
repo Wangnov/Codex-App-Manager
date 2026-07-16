@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from "react";
 
 import { I18nProvider } from "./i18n";
 import { ThemeProvider } from "./theme";
+import { WindowModeProvider } from "./windowMode";
 import { withViewTransition } from "./viewTransition";
 import { QuitConfirm } from "./components";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { Rail } from "./Rail";
 import { Home } from "./views/Home";
 import { Settings } from "./views/Settings";
 import { About } from "./views/About";
@@ -61,6 +63,18 @@ function Shell() {
 
   return (
     <>
+      {/* Expanded-workbench navigation card; renders nothing while compact.
+          Sub-views under Settings (about/uninstall/config) highlight the
+          Settings section. Jumping home reuses the same cross-fade as the
+          NavBar back path so the two routes feel identical. */}
+      <Rail
+        section={view === "home" ? "home" : "settings"}
+        onNavigate={(section) => {
+          if (section === view) return;
+          if (section === "home") withViewTransition(() => setView("home"));
+          else setView("settings");
+        }}
+      />
       <div data-view="home" style={{ display: view === "home" ? "contents" : "none" }}>
         <Home onOpenSettings={() => setView("settings")} />
       </div>
@@ -101,10 +115,12 @@ export function App() {
   return (
     <ThemeProvider>
       <I18nProvider>
-        <ErrorBoundary>
-          <Shell />
-        </ErrorBoundary>
-        <QuitConfirm />
+        <WindowModeProvider>
+          <ErrorBoundary>
+            <Shell />
+          </ErrorBoundary>
+          <QuitConfirm />
+        </WindowModeProvider>
       </I18nProvider>
     </ThemeProvider>
   );

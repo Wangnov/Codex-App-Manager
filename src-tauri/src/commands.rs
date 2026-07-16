@@ -32,6 +32,7 @@ use crate::app::provenance::ProvenanceStore;
 use crate::app::settings_store::AppSettings as PersistedAppSettings;
 use crate::app::settings_store::{ProxyMode, UpdateSource};
 use crate::app::url_guard::{validate_custom_proxy, validate_custom_source};
+use crate::app::window_mode::{self, WindowMode, WindowModeReport};
 use crate::app::win_update::{
     auto_stage_windows_update_with_install_mode_and_network, cancel_windows_download,
     detect_existing_windows_install_at_path as detect_windows_install_at_path,
@@ -1590,6 +1591,20 @@ pub fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), Command
     let mgr = app.autolaunch();
     let result = if enabled { mgr.enable() } else { mgr.disable() };
     result.map_err(|e| AppError::Internal(format!("autostart: {e}")).into())
+}
+
+/// Switch the main window between the compact dashboard and the expanded
+/// workbench. `width`/`height` are the frontend-remembered expanded size
+/// (logical px); the echoed report carries what was actually applied after
+/// clamping, so the frontend persists reality rather than the request.
+#[tauri::command]
+pub fn set_window_mode(
+    app: tauri::AppHandle,
+    mode: WindowMode,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<WindowModeReport, CommandError> {
+    window_mode::apply_window_mode(&app, mode, width, height).map_err(Into::into)
 }
 
 /// Open an external http(s) URL in the user's default browser. Restricted to

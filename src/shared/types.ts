@@ -549,3 +549,15 @@ export interface WinInstallStatus {
   installed: InstalledWindowsCodex | null;
   status: InstallClass;
 }
+
+/** Main-window form factor: `compact` is the fixed 400×640 dashboard,
+ *  `expanded` the resizable desktop-sized workbench. */
+export type WindowMode = "compact" | "expanded";
+
+/** What the backend actually applied (post-clamp), echoed so the frontend
+ *  persists reality instead of its request. Sizes are logical px. */
+export interface WindowModeReport {
+  mode: WindowMode;
+  width: number;
+  height: number;
+}

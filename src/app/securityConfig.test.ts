@@ -45,6 +45,9 @@ describe("desktop trust-boundary config", () => {
       "core:window:allow-start-dragging",
       "core:window:allow-close",
       "core:window:allow-minimize",
+      // Window-mode switching stores the expanded size in logical px; the
+      // renderer reads the monitor scale to convert onResized's physical px.
+      "core:window:allow-scale-factor",
       "dialog:allow-open",
       "process:allow-restart",
     ]);

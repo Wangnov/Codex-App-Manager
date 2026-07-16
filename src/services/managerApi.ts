@@ -22,6 +22,8 @@ import type {
   WinPerformReport,
   WinStageReport,
   SkippedCodexUpdate,
+  WindowMode,
+  WindowModeReport,
   WinUninstallReport,
   WinUpdateReport,
 } from "../shared/types";
@@ -776,6 +778,27 @@ export const managerApi = {
       return Promise.resolve(false);
     }
     return invoke<boolean>("get_autostart");
+  },
+  /** Switch the native window between compact and expanded. `size` is the
+   *  remembered expanded size (logical px); the report echoes what was applied
+   *  after work-area clamping. The browser preview has no native window, so it
+   *  echoes the request and the layout switches on CSS alone. */
+  setWindowMode(
+    mode: WindowMode,
+    size?: { width: number; height: number },
+  ): Promise<WindowModeReport> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve({
+        mode,
+        width: size?.width ?? (mode === "expanded" ? 1100 : 400),
+        height: size?.height ?? (mode === "expanded" ? 720 : 640),
+      });
+    }
+    return invoke<WindowModeReport>("set_window_mode", {
+      mode,
+      width: size?.width,
+      height: size?.height,
+    });
   },
   setAutostart(enabled: boolean): Promise<void> {
     if (!hasTauriRuntime()) {

@@ -283,6 +283,167 @@ input {
   border-radius: inherit;
 }
 
+/* ── Window modes ────────────────────────────────────────────────────────── */
+/* Two shapes, one window: the compact 400×640 dashboard (default — nothing
+   below applies) and the expanded desktop workbench. Switch choreography: the
+   stage fades out, the native window snaps to its new frame behind the veil,
+   and the new layout fades back in (the rail adds its own slide). Reduced
+   motion drops the veil — the switch becomes a single hard cut. */
+#root {
+  transition: opacity 0.15s var(--ease);
+}
+:root[data-window-mode-switching] #root {
+  opacity: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  #root {
+    transition: none;
+  }
+}
+
+/* Expanded: #root becomes a horizontal card shelf — the rail is a second
+   floating card beside the active view's card, sharing the transparent
+   gutter, so the workbench still reads as the same popover material that
+   simply grew a sibling. */
+:root[data-window-mode="expanded"] #root {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+}
+/* Only the top-level window cards flex — `.pop` is also borrowed by inner
+   decorations (Uninstall's completion Ring), which a descendant selector
+   would flatten. The [data-view] wrappers are display:contents, so their
+   children are #root's flex items but still one child-combinator away. */
+:root[data-window-mode="expanded"] #root > .pop:not(.rail),
+:root[data-window-mode="expanded"] #root > [data-view] > .pop {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Wide window, reading-width content: existing views keep their single
+   column, centered in the card. Surfaces designed for the full width (the
+   theme gallery) opt out by putting .scroll-wide on their scroll container. */
+:root[data-window-mode="expanded"] .scroll:not(.scroll-wide) > * {
+  width: 100%;
+  max-width: 640px;
+  margin-inline: auto;
+}
+
+/* The rail — same .pop material, fixed width, its own entrance. */
+.rail {
+  display: none;
+}
+:root[data-window-mode="expanded"] .rail {
+  display: flex;
+  flex: 0 0 208px;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-sm) 10px;
+  animation: rail-in 0.4s var(--ease-out);
+  transition: opacity 0.18s var(--ease);
+}
+/* A modal sheet's scrim can only veil its own card (each .pop clips its
+   children), so a sibling rail would stay clickable under e.g. About's
+   non-dismissable updater sheet — letting the user unmount the very view
+   holding the modal. Park the rail while any sheet is up; keyboard reach is
+   already fenced by the sheet's focus trap. */
+:root[data-window-mode="expanded"] #root:has(.scrim, .quit-scrim) .rail {
+  pointer-events: none;
+  opacity: 0.55;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root[data-window-mode="expanded"] .rail {
+    animation: none;
+  }
+}
+@keyframes rail-in {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+}
+.rail-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 2px 4px 12px;
+}
+.rail-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rail-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: var(--fs-body);
+  font-weight: 550;
+  text-align: start;
+  transition: background 0.18s var(--ease), color 0.18s var(--ease),
+    border-color 0.18s var(--ease), transform 0.08s var(--ease);
+}
+.rail-item:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.rail-item:active:not(:disabled) {
+  transform: scale(0.985);
+}
+.rail-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.rail-item.active {
+  background: var(--accent-tint);
+  border-color: color-mix(in oklch, var(--accent) 26%, transparent);
+  color: var(--accent-deep);
+}
+.rail-item svg {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+}
+.rail-spacer {
+  flex: 1;
+}
+.rail-collapse {
+  color: var(--text-faint);
+}
+
+/* Expand/collapse icon micro-motion: the diagonal arrow pairs stretch apart
+   (expand) or draw together (collapse) on hover, mirroring the window's own
+   move. Same reduced-motion gate as the shared icon block below. */
+@media (prefers-reduced-motion: no-preference) {
+  button:not(:disabled):is(:hover, :focus-visible) .cam-expand-ne {
+    animation: cam-diag-ne 0.42s var(--ease) both;
+  }
+  button:not(:disabled):is(:hover, :focus-visible) .cam-expand-sw {
+    animation: cam-diag-sw 0.42s var(--ease) both;
+  }
+  button:not(:disabled):is(:hover, :focus-visible) .cam-collapse-ne {
+    animation: cam-diag-sw 0.42s var(--ease) both;
+  }
+  button:not(:disabled):is(:hover, :focus-visible) .cam-collapse-sw {
+    animation: cam-diag-ne 0.42s var(--ease) both;
+  }
+}
+@keyframes cam-diag-ne {
+  45% {
+    transform: translate(1.6px, -1.6px);
+  }
+}
+@keyframes cam-diag-sw {
+  45% {
+    transform: translate(-1.6px, 1.6px);
+  }
+}
+
 .scroll {
   flex: 1;
   overflow-y: auto;

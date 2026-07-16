@@ -768,6 +768,7 @@ pub fn run() {
             commands::win_reset_install_root,
             commands::get_autostart,
             commands::set_autostart,
+            commands::set_window_mode,
             commands::open_url,
             commands::win_plan_update,
             commands::win_stage_update,

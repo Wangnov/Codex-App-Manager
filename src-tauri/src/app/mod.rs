@@ -16,3 +16,4 @@ pub mod shell;
 pub mod staging;
 pub mod url_guard;
 pub mod win_update;
+pub mod window_mode;
