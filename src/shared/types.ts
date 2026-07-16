@@ -226,6 +226,10 @@ export interface AppSettings {
   disableCodexSelfUpdates: boolean;
   /** One exact Codex app update the user chose not to be reminded about. */
   skippedCodexUpdate: SkippedCodexUpdate | null;
+  /** Persistent Codex UI theme selection (theme id); null = stock. */
+  codexTheme: string | null;
+  /** Extra local directory scanned for theme packages (dev workflow). */
+  codexThemeDir: string | null;
 }
 
 export interface ConfigHealth {
@@ -271,6 +275,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   customProxyUrl: "",
   disableCodexSelfUpdates: false,
   skippedCodexUpdate: null,
+  codexTheme: null,
+  codexThemeDir: null,
 };
 
 export interface MacUninstallReport {
@@ -548,6 +554,39 @@ export function outcomeIsPartial(outcome: OperationOutcome | null | undefined): 
 export interface WinInstallStatus {
   installed: InstalledWindowsCodex | null;
   status: InstallClass;
+}
+
+/** A locally installed Codex UI theme package (codex-theme-engine). */
+export interface CodexThemeSummary {
+  id: string;
+  name: string;
+  description: string;
+  dir: string;
+  hasNativeTheme: boolean;
+  /** Color tokens from theme.json — theme cards render from these. */
+  colors: Record<string, string>;
+}
+
+export interface CodexThemeDaemonStatus {
+  running: boolean;
+  port: number;
+  themeId: string | null;
+  stamp: string | null;
+  connectedTargets: number;
+  lastError: string | null;
+}
+
+export interface CodexThemeStatusReport {
+  /** Whether this platform can theme Codex at all (macOS for now). */
+  supported: boolean;
+  /** The persisted selection — what manager-launches will apply. */
+  activeTheme: string | null;
+  daemon: CodexThemeDaemonStatus | null;
+  /** A CDP endpoint answers on the theme port right now. */
+  cdpReady: boolean;
+  codexRunning: boolean;
+  /** A pristine config.toml appearance backup exists (full restore possible). */
+  nativeBackupPresent: boolean;
 }
 
 /** Main-window form factor: `compact` is the fixed 400×640 dashboard,

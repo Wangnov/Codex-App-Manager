@@ -12,8 +12,9 @@ import { Settings } from "./views/Settings";
 import { About } from "./views/About";
 import { Uninstall } from "./views/Uninstall";
 import { CodexConfig } from "./views/CodexConfig";
+import { CodexThemes } from "./views/CodexThemes";
 
-type View = "home" | "settings" | "about" | "uninstall" | "config";
+type View = "home" | "settings" | "about" | "uninstall" | "config" | "themes";
 
 function focusPageTarget(root: ParentNode | null) {
   if (!root) return;
@@ -68,11 +69,12 @@ function Shell() {
           Settings section. Jumping home reuses the same cross-fade as the
           NavBar back path so the two routes feel identical. */}
       <Rail
-        section={view === "home" ? "home" : "settings"}
+        section={view === "home" ? "home" : view === "themes" ? "themes" : "settings"}
         onNavigate={(section) => {
-          if (section === view) return;
-          if (section === "home") withViewTransition(() => setView("home"));
-          else setView("settings");
+          const target: View = section;
+          if (target === view) return;
+          if (target === "home") withViewTransition(() => setView("home"));
+          else setView(target);
         }}
       />
       <div data-view="home" style={{ display: view === "home" ? "contents" : "none" }}>
@@ -85,7 +87,13 @@ function Shell() {
             onOpenAbout={() => setView("about")}
             onOpenUninstall={() => setView("uninstall")}
             onOpenConfig={() => setView("config")}
+            onOpenThemes={() => setView("themes")}
           />
+        </div>
+      ) : null}
+      {view === "themes" ? (
+        <div data-view="themes" style={{ display: "contents" }}>
+          <CodexThemes onBack={() => setView("settings")} />
         </div>
       ) : null}
       {view === "about" ? (

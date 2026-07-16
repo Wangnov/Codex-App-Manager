@@ -73,6 +73,8 @@ jobs:
         run: cargo test --manifest-path crates/codex-mac-engine/Cargo.toml --all-targets
       - name: Test codex-win-engine (standalone)
         run: cargo test --manifest-path crates/codex-win-engine/Cargo.toml --all-targets
+      - name: Test codex-theme-engine (standalone)
+        run: cargo test --manifest-path crates/codex-theme-engine/Cargo.toml --all-targets
 
   audit:
     name: Audit (report)

@@ -883,10 +883,22 @@ pub fn mac_adopt_path(
 }
 
 /// macOS-only: open the installed Codex.app (explicit 〔打开 Codex〕 action).
+/// With a persisted theme selection this transparently becomes "launch
+/// debuggable + inject" — unless an operation holds the lock, in which case
+/// the launch stays plain rather than racing the updater for the process.
 #[tauri::command]
-pub fn mac_launch_codex() -> Result<(), CommandError> {
+pub async fn mac_launch_codex(state: State<'_, ManagerState>) -> Result<(), CommandError> {
     if !cfg!(target_os = "macos") {
         return Err(AppError::UnsupportedPlatform.into());
+    }
+    let settings = PersistedAppSettings::load();
+    if settings.codex_theme.is_some() && state.operations.snapshot().is_none() {
+        let themed =
+            crate::app::codex_theme::launch_with_active_theme(&state.codex_theme, &settings)
+                .await?;
+        if themed {
+            return Ok(());
+        }
     }
     crate::app::mac_update::launch_codex().map_err(Into::into)
 }
@@ -1591,6 +1603,95 @@ pub fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), Command
     let mgr = app.autolaunch();
     let result = if enabled { mgr.enable() } else { mgr.disable() };
     result.map_err(|e| AppError::Internal(format!("autostart: {e}")).into())
+}
+
+// ── Codex UI themes ──────────────────────────────────────────────────────────
+// CDP-injected theme packages (see crates/codex-theme-engine). Live try-on
+// needs a debuggable Codex; the apply path restarts Codex with the loopback
+// debug port and writes the native config.toml appearance sections.
+
+/// Refuse theme operations that restart Codex while an install/update holds
+/// the operation lock — a themed relaunch racing an updater's quit/swap would
+/// interleave two owners of the Codex process lifecycle.
+fn ensure_theme_may_restart_codex(state: &ManagerState) -> Result<(), CommandError> {
+    if state.operations.snapshot().is_some() {
+        return Err(AppError::Engine("有正在进行的操作，请稍后再试".to_string()).into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn codex_theme_list() -> Vec<codex_theme_engine::theme::ThemeSummary> {
+    let settings = PersistedAppSettings::load();
+    crate::app::codex_theme::merged_theme_list(&settings)
+}
+
+#[tauri::command]
+pub async fn codex_theme_status(
+    state: State<'_, ManagerState>,
+) -> Result<crate::app::codex_theme::ThemeStatusReport, CommandError> {
+    let settings = PersistedAppSettings::load();
+    Ok(state.codex_theme.status(&settings).await)
+}
+
+/// Live try-on against an already-debuggable Codex. Does not persist.
+#[tauri::command]
+pub async fn codex_theme_try_on(
+    state: State<'_, ManagerState>,
+    theme_ref: String,
+) -> Result<crate::app::codex_theme::ThemeStatusReport, CommandError> {
+    let settings = PersistedAppSettings::load();
+    state.codex_theme.try_on(&settings, &theme_ref).await?;
+    Ok(state.codex_theme.status(&settings).await)
+}
+
+/// Persist the selection (the daemon keeps whatever is currently injected;
+/// future launches through the manager apply it automatically).
+#[tauri::command]
+pub fn codex_theme_keep(theme_ref: String) -> Result<(), CommandError> {
+    let mut settings = PersistedAppSettings::load();
+    let dir = crate::app::codex_theme::resolve_theme_for_keep(&settings, &theme_ref)?;
+    settings.codex_theme = Some(dir);
+    settings.save().map_err(Into::into)
+}
+
+/// Full apply: quiesce Codex → native appearance sections → relaunch with the
+/// debug port → inject → persist the selection.
+#[tauri::command]
+pub async fn codex_theme_apply(
+    state: State<'_, ManagerState>,
+    theme_ref: String,
+) -> Result<crate::app::codex_theme::ThemeStatusReport, CommandError> {
+    ensure_theme_may_restart_codex(&state)?;
+    let settings = PersistedAppSettings::load();
+    state
+        .codex_theme
+        .apply_with_restart(&settings, &theme_ref)
+        .await?;
+    let id = crate::app::codex_theme::resolve_theme_for_keep(&settings, &theme_ref)?;
+    let mut updated = PersistedAppSettings::load();
+    updated.codex_theme = Some(id);
+    updated.save()?;
+    Ok(state.codex_theme.status(&updated).await)
+}
+
+/// Turn the theme off. `full` additionally restores the original config.toml
+/// appearance sections (restarting Codex plainly if it was running).
+#[tauri::command]
+pub async fn codex_theme_off(
+    state: State<'_, ManagerState>,
+    full: bool,
+) -> Result<crate::app::codex_theme::ThemeStatusReport, CommandError> {
+    if full {
+        ensure_theme_may_restart_codex(&state)?;
+        state.codex_theme.off_full().await?;
+    } else {
+        state.codex_theme.turn_off_live().await?;
+    }
+    let mut settings = PersistedAppSettings::load();
+    settings.codex_theme = None;
+    settings.save()?;
+    Ok(state.codex_theme.status(&settings).await)
 }
 
 /// Switch the main window between the compact dashboard and the expanded

@@ -1,5 +1,6 @@
 pub mod atomic_file;
 pub mod codex_self_update;
+pub mod codex_theme;
 pub mod config_health;
 pub mod diagnostics;
 pub mod disk;

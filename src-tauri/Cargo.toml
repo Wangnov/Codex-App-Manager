@@ -22,6 +22,7 @@ tauri-build = { version = "2.6.2", features = [] }
 
 [dependencies]
 codex-mac-engine = { path = "../crates/codex-mac-engine" }
+codex-theme-engine = { path = "../crates/codex-theme-engine" }
 codex-win-engine = { path = "../crates/codex-win-engine" }
 directories = "6.0.0"
 fs4 = "1.1"
@@ -37,6 +38,7 @@ tauri-plugin-process = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 thiserror = "2.0"
+tokio = { version = "1", features = ["sync", "time"] }
 url = "2.5"
 uuid = { version = "1", features = ["v4"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

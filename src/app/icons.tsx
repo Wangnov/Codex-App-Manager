@@ -31,6 +31,7 @@ export type IconName =
   | "expand"
   | "collapse"
   | "house"
+  | "palette"
   | "minimize"
   | "close";
 
@@ -163,6 +164,15 @@ const PATHS: Record<IconName, ReactNode> = {
       <path className="cam-house-roof" d="M3.5 10.8 12 3.8l8.5 7" />
       <path d="M6 9.2v9.3A1.5 1.5 0 0 0 7.5 20h9a1.5 1.5 0 0 0 1.5-1.5V9.2" />
     </>
+  ),
+  palette: (
+    <g className="cam-palette">
+      <path d="M12 3.5a8.5 8.5 0 1 0 .2 17h1.4a2.1 2.1 0 0 0 1.55-3.52 2.1 2.1 0 0 1 1.55-3.53h1.9a2.4 2.4 0 0 0 2.4-2.5A8.5 8.5 0 0 0 12 3.5Z" />
+      <circle className="cam-palette-dot" cx="8" cy="10.2" r="0.5" />
+      <circle className="cam-palette-dot" cx="12" cy="7.8" r="0.5" />
+      <circle className="cam-palette-dot" cx="16" cy="10.2" r="0.5" />
+      <circle className="cam-palette-dot" cx="8.6" cy="14.6" r="0.5" />
+    </g>
   ),
   minimize: <line className="cam-minimize" x1="6" y1="12" x2="18" y2="12" />,
   close: (

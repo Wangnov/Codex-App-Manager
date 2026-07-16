@@ -30,6 +30,8 @@ pub struct ManagerState {
     pub operations: OperationManager,
     pub config_health: Mutex<ConfigHealth>,
     pub frontend: FrontendGate,
+    /// Codex UI theme orchestration (daemon handle + status).
+    pub codex_theme: crate::app::codex_theme::ThemeService,
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -89,6 +91,7 @@ impl ManagerState {
             operations,
             config_health,
             frontend: FrontendGate::default(),
+            codex_theme: crate::app::codex_theme::ThemeService::default(),
         }
     }
 

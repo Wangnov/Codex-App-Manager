@@ -5,6 +5,8 @@ import type {
   AncillaryRetryReport,
   AncillaryRetryRequest,
   AppSettings,
+  CodexThemeStatusReport,
+  CodexThemeSummary,
   CommandError,
   CodexUpdatePlatform,
   ConfigHealth,
@@ -130,6 +132,12 @@ function normalizeSettings(raw: Partial<AppSettings>): AppSettings {
         ? raw.disableCodexSelfUpdates
         : DEFAULT_SETTINGS.disableCodexSelfUpdates,
     skippedCodexUpdate: normalizedSkippedCodexUpdate(raw.skippedCodexUpdate),
+    codexTheme:
+      typeof raw.codexTheme === "string" && raw.codexTheme.trim() ? raw.codexTheme : null,
+    codexThemeDir:
+      typeof raw.codexThemeDir === "string" && raw.codexThemeDir.trim()
+        ? raw.codexThemeDir
+        : null,
   };
 }
 
@@ -425,6 +433,50 @@ const FALLBACK_DIAGNOSTICS: Diagnostics = {
   recentErrors: [],
   logTail: "",
   generatedAtUnix: Math.floor(Date.now() / 1000),
+};
+
+// Browser-preview stand-ins so the theme gallery can be developed and styled
+// without a Tauri backend (mirrors guts-terminal / asuka-eva02 palettes).
+const BROWSER_FALLBACK_THEMES: CodexThemeSummary[] = [
+  {
+    id: "guts-terminal",
+    name: "GUTS Terminal",
+    description: "TPC/GUTS command terminal from the Tiga concept sheets.",
+    dir: "/dev/themes/guts-terminal",
+    hasNativeTheme: true,
+    colors: {
+      base: "#1a1d24",
+      panel: "#232833",
+      accent: "#d97e2a",
+      ink: "#f2e9d8",
+      glow: "#e8a33d",
+      line: "#3a4150",
+    },
+  },
+  {
+    id: "asuka-eva02",
+    name: "Asuka EVA-02",
+    description: "NERV console styling around Unit-02's palette.",
+    dir: "/dev/themes/asuka-eva02",
+    hasNativeTheme: true,
+    colors: {
+      base: "#17131a",
+      panel: "#241c26",
+      accent: "#ff6a00",
+      ink: "#f5ede4",
+      glow: "#c8300e",
+      line: "#453343",
+    },
+  },
+];
+
+const BROWSER_FALLBACK_THEME_STATUS: CodexThemeStatusReport = {
+  supported: true,
+  activeTheme: null,
+  daemon: null,
+  cdpReady: false,
+  codexRunning: false,
+  nativeBackupPresent: false,
 };
 
 // ── Contract guards ──────────────────────────────────────────────────────────
@@ -778,6 +830,48 @@ export const managerApi = {
       return Promise.resolve(false);
     }
     return invoke<boolean>("get_autostart");
+  },
+  // ── Codex UI themes ────────────────────────────────────────────────────
+  /** Locally installed theme packages (managed dir + optional dev dir). */
+  codexThemeList(): Promise<CodexThemeSummary[]> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve(BROWSER_FALLBACK_THEMES);
+    }
+    return invoke<CodexThemeSummary[]>("codex_theme_list");
+  },
+  codexThemeStatus(): Promise<CodexThemeStatusReport> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve({ ...BROWSER_FALLBACK_THEME_STATUS });
+    }
+    return invoke<CodexThemeStatusReport>("codex_theme_status");
+  },
+  /** Live try-on against an already-debuggable Codex. Not persisted. */
+  codexThemeTryOn(themeRef: string): Promise<CodexThemeStatusReport> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve({ ...BROWSER_FALLBACK_THEME_STATUS, daemon: null });
+    }
+    return invoke<CodexThemeStatusReport>("codex_theme_try_on", { themeRef });
+  },
+  /** Persist the current try-on as the standing selection. */
+  codexThemeKeep(themeRef: string): Promise<void> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve();
+    }
+    return invoke<void>("codex_theme_keep", { themeRef });
+  },
+  /** Full apply: restart Codex debuggable + native config sections + inject. */
+  codexThemeApply(themeRef: string): Promise<CodexThemeStatusReport> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve({ ...BROWSER_FALLBACK_THEME_STATUS, activeTheme: themeRef });
+    }
+    return invoke<CodexThemeStatusReport>("codex_theme_apply", { themeRef });
+  },
+  /** Turn the theme off; `full` also restores original config.toml sections. */
+  codexThemeOff(full: boolean): Promise<CodexThemeStatusReport> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve({ ...BROWSER_FALLBACK_THEME_STATUS, activeTheme: null });
+    }
+    return invoke<CodexThemeStatusReport>("codex_theme_off", { full });
   },
   /** Switch the native window between compact and expanded. `size` is the
    *  remembered expanded size (logical px); the report echoes what was applied

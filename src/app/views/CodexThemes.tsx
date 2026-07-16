@@ -1,0 +1,342 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+
+import { errorMessage, managerApi, SETTINGS_CHANGED_EVENT } from "../../services/managerApi";
+import type {
+  AppSettings,
+  CodexThemeStatusReport,
+  CodexThemeSummary,
+} from "../../shared/types";
+import { NavBar, StatusBanner } from "../components";
+import { Icon } from "../icons";
+import { useI18n } from "../i18n";
+
+/** Parse #rgb/#rrggbb/rgb() far enough for luminance/saturation ranking. */
+function parseColor(value: string): { r: number; g: number; b: number } | null {
+  const hex = value.trim().match(/^#([0-9a-f]{3,8})$/i)?.[1];
+  if (hex) {
+    const size = hex.length >= 6 ? 2 : 1;
+    const chan = (i: number) => {
+      const raw = hex.slice(i * size, i * size + size);
+      const parsed = parseInt(size === 1 ? raw + raw : raw, 16);
+      return Number.isNaN(parsed) ? null : parsed;
+    };
+    const [r, g, b] = [chan(0), chan(1), chan(2)];
+    return r == null || g == null || b == null ? null : { r, g, b };
+  }
+  const rgb = value.trim().match(/^rgba?\(([^)]+)\)$/i)?.[1];
+  if (rgb) {
+    const [r, g, b] = rgb.split(",").map((part) => Number(part.trim().replace("%", "")));
+    if ([r, g, b].every((n) => Number.isFinite(n))) return { r, g, b };
+  }
+  return null;
+}
+
+/** Theme packages name their colors freely (cream/amber/lcl/...), so the card
+ *  art derives roles from the values instead: darkest = backdrop, most
+ *  saturated = accent, lightest = ink. Every theme card becomes its own
+ *  poster with zero bundled artwork. */
+function cardPalette(colors: Record<string, string>) {
+  const parsed = Object.values(colors)
+    .map((value) => ({ value, rgb: parseColor(value) }))
+    .filter((c): c is { value: string; rgb: { r: number; g: number; b: number } } => c.rgb !== null)
+    .map(({ value, rgb }) => {
+      const max = Math.max(rgb.r, rgb.g, rgb.b);
+      const min = Math.min(rgb.r, rgb.g, rgb.b);
+      return {
+        value,
+        luminance: (0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b) / 255,
+        saturation: max === 0 ? 0 : (max - min) / max,
+      };
+    });
+  if (!parsed.length) {
+    return { backdrop: "var(--surface-2)", panel: "var(--surface-3)", accent: "var(--accent)", ink: "var(--text)" };
+  }
+  const byLuminance = [...parsed].sort((a, b) => a.luminance - b.luminance);
+  const accent = [...parsed].sort(
+    (a, b) => b.saturation * (1 - Math.abs(b.luminance - 0.55)) - a.saturation * (1 - Math.abs(a.luminance - 0.55)),
+  )[0];
+  return {
+    backdrop: byLuminance[0].value,
+    panel: byLuminance[Math.min(1, byLuminance.length - 1)].value,
+    accent: accent.value,
+    ink: byLuminance[byLuminance.length - 1].value,
+  };
+}
+
+function ThemeCardArt({ colors }: { colors: Record<string, string> }) {
+  const palette = useMemo(() => cardPalette(colors), [colors]);
+  return (
+    <div className="themecard-art" style={{ background: palette.backdrop }} aria-hidden="true">
+      <span className="tca-side" style={{ background: palette.panel }} />
+      <span className="tca-line" style={{ background: palette.ink, opacity: 0.55 }} />
+      <span className="tca-line tca-line-2" style={{ background: palette.ink, opacity: 0.3 }} />
+      <span className="tca-composer" style={{ borderColor: palette.accent }}>
+        <span className="tca-send" style={{ background: palette.accent }} />
+      </span>
+    </div>
+  );
+}
+
+export function CodexThemes({ onBack }: { onBack: () => void }) {
+  const { t } = useI18n();
+  const [themes, setThemes] = useState<CodexThemeSummary[]>([]);
+  const [status, setStatus] = useState<CodexThemeStatusReport | null>(null);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [devDirDraft, setDevDirDraft] = useState("");
+  const [loaded, setLoaded] = useState(false);
+
+  const refresh = useCallback(async () => {
+    try {
+      const [list, report, current] = await Promise.all([
+        managerApi.codexThemeList(),
+        managerApi.codexThemeStatus(),
+        managerApi.getSettings(),
+      ]);
+      setThemes(list);
+      setStatus(report);
+      setSettings(current);
+      setDevDirDraft(current.codexThemeDir ?? "");
+    } catch (cause) {
+      setActionError(errorMessage(cause));
+    } finally {
+      setLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    const onSettings = () => void refresh();
+    window.addEventListener(SETTINGS_CHANGED_EVENT, onSettings);
+    return () => window.removeEventListener(SETTINGS_CHANGED_EVENT, onSettings);
+  }, [refresh]);
+
+  // Keep the status line live while the view is open (daemon connects targets
+  // asynchronously after an apply).
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      void managerApi.codexThemeStatus().then(setStatus).catch(() => undefined);
+    }, 3000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const run = useCallback(
+    async (key: string, action: () => Promise<unknown>) => {
+      if (busy) return;
+      setBusy(key);
+      setActionError(null);
+      try {
+        await action();
+        await refresh();
+      } catch (cause) {
+        setActionError(errorMessage(cause));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [busy, refresh],
+  );
+
+  const activeId = status?.activeTheme ?? null;
+  const tryingId = status?.daemon?.themeId && status.daemon.themeId !== activeId
+    ? status.daemon.themeId
+    : null;
+  const themeName = (id: string | null) =>
+    (id && themes.find((theme) => theme.id === id)?.name) || id || "";
+
+  const saveDevDir = () =>
+    run("devdir", async () => {
+      const current = settings ?? (await managerApi.getSettings());
+      await managerApi.setSettings({
+        ...current,
+        codexThemeDir: devDirDraft.trim() ? devDirDraft.trim() : null,
+      });
+    });
+
+  return (
+    <div className="pop">
+      <NavBar title={t("themes.title")} onBack={onBack} disableBack={busy === "apply"} />
+      <div className="scroll scroll-wide view">
+        {status && !status.supported ? (
+          <StatusBanner tone="info">{t("themes.status.unsupported")}</StatusBanner>
+        ) : null}
+        {actionError ? <StatusBanner tone="err">{actionError}</StatusBanner> : null}
+        {status?.daemon?.lastError && !actionError ? (
+          <StatusBanner tone="warn">
+            {t("themes.status.daemonError", { error: status.daemon.lastError })}
+          </StatusBanner>
+        ) : null}
+
+        {tryingId ? (
+          <StatusBanner
+            tone="info"
+            icon="sliders"
+            action={
+              <span className="row2" style={{ gap: 8 }}>
+                <button
+                  className="btn primary sm"
+                  disabled={busy !== null}
+                  onClick={() => void run("keep", () => managerApi.codexThemeKeep(tryingId))}
+                >
+                  {t("themes.keep")}
+                </button>
+                <button
+                  className="btn ghost sm"
+                  disabled={busy !== null}
+                  onClick={() => void run("offlive", () => managerApi.codexThemeOff(false))}
+                >
+                  {t("themes.revert")}
+                </button>
+              </span>
+            }
+          >
+            {t("themes.status.tryingOn", { name: themeName(tryingId) })}
+          </StatusBanner>
+        ) : null}
+
+        {activeId ? (
+          <StatusBanner
+            tone="ok"
+            action={
+              <span className="row2" style={{ gap: 8 }}>
+                <button
+                  className="btn ghost sm"
+                  disabled={busy !== null}
+                  onClick={() => void run("offlive", () => managerApi.codexThemeOff(false))}
+                >
+                  {t("themes.turnOff")}
+                </button>
+                {status?.nativeBackupPresent ? (
+                  <button
+                    className="btn ghost sm"
+                    disabled={busy !== null}
+                    onClick={() => void run("offfull", () => managerApi.codexThemeOff(true))}
+                  >
+                    {t("themes.restoreFull")}
+                  </button>
+                ) : null}
+              </span>
+            }
+          >
+            {t("themes.status.active", { name: themeName(activeId) })}
+          </StatusBanner>
+        ) : null}
+
+        {status?.supported && themes.length > 0 && !status.cdpReady ? (
+          <StatusBanner tone="info">{t("themes.status.needsDebug")}</StatusBanner>
+        ) : null}
+
+        <div className="themegrid">
+          {themes.map((theme) => {
+            const isActive = theme.id === activeId;
+            const isTrying = theme.id === tryingId;
+            return (
+              <article key={theme.id} className={`themecard${isActive ? " active" : ""}`}>
+                <ThemeCardArt colors={theme.colors} />
+                <div className="themecard-body">
+                  <div className="themecard-head">
+                    <span className="themecard-name">{theme.name}</span>
+                    {isActive ? <span className="tag ok">{t("themes.inUse")}</span> : null}
+                    {isTrying ? <span className="tag soon">{t("themes.trying")}</span> : null}
+                    {theme.hasNativeTheme ? (
+                      <span className="tag" title={t("themes.nativeHint")}>
+                        {t("themes.native")}
+                      </span>
+                    ) : null}
+                  </div>
+                  {theme.description ? (
+                    <p className="themecard-desc">{theme.description}</p>
+                  ) : null}
+                  <div className="themecard-swatches" aria-hidden="true">
+                    {Object.entries(theme.colors)
+                      .slice(0, 10)
+                      .map(([key, value]) => (
+                        <span key={key} className="swatch" style={{ background: value }} title={key} />
+                      ))}
+                  </div>
+                  <div className="themecard-actions">
+                    {status?.cdpReady && !isActive ? (
+                      <button
+                        className="btn ghost sm"
+                        disabled={busy !== null}
+                        onClick={() =>
+                          void run("tryon", () => managerApi.codexThemeTryOn(theme.id))
+                        }
+                      >
+                        {busy === "tryon" ? t("themes.busy.tryOn") : t("themes.tryOn")}
+                      </button>
+                    ) : null}
+                    {!isActive ? (
+                      <button
+                        className="btn primary sm"
+                        disabled={busy !== null || !status?.supported}
+                        onClick={() =>
+                          void run("apply", () => managerApi.codexThemeApply(theme.id))
+                        }
+                      >
+                        {busy === "apply" ? t("themes.busy.apply") : t("themes.applyRestart")}
+                      </button>
+                    ) : (
+                      <button
+                        className="btn ghost sm"
+                        disabled={busy !== null}
+                        onClick={() =>
+                          void run("apply", () => managerApi.codexThemeApply(theme.id))
+                        }
+                      >
+                        {t("themes.reapply")}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+
+        {loaded && themes.length === 0 ? (
+          <section className="hero" style={{ paddingTop: 24 }}>
+            <Icon name="sliders" className="ricon" />
+            <div className="headline" style={{ fontSize: 16 }}>
+              {t("themes.empty.title")}
+            </div>
+            <div className="desc">{t("themes.empty.sub")}</div>
+          </section>
+        ) : null}
+
+        <div className="group-h">{t("themes.devdir.title")}</div>
+        <div className="list">
+          <div className="row" style={{ display: "block" }}>
+            <span
+              className="rtext"
+              style={{ display: "flex", flexDirection: "column", marginBottom: 8 }}
+            >
+              <span className="rtitle">{t("themes.devdir.title")}</span>
+              <span className="rsub">{t("themes.devdir.sub")}</span>
+            </span>
+            <div className="row2" style={{ gap: 8 }}>
+              <input
+                className="input mono"
+                aria-label={t("themes.devdir.title")}
+                value={devDirDraft}
+                placeholder={t("themes.devdir.placeholder")}
+                onChange={(event) => setDevDirDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void saveDevDir();
+                }}
+              />
+              <button
+                className="btn ghost sm"
+                disabled={busy !== null || (settings?.codexThemeDir ?? "") === devDirDraft.trim()}
+                onClick={() => void saveDevDir()}
+              >
+                {t("themes.devdir.save")}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

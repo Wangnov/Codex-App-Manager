@@ -18,6 +18,10 @@ export default tseslint.config(
       "dist/",
       "node_modules/",
       "src-tauri/",
+      // Rust crates; includes the injected renderer runtime template
+      // (crates/codex-theme-engine/src/runtime/), which is browser-side JS
+      // with substitution placeholders — not part of this app bundle.
+      "crates/",
       "website/",
       "cloudflare/",
       "scripts/",

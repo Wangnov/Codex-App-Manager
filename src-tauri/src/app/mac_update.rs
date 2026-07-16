@@ -323,7 +323,7 @@ fn require_not_translocation_risk(app: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn detect_managed_installed() -> Option<InstalledCodex> {
+pub(crate) fn detect_managed_installed() -> Option<InstalledCodex> {
     let store = ProvenanceStore::load();
     for record in store.managed.iter().rev() {
         if let Some((path, build)) = sys::installed_codex_build_at_path(&record.path) {

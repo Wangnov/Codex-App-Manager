@@ -115,12 +115,14 @@ export function Settings({
   onOpenAbout,
   onOpenUninstall,
   onOpenConfig: _onOpenConfig,
+  onOpenThemes,
 }: {
   onBack: () => void;
   onOpenAbout: () => void;
   onOpenUninstall: () => void;
   /** Reserved: Codex config is not shippable yet; entry stays disabled. */
   onOpenConfig: () => void;
+  onOpenThemes: () => void;
 }) {
   const { t, lang, setLang } = useI18n();
   const { mode, setMode } = useTheme();
@@ -732,6 +734,14 @@ export function Settings({
                 <span className="rtitle">{t("settings.appearance.language")}</span>
               </span>
               <span className="rval">{LANGS.find((l) => l.code === lang)?.native ?? lang}</span>
+              <Icon name="chevron" className="chev" />
+            </button>
+            <button className="row" onClick={onOpenThemes}>
+              <Icon name="palette" className="ricon" />
+              <span className="rtext">
+                <span className="rtitle">{t("themes.title")}</span>
+                <span className="rsub">{t("themes.settingsSub")}</span>
+              </span>
               <Icon name="chevron" className="chev" />
             </button>
           </div>
