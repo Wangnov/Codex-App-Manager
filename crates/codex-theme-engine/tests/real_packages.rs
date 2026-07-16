@@ -56,3 +56,68 @@ fn studio_packages_load_and_build() {
         );
     }
 }
+
+/// Full live loop against a debuggable Codex on 9345: inject guts-terminal,
+/// structurally verify, remove, verify removed. Only proceeds when every
+/// renderer is currently stock (never clobbers an active studio session);
+/// net effect on the running app is zero.
+#[test]
+#[ignore = "requires a running Codex with --remote-debugging-port=9345"]
+fn live_inject_verify_revert_when_stock() {
+    let root = studio_themes().expect("~/codex-theme-studio/themes not found");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let connected =
+            codex_theme_engine::cdp::connect_codex_targets(9345, std::time::Duration::from_secs(5))
+                .await
+                .expect("no verified Codex renderer on 9345");
+        println!("connected {} verified target(s)", connected.len());
+
+        for target in &connected {
+            let stamp = target
+                .session
+                .evaluate(codex_theme_engine::payload::CURRENT_STAMP_EXPRESSION)
+                .await
+                .expect("stamp probe");
+            if !stamp.is_null() {
+                println!("SKIP: renderer already themed ({stamp}) — not touching it");
+                return;
+            }
+        }
+
+        let built =
+            codex_theme_engine::payload::build_payload(&root.join("guts-terminal")).unwrap();
+        let verify = codex_theme_engine::payload::verify_expression(
+            codex_theme_engine::ENGINE_VERSION,
+        )
+        .unwrap();
+        for target in &connected {
+            target.session.evaluate(&built.payload).await.expect("inject");
+            let report = target.session.evaluate(&verify).await.expect("verify");
+            println!(
+                "target {} verify: pass={} themeId={:?}",
+                target.probe.title,
+                report["pass"],
+                report["themeId"]
+            );
+            assert_eq!(report["installed"], true, "theme must be installed");
+            assert_eq!(report["stylePresent"], true, "style must be present");
+
+            target
+                .session
+                .evaluate(codex_theme_engine::payload::REMOVE_EXPRESSION)
+                .await
+                .expect("remove");
+            let removed = target
+                .session
+                .evaluate(codex_theme_engine::payload::VERIFY_REMOVED_EXPRESSION)
+                .await
+                .expect("verify removed");
+            assert_eq!(removed, true, "renderer must be stock again");
+        }
+        println!("live loop OK: inject → verify → revert, renderers back to stock");
+    });
+}
