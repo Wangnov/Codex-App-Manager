@@ -301,14 +301,30 @@ input {
   }
 }
 
-/* Expanded: #root becomes a horizontal card shelf — the rail is a second
-   floating card beside the active view's card, sharing the transparent
-   gutter, so the workbench still reads as the same popover material that
-   simply grew a sibling. */
+/* Expanded: a solid desktop window, edge to edge. The compact popover's
+   transparent gutter would read as a phantom border here (clicks and edge
+   drags land on "air"), so the workbench drops it entirely: no padding, the
+   window IS the surface (native shadow comes from the backend via
+   set_shadow), and the rail becomes a fixed pane behind a hairline instead
+   of a floating card. */
 :root[data-window-mode="expanded"] #root {
   display: flex;
   align-items: stretch;
-  gap: 12px;
+  gap: 0;
+  padding: 0;
+  background: var(--bg);
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--line-2);
+}
+:root[data-window-mode="expanded"] #root > .pop,
+:root[data-window-mode="expanded"] #root > [data-view] > .pop {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+:root[data-window-mode="expanded"] .rail {
+  border-right: 1px solid var(--line);
 }
 /* Only the top-level window cards flex — `.pop` is also borrowed by inner
    decorations (Uninstall's completion Ring), which a descendant selector
@@ -327,6 +343,14 @@ input {
   width: 100%;
   max-width: 640px;
   margin-inline: auto;
+}
+
+/* A scroll container's children must never be squeezed — overflowing content
+   is what the scrollbar is for. Critical for children with overflow:hidden
+   (.list), whose automatic minimum height computes to 0 as a flex item and
+   which therefore collapse to their borders when content overflows. */
+.scroll-wide > * {
+  flex-shrink: 0;
 }
 
 /* The rail — same .pop material, fixed width, its own entrance. */

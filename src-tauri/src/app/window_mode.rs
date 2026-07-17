@@ -156,8 +156,14 @@ pub fn apply_window_mode(
             window
                 .set_resizable(false)
                 .map_err(|e| win_err("resizable", e))?;
+            // Back to the floating popover: shadow is self-drawn around the
+            // card, inside the transparent gutter.
+            let _ = window.set_shadow(false);
         }
         WindowMode::Expanded => {
+            // The workbench fills the frame edge-to-edge (no transparent
+            // gutter), so the shadow must come from the OS.
+            let _ = window.set_shadow(true);
             window
                 .set_resizable(true)
                 .map_err(|e| win_err("resizable", e))?;
