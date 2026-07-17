@@ -251,6 +251,11 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
   const tryingId = status?.daemon?.themeId && status.daemon.themeId !== activeId
     ? status.daemon.themeId
     : null;
+  // The kept theme has two live states: injected (daemon confirms it) and
+  // paused (off-live keeps the selection and the native palette; only the
+  // CSS layer is withdrawn for this session).
+  const activeInjected = Boolean(activeId && status?.daemon?.themeId === activeId);
+  const activePaused = Boolean(activeId && !status?.daemon?.themeId);
   const themeName = (id: string | null) =>
     (id && themes.find((theme) => theme.id === id)?.name) || id || "";
 
@@ -379,7 +384,7 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
                 <button
                   className="btn ghost sm"
                   disabled={busy !== null}
-                  onClick={() => void run("offlive", () => managerApi.codexThemeOff(false))}
+                  onClick={() => void run("cancel", () => managerApi.codexThemeCancel())}
                 >
                   {t("themes.revert")}
                 </button>
@@ -390,7 +395,11 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
           </StatusBanner>
         ) : null}
 
-        {activeId ? (
+        {status?.recoveryRequired ? (
+          <StatusBanner tone="err">{t("themes.status.recovery")}</StatusBanner>
+        ) : null}
+
+        {activeId && activeInjected ? (
           <StatusBanner
             tone="ok"
             action={
@@ -415,6 +424,36 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
             }
           >
             {t("themes.status.active", { name: themeName(activeId) })}
+          </StatusBanner>
+        ) : null}
+
+        {activeId && activePaused ? (
+          <StatusBanner
+            tone="info"
+            action={
+              <span className="row-actions">
+                <button
+                  className="btn primary sm"
+                  disabled={busy !== null || !status?.supported}
+                  onClick={() =>
+                    void run(`apply:${activeId}`, () => managerApi.codexThemeApply(activeId))
+                  }
+                >
+                  {busy === `apply:${activeId}` ? t("themes.busy.tryOn") : t("themes.enable")}
+                </button>
+                {status?.nativeBackupPresent ? (
+                  <button
+                    className="btn ghost sm"
+                    disabled={busy !== null}
+                    onClick={() => void run("offfull", () => managerApi.codexThemeOff(true))}
+                  >
+                    {t("themes.restoreFull")}
+                  </button>
+                ) : null}
+              </span>
+            }
+          >
+            {t("themes.status.paused", { name: themeName(activeId) })}
           </StatusBanner>
         ) : null}
 

@@ -1668,7 +1668,12 @@ pub fn codex_theme_keep(theme_ref: String) -> Result<(), CommandError> {
     let mut settings = PersistedAppSettings::load();
     let dir = crate::app::codex_theme::resolve_theme_for_keep(&settings, &theme_ref)?;
     settings.codex_theme = Some(dir);
-    settings.save().map_err(Into::into)
+    settings.save()?;
+    // The pre-try-on stash is consumed by keeping: the hot-imported native
+    // theme is now the wanted state, and the long-term baseline (captured
+    // before the first hot write) remains the path back to the user's own.
+    crate::app::codex_theme::consume_try_on_stash();
+    Ok(())
 }
 
 /// Full apply: quiesce Codex → native appearance sections → relaunch with the
@@ -1857,12 +1862,27 @@ pub async fn codex_theme_off(
     if full {
         ensure_theme_may_restart_codex(&state)?;
         state.codex_theme.off_full().await?;
-    } else {
-        state.codex_theme.turn_off_live().await?;
+        // Only the full restore clears the selection — off_live is a
+        // session-scoped pause (SPEC §11): the native palette stays enabled
+        // and the next themed launch re-injects.
+        let mut settings = PersistedAppSettings::load();
+        settings.codex_theme = None;
+        settings.save()?;
+        return Ok(state.codex_theme.status(&settings).await);
     }
-    let mut settings = PersistedAppSettings::load();
-    settings.codex_theme = None;
-    settings.save()?;
+    state.codex_theme.turn_off_live().await?;
+    let settings = PersistedAppSettings::load();
+    Ok(state.codex_theme.status(&settings).await)
+}
+
+/// Cancel an unkept try-on: CSS off + hot-restore the stashed pre-try-on
+/// native settings (or write them back to config.toml if Codex is stopped).
+#[tauri::command]
+pub async fn codex_theme_cancel(
+    state: State<'_, ManagerState>,
+) -> Result<crate::app::codex_theme::ThemeStatusReport, CommandError> {
+    state.codex_theme.cancel_try_on().await?;
+    let settings = PersistedAppSettings::load();
     Ok(state.codex_theme.status(&settings).await)
 }
 

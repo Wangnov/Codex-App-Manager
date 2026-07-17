@@ -10,10 +10,13 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use codex_theme_engine::codex_theme::{parse_codex_theme, CodexTheme, ValidateOptions};
 use codex_theme_engine::daemon::{run_daemon, DaemonStatus, Directive};
-use codex_theme_engine::native::{has_backup, NativeThemePaths};
-use codex_theme_engine::theme::{list_themes, load_theme, ThemeSummary};
-use serde::Serialize;
+use codex_theme_engine::native::{has_backup, NativeSettingsSnapshot, NativeThemePaths};
+use codex_theme_engine::native_hot;
+use codex_theme_engine::theme::{list_themes, load_theme, LoadedTheme, ThemeSummary};
+use codex_theme_engine::transaction::{self, BeginInput, NativeTransaction, Phase};
+use serde::{Deserialize, Serialize};
 use tokio::sync::{watch, Mutex};
 
 use crate::app::paths;
@@ -32,6 +35,132 @@ const CONFIG_SETTLE: Duration = Duration::from_secs(2);
 #[cfg(target_os = "macos")]
 const QUIT_TIMEOUT_SECS: u64 = 30;
 const CDP_WAIT: Duration = Duration::from_secs(45);
+
+/// How a restart-based flow syncs the native layer: try-on hot-syncs
+/// best-effort (degrading to CSS-only); a full apply falls back to the
+/// stopped-Codex transactional file write when the hot path fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeSync {
+    Hot,
+    HotThenFile,
+}
+
+/// New native mutations are refused while an unresolved transaction's
+/// evidence exists (SPEC §9: after recovery_required, no new transactions).
+fn ensure_no_pending_tx() -> Result<(), AppError> {
+    let root = tx_root()?;
+    match transaction::pending_transaction(&root) {
+        Ok(None) => Ok(()),
+        Ok(Some(pending)) => Err(AppError::Engine(format!(
+            "存在未完结的原生主题事务（txId={}，phase={:?}）——重启 Manager 可触发自动恢复，或手动检查 {}",
+            pending.journal.tx_id,
+            pending.journal.phase,
+            pending.dir.display()
+        ))),
+        Err(error) => Err(AppError::Engine(error.to_string())),
+    }
+}
+
+/// Best-effort preimage rollback for a transaction whose write may have
+/// landed. Terminal outcome is journaled either way: `rolled_back` on
+/// success, `recovery_required` (evidence kept) when the rollback itself
+/// cannot be trusted.
+fn rollback_tx_to_preimage(mut tx: NativeTransaction, paths: &NativeThemePaths, cause: &str) {
+    let _ = tx.note_error(cause);
+    let _ = tx.set_phase(Phase::RollingBack);
+    let preimage = match tx.preimage_text() {
+        Ok(text) => text,
+        Err(error) => {
+            let _ = tx.recovery_required(&format!("{cause}; 读取 preimage 失败: {error}"));
+            return;
+        }
+    };
+    if codex_theme_engine::native::sha256_hex(preimage.as_bytes()) != tx.preimage_sha256() {
+        let _ = tx.recovery_required(&format!("{cause}; preimage 校验失败"));
+        return;
+    }
+    match codex_theme_engine::native::write_config_atomic(paths, &preimage) {
+        Ok(()) => {
+            if let Err(error) = tx.rolled_back() {
+                log::warn!("回滚成功但事务清理失败: {error}");
+            }
+        }
+        Err(error) => {
+            let _ = tx.recovery_required(&format!("{cause}; 回滚写入失败: {error}"));
+        }
+    }
+}
+
+/// Write a hot-path settings snapshot into config.toml under a transaction.
+/// Caller contract: Codex is not running.
+fn write_snapshot_with_tx(
+    snapshot: &NativeSettingsSnapshot,
+    operation: &str,
+) -> Result<(), AppError> {
+    let paths = native_paths()?;
+    let root = tx_root()?;
+    let mut tx = NativeTransaction::begin(BeginInput {
+        root: &root,
+        config: &paths.config,
+        operation,
+        theme_id: None,
+        was_codex_running: false,
+        previous_active_theme: None,
+    })
+    .map_err(|e| AppError::Engine(e.to_string()))?;
+    let outcome = (|| -> Result<(), AppError> {
+        let current = std::fs::read_to_string(&paths.config)
+            .map_err(|e| AppError::Internal(format!("读取 config.toml 失败: {e}")))?;
+        let planned = codex_theme_engine::native::plan_native_config(
+            &current,
+            &codex_theme_engine::native::snapshot_plan(snapshot),
+        )
+        .map_err(|e| AppError::Engine(e.to_string()))?;
+        tx.stage(&planned).map_err(|e| AppError::Engine(e.to_string()))?;
+        codex_theme_engine::native::write_config_atomic(&paths, &planned)
+            .map_err(|e| AppError::Engine(e.to_string()))?;
+        let on_disk = std::fs::read_to_string(&paths.config)
+            .map_err(|e| AppError::Internal(format!("回读 config.toml 失败: {e}")))?;
+        codex_theme_engine::native::verify_commit(&current, &planned, &on_disk)
+            .map_err(|e| AppError::Engine(e.to_string()))?;
+        tx.set_phase(Phase::ConfigCommitted)
+            .map_err(|e| AppError::Engine(e.to_string()))?;
+        Ok(())
+    })();
+    match outcome {
+        Ok(()) => tx.commit().map_err(|e| AppError::Engine(e.to_string())),
+        Err(error) => {
+            rollback_tx_to_preimage(tx, &paths, &error.to_string());
+            Err(error)
+        }
+    }
+}
+
+/// Startup recovery (SPEC §10): resolve any crashed native transaction by the
+/// default decision table, then reconcile a leftover try-on stash — a crash
+/// mid-try-on leaves Codex's persisted config themed while nothing was kept.
+pub fn recover_native_theme_on_startup() {
+    let (Ok(root), Ok(paths)) = (tx_root(), native_paths()) else {
+        return;
+    };
+    match transaction::recover_pending(&root, &paths.config) {
+        Ok(Some(action)) => log::warn!("native theme transaction recovery: {action:?}"),
+        Ok(None) => {}
+        Err(error) => log::warn!("native theme transaction recovery failed: {error}"),
+    }
+    if let Some(stash) = read_stash() {
+        let settings = AppSettings::load();
+        if settings.codex_theme.is_none() && !codex_running() {
+            match write_snapshot_with_tx(&stash.settings, "snapshot_restore") {
+                Ok(()) => {
+                    remove_stash();
+                    log::info!("restored pre-try-on native settings from stash");
+                }
+                Err(error) => log::warn!("try-on stash restore failed: {error}"),
+            }
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct ThemeService {
@@ -61,6 +190,11 @@ pub struct ThemeStatusReport {
     pub native_backup_present: bool,
     /// Where managed skins currently live (downloads/imports land here).
     pub store_dir: Option<PathBuf>,
+    /// A pre-try-on native settings stash exists (a try-on is undoable).
+    pub try_on_stash: bool,
+    /// An unresolved native transaction blocks further native theme ops (the
+    /// UI must surface a recovery entry instead of pretending all is well).
+    pub recovery_required: bool,
 }
 
 fn theme_supported() -> bool {
@@ -175,6 +309,106 @@ fn native_paths() -> Result<NativeThemePaths, AppError> {
         .ok_or_else(|| AppError::Internal("无法定位数据目录".to_string()))?
         .join("codex-theme-native-backup.json");
     Ok(NativeThemePaths { config, backup })
+}
+
+/// Transaction evidence root for the stopped-Codex file path (journal +
+/// preimage per mutation; see engine `transaction`).
+fn tx_root() -> Result<PathBuf, AppError> {
+    Ok(paths::data_dir()
+        .ok_or_else(|| AppError::Internal("无法定位数据目录".to_string()))?
+        .join("codex-theme-native-tx"))
+}
+
+// ── try-on stash ────────────────────────────────────────────────────────────
+// The official hot import persists immediately through Codex's own store, so
+// a try-on must first capture the user's live appearance settings; cancelling
+// hot-imports them back. Created once per try-on session (switching skins
+// keeps the ORIGINAL), consumed by 保留 (keep) or cancel.
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TryOnStash {
+    saved_at: String,
+    /// The most recently tried-on theme (informational).
+    theme_id: String,
+    settings: NativeSettingsSnapshot,
+}
+
+fn stash_path() -> Result<PathBuf, AppError> {
+    Ok(paths::data_dir()
+        .ok_or_else(|| AppError::Internal("无法定位数据目录".to_string()))?
+        .join("codex-theme-tryon-stash.json"))
+}
+
+fn read_stash() -> Option<TryOnStash> {
+    let path = stash_path().ok()?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn write_stash(theme_id: &str, settings: NativeSettingsSnapshot) -> Result<(), AppError> {
+    let path = stash_path()?;
+    let stash = TryOnStash {
+        saved_at: format!(
+            "unix:{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        ),
+        theme_id: theme_id.to_string(),
+        settings,
+    };
+    let rendered = serde_json::to_string_pretty(&stash)
+        .map_err(|e| AppError::Internal(format!("试穿备份序列化失败: {e}")))?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, rendered)
+        .and_then(|()| std::fs::rename(&tmp, &path))
+        .map_err(|e| AppError::Internal(format!("写入试穿备份失败: {e}")))
+}
+
+fn remove_stash() {
+    if let Ok(path) = stash_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Keeping a try-on consumes its undo stash (command layer hook).
+pub fn consume_try_on_stash() {
+    remove_stash();
+}
+
+// ── native block parsing ────────────────────────────────────────────────────
+
+/// Strict delivery-profile parse for the FULL apply path: missing/invalid
+/// codexTheme (including absent codeThemeIds) is a hard error — SPEC forbids
+/// writing half a native theme.
+fn strict_native(theme: &LoadedTheme) -> Result<CodexTheme, AppError> {
+    let block = theme.codex_theme.as_ref().ok_or_else(|| {
+        AppError::Engine("该主题包没有 codexTheme 原生主题块，无法完整应用".to_string())
+    })?;
+    parse_codex_theme(block, ValidateOptions::default())
+        .map_err(|e| AppError::Engine(e.to_string()))
+}
+
+/// Lenient parse for try-on: legacy packages without codeThemeIds degrade to
+/// palette-only; a malformed block degrades to CSS-only (logged, not fatal —
+/// a broken native block must not take the CSS try-on down with it).
+fn lenient_native(theme: &LoadedTheme) -> Option<CodexTheme> {
+    let block = theme.codex_theme.as_ref()?;
+    match parse_codex_theme(
+        block,
+        ValidateOptions {
+            require_code_theme_ids: false,
+            ..Default::default()
+        },
+    ) {
+        Ok(parsed) => Some(parsed),
+        Err(error) => {
+            log::warn!("codexTheme 校验失败，试穿降级为仅 CSS: {error}");
+            None
+        }
+    }
 }
 
 /// Which root a gallery entry came from. Dev packages shadow store packages
@@ -452,6 +686,10 @@ impl ThemeService {
     pub async fn status(&self, settings: &AppSettings) -> ThemeStatusReport {
         let cdp_ready = codex_theme_engine::cdp::cdp_http_ready(THEME_CDP_PORT).await;
         let native_backup = native_paths().map(|p| has_backup(&p)).unwrap_or(false);
+        let recovery_required = tx_root()
+            .ok()
+            .and_then(|root| transaction::pending_transaction(&root).ok().flatten())
+            .is_some();
         ThemeStatusReport {
             supported: theme_supported(),
             active_theme: settings.codex_theme.clone(),
@@ -460,28 +698,159 @@ impl ThemeService {
             codex_running: codex_running(),
             native_backup_present: native_backup,
             store_dir: store_dir(settings).ok(),
+            try_on_stash: read_stash().is_some(),
+            recovery_required,
         }
     }
 
-    /// Live try-on: requires a debuggable Codex on the theme port. Does not
-    /// touch persisted settings — the caller decides whether to keep it.
+    /// Live try-on: requires a debuggable Codex on the theme port. Hot-first
+    /// end to end — the native palettes/code themes hot-import through Codex's
+    /// own settings API (stashing the user's live values once per try-on
+    /// session, since the import persists immediately), then the CSS layer
+    /// injects. Does not touch the manager's persisted selection — the caller
+    /// decides whether to keep it.
     pub async fn try_on(&self, settings: &AppSettings, theme_ref: &str) -> Result<(), AppError> {
         if !theme_supported() {
             return Err(AppError::UnsupportedPlatform);
         }
+        ensure_no_pending_tx()?;
         let dir = resolve_theme(settings, theme_ref)?;
         // Validate eagerly so a broken package fails the command, not the
         // daemon's next tick.
-        load_theme(&dir).map_err(|e| AppError::Engine(e.to_string()))?;
+        let theme = load_theme(&dir).map_err(|e| AppError::Engine(e.to_string()))?;
         if !codex_theme_engine::cdp::cdp_http_ready(THEME_CDP_PORT).await {
             return Err(AppError::Engine(
                 "codex-not-debuggable: Codex 未以调试模式运行".to_string(),
             ));
         }
+        if let Some(native) = lenient_native(&theme) {
+            // Native hot-switch is best-effort for try-on: a failure degrades
+            // to CSS-only rather than blocking the whole try-on.
+            if let Err(error) = self.hot_apply_native(&theme.config.id, &native, true).await {
+                log::warn!("原生主题热切失败，试穿降级为仅 CSS: {error}");
+            }
+        }
         let handle = self.directive_handle().await;
         handle
             .send(Some(dir))
             .map_err(|_| AppError::Internal("主题守护未运行".to_string()))
+    }
+
+    /// Hot-write a theme's native settings over CDP (running Codex, official
+    /// settings path, live repaint). The file-level baseline is captured from
+    /// disk BEFORE the first write — the hot import persists through Codex
+    /// within moments, after which the disk no longer holds the user's state.
+    /// `stash_first` additionally captures the live values once per try-on
+    /// session so cancel can hot-restore them.
+    async fn hot_apply_native(
+        &self,
+        theme_id: &str,
+        native: &CodexTheme,
+        stash_first: bool,
+    ) -> Result<(), AppError> {
+        let paths = native_paths()?;
+        codex_theme_engine::native::backup_native_theme(&paths)
+            .map_err(|e| AppError::Engine(e.to_string()))?;
+
+        let mut targets =
+            codex_theme_engine::cdp::connect_codex_targets(THEME_CDP_PORT, Duration::from_secs(8))
+                .await
+                .map_err(|e| AppError::Engine(e.to_string()))?;
+        let session = targets.remove(0).session;
+        for extra in targets {
+            extra.session.close();
+        }
+
+        let outcome: Result<(), AppError> = async {
+            native_hot::ensure_api(&session)
+                .await
+                .map_err(|e| AppError::Engine(e.to_string()))?;
+            let before = native_hot::read_snapshot(&session)
+                .await
+                .map_err(|e| AppError::Engine(e.to_string()))?;
+            if stash_first && read_stash().is_none() {
+                write_stash(theme_id, before.clone())?;
+            }
+            let entries = native_hot::theme_write_entries(native);
+            if let Err(error) = native_hot::write_values(&session, &entries).await {
+                // Best-effort immediate revert to the pre-write values so a
+                // half-written palette never survives.
+                let revert = native_hot::snapshot_write_entries(&before);
+                if let Err(revert_error) = native_hot::write_values(&session, &revert).await {
+                    log::error!("原生设置写入失败且回写也失败: {revert_error}");
+                }
+                return Err(AppError::Engine(error.to_string()));
+            }
+            Ok(())
+        }
+        .await;
+        session.close();
+        outcome
+    }
+
+    /// Poll the daemon until it confirms the target theme on at least one
+    /// connected renderer (SPEC §8.9 — a directive `send` alone proves
+    /// nothing). Prewarm shells don't pass the daemon's Codex probe, so a
+    /// connected target is a real window.
+    async fn wait_daemon_theme(&self, theme_id: &str, timeout: Duration) -> Result<(), AppError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if let Some(status) = self.daemon_status().await {
+                if status.theme_id.as_deref() == Some(theme_id)
+                    && status.connected_targets > 0
+                    && status.last_error.is_none()
+                {
+                    return Ok(());
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(AppError::Engine(
+                    "注入确认超时：守护未能在 Codex 窗口确认主题".to_string(),
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(400)).await;
+        }
+    }
+
+    /// Cancel a try-on: remove the CSS layer and hot-import the stashed
+    /// pre-try-on native settings back. With Codex stopped the snapshot is
+    /// written straight into config.toml (transactionally) instead.
+    pub async fn cancel_try_on(&self) -> Result<(), AppError> {
+        self.turn_off_live().await?;
+        let Some(stash) = read_stash() else {
+            return Ok(());
+        };
+        if codex_theme_engine::cdp::cdp_http_ready(THEME_CDP_PORT).await {
+            let mut targets = codex_theme_engine::cdp::connect_codex_targets(
+                THEME_CDP_PORT,
+                Duration::from_secs(8),
+            )
+            .await
+            .map_err(|e| AppError::Engine(e.to_string()))?;
+            let session = targets.remove(0).session;
+            for extra in targets {
+                extra.session.close();
+            }
+            let entries = native_hot::snapshot_write_entries(&stash.settings);
+            let outcome = native_hot::write_values(&session, &entries).await;
+            session.close();
+            outcome.map_err(|e| AppError::Engine(e.to_string()))?;
+            remove_stash();
+            Ok(())
+        } else if !codex_running() {
+            let snapshot = stash.settings.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                write_snapshot_with_tx(&snapshot, "snapshot_restore")
+            })
+            .await
+            .map_err(|e| AppError::Internal(format!("试穿撤销任务失败: {e}")))??;
+            remove_stash();
+            Ok(())
+        } else {
+            Err(AppError::Engine(
+                "Codex 正在运行但没有调试端口，暂时无法撤销原生试穿——退出 Codex 后重试，或使用完全恢复".to_string(),
+            ))
+        }
     }
 
     /// Live removal (renderers back to stock). Persisted selection is cleared
@@ -514,27 +883,61 @@ impl ThemeService {
     }
 
     /// Try-on that first puts Codex into debug mode: graceful quit → relaunch
-    /// with the loopback CDP port → inject. Unlike the full apply it writes
-    /// NOTHING — no config.toml sections, no persisted selection; the top
-    /// banner's 保留 is what makes a try-on stick.
+    /// with the loopback CDP port → hot native + inject. It never writes
+    /// config.toml directly and never persists a selection; the top banner's
+    /// 保留 is what makes a try-on stick.
     pub async fn try_on_with_restart(
         &self,
         settings: &AppSettings,
         theme_ref: &str,
     ) -> Result<(), AppError> {
-        self.restart_debuggable_and_inject(settings, theme_ref, false)
+        self.restart_debuggable_and_inject(settings, theme_ref, NativeSync::Hot)
             .await
     }
 
-    /// Full apply: quiesce Codex, write the native appearance sections, then
-    /// relaunch with the loopback CDP port and inject. The only path that
-    /// writes config.toml, honoring "only while Codex is stopped".
+    /// Full apply, hot-first: with a debuggable Codex already up it is a pure
+    /// hot switch (official settings import + CSS, injection confirmed before
+    /// returning). Otherwise one restart into CDP mode, then the same hot
+    /// path; only if the hot path fails does it fall back to the stopped-
+    /// Codex transactional config.toml write.
     pub async fn apply_with_restart(
         &self,
         settings: &AppSettings,
         theme_ref: &str,
     ) -> Result<(), AppError> {
-        self.restart_debuggable_and_inject(settings, theme_ref, true)
+        if !theme_supported() {
+            return Err(AppError::UnsupportedPlatform);
+        }
+        ensure_no_pending_tx()?;
+        let dir = resolve_theme(settings, theme_ref)?;
+        let theme = load_theme(&dir).map_err(|e| AppError::Engine(e.to_string()))?;
+        let native = strict_native(&theme)?;
+        // §4 contract gate: both official share strings must derive and
+        // round-trip before anything is written anywhere.
+        codex_theme_engine::codex_theme::verified_share_strings(&native)
+            .map_err(|e| AppError::Engine(e.to_string()))?;
+        let theme_id = theme.config.id.clone();
+
+        if codex_theme_engine::cdp::cdp_http_ready(THEME_CDP_PORT).await {
+            match self.hot_apply_native(&theme_id, &native, false).await {
+                Ok(()) => {
+                    let handle = self.directive_handle().await;
+                    handle
+                        .send(Some(dir.clone()))
+                        .map_err(|_| AppError::Internal("主题守护未运行".to_string()))?;
+                    self.wait_daemon_theme(&theme_id, Duration::from_secs(30)).await?;
+                    remove_stash(); // applied == kept: the try-on stash is consumed
+                    return Ok(());
+                }
+                Err(error) => {
+                    log::warn!("热应用失败，降级为停机写 config.toml: {error}");
+                    return self
+                        .file_apply_flow(settings, &dir, &theme_id, &native)
+                        .await;
+                }
+            }
+        }
+        self.restart_debuggable_and_inject(settings, theme_ref, NativeSync::HotThenFile)
             .await
     }
 
@@ -542,25 +945,31 @@ impl ThemeService {
         &self,
         settings: &AppSettings,
         theme_ref: &str,
-        write_native: bool,
+        sync: NativeSync,
     ) -> Result<(), AppError> {
         if !theme_supported() {
             return Err(AppError::UnsupportedPlatform);
         }
+        ensure_no_pending_tx()?;
         let dir = resolve_theme(settings, theme_ref)?;
         let theme = load_theme(&dir).map_err(|e| AppError::Engine(e.to_string()))?;
+        let theme_id = theme.config.id.clone();
+        let native = match sync {
+            NativeSync::Hot => lenient_native(&theme),
+            NativeSync::HotThenFile => {
+                let strict = strict_native(&theme)?;
+                codex_theme_engine::codex_theme::verified_share_strings(&strict)
+                    .map_err(|e| AppError::Engine(e.to_string()))?;
+                Some(strict)
+            }
+        };
 
+        // Plain relaunch into CDP mode — the native layer is synced hot after
+        // the debug port is up, so nothing here races Codex's config persist.
         let disable_self_updates = settings.disable_codex_self_updates;
-        let codex_theme_block = theme.codex_theme.clone().filter(|_| write_native);
         tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
             let installed = installed_codex_path()?;
             quit_codex(&installed)?;
-            if let Some(block) = &codex_theme_block {
-                std::thread::sleep(CONFIG_SETTLE);
-                let paths = native_paths()?;
-                codex_theme_engine::native::apply_native_theme(&paths, block)
-                    .map_err(|e| AppError::Engine(e.to_string()))?;
-            }
             launch_codex_with_cdp(&installed, THEME_CDP_PORT, disable_self_updates)
         })
         .await
@@ -575,18 +984,179 @@ impl ThemeService {
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
+
+        if let Some(native) = &native {
+            let stash_first = matches!(sync, NativeSync::Hot);
+            match self.hot_apply_native(&theme_id, native, stash_first).await {
+                Ok(()) => {}
+                Err(error) if matches!(sync, NativeSync::HotThenFile) => {
+                    log::warn!("热应用失败，降级为停机写 config.toml: {error}");
+                    return self
+                        .file_apply_flow(settings, &dir, &theme_id, native)
+                        .await;
+                }
+                Err(error) => {
+                    log::warn!("原生主题热切失败，试穿降级为仅 CSS: {error}");
+                }
+            }
+        }
+
         let handle = self.directive_handle().await;
         handle
             .send(Some(dir))
-            .map_err(|_| AppError::Internal("主题守护未运行".to_string()))
+            .map_err(|_| AppError::Internal("主题守护未运行".to_string()))?;
+        if matches!(sync, NativeSync::HotThenFile) {
+            self.wait_daemon_theme(&theme_id, Duration::from_secs(30)).await?;
+            remove_stash();
+        }
+        Ok(())
     }
 
-    /// Full restore: live removal + quiesce Codex, put the user's original
-    /// appearance sections back, relaunch plainly (no CDP port).
+    /// The stopped-Codex fallback (SPEC §8): quiesce → transactional
+    /// config.toml write (preimage + journal + staged + post-verify) →
+    /// relaunch debuggable → inject → daemon confirmation → commit. Any
+    /// failure after the config commit rolls the preimage back and restores
+    /// the previous run state.
+    async fn file_apply_flow(
+        &self,
+        settings: &AppSettings,
+        dir: &Path,
+        theme_id: &str,
+        native: &CodexTheme,
+    ) -> Result<(), AppError> {
+        let disable_self_updates = settings.disable_codex_self_updates;
+        let previous_active = settings.codex_theme.clone();
+        let native_clone = native.clone();
+        let id = theme_id.to_string();
+
+        // Blocking half: quit, settle, write-under-transaction, relaunch.
+        let mut tx = tauri::async_runtime::spawn_blocking(
+            move || -> Result<NativeTransaction, AppError> {
+                let installed = installed_codex_path()?;
+                let was_running = codex_running();
+                quit_codex(&installed)?;
+                std::thread::sleep(CONFIG_SETTLE);
+                let paths = native_paths()?;
+                let root = tx_root()?;
+                let mut tx = NativeTransaction::begin(BeginInput {
+                    root: &root,
+                    config: &paths.config,
+                    operation: "apply",
+                    theme_id: Some(id.clone()),
+                    was_codex_running: was_running,
+                    previous_active_theme: previous_active,
+                })
+                .map_err(|e| AppError::Engine(e.to_string()))?;
+                let staged_write = (|| -> Result<(), AppError> {
+                    tx.set_phase(Phase::CodexStopped)
+                        .map_err(|e| AppError::Engine(e.to_string()))?;
+                    codex_theme_engine::native::backup_native_theme(&paths)
+                        .map_err(|e| AppError::Engine(e.to_string()))?;
+                    let current = std::fs::read_to_string(&paths.config)
+                        .map_err(|e| AppError::Internal(format!("读取 config.toml 失败: {e}")))?;
+                    let planned = codex_theme_engine::native::plan_native_config(
+                        &current,
+                        &codex_theme_engine::native::apply_plan(&native_clone),
+                    )
+                    .map_err(|e| AppError::Engine(e.to_string()))?;
+                    tx.stage(&planned).map_err(|e| AppError::Engine(e.to_string()))?;
+                    codex_theme_engine::native::write_config_atomic(&paths, &planned)
+                        .map_err(|e| AppError::Engine(e.to_string()))?;
+                    let on_disk = std::fs::read_to_string(&paths.config)
+                        .map_err(|e| AppError::Internal(format!("回读 config.toml 失败: {e}")))?;
+                    codex_theme_engine::native::verify_commit(&current, &planned, &on_disk)
+                        .map_err(|e| AppError::Engine(e.to_string()))?;
+                    tx.set_phase(Phase::ConfigCommitted)
+                        .map_err(|e| AppError::Engine(e.to_string()))?;
+                    Ok(())
+                })();
+                match staged_write {
+                    Ok(()) => {
+                        launch_codex_with_cdp(&installed, THEME_CDP_PORT, disable_self_updates)?;
+                        let _ = tx.set_phase(Phase::CodexLaunched);
+                        Ok(tx)
+                    }
+                    Err(error) => {
+                        rollback_tx_to_preimage(tx, &paths, &error.to_string());
+                        // Codex was quit but nothing was committed — put the
+                        // previous run state back.
+                        if was_running {
+                            let _ = crate::app::mac_update::launch_codex();
+                        }
+                        Err(error)
+                    }
+                }
+            },
+        )
+        .await
+        .map_err(|e| AppError::Internal(format!("主题应用任务失败: {e}")))??;
+
+        // Async half: CDP ready → inject → daemon confirmation → commit.
+        let post_launch: Result<(), AppError> = async {
+            let deadline = tokio::time::Instant::now() + CDP_WAIT;
+            while !codex_theme_engine::cdp::cdp_http_ready(THEME_CDP_PORT).await {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(AppError::Engine(
+                        "Codex 已启动但调试端口未就绪".to_string(),
+                    ));
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            let handle = self.directive_handle().await;
+            handle
+                .send(Some(dir.to_path_buf()))
+                .map_err(|_| AppError::Internal("主题守护未运行".to_string()))?;
+            self.wait_daemon_theme(theme_id, Duration::from_secs(30)).await?;
+            Ok(())
+        }
+        .await;
+
+        match post_launch {
+            Ok(()) => {
+                let _ = tx.set_phase(Phase::InjectionVerified);
+                tx.commit().map_err(|e| AppError::Engine(e.to_string()))?;
+                remove_stash();
+                Ok(())
+            }
+            Err(error) => {
+                // §9: config already committed — quiesce, restore preimage,
+                // and put the previous state back as far as possible.
+                let was_running = tx.journal().was_codex_running;
+                let error_text = error.to_string();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let paths = match native_paths() {
+                        Ok(paths) => paths,
+                        Err(e) => {
+                            let _ = tx.recovery_required(&format!("{error_text}; 回滚失败: {e}"));
+                            return;
+                        }
+                    };
+                    if let Ok(installed) = installed_codex_path() {
+                        let _ = quit_codex(&installed);
+                        std::thread::sleep(CONFIG_SETTLE);
+                    }
+                    rollback_tx_to_preimage(tx, &paths, &error_text);
+                    if was_running {
+                        let _ = crate::app::mac_update::launch_codex();
+                    }
+                })
+                .await
+                .map_err(|e| AppError::Internal(format!("回滚任务失败: {e}")))?;
+                Err(error)
+            }
+        }
+    }
+
+    /// Full restore (SPEC §11 off_full): live removal + quiesce Codex, put
+    /// every managed unit back from the baseline under a transaction (an
+    /// introduced key/section is deleted, the user's raw lines return
+    /// verbatim), relaunch plainly (no CDP port). The baseline is only
+    /// dropped after the restore commit verified.
     pub async fn off_full(&self) -> Result<(), AppError> {
         if !theme_supported() {
             return Err(AppError::UnsupportedPlatform);
         }
+        ensure_no_pending_tx()?;
         self.turn_off_live().await?;
         tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
             let installed = installed_codex_path()?;
@@ -594,12 +1164,64 @@ impl ThemeService {
             quit_codex(&installed)?;
             std::thread::sleep(CONFIG_SETTLE);
             let paths = native_paths()?;
-            codex_theme_engine::native::restore_native_theme(&paths)
-                .map_err(|e| AppError::Engine(e.to_string()))?;
-            if was_running {
-                crate::app::mac_update::launch_codex()?;
+            if !has_backup(&paths) {
+                // Nothing to restore — still honor the run state.
+                if was_running {
+                    crate::app::mac_update::launch_codex()?;
+                }
+                remove_stash();
+                return Ok(());
             }
-            Ok(())
+            let root = tx_root()?;
+            let mut tx = NativeTransaction::begin(BeginInput {
+                root: &root,
+                config: &paths.config,
+                operation: "off_full",
+                theme_id: None,
+                was_codex_running: was_running,
+                previous_active_theme: None,
+            })
+            .map_err(|e| AppError::Engine(e.to_string()))?;
+            let outcome = (|| -> Result<(), AppError> {
+                tx.set_phase(Phase::CodexStopped)
+                    .map_err(|e| AppError::Engine(e.to_string()))?;
+                let current = std::fs::read_to_string(&paths.config)
+                    .map_err(|e| AppError::Internal(format!("读取 config.toml 失败: {e}")))?;
+                let planned = codex_theme_engine::native::planned_restore_text(&paths, &current)
+                    .map_err(|e| AppError::Engine(e.to_string()))?
+                    .ok_or_else(|| AppError::Engine("原生备份缺失".to_string()))?;
+                tx.stage(&planned).map_err(|e| AppError::Engine(e.to_string()))?;
+                codex_theme_engine::native::write_config_atomic(&paths, &planned)
+                    .map_err(|e| AppError::Engine(e.to_string()))?;
+                let on_disk = std::fs::read_to_string(&paths.config)
+                    .map_err(|e| AppError::Internal(format!("回读 config.toml 失败: {e}")))?;
+                codex_theme_engine::native::verify_commit(&current, &planned, &on_disk)
+                    .map_err(|e| AppError::Engine(e.to_string()))?;
+                tx.set_phase(Phase::ConfigCommitted)
+                    .map_err(|e| AppError::Engine(e.to_string()))?;
+                Ok(())
+            })();
+            match outcome {
+                Ok(()) => {
+                    // Restore committed and verified — only now may the
+                    // baseline go away.
+                    codex_theme_engine::native::drop_backup(&paths)
+                        .map_err(|e| AppError::Engine(e.to_string()))?;
+                    tx.commit().map_err(|e| AppError::Engine(e.to_string()))?;
+                    remove_stash();
+                    if was_running {
+                        crate::app::mac_update::launch_codex()?;
+                    }
+                    Ok(())
+                }
+                Err(error) => {
+                    rollback_tx_to_preimage(tx, &paths, &error.to_string());
+                    if was_running {
+                        let _ = crate::app::mac_update::launch_codex();
+                    }
+                    Err(error)
+                }
+            }
         })
         .await
         .map_err(|e| AppError::Internal(format!("主题还原任务失败: {e}")))?

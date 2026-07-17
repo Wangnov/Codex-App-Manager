@@ -18,11 +18,14 @@
 //! discipline (see that file's comments) and must be edited there, not here.
 
 pub mod cdp;
+pub mod codex_theme;
 pub mod daemon;
 pub mod import;
 pub mod native;
+pub mod native_hot;
 pub mod payload;
 pub mod theme;
+pub mod transaction;
 
 /// Engine version stamped into every payload; the renderer's verify pass
 /// checks it, so an engine upgrade re-injects on the next daemon tick.

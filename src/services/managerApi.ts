@@ -500,6 +500,8 @@ const BROWSER_FALLBACK_THEME_STATUS: CodexThemeStatusReport = {
   codexRunning: false,
   nativeBackupPresent: false,
   storeDir: null,
+  tryOnStash: false,
+  recoveryRequired: false,
 };
 
 // ── Contract guards ──────────────────────────────────────────────────────────
@@ -896,12 +898,22 @@ export const managerApi = {
     }
     return invoke<CodexThemeStatusReport>("codex_theme_apply", { themeRef });
   },
-  /** Turn the theme off; `full` also restores original config.toml sections. */
+  /** Turn the theme off. `full` restores every managed native unit from the
+   *  baseline and clears the selection; otherwise it only pauses the CSS
+   *  injection for this session (native palette stays enabled). */
   codexThemeOff(full: boolean): Promise<CodexThemeStatusReport> {
     if (!hasTauriRuntime()) {
       return Promise.resolve({ ...BROWSER_FALLBACK_THEME_STATUS, activeTheme: null });
     }
     return invoke<CodexThemeStatusReport>("codex_theme_off", { full });
+  },
+  /** Cancel an unkept try-on: CSS off + restore the pre-try-on native
+   *  settings from the stash. */
+  codexThemeCancel(): Promise<CodexThemeStatusReport> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve({ ...BROWSER_FALLBACK_THEME_STATUS });
+    }
+    return invoke<CodexThemeStatusReport>("codex_theme_cancel");
   },
   /** Pick and install a .codexskin; null when the user cancels the picker. */
   codexThemeImport(): Promise<CodexThemeSummary | null> {

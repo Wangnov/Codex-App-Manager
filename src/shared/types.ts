@@ -611,6 +611,10 @@ export interface CodexThemeStatusReport {
   nativeBackupPresent: boolean;
   /** Where managed skins currently live (downloads/imports land here). */
   storeDir: string | null;
+  /** A pre-try-on native settings stash exists (the try-on is undoable). */
+  tryOnStash: boolean;
+  /** An unresolved native transaction blocks native theme operations. */
+  recoveryRequired: boolean;
 }
 
 /** Result of relocating the skin store. */
