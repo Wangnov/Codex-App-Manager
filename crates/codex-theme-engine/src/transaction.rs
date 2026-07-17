@@ -168,7 +168,19 @@ impl LockGuard {
                 .map(|s| !s.success())
                 .unwrap_or(false)
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            // A live pid shows up as a CSV row quoting it; the locale-varying
+            // "no tasks" info line never contains the quoted pid.
+            std::process::Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+                .output()
+                .map(|o| {
+                    !String::from_utf8_lossy(&o.stdout).contains(&format!("\"{pid}\""))
+                })
+                .unwrap_or(false)
+        }
+        #[cfg(all(not(unix), not(windows)))]
         {
             lock_age_secs(path).map(|a| a > 3600).unwrap_or(false)
         }
