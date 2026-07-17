@@ -118,6 +118,52 @@
   const EXTENDED_ICONS = new Set(["settings", "folder"]);
   const PROJECT_ROW_SELECTOR = "[data-project-row], [data-app-action-sidebar-project-row]";
 
+  // ── Workspace wordmark → logo variant ─────────────────────────────────────
+  // Structural class names (app-shell-left-panel, main-surface, …) have held
+  // stable across releases, so the CSS layer is version-robust. What drifts is
+  // the workspace *wordmark* — the 2026-07 ChatGPT rebrand renamed it from
+  // "ChatGPT 工作" / "ChatGPT Work" (Codex ≤ 26.707) to a bare "ChatGPT"
+  // (26.715+). The styled logo art is baked with the words it shows, so the
+  // OLD art must keep serving old clients while regenerated art serves new
+  // ones. The choice is driven by the Codex *version*, not the wordmark text:
+  // the text is localized (工作/Work/…) but the version is not, so version is
+  // the robust, locale-independent signal for which art matches the shell.
+  // Text below only *locates* the workspace button and splits personal(Codex)
+  // vs work(ChatGPT) — it never selects the old/new art. Adapting to a future
+  // wordmark change = one more boundary here plus its regenerated art, never a
+  // per-user migration; the CSS falls `chatgpt` back to `chatgpt-work` art so
+  // a theme that hasn't shipped the new art yet degrades instead of blanking.
+  const codexVersion = () => {
+    try {
+      const v = window.electronBridge?.getSentryInitOptions?.()?.appVersion;
+      return typeof v === "string" && /^\d+\./.test(v) ? v : null;
+    } catch {
+      return null;
+    }
+  };
+  const versionAtLeast = (version, floor) => {
+    const a = String(version).split(".");
+    const b = floor.split(".");
+    for (let i = 0; i < b.length; i += 1) {
+      const d = (parseInt(a[i], 10) || 0) - (parseInt(b[i], 10) || 0);
+      if (d !== 0) return d > 0;
+    }
+    return true;
+  };
+  // The work-wordmark art for THIS Codex. Undetected version → current-
+  // generation art (`chatgpt`), which the CSS degrades to `chatgpt-work` when
+  // a theme hasn't shipped the regenerated asset.
+  const WORK_LOGO = (() => {
+    const version = codexVersion();
+    return version && !versionAtLeast(version, "26.715") ? "chatgpt-work" : "chatgpt";
+  })();
+  const workspaceLogo = (text) => {
+    if (/^Codex$/i.test(text)) return "codex";
+    if (/^ChatGPT( ?(工作|Work))?$/i.test(text)) return WORK_LOGO;
+    return null;
+  };
+  const isWorkspaceTitle = (text) => workspaceLogo(text) !== null;
+
   // settings/folder annotation was added after the original 14-glyph runtime.
   // Gate those two on an explicit theme rule so older themes that hide native
   // paths without mapping the new glyphs never render blank controls.
@@ -206,8 +252,7 @@
     if (aside) {
       for (const button of aside.querySelectorAll("button:not([data-cts-icon])")) {
         const text = (button.textContent || "").replace(/\s+/g, " ").trim();
-        const isWorkspace = text === "Codex" || /^ChatGPT ?(工作|Work)$/i.test(text);
-        if (isWorkspace) {
+        if (isWorkspaceTitle(text)) {
           clearGlyph(button);
           continue;
         }
@@ -233,24 +278,23 @@
         'button, a, [role="button"], [data-project-row], [data-app-action-sidebar-project-row]'
       )) {
         const controlText = (control.textContent || "").replace(/\s+/g, " ").trim();
-        if (controlText === "Codex" || /^ChatGPT ?(工作|Work)$/i.test(controlText)) continue;
+        if (isWorkspaceTitle(controlText)) continue;
         const row = control.closest(PROJECT_ROW_SELECTOR);
         if (row && row !== control) continue;
         if (isProjectControl(control)) tagGlyph(control, "folder");
       }
-      // Workspace title → theme-specific logo. The title text is split across
-      // child spans ("ChatGPT" + "工作"), so match on the whole button and
-      // re-evaluate every pass (the same button swaps text on switch).
+      // Workspace title → theme-specific logo. Text can be split across child
+      // spans and swaps on workspace switch, so match the whole button every
+      // pass. The active UI profile owns the text→variant mapping, absorbing
+      // wordmark drift (e.g. the 26.715 "ChatGPT 工作"→"ChatGPT" rebrand).
       for (const button of aside.querySelectorAll("button")) {
         const text = button.textContent.replace(/\s+/g, " ").trim();
-        const isCodex = text === "Codex";
-        const isWork = /^ChatGPT ?(工作|Work)$/i.test(text);
-        if (!isCodex && !isWork) {
+        const want = workspaceLogo(text);
+        if (!want) {
           if (button.dataset.ctsLogo) delete button.dataset.ctsLogo;
           continue;
         }
         clearGlyph(button);
-        const want = isCodex ? "codex" : "chatgpt-work";
         if (button.dataset.ctsLogo !== want) button.dataset.ctsLogo = want;
       }
     }
