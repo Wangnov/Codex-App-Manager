@@ -399,6 +399,508 @@ const INSTALLED_MSIX_OBJECT: &str = r#"@{
 }"#;
 
 #[cfg(windows)]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OfflineAppxConflictReport {
+    active: bool,
+    activity_id: Option<String>,
+    file_id: Option<String>,
+    message: String,
+}
+
+#[cfg(windows)]
+fn parse_offline_appx_conflict_probe(
+    result: Result<String, PowerShellRunError>,
+) -> Option<OfflineAppxConflictReport> {
+    let json = match result {
+        Ok(json) => json,
+        Err(err) => {
+            log::warn!(
+                "offline AppX conflict probe unavailable; proceeding with verified local MSIX error={}",
+                err.message()
+            );
+            return None;
+        }
+    };
+    match serde_json::from_str(&json) {
+        Ok(report) => Some(report),
+        Err(err) => {
+            log::warn!(
+                "offline AppX conflict probe returned invalid JSON; proceeding with verified local MSIX error={err}"
+            );
+            None
+        }
+    }
+}
+
+#[cfg(windows)]
+fn validated_delivery_optimization_file_id(value: Option<String>) -> String {
+    let value = value.unwrap_or_default();
+    if value.is_empty()
+        || ((40..=128).contains(&value.len())
+            && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return value;
+    }
+    // The AppX event names this field `Path`; builds may emit an actual path or
+    // URI instead of a Delivery Optimization FileId. Cache cleanup is optional,
+    // so ignore an untrusted shape without blocking the verified local MSIX.
+    log::warn!(
+        "AppX conflict event had a non-FileId Path payload; skipping Delivery Optimization cache cleanup"
+    );
+    String::new()
+}
+
+#[cfg(windows)]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ElevatedRecoveryLaunchReport {
+    started: bool,
+    exit_code: i32,
+    error: String,
+}
+
+#[cfg(windows)]
+struct OfflineAppxRestoreGuard {
+    signal: Option<PathBuf>,
+}
+
+#[cfg(windows)]
+const OFFLINE_APPX_RESTORE_WATCHDOG_SECS: u64 = 10 * 60;
+
+/// Leave enough time before the unelevated launcher's hard deadline for the
+/// elevated watchdog to terminate a wedged recovery helper and restart the
+/// services it paused. This deadline is absolute, so time spent on the UAC
+/// prompt cannot create a detached five-minute recovery window of its own.
+#[cfg(windows)]
+const OFFLINE_APPX_RECOVERY_CLEANUP_MARGIN_SECS: u64 = 60;
+
+#[cfg(windows)]
+impl Drop for OfflineAppxRestoreGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.signal.take() {
+            if let Err(err) = std::fs::write(&path, b"restore") {
+                log::error!(
+                    "signal Windows update service restoration failed path={} error={err}",
+                    path.display()
+                );
+            } else {
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(10));
+                    let _ = std::fs::remove_file(path);
+                });
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn detect_offline_appx_conflict_script(package_moniker: &str) -> String {
+    format!(
+        r#"
+$ErrorActionPreference = 'Stop'
+$TargetMoniker = {package_moniker}
+$DeploymentLog = 'Microsoft-Windows-AppXDeploymentServer/Operational'
+
+function Get-ActiveWindowsUpdateDeployment {{
+  try {{
+    $starts = @(Get-WinEvent -FilterHashtable @{{
+      LogName = $DeploymentLog
+      Id = 10002
+      StartTime = (Get-Date).AddDays(-7)
+    }} -ErrorAction Stop)
+    foreach ($event in $starts) {{
+      $xml = [xml]$event.ToXml()
+      $moniker = @($xml.Event.EventData.Data |
+        Where-Object {{ $_.Name -eq 'MainPackageMoniker' }} |
+        Select-Object -First 1)
+      if ($moniker.Count -eq 0 -or [string]$moniker[0].'#text' -ne $TargetMoniker) {{ continue }}
+      $activityId = $event.ActivityId.ToString('B')
+      $related = @(Get-WinEvent -LogName $DeploymentLog -FilterXPath "*[System[Correlation[@ActivityID='$activityId']]]" -ErrorAction Stop)
+      $terminal = @($related | Where-Object {{ 400, 401, 404 -contains [int]$_.Id }})
+      if ($terminal.Count -gt 0) {{ continue }}
+      $wuStart = @($related | Where-Object {{ [int]$_.Id -eq 603 }} | Select-Object -First 1)
+      if ($wuStart.Count -eq 0) {{ continue }}
+      $wuXml = [xml]$wuStart[0].ToXml()
+      $operation = [string](@($wuXml.Event.EventData.Data | Where-Object {{ $_.Name -eq 'DeploymentOperation' }} | Select-Object -First 1)[0].'#text')
+      $caller = [string](@($wuXml.Event.EventData.Data | Where-Object {{ $_.Name -eq 'CallingProcess' }} | Select-Object -First 1)[0].'#text')
+      $owner = [string]$wuXml.Event.System.Security.UserID
+      if ($operation -ne '4' -or $caller -notmatch '(^|,)wuauserv($|,)' -or $owner -ne 'S-1-5-18') {{ continue }}
+      $pathData = @($wuXml.Event.EventData.Data | Where-Object {{ $_.Name -eq 'Path' }} | Select-Object -First 1)
+      $fileId = if ($pathData.Count -gt 0) {{ [string]$pathData[0].'#text' }} else {{ '' }}
+      return @{{ activityId = $activityId; fileId = $fileId }}
+    }}
+  }} catch {{
+    return $null
+  }}
+  return $null
+}}
+
+$activeDeployment = Get-ActiveWindowsUpdateDeployment
+if ($null -eq $activeDeployment) {{
+  @{{ active = $false; activityId = $null; fileId = $null; message = 'No conflicting SYSTEM Windows Update deployment' }} |
+    ConvertTo-Json -Compress -Depth 3
+  exit 0
+}}
+@{{
+  active = $true
+  activityId = [string]$activeDeployment.activityId
+  fileId = [string]$activeDeployment.fileId
+  message = 'SYSTEM Windows Update owns an active stage operation for the exact target package'
+}} | ConvertTo-Json -Compress -Depth 3
+"#,
+        package_moniker = ps_quote(package_moniker),
+    )
+}
+
+#[cfg(windows)]
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(((bytes.len() + 2) / 3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        encoded.push(TABLE[(first >> 2) as usize] as char);
+        encoded.push(TABLE[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
+        encoded.push(if chunk.len() > 1 {
+            TABLE[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        encoded.push(if chunk.len() > 2 {
+            TABLE[(third & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    encoded
+}
+
+#[cfg(windows)]
+fn encode_powershell_command(script: &str) -> String {
+    let bytes = script
+        .encode_utf16()
+        .flat_map(|unit| unit.to_le_bytes())
+        .collect::<Vec<_>>();
+    base64_encode(&bytes)
+}
+
+/// Builds the narrowly scoped elevated recovery as an inline command. No
+/// executable script is written to a user-writable directory; temporary paths
+/// are one-way state markers shared with the elevated watchdogs.
+#[cfg(windows)]
+fn offline_appx_recovery_script(
+    package_moniker: &str,
+    activity_id: &str,
+    file_id: &str,
+    restore_signal: &Path,
+    recovery_started_signal: &Path,
+    recovery_done_signal: &Path,
+    recovery_timed_out_signal: &Path,
+    recovery_deadline_unix_ms: u64,
+) -> String {
+    format!(
+        r#"
+$ErrorActionPreference = 'Stop'
+$DeploymentLog = 'Microsoft-Windows-AppXDeploymentServer/Operational'
+$TargetMoniker = {package_moniker}
+$ActivityId = {activity_id}
+$FileId = {file_id}
+$RestoreSignal = {restore_signal}
+$RecoveryStartedSignal = {recovery_started_signal}
+$RecoveryDoneSignal = {recovery_done_signal}
+$RecoveryTimedOutSignal = {recovery_timed_out_signal}
+$RecoveryDeadlineUnixMs = [int64]{recovery_deadline_unix_ms}
+$stopped = @()
+
+# This marker is written before any service/process mutation. The unelevated
+# caller uses it to distinguish a harmless UAC/launcher timeout from an
+# elevated helper whose outcome must be treated as ambiguous.
+Set-Content -LiteralPath $RecoveryStartedSignal -Value 'started' -Force -ErrorAction Stop
+
+function Restore-PausedServices([string]$Names) {{
+  foreach ($name in @($Names -split ',' | Where-Object {{ -not [string]::IsNullOrWhiteSpace($_) }})) {{
+    try {{ Start-Service -Name $name -ErrorAction Stop }} catch {{}}
+  }}
+}}
+
+function Signal-RecoveryFinished {{
+  Set-Content -LiteralPath $RecoveryDoneSignal -Value 'done' -Force -ErrorAction SilentlyContinue
+}}
+
+function Start-RecoveryDeadlineWatchdog([string]$Names) {{
+  $helperPid = [uint32]$PID
+  $helperStarted = (Get-Process -Id $helperPid -ErrorAction Stop).StartTime.ToFileTimeUtc()
+  $escapedServices = $Names.Replace("'", "''")
+  $escapedSignal = $RecoveryDoneSignal.Replace("'", "''")
+  $escapedTimedOutSignal = $RecoveryTimedOutSignal.Replace("'", "''")
+  $deadlineTemplate = @'
+$ErrorActionPreference = 'SilentlyContinue'
+$deadline = [DateTimeOffset]::FromUnixTimeMilliseconds(__DEADLINE__).UtcDateTime
+$signal = '__SIGNAL__'
+while (-not (Test-Path -LiteralPath $signal) -and [DateTime]::UtcNow -lt $deadline) {{ Start-Sleep -Seconds 1 }}
+if (Test-Path -LiteralPath $signal) {{ Remove-Item -LiteralPath $signal -Force -ErrorAction SilentlyContinue; exit 0 }}
+$timedOutSignal = '__TIMED_OUT_SIGNAL__'
+$null = New-Item -ItemType File -Path $timedOutSignal -Force -ErrorAction SilentlyContinue
+$helper = Get-Process -Id __HELPER_PID__ -ErrorAction SilentlyContinue
+if ($null -ne $helper -and $helper.StartTime.ToFileTimeUtc() -eq [int64]__HELPER_STARTED__) {{ Stop-Process -Id __HELPER_PID__ -Force -ErrorAction SilentlyContinue }}
+foreach ($name in @('__SERVICES__' -split ',' | Where-Object {{ -not [string]::IsNullOrWhiteSpace($_) }})) {{ Start-Service -Name $name -ErrorAction SilentlyContinue }}
+'@
+  $deadlineScript = $deadlineTemplate.Replace('__DEADLINE__', [string]$RecoveryDeadlineUnixMs).Replace('__SIGNAL__', $escapedSignal).Replace('__TIMED_OUT_SIGNAL__', $escapedTimedOutSignal).Replace('__HELPER_PID__', [string]$helperPid).Replace('__HELPER_STARTED__', [string]$helperStarted).Replace('__SERVICES__', $escapedServices)
+  $encodedDeadline = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($deadlineScript))
+  Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList ('-NoProfile -NonInteractive -EncodedCommand ' + $encodedDeadline) -WindowStyle Hidden -ErrorAction Stop | Out-Null
+}}
+
+function Start-RestoreWatchdog([string]$Names) {{
+  $escapedServices = $Names.Replace("'", "''")
+  $escapedSignal = $RestoreSignal.Replace("'", "''")
+  $restoreTemplate = @'
+$ErrorActionPreference = 'SilentlyContinue'
+$deadline = (Get-Date).AddSeconds({restore_watchdog_secs})
+$signal = '__SIGNAL__'
+while (-not (Test-Path -LiteralPath $signal) -and (Get-Date) -lt $deadline) {{ Start-Sleep -Seconds 1 }}
+foreach ($name in @('__SERVICES__' -split ',' | Where-Object {{ -not [string]::IsNullOrWhiteSpace($_) }})) {{ Start-Service -Name $name -ErrorAction SilentlyContinue }}
+'@
+  $restoreScript = $restoreTemplate.Replace('__SIGNAL__', $escapedSignal).Replace('__SERVICES__', $escapedServices)
+  $encodedRestore = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($restoreScript))
+  Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList ('-NoProfile -NonInteractive -EncodedCommand ' + $encodedRestore) -WindowStyle Hidden -ErrorAction Stop | Out-Null
+}}
+
+try {{
+  # Arm restoration before the first service/process mutation. If this elevated
+  # helper itself hangs, the independent elevated watchdog still restores every
+  # service that was running when recovery began.
+  foreach ($name in @('InstallService', 'wuauserv', 'DoSvc', 'AppXSvc', 'ClipSVC')) {{
+    $service = Get-Service -Name $name -ErrorAction SilentlyContinue
+    if ($null -ne $service -and $service.Status -eq 'Running' -and $stopped -notcontains $name) {{
+      $stopped += $name
+    }}
+  }}
+  if ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -ge $RecoveryDeadlineUnixMs) {{
+    throw 'Offline AppX recovery deadline expired before mutation began'
+  }}
+  Start-RecoveryDeadlineWatchdog ($stopped -join ',')
+  Start-RestoreWatchdog ($stopped -join ',')
+
+  $related = @(Get-WinEvent -LogName $DeploymentLog -FilterXPath "*[System[Correlation[@ActivityID='$ActivityId']]]" -ErrorAction Stop)
+  $terminal = @($related | Where-Object {{ 400, 401, 404 -contains [int]$_.Id }})
+  if ($terminal.Count -gt 0) {{
+    Signal-RecoveryFinished
+    exit 0
+  }}
+  $packageStart = @($related | Where-Object {{ [int]$_.Id -eq 10002 }} | Select-Object -First 1)
+  $wuStart = @($related | Where-Object {{ [int]$_.Id -eq 603 }} | Select-Object -First 1)
+  if ($packageStart.Count -eq 0 -or $wuStart.Count -eq 0) {{ throw 'AppX activity no longer has the expected start events' }}
+  $packageXml = [xml]$packageStart[0].ToXml()
+  $wuXml = [xml]$wuStart[0].ToXml()
+  $moniker = [string](@($packageXml.Event.EventData.Data | Where-Object {{ $_.Name -eq 'MainPackageMoniker' }} | Select-Object -First 1)[0].'#text')
+  $operation = [string](@($wuXml.Event.EventData.Data | Where-Object {{ $_.Name -eq 'DeploymentOperation' }} | Select-Object -First 1)[0].'#text')
+  $caller = [string](@($wuXml.Event.EventData.Data | Where-Object {{ $_.Name -eq 'CallingProcess' }} | Select-Object -First 1)[0].'#text')
+  $owner = [string]$wuXml.Event.System.Security.UserID
+  if ($moniker -ne $TargetMoniker -or $operation -ne '4' -or $caller -notmatch '(^|,)wuauserv($|,)' -or $owner -ne 'S-1-5-18') {{
+    throw 'Refusing to reset an AppX activity that is not the exact SYSTEM Windows Update stage operation'
+  }}
+
+  foreach ($name in @('InstallService', 'wuauserv')) {{
+    $service = Get-Service -Name $name -ErrorAction SilentlyContinue
+    if ($null -ne $service -and $service.Status -eq 'Running') {{
+      Stop-Service -Name $name -Force -ErrorAction Stop
+    }}
+  }}
+
+  if (-not [string]::IsNullOrWhiteSpace($FileId)) {{
+    $delivery = @()
+    if ($null -ne (Get-Command Get-DeliveryOptimizationStatus -ErrorAction SilentlyContinue)) {{
+      $delivery = @(Get-DeliveryOptimizationStatus -ErrorAction SilentlyContinue |
+        Where-Object {{ $_.FileId -eq $FileId }} | Select-Object -First 1)
+    }}
+    if ($delivery.Count -gt 0 -and [string]$delivery[0].PredefinedCallerApplication -ne 'WU Client Download') {{
+      throw 'Refusing to clear a Delivery Optimization entry not owned by Windows Update'
+    }}
+    if ($delivery.Count -gt 0 -and $null -ne (Get-Command Delete-DeliveryOptimizationCache -ErrorAction SilentlyContinue)) {{
+      try {{ Delete-DeliveryOptimizationCache -FileId $FileId -Force -ErrorAction Stop }} catch {{}}
+    }}
+  }}
+
+  $deliveryService = Get-Service -Name DoSvc -ErrorAction SilentlyContinue
+  if ($null -ne $deliveryService -and $deliveryService.Status -eq 'Running') {{
+    Stop-Service -Name DoSvc -Force -ErrorAction Stop
+  }}
+
+  $appx = Get-CimInstance Win32_Service -Filter "Name='AppXSvc'" -ErrorAction Stop
+  if ($null -ne $appx -and [uint32]$appx.ProcessId -ne 0) {{
+    $hosted = @(Get-CimInstance Win32_Service -Filter ("ProcessId=" + [uint32]$appx.ProcessId) -ErrorAction Stop |
+      Where-Object {{ $_.State -eq 'Running' }})
+    $unexpected = @($hosted | Where-Object {{ @('AppXSvc', 'ClipSVC') -notcontains [string]$_.Name }})
+    if ($unexpected.Count -gt 0 -or @($hosted | Where-Object {{ [string]$_.Name -eq 'AppXSvc' }}).Count -ne 1) {{
+      throw 'Refusing to terminate an AppX service host containing unrelated services'
+    }}
+    $cohostedServices = @($hosted | Where-Object {{ [string]$_.Name -ne 'AppXSvc' }})
+    foreach ($cohosted in $cohostedServices) {{
+      if ($stopped -notcontains [string]$cohosted.Name) {{ $stopped += [string]$cohosted.Name }}
+    }}
+    if ($cohostedServices.Count -gt 0) {{
+      Start-RestoreWatchdog ((@($cohostedServices | ForEach-Object {{ [string]$_.Name }})) -join ',')
+    }}
+    Stop-Process -Id ([uint32]$appx.ProcessId) -Force -ErrorAction Stop
+    Start-Sleep -Milliseconds 500
+  }}
+  Start-Service -Name AppXSvc -ErrorAction SilentlyContinue
+  Signal-RecoveryFinished
+  exit 0
+}} catch {{
+  Restore-PausedServices ($stopped -join ',')
+  Signal-RecoveryFinished
+  exit 1
+}}
+"#,
+        package_moniker = ps_quote(package_moniker),
+        activity_id = ps_quote(activity_id),
+        file_id = ps_quote(file_id),
+        restore_signal = ps_quote(&restore_signal.to_string_lossy()),
+        recovery_started_signal = ps_quote(&recovery_started_signal.to_string_lossy()),
+        recovery_done_signal = ps_quote(&recovery_done_signal.to_string_lossy()),
+        recovery_timed_out_signal = ps_quote(&recovery_timed_out_signal.to_string_lossy()),
+        recovery_deadline_unix_ms = recovery_deadline_unix_ms,
+        restore_watchdog_secs = OFFLINE_APPX_RESTORE_WATCHDOG_SECS,
+    )
+}
+
+#[cfg(windows)]
+fn launch_elevated_recovery(script: &str) -> Result<ElevatedRecoveryLaunchReport, EngineError> {
+    let arguments = format!(
+        "-NoProfile -NonInteractive -EncodedCommand {}",
+        encode_powershell_command(script)
+    );
+    let launcher = format!(
+        r#"
+$ErrorActionPreference = 'Stop'
+try {{
+  $process = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -Verb RunAs -ArgumentList {arguments} -WindowStyle Hidden -Wait -PassThru -ErrorAction Stop
+  @{{ started = $true; exitCode = [int]$process.ExitCode; error = '' }} | ConvertTo-Json -Compress
+}} catch {{
+  @{{ started = $false; exitCode = -1; error = [string]$_.Exception.Message }} | ConvertTo-Json -Compress
+}}
+"#,
+        arguments = ps_quote(&arguments),
+    );
+    let json =
+        run_powershell_json_with_limits(&launcher, RunLimits::appx_recovery()).map_err(|e| {
+            EngineError::Install(format!(
+                "run administrator-approved offline AppX recovery: {}",
+                e.message()
+            ))
+        })?;
+    serde_json::from_str(&json)
+        .map_err(|e| EngineError::Install(format!("parse elevated AppX recovery result: {e}")))
+}
+
+#[cfg(windows)]
+fn prepare_offline_appx_install(
+    package_moniker: &str,
+    recovery_outcome_ambiguous: &mut dyn FnMut(),
+) -> Result<OfflineAppxRestoreGuard, EngineError> {
+    let detection = detect_offline_appx_conflict_script(package_moniker);
+    let Some(conflict) = parse_offline_appx_conflict_probe(run_powershell_json_with_limits(
+        &detection,
+        RunLimits::probe(),
+    )) else {
+        // This probe only decides whether an exact SYSTEM transaction needs to
+        // be released. It must never become a prerequisite for trying the
+        // already-downloaded, already-verified local package.
+        return Ok(OfflineAppxRestoreGuard { signal: None });
+    };
+    log::info!(
+        "offline AppX conflict active={} message={}",
+        conflict.active,
+        conflict.message
+    );
+    if !conflict.active {
+        return Ok(OfflineAppxRestoreGuard { signal: None });
+    }
+
+    let activity_id = conflict.activity_id.ok_or_else(|| {
+        EngineError::Install("SYSTEM AppX conflict had no activity id".to_string())
+    })?;
+    let activity_uuid = activity_id.trim_matches(['{', '}']);
+    uuid::Uuid::parse_str(activity_uuid).map_err(|_| {
+        EngineError::Install("SYSTEM AppX conflict had an invalid activity id".to_string())
+    })?;
+    let file_id = validated_delivery_optimization_file_id(conflict.file_id);
+
+    let base = std::env::temp_dir().join(format!(
+        "codex-offline-appx-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let restore_signal = base.with_extension("restore");
+    let recovery_started_signal = base.with_extension("recovery-started");
+    let recovery_done_signal = base.with_extension("recovery-done");
+    let recovery_timed_out_signal = base.with_extension("recovery-timed-out");
+    let recovery_deadline = std::time::SystemTime::now()
+        + (crate::process::APPX_RECOVERY_TIMEOUT
+            - std::time::Duration::from_secs(OFFLINE_APPX_RECOVERY_CLEANUP_MARGIN_SECS));
+    let recovery_deadline_unix_ms = recovery_deadline
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| EngineError::Install(format!("compute AppX recovery deadline: {e}")))?
+        .as_millis() as u64;
+    let recovery = offline_appx_recovery_script(
+        package_moniker,
+        &activity_id,
+        &file_id,
+        &restore_signal,
+        &recovery_started_signal,
+        &recovery_done_signal,
+        &recovery_timed_out_signal,
+        recovery_deadline_unix_ms,
+    );
+    let launched = match launch_elevated_recovery(&recovery) {
+        Ok(launched) => launched,
+        Err(err) => {
+            // The unelevated launcher cannot directly terminate a process that
+            // has crossed the UAC boundary. The elevated absolute-deadline
+            // watchdog will stop it, while this marker prevents the operation
+            // from being classified as a clean, immediately retryable failure.
+            if recovery_started_signal.exists() {
+                recovery_outcome_ambiguous();
+            }
+            let _ = std::fs::remove_file(&recovery_started_signal);
+            let _ = std::fs::remove_file(&recovery_timed_out_signal);
+            return Err(err);
+        }
+    };
+    if recovery_timed_out_signal.exists() {
+        recovery_outcome_ambiguous();
+    }
+    let _ = std::fs::remove_file(&recovery_started_signal);
+    let _ = std::fs::remove_file(&recovery_timed_out_signal);
+    if !launched.started {
+        let _ = std::fs::remove_file(&recovery_done_signal);
+        // An exact active SYSTEM transaction is not evidence that MSIX is
+        // unsupported. Returning a failed sideload report here would make the
+        // app route to portable, violating the mirror-first contract. Keep the
+        // verified staged package and expose a retryable permission failure.
+        return Err(EngineError::Install(format!(
+            "Windows Update owns this Codex deployment; administrator approval is required to release only that transaction. The verified local MSIX remains staged; retry and approve the prompt: {}",
+            launched.error
+        )));
+    }
+    if launched.exit_code != 0 {
+        let _ = std::fs::remove_file(&restore_signal);
+        return Err(EngineError::Install(format!(
+            "could not release the exact SYSTEM Windows Update deployment (exit {})",
+            launched.exit_code
+        )));
+    }
+    log::info!(
+        "SYSTEM Windows Update deployment was released or had already completed; proceeding with verified local MSIX"
+    );
+    Ok(OfflineAppxRestoreGuard {
+        signal: Some(restore_signal),
+    })
+}
+
+#[cfg(windows)]
 fn install_msix_script(path: &Path) -> String {
     format!(
         r#"
@@ -413,6 +915,11 @@ try {{
   }}
   if ($cmd.Parameters.Keys -contains 'ForceUpdateFromAnyVersion') {{
     $args['ForceUpdateFromAnyVersion'] = $true
+  }}
+  if ($cmd.Parameters.Keys -contains 'ForceTargetApplicationShutdown') {{
+    $args['ForceTargetApplicationShutdown'] = $true
+  }} elseif ($cmd.Parameters.Keys -contains 'ForceApplicationShutdown') {{
+    $args['ForceApplicationShutdown'] = $true
   }}
   Add-AppxPackage @args
   $p = Get-AppxPackage -Name {name} -ErrorAction SilentlyContinue |
@@ -444,10 +951,42 @@ try {{
 }
 
 #[cfg(windows)]
-pub fn install_msix_sideload(path: &Path) -> Result<MsixSideloadReport, EngineError> {
+pub fn install_msix_sideload(
+    path: &Path,
+    package_moniker: &str,
+) -> Result<MsixSideloadReport, EngineError> {
+    let mut recovery_outcome_ambiguous = || {};
+    let mut before_install = || Ok(());
+    install_msix_sideload_with_observer(
+        path,
+        package_moniker,
+        &mut recovery_outcome_ambiguous,
+        &mut before_install,
+    )
+}
+
+#[cfg(windows)]
+pub fn install_msix_sideload_with_observer(
+    path: &Path,
+    package_moniker: &str,
+    recovery_outcome_ambiguous: &mut dyn FnMut(),
+    before_install: &mut dyn FnMut() -> Result<(), EngineError>,
+) -> Result<MsixSideloadReport, EngineError> {
     let path_display = path.display();
     log::info!("MSIX sideload start path={path_display}");
+    // The mirror package is already fully downloaded and verified. Never wait
+    // for Microsoft to download the same package: if SYSTEM owns an exact
+    // Windows Update Stage transaction, narrowly release it and immediately
+    // submit our local MSIX. The guard restores any paused services on every
+    // return path, including Add-AppxPackage timeout/failure.
+    let _restore_guard =
+        prepare_offline_appx_install(package_moniker, recovery_outcome_ambiguous)?;
     let script = install_msix_script(path);
+    // Everything above is pre-package-mutation. An optional elevated recovery
+    // may have paused services, but its own watchdog restores them. The app
+    // records an ambiguous package outcome from this boundary onward,
+    // immediately before the child that can invoke Add-AppxPackage is started.
+    before_install()?;
     let json = run_powershell_json_with_limits(&script, RunLimits::install())
         .map_err(|e| EngineError::Install(format!("run Add-AppxPackage: {}", e.message())))?;
     let mut report: MsixSideloadReport = serde_json::from_str(&json)
@@ -467,7 +1006,10 @@ pub fn install_msix_sideload(path: &Path) -> Result<MsixSideloadReport, EngineEr
 }
 
 #[cfg(not(windows))]
-pub fn install_msix_sideload(_path: &Path) -> Result<MsixSideloadReport, EngineError> {
+pub fn install_msix_sideload(
+    _path: &Path,
+    _package_moniker: &str,
+) -> Result<MsixSideloadReport, EngineError> {
     log::info!("MSIX sideload start path=unsupported-platform");
     log::error!("MSIX sideload failed error=unsupported-platform");
     Ok(MsixSideloadReport {
@@ -477,6 +1019,16 @@ pub fn install_msix_sideload(_path: &Path) -> Result<MsixSideloadReport, EngineE
         fallback_recommended: true,
         raw_error: None,
     })
+}
+
+#[cfg(not(windows))]
+pub fn install_msix_sideload_with_observer(
+    path: &Path,
+    package_moniker: &str,
+    _recovery_outcome_ambiguous: &mut dyn FnMut(),
+    _before_install: &mut dyn FnMut() -> Result<(), EngineError>,
+) -> Result<MsixSideloadReport, EngineError> {
+    install_msix_sideload(path, package_moniker)
 }
 
 /// PRE-check, before sideloading, that every redistributable framework the
@@ -1820,6 +2372,178 @@ function Get-AppxPackage {
             crate::process::PORTABLE_LIVENESS_WINDOW.as_secs()
         );
         assert!(crate::process::MSIX_ACTIVATION_WINDOW_SECS >= 20);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn offline_appx_recovery_targets_only_the_exact_system_update_activity() {
+        let detection =
+            detect_offline_appx_conflict_script("OpenAI.Codex_26.715.2305.0_x64__2p2nqsd0c76g0");
+        let recovery = offline_appx_recovery_script(
+            "OpenAI.Codex_26.715.2305.0_x64__2p2nqsd0c76g0",
+            "{9afe3240-101d-0002-37b9-8aa11d10dd01}",
+            "4cecd7e61f209785343c5808b459e94818b9627f",
+            Path::new(r"C:\Temp\codex.restore"),
+            Path::new(r"C:\Temp\codex.recovery-started"),
+            Path::new(r"C:\Temp\codex.recovery-done"),
+            Path::new(r"C:\Temp\codex.recovery-timed-out"),
+            1_800_000_000_000,
+        );
+        for script in [&detection, &recovery] {
+            assert!(script.contains("MainPackageMoniker"));
+            assert!(script.contains("ActivityID"));
+            assert!(script.contains("400, 401, 404"));
+            assert!(script.contains("DeploymentOperation"));
+            assert!(script.contains("wuauserv"));
+            assert!(script.contains("S-1-5-18"));
+            assert!(!script.contains("QueueDeadline"));
+            assert!(!script.contains("FileSizeInCache"));
+            assert!(!script.contains("$_.Message"));
+        }
+        assert!(recovery.contains("Delete-DeliveryOptimizationCache -FileId"));
+        assert!(recovery.contains("PredefinedCallerApplication"));
+        assert!(recovery.contains("Stop-Process -Id"));
+        assert!(recovery.contains("EncodedCommand"));
+        assert!(recovery.contains("AddSeconds(600)"));
+        assert!(recovery.contains("$RecoveryDeadlineUnixMs = [int64]1800000000000"));
+        assert!(recovery.contains("codex.recovery-timed-out"));
+        assert!(!recovery.contains("-File \""));
+        assert!(
+            encode_powershell_command(&recovery).len() < 30_000,
+            "elevated recovery must leave room below the Windows command-line limit"
+        );
+        assert!(
+            recovery
+                .find("Start-RecoveryDeadlineWatchdog ($stopped -join ',')")
+                .expect("deadline watchdog must be armed")
+                < recovery
+                    .find("Stop-Service -Name $name")
+                    .expect("service stop must follow watchdog")
+        );
+        assert!(
+            recovery
+                .find("Start-RestoreWatchdog ($stopped -join ',')")
+                .expect("watchdog must be armed")
+                < recovery
+                    .find("Stop-Service -Name $name")
+                    .expect("service stop must follow watchdog")
+        );
+        assert!(recovery.contains(
+            "@('InstallService', 'wuauserv', 'DoSvc', 'AppXSvc', 'ClipSVC')"
+        ));
+        assert!(
+            std::time::Duration::from_secs(OFFLINE_APPX_RESTORE_WATCHDOG_SECS)
+                > crate::process::APPX_RECOVERY_TIMEOUT + crate::process::INSTALL_TIMEOUT
+        );
+        assert!(
+            std::time::Duration::from_secs(OFFLINE_APPX_RECOVERY_CLEANUP_MARGIN_SECS)
+                < crate::process::APPX_RECOVERY_TIMEOUT
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn offline_appx_prepare_skips_elevation_without_an_exact_conflict() {
+        let production =
+            detect_offline_appx_conflict_script("OpenAI.Codex_26.715.2305.0_x64__2p2nqsd0c76g0");
+        let script = format!(
+            "function Get-WinEvent {{ param($FilterHashtable, $LogName, $FilterXPath, $ErrorAction); @() }}\n{production}"
+        );
+        let json = run_powershell_json(&script).expect("run no-conflict AppX preparation");
+        let report: OfflineAppxConflictReport =
+            serde_json::from_str(&json).expect("parse no-conflict AppX preparation");
+        assert!(!report.active);
+        assert!(report.activity_id.is_none());
+        assert!(report.file_id.is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn offline_appx_probe_failures_do_not_block_the_verified_local_msix() {
+        assert!(
+            parse_offline_appx_conflict_probe(Err(PowerShellRunError::Timeout(
+                crate::process::TimeoutKind::Total
+            )))
+            .is_none()
+        );
+        assert!(parse_offline_appx_conflict_probe(Ok("not-json".to_string())).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn appx_path_payload_only_enables_cache_cleanup_for_a_valid_file_id() {
+        let valid = "4cecd7e61f209785343c5808b459e94818b9627f";
+        assert_eq!(
+            validated_delivery_optimization_file_id(Some(valid.to_string())),
+            valid
+        );
+        assert_eq!(
+            validated_delivery_optimization_file_id(Some(
+                r"C:\Windows\SoftwareDistribution\Download\Codex.msix".to_string()
+            )),
+            ""
+        );
+        assert_eq!(
+            validated_delivery_optimization_file_id(Some("https://example.invalid".to_string())),
+            ""
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn offline_appx_elevated_helper_is_valid_powershell() {
+        let recovery = offline_appx_recovery_script(
+            "OpenAI.Codex_26.715.2305.0_x64__2p2nqsd0c76g0",
+            "{9afe3240-101d-0002-37b9-8aa11d10dd01}",
+            "4cecd7e61f209785343c5808b459e94818b9627f",
+            Path::new(r"C:\Temp\codex.restore"),
+            Path::new(r"C:\Temp\codex.recovery-started"),
+            Path::new(r"C:\Temp\codex.recovery-done"),
+            Path::new(r"C:\Temp\codex.recovery-timed-out"),
+            1_800_000_000_000,
+        );
+        let script = format!(
+            "$null = [scriptblock]::Create({}); @{{ ok = $true }} | ConvertTo-Json -Compress",
+            ps_quote(&recovery)
+        );
+        // Exercise the same encoded transport used in production. Passing this
+        // large nested script through `-Command` adds a second quoting layer
+        // that can hang Windows PowerShell near its command-line limit.
+        let encoded = encode_powershell_command(&script);
+        let mut command = hidden_command(powershell_exe());
+        command.args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded]);
+        let output = run_capturing(command, RunLimits::probe(), None)
+            .expect("parse elevated AppX recovery helper");
+        assert!(
+            output.status.success(),
+            "PowerShell syntax validation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                .expect("parse helper syntax result")
+                .get("ok")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn encoded_powershell_transport_executes_without_a_script_file() {
+        let script = "@{ ok = $true } | ConvertTo-Json -Compress";
+        let encoded = encode_powershell_command(script);
+        let mut command = hidden_command(powershell_exe());
+        command.args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded]);
+        let output =
+            run_capturing(command, RunLimits::probe(), None).expect("run encoded PowerShell");
+        assert!(output.status.success());
+        let value: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("parse encoded PowerShell output");
+        assert_eq!(
+            value.get("ok").and_then(|value| value.as_bool()),
+            Some(true)
+        );
     }
 
     #[cfg(windows)]

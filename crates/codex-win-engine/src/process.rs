@@ -18,6 +18,9 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 pub const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(45);
 /// Longer budget for Add-AppxPackage / Remove-AppxPackage.
 pub const INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
+/// Upper bound for the one-shot UAC recovery used only when Windows Update owns
+/// an active deployment of the exact package we already downloaded locally.
+pub const APPX_RECOVERY_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// Default no-progress budget for streaming package downloads.
 pub const DEFAULT_STALL_TIMEOUT: Duration = Duration::from_secs(120);
 /// Absolute upper bound for a package download (2 hours). Stall timeout is the
@@ -62,6 +65,10 @@ impl RunLimits {
 
     pub fn install() -> Self {
         Self::total(INSTALL_TIMEOUT)
+    }
+
+    pub fn appx_recovery() -> Self {
+        Self::total(APPX_RECOVERY_TIMEOUT)
     }
 
     pub fn download() -> Self {
