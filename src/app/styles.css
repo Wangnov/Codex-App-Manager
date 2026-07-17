@@ -1704,6 +1704,26 @@ button.row.danger:hover {
   background: var(--danger-tint);
 }
 
+/* Trailing button cluster inside a .row (skin storage row). flex-shrink: 0
+   keeps the pair on the row; the mono path beside it ellipsizes instead. */
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+/* Dev-dir editor row: full-width input with the save button beside it. */
+.row.devdir-edit {
+  gap: 8px;
+}
+.row.devdir-edit .input {
+  flex: 1;
+  min-width: 0;
+}
+.row.devdir-edit .btn {
+  flex-shrink: 0;
+}
+
 /* metadata list — quiet label / value rows (version, release date, install location).
    The label is softer than an interactive row title; the value sits trailing. */
 .list.meta .row {

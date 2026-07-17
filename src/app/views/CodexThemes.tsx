@@ -254,7 +254,15 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
   const themeName = (id: string | null) =>
     (id && themes.find((theme) => theme.id === id)?.name) || id || "";
 
-  const visibleThemes = themes.filter((theme) =>
+  // The backend lists every root (dev first, then store) WITHOUT deduping so
+  // the store tab can see the store copy behind a same-id dev checkout. The
+  // local gallery shows resolution order: first occurrence per id wins.
+  const localThemes = useMemo(() => {
+    const seen = new Set<string>();
+    return themes.filter((theme) => (seen.has(theme.id) ? false : (seen.add(theme.id), true)));
+  }, [themes]);
+
+  const visibleThemes = localThemes.filter((theme) =>
     matches(query, [
       theme.name,
       theme.id,
@@ -330,7 +338,11 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
 
   return (
     <div className="pop">
-      <NavBar title={t("themes.title")} onBack={onBack} disableBack={busy === "tryon-restart"}>
+      <NavBar
+        title={t("themes.title")}
+        onBack={onBack}
+        disableBack={busy !== null && busy.startsWith("tryon-restart")}
+      >
         <button
           className="iconbtn"
           title={t("themes.import")}
@@ -356,7 +368,7 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
             tone="info"
             icon="sliders"
             action={
-              <span className="row2" style={{ gap: 8 }}>
+              <span className="row-actions">
                 <button
                   className="btn primary sm"
                   disabled={busy !== null}
@@ -382,7 +394,7 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
           <StatusBanner
             tone="ok"
             action={
-              <span className="row2" style={{ gap: 8 }}>
+              <span className="row-actions">
                 <button
                   className="btn ghost sm"
                   disabled={busy !== null}
@@ -451,6 +463,11 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
                         {theme.meta.version ? (
                           <span className="themecard-version">v{theme.meta.version}</span>
                         ) : null}
+                        {theme.origin === "dev" ? (
+                          <span className="tag soon" title={t("themes.origin.devHint")}>
+                            {t("themes.origin.dev")}
+                          </span>
+                        ) : null}
                         {isActive ? <span className="tag ok">{t("themes.inUse")}</span> : null}
                         {isTrying ? <span className="tag soon">{t("themes.trying")}</span> : null}
                         {theme.meta.codexVerified ? (
@@ -482,7 +499,9 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
                             disabled={busy !== null || !status?.supported}
                             onClick={() =>
                               void run(
-                                status?.cdpReady ? "tryon" : "tryon-restart",
+                                status?.cdpReady
+                                  ? `tryon:${theme.id}`
+                                  : `tryon-restart:${theme.id}`,
                                 () =>
                                   status?.cdpReady
                                     ? managerApi.codexThemeTryOn(theme.id)
@@ -490,7 +509,7 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
                               )
                             }
                           >
-                            {busy === "tryon" || busy === "tryon-restart"
+                            {busy === `tryon:${theme.id}` || busy === `tryon-restart:${theme.id}`
                               ? t("themes.busy.tryOn")
                               : status?.cdpReady
                                 ? t("themes.tryOn")
@@ -523,9 +542,11 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
                 <Icon name="folder" className="ricon" />
                 <span className="rtext">
                   <span className="rtitle">{t("themes.storage.title")}</span>
-                  <span className="rsub mono-path">{status?.storeDir ?? "…"}</span>
+                  <span className="rsub mono-path" title={status?.storeDir ?? undefined}>
+                    {status?.storeDir ?? "…"}
+                  </span>
                 </span>
-                <span className="row2" style={{ gap: 8 }}>
+                <span className="row-actions">
                   <button
                     className="btn ghost sm"
                     disabled={busy !== null}
@@ -555,7 +576,7 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
                 </span>
               </div>
               {storeNote ? (
-                <div className="row" style={{ display: "block" }}>
+                <div className="row">
                   <span className="rsub" role="status">{storeNote}</span>
                 </div>
               ) : null}
@@ -563,33 +584,31 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
 
             <div className="group-h">{t("themes.devdir.title")}</div>
             <div className="list">
-              <div className="row" style={{ display: "block" }}>
-                <span
-                  className="rtext"
-                  style={{ display: "flex", flexDirection: "column", marginBottom: 8 }}
-                >
+              <div className="row">
+                <Icon name="sliders" className="ricon" />
+                <span className="rtext">
                   <span className="rtitle">{t("themes.devdir.title")}</span>
                   <span className="rsub">{t("themes.devdir.sub")}</span>
                 </span>
-                <div className="row2" style={{ gap: 8 }}>
-                  <input
-                    className="input mono"
-                    aria-label={t("themes.devdir.title")}
-                    value={devDirDraft}
-                    placeholder={t("themes.devdir.placeholder")}
-                    onChange={(event) => setDevDirDraft(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") void saveDevDir();
-                    }}
-                  />
-                  <button
-                    className="btn ghost sm"
-                    disabled={busy !== null || (settings?.codexThemeDir ?? "") === devDirDraft.trim()}
-                    onClick={() => void saveDevDir()}
-                  >
-                    {t("themes.devdir.save")}
-                  </button>
-                </div>
+              </div>
+              <div className="row devdir-edit">
+                <input
+                  className="input mono"
+                  aria-label={t("themes.devdir.title")}
+                  value={devDirDraft}
+                  placeholder={t("themes.devdir.placeholder")}
+                  onChange={(event) => setDevDirDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void saveDevDir();
+                  }}
+                />
+                <button
+                  className="btn ghost sm"
+                  disabled={busy !== null || (settings?.codexThemeDir ?? "") === devDirDraft.trim()}
+                  onClick={() => void saveDevDir()}
+                >
+                  {t("themes.devdir.save")}
+                </button>
               </div>
             </div>
           </>
@@ -603,9 +622,15 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
               <>
                 <div className="themegrid">
                   {visibleCatalog.map((skin) => {
-                    const installed = themes.find((theme) => theme.id === skin.id);
+                    // Compare against the STORE copy specifically — a same-id
+                    // dev checkout shadows it in resolution order but says
+                    // nothing about what the store has installed.
+                    const installed = themes.find(
+                      (theme) => theme.id === skin.id && theme.origin === "store",
+                    );
                     const upToDate = installed && installed.meta.version === skin.version;
                     const isUpgrade = installed && installed.meta.version !== skin.version;
+                    const busyKey = `online:${skin.id}`;
                     return (
                       <article key={skin.id} className="themecard">
                         <PhotoCover
@@ -641,12 +666,12 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
                                 className="btn primary sm"
                                 disabled={busy !== null}
                                 onClick={() =>
-                                  void run("online", () =>
+                                  void run(busyKey, () =>
                                     managerApi.codexThemeInstallOnline(skin.id),
                                   )
                                 }
                               >
-                                {busy === "online"
+                                {busy === busyKey
                                   ? t("themes.online.installing")
                                   : isUpgrade
                                     ? t("themes.online.update", { v: skin.version })

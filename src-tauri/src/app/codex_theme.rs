@@ -177,18 +177,49 @@ fn native_paths() -> Result<NativeThemePaths, AppError> {
     Ok(NativeThemePaths { config, backup })
 }
 
-/// Merge every root's packages, first root wins per id.
-pub fn merged_theme_list(settings: &AppSettings) -> Vec<ThemeSummary> {
-    let mut seen = std::collections::HashSet::new();
-    let mut merged = Vec::new();
-    for root in theme_roots(settings) {
-        for theme in list_themes(&root) {
-            if seen.insert(theme.id.clone()) {
-                merged.push(theme);
-            }
-        }
+/// Which root a gallery entry came from. Dev packages shadow store packages
+/// per id at *resolution* time; the gallery still needs to see both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeOrigin {
+    Dev,
+    Store,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThemeListEntry {
+    #[serde(flatten)]
+    pub summary: ThemeSummary,
+    pub origin: ThemeOrigin,
+}
+
+/// Every package from every root, dev root first (same precedence as
+/// `resolve_theme`), annotated with its origin. Deliberately NOT deduplicated:
+/// a dev checkout masks the store copy for resolution, but the store tab
+/// compares catalog versions against the STORE copy — after an online update
+/// the shadowed store version must still be observable, or the update button
+/// never flips to "installed".
+pub fn merged_theme_list(settings: &AppSettings) -> Vec<ThemeListEntry> {
+    let mut entries = Vec::new();
+    if let Some(dir) = settings
+        .codex_theme_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+    {
+        entries.extend(list_themes(Path::new(dir)).into_iter().map(|summary| ThemeListEntry {
+            summary,
+            origin: ThemeOrigin::Dev,
+        }));
     }
-    merged
+    if let Ok(store) = store_dir(settings) {
+        entries.extend(list_themes(&store).into_iter().map(|summary| ThemeListEntry {
+            summary,
+            origin: ThemeOrigin::Store,
+        }));
+    }
+    entries
 }
 
 fn resolve_theme(settings: &AppSettings, theme_ref: &str) -> Result<PathBuf, AppError> {
@@ -281,13 +312,16 @@ fn curl_bin() -> &'static str {
 }
 
 /// Fetch a URL to stdout via system curl: https only, no retries into other
-/// protocols, hard timeout and size cap.
+/// protocols, hard timeout and size cap. `--retry` covers the transient
+/// connection resets this route sees in the wild (CDN + long-haul links).
 fn curl_fetch(url: &str, max_bytes: &str, timeout_secs: &str) -> Result<Vec<u8>, AppError> {
     let output = std::process::Command::new(curl_bin())
         .args([
             "-sfL",
             "--proto",
             "=https",
+            "--retry",
+            "2",
             "--max-time",
             timeout_secs,
             "--max-filesize",

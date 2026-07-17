@@ -1621,7 +1621,7 @@ fn ensure_theme_may_restart_codex(state: &ManagerState) -> Result<(), CommandErr
 }
 
 #[tauri::command]
-pub fn codex_theme_list() -> Vec<codex_theme_engine::theme::ThemeSummary> {
+pub fn codex_theme_list() -> Vec<crate::app::codex_theme::ThemeListEntry> {
     let settings = PersistedAppSettings::load();
     crate::app::codex_theme::merged_theme_list(&settings)
 }

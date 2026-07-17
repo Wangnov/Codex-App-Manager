@@ -470,6 +470,7 @@ const BROWSER_FALLBACK_THEMES: CodexThemeSummary[] = [
     },
     preview: null,
     meta: { ...FALLBACK_THEME_META },
+    origin: "dev",
   },
   {
     id: "asuka-eva02",
@@ -487,6 +488,7 @@ const BROWSER_FALLBACK_THEMES: CodexThemeSummary[] = [
     },
     preview: null,
     meta: { ...FALLBACK_THEME_META },
+    origin: "store",
   },
 ];
 

@@ -12,6 +12,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { managerApi } from "../services/managerApi";
 import type { WindowMode } from "../shared/types";
+import { installWindowDragHandler } from "./windowDrag";
 
 /** Remembered expanded size (logical px, JSON `{width,height}`). The *mode*
  *  itself is deliberately not persisted: the manager is an at-a-glance popover
@@ -99,6 +100,17 @@ export function WindowModeProvider({ children }: { children: ReactNode }) {
       delete document.documentElement.dataset.windowMode;
     };
   }, [mode]);
+
+  // One app-wide drag-region handler (bars + rail carry data-app-drag).
+  // Double-click zoom only applies to the resizable workbench.
+  useEffect(
+    () =>
+      installWindowDragHandler({
+        isTauri,
+        canToggleMaximize: () => modeRef.current === "expanded",
+      }),
+    [],
+  );
 
   const setMode = useCallback(
     (next: WindowMode) => {

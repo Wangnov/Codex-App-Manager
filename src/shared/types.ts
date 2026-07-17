@@ -584,6 +584,9 @@ export interface CodexThemeSummary {
   /** Absolute path of the cover preview when the package ships one. */
   preview: string | null;
   meta: CodexThemeMeta;
+  /** Which root produced this entry. The list may carry the same id twice
+   *  (dev checkout shadowing the store copy); dev entries come first. */
+  origin: "dev" | "store";
 }
 
 export interface CodexThemeDaemonStatus {

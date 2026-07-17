@@ -41,11 +41,13 @@ describe("desktop trust-boundary config", () => {
       "core:event:allow-listen",
       "core:event:allow-unlisten",
       "core:webview:allow-internal-toggle-devtools",
-      "core:window:allow-internal-toggle-maximize",
+      // Dragging + zooming are driven by our own drag-region handler
+      // (windowDrag.ts) — the built-in internal-toggle-maximize is unused.
       "core:window:allow-start-dragging",
       "core:window:allow-close",
       "core:window:allow-minimize",
-      // The expanded workbench offers a native maximize toggle.
+      // The expanded workbench offers a native maximize toggle (button and
+      // drag-region double-click alike).
       "core:window:allow-toggle-maximize",
       // Window-mode switching stores the expanded size in logical px; the
       // renderer reads the monitor scale to convert onResized's physical px.

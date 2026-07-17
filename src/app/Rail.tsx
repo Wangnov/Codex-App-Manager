@@ -37,12 +37,12 @@ export function Rail({
   ];
 
   return (
-    <aside className="pop rail" data-tauri-drag-region>
-      <div className="rail-brand" data-tauri-drag-region>
-        <div className="mark" data-tauri-drag-region>
+    <aside className="pop rail" data-app-drag>
+      <div className="rail-brand" data-app-drag>
+        <div className="mark" data-app-drag>
           <CodexMark />
         </div>
-        <div className="wordmark" data-tauri-drag-region>
+        <div className="wordmark" data-app-drag>
           {t("app.name")}
         </div>
       </div>
@@ -60,7 +60,7 @@ export function Rail({
           </button>
         ))}
       </nav>
-      <div className="rail-spacer" data-tauri-drag-region />
+      <div className="rail-spacer" data-app-drag />
       <button className="rail-item rail-collapse" onClick={() => windowMode.setMode("compact")}>
         <Icon name="collapse" />
         {t("nav.collapse")}

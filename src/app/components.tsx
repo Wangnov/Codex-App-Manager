@@ -358,20 +358,21 @@ export function QuitConfirm() {
   );
 }
 
-// The window is frameless, so the bar drags it. tauri's data-tauri-drag-region
-// triggers on the element actually clicked, so every non-button element in the
-// bar carries it; the buttons deliberately don't (they stay clickable).
+// The window is frameless, so the bar drags it. data-app-drag (see
+// windowDrag.ts) triggers on the element actually clicked, so every non-button
+// element in the bar carries it; the buttons deliberately don't (they stay
+// clickable). Double-clicking a marked element zooms the expanded workbench.
 export function TopBar({ children }: { children?: ReactNode }) {
   const { t } = useI18n();
   return (
-    <div className="topbar" data-tauri-drag-region>
-      <div className="mark" data-tauri-drag-region>
+    <div className="topbar" data-app-drag>
+      <div className="mark" data-app-drag>
         <CodexMark />
       </div>
-      <div className="wordmark" data-tauri-drag-region>
+      <div className="wordmark" data-app-drag>
         {t("app.name")}
       </div>
-      <div className="spacer" data-tauri-drag-region />
+      <div className="spacer" data-app-drag />
       {/* First interactive child is the preferred home focus target after a
           view transition (see App focus restore + data-page-focus). */}
       {children}
@@ -409,7 +410,7 @@ export function NavBar({
   }, [disableBack]);
 
   return (
-    <div className="navbar" data-tauri-drag-region>
+    <div className="navbar" data-app-drag>
       <button
         ref={backRef}
         className="navback"
@@ -420,10 +421,10 @@ export function NavBar({
         <Icon name="back" />
         {t("nav.back")}
       </button>
-      <div className="navtitle" data-tauri-drag-region>
+      <div className="navtitle" data-app-drag>
         {title}
       </div>
-      <div className="spacer" style={{ flex: 1 }} data-tauri-drag-region />
+      <div className="spacer" style={{ flex: 1 }} data-app-drag />
       {children}
       <ExpandButton />
       <MaximizeButton />
