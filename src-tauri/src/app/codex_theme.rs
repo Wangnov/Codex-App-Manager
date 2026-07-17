@@ -664,6 +664,7 @@ fn curl_supports_schannel_best_effort() -> bool {
         })
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn is_schannel_revocation_offline(exit_code: Option<i32>, stderr: &[u8]) -> bool {
     let stderr = String::from_utf8_lossy(stderr);
     exit_code == Some(35)
@@ -671,9 +672,9 @@ fn is_schannel_revocation_offline(exit_code: Option<i32>, stderr: &[u8]) -> bool
 }
 
 fn curl_fetch(url: &str, max_bytes: &str, timeout_secs: &str) -> Result<Vec<u8>, AppError> {
-    let mut output = curl_fetch_attempt(url, max_bytes, timeout_secs, false)?;
+    let output = curl_fetch_attempt(url, max_bytes, timeout_secs, false)?;
     #[cfg(target_os = "windows")]
-    if !output.status.success()
+    let output = if !output.status.success()
         && is_schannel_revocation_offline(output.status.code(), &output.stderr)
     {
         if curl_supports_schannel_best_effort() {
@@ -681,14 +682,17 @@ fn curl_fetch(url: &str, max_bytes: &str, timeout_secs: &str) -> Result<Vec<u8>,
                 "theme catalog Schannel revocation endpoint unavailable; retrying best-effort url={}",
                 crate::app::logging::redact_url(url)
             );
-            output = curl_fetch_attempt(url, max_bytes, timeout_secs, true)?;
+            curl_fetch_attempt(url, max_bytes, timeout_secs, true)?
         } else {
             log::warn!(
                 "theme catalog Schannel revocation endpoint unavailable and curl lacks safe retry support url={}",
                 crate::app::logging::redact_url(url)
             );
+            output
         }
-    }
+    } else {
+        output
+    };
     if !output.status.success() {
         return Err(AppError::Engine(format!(
             "下载失败 ({}): {}",
