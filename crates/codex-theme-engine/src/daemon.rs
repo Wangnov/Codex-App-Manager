@@ -23,7 +23,7 @@ use std::time::Duration;
 use serde::Serialize;
 use tokio::sync::watch;
 
-use crate::cdp::{list_app_targets, probe_session, CdpSession};
+use crate::cdp::{is_theme_excluded_target, list_app_targets, probe_session, CdpSession};
 use crate::payload::{build_payload, BuiltPayload, CURRENT_STAMP_EXPRESSION, REMOVE_EXPRESSION};
 
 const TICK: Duration = Duration::from_millis(900);
@@ -50,6 +50,9 @@ pub async fn run_daemon(
     status_tx: watch::Sender<DaemonStatus>,
 ) {
     let mut sessions: HashMap<String, CdpSession> = HashMap::new();
+    // Keep excluded pet renderers connected after cleaning them once. Closing
+    // them would make the census reconnect and repeat cleanup every 900 ms.
+    let mut excluded_sessions: HashMap<String, CdpSession> = HashMap::new();
     let mut built: Option<BuiltPayload>;
     let mut last_error: Option<String> = None;
 
@@ -91,16 +94,38 @@ pub async fn run_daemon(
                         }
                         keep
                     });
+                    excluded_sessions.retain(|id, session| {
+                        let keep = active.contains(id.as_str()) && !session.closed();
+                        if !keep {
+                            session.close();
+                        }
+                        keep
+                    });
                     for target in targets {
-                        if sessions.contains_key(&target.id) {
+                        if sessions.contains_key(&target.id)
+                            || excluded_sessions.contains_key(&target.id)
+                        {
                             continue;
                         }
                         let id = target.id.clone();
                         match CdpSession::connect(target, port).await {
                             Ok(session) => match probe_session(&session).await {
                                 Ok(probe) if probe.codex => {
-                                    log::info!("theme daemon connected target {id}");
-                                    sessions.insert(id, session);
+                                    if is_theme_excluded_target(&session.target) {
+                                        match session.evaluate(REMOVE_EXPRESSION).await {
+                                            Ok(_) => {
+                                                log::info!("theme daemon excluded pet target {id}");
+                                                excluded_sessions.insert(id, session);
+                                            }
+                                            Err(error) => {
+                                                session.close();
+                                                last_error = Some(error.to_string());
+                                            }
+                                        }
+                                    } else {
+                                        log::info!("theme daemon connected target {id}");
+                                        sessions.insert(id, session);
+                                    }
                                 }
                                 Ok(_) => session.close(),
                                 Err(error) => {
@@ -119,6 +144,10 @@ pub async fn run_daemon(
                         session.close();
                     }
                     sessions.clear();
+                    for session in excluded_sessions.values() {
+                        session.close();
+                    }
+                    excluded_sessions.clear();
                     last_error = Some(error.to_string());
                 }
             }
@@ -171,6 +200,9 @@ pub async fn run_daemon(
                     if changed.is_err() {
                         // Manager shutting down: leave renderers as they are.
                         for session in sessions.values() {
+                            session.close();
+                        }
+                        for session in excluded_sessions.values() {
                             session.close();
                         }
                         let _ = status_tx.send(DaemonStatus {

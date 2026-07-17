@@ -107,6 +107,8 @@ pub const REMOVE_EXPRESSION: &str = r#"(() => {
   document.documentElement?.removeAttribute('data-cts-shell');
   document.getElementById('cts-style')?.remove();
   document.getElementById('cts-chrome')?.remove();
+  document.getElementById('cts-stage')?.remove();
+  document.getElementById('cts-intro')?.remove();
   delete window.__CODEX_THEME_STUDIO__;
   return true;
 })()"#;
@@ -115,6 +117,8 @@ pub const VERIFY_REMOVED_EXPRESSION: &str = r#"(() =>
   !document.documentElement.classList.contains('codex-theme-studio') &&
   !document.getElementById('cts-style') &&
   !document.getElementById('cts-chrome') &&
+  !document.getElementById('cts-stage') &&
+  !document.getElementById('cts-intro') &&
   !window.__CODEX_THEME_STUDIO__
 )()"#;
 
@@ -226,6 +230,17 @@ mod tests {
         let first = fingerprint("runtime-a", "css", "chrome", "config");
         let second = fingerprint("runtime-b", "css", "chrome", "config");
         assert_ne!(first, second, "runtime change must re-stamp");
+    }
+
+    #[test]
+    fn removal_covers_every_runtime_owned_layer() {
+        for id in ["cts-style", "cts-chrome", "cts-stage", "cts-intro"] {
+            assert!(REMOVE_EXPRESSION.contains(id), "remove expression misses {id}");
+            assert!(
+                VERIFY_REMOVED_EXPRESSION.contains(id),
+                "removal verification misses {id}"
+            );
+        }
     }
 
     #[test]

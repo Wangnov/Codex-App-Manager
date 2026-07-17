@@ -339,6 +339,28 @@ pub async fn list_app_targets(port: u16) -> Result<Vec<TargetInfo>> {
     Ok(filtered)
 }
 
+/// Codex pet windows are independent transparent renderers that share the
+/// `app://` scheme and Codex-branded titles with the main shell. They must
+/// never receive a UI theme: a body background turns the transparent pet
+/// overlay into an opaque rectangle.
+///
+/// Match the dedicated document path as well as the encoded `initialRoute`
+/// used by the overlay host. Keeping this separate from the title/DOM probe
+/// preserves its title fallback for full-screen routes such as Settings.
+pub fn is_theme_excluded_target(target: &TargetInfo) -> bool {
+    let Ok(url) = url::Url::parse(&target.url) else {
+        return false;
+    };
+    if url.scheme() != "app" {
+        return false;
+    }
+    if url.path().starts_with("/avatar-overlay") {
+        return true;
+    }
+    url.query_pairs()
+        .any(|(key, value)| key == "initialRoute" && value.starts_with("/avatar-overlay"))
+}
+
 /// Whether a CDP HTTP endpoint answers on the port (does NOT prove it is
 /// Codex — pair with a shell probe before injecting).
 pub async fn cdp_http_ready(port: u16) -> bool {
@@ -405,6 +427,9 @@ pub async fn connect_codex_targets(
             Ok(targets) => {
                 let mut connected = Vec::new();
                 for target in targets {
+                    if is_theme_excluded_target(&target) {
+                        continue;
+                    }
                     match CdpSession::connect(target, port).await {
                         Ok(session) => match probe_session(&session).await {
                             Ok(probe) if probe.codex => {
@@ -460,5 +485,34 @@ mod tests {
         assert!(validated_debugger_url(&target("wss://127.0.0.1:9345/x"), 9345).is_err());
         assert!(validated_debugger_url(&target("ws://192.168.1.4:9345/x"), 9345).is_err());
         assert!(validated_debugger_url(&target("http://127.0.0.1:9345/x"), 9345).is_err());
+    }
+
+    #[test]
+    fn pet_overlay_targets_are_excluded_from_theming() {
+        for url in [
+            "app://-/index.html?initialRoute=%2Favatar-overlay",
+            "app://-/avatar-overlay",
+            "app://-/avatar-overlay-composition-surface.html?surfaceId=mascot-badge",
+            "app://-/avatar-overlay-composition-surface.html?surfaceId=activity-slot-0",
+            "app://-/avatar-overlay-composition-surface.html?surfaceId=activity-slot-1",
+        ] {
+            let mut candidate = target("ws://127.0.0.1:9345/devtools/page/1");
+            candidate.url = url.into();
+            assert!(is_theme_excluded_target(&candidate), "expected exclusion: {url}");
+        }
+    }
+
+    #[test]
+    fn regular_codex_targets_remain_theme_eligible() {
+        for url in [
+            "app://-/index.html",
+            "app://-/index.html?initialRoute=%2Fsettings",
+            "app://-/index.html?initialRoute=%2Fquick-chat",
+            "app://-/avatar-settings.html",
+        ] {
+            let mut candidate = target("ws://127.0.0.1:9345/devtools/page/1");
+            candidate.url = url.into();
+            assert!(!is_theme_excluded_target(&candidate), "unexpected exclusion: {url}");
+        }
     }
 }
