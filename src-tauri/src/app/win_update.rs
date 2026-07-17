@@ -1685,6 +1685,7 @@ pub fn launch_codex(settings: &AppSettings) -> Result<(), AppError> {
         &installed,
         codex_win_engine::LaunchOptions {
             disable_codex_self_updates: settings.disable_codex_self_updates,
+            remote_debugging_port: None,
         },
     )
     .map_err(|e| AppError::Engine(e.to_string()))

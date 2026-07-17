@@ -7,7 +7,7 @@ import type {
   CodexThemeStatusReport,
   CodexThemeSummary,
 } from "../../shared/types";
-import { NavBar, Segmented, StatusBanner } from "../components";
+import { NavBar, Ring, Segmented, StatusBanner } from "../components";
 import { Icon } from "../icons";
 import { Sheet } from "../Sheet";
 import { useI18n, type TFn } from "../i18n";
@@ -900,7 +900,7 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
 
         {empty ? (
           <section className="hero" style={{ paddingTop: 24 }}>
-            <Icon name="sliders" className="ricon" />
+            <Ring icon="sliders" variant="muted" />
             <div className="headline" style={{ fontSize: 16 }}>
               {t("themes.empty.title")}
             </div>

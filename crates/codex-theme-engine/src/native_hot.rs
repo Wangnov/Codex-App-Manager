@@ -11,9 +11,11 @@
 //! minified shape, resolve their export aliases, `import()` the chunk (which
 //! dedupes into the live module graph) and cache the functions on `window`.
 //!
-//! Discovery failing (a future Codex reshapes its internals) is a clean,
-//! detectable error — callers fall back to the quit → edit config.toml →
-//! relaunch path. Verified against Codex 26.707.91948.
+//! Discovery is version-adapted: 26.707 keeps the eager loaded-chunk scan,
+//! while 26.715 follows the Vite dependency manifest to its lazy
+//! `setting-storage-*` chunk. A version hint only controls probe order; every
+//! adapter still proves the module structurally before it is used, so a stale
+//! installed-version cache cannot select an incompatible implementation.
 
 use serde_json::Value;
 
@@ -36,47 +38,139 @@ pub const SETTING_KEYS: [&str; 5] = [
     "appearanceLightCodeThemeId",
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsAdapter {
+    V26_707,
+    V26_715,
+}
+
+impl SettingsAdapter {
+    const fn id(self) -> &'static str {
+        match self {
+            Self::V26_707 => "26.707",
+            Self::V26_715 => "26.715",
+        }
+    }
+}
+
+fn preferred_adapter(version_hint: Option<&str>) -> Option<SettingsAdapter> {
+    let train = version_hint?
+        .trim()
+        .split('.')
+        .nth(1)?
+        .parse::<u32>()
+        .ok()?;
+    match train {
+        707..=714 => Some(SettingsAdapter::V26_707),
+        715.. => Some(SettingsAdapter::V26_715),
+        _ => None,
+    }
+}
+
+fn adapter_order(version_hint: Option<&str>) -> [SettingsAdapter; 2] {
+    match preferred_adapter(version_hint) {
+        Some(SettingsAdapter::V26_707) => [SettingsAdapter::V26_707, SettingsAdapter::V26_715],
+        Some(SettingsAdapter::V26_715) | None => {
+            [SettingsAdapter::V26_715, SettingsAdapter::V26_707]
+        }
+    }
+}
+
 /// Locate + cache the renderer's settings API (idempotent). The cache lives on
 /// `window.__camThemeSettingsV1`, so repeated ops skip the chunk scan.
-const ENSURE_API_JS: &str = r#"(async () => {
+const PREFERRED_ADAPTER_TOKEN: &str = "__CAM_PREFERRED_ADAPTER__";
+
+const ENSURE_API_JS_TEMPLATE: &str = r#"(async () => {
   const w = window;
   if (w.__camThemeSettingsV1?.read && w.__camThemeSettingsV1?.write) {
-    return { ok: true, cached: true };
+    return {
+      ok: true,
+      cached: true,
+      adapter: w.__camThemeSettingsV1.adapter,
+      url: w.__camThemeSettingsV1.url,
+    };
   }
-  const urls = [...new Set([
+  const preferred = "__CAM_PREFERRED_ADAPTER__";
+  const adapters = preferred === "26.707"
+    ? ["26.707", "26.715"]
+    : ["26.715", "26.707"];
+  const loadedUrls = [...new Set([
     ...performance.getEntriesByType("resource").map((r) => r.name),
     ...[...document.querySelectorAll("script[src]")].map((el) => el.src),
     ...[...document.querySelectorAll('link[rel="modulepreload"]')].map((el) => el.href),
   ])].filter((u) => u.includes(".js"));
   const writeRe = /async function (\w+)\(e,t\)\{await (\w+)\([`'"]set-setting[`'"],\{params:\{key:e\.key,value:t\}\}\)\}/;
   const readRe = /async function (\w+)\(e\)\{return\(await (\w+)\([`'"]get-setting[`'"],\{params:\{key:e\.key\}\}\)\)\.value\?\?e\.default\}/;
-  let checked = 0;
-  for (const url of urls) {
-    let text;
-    try { text = await (await fetch(url)).text(); } catch { continue; }
-    checked += 1;
-    if (!text.includes("set-setting")) continue;
-    const writeMatch = text.match(writeRe);
-    if (!writeMatch) continue;
-    const readMatch = text.match(readRe);
-    if (!readMatch) continue;
-    const aliasOf = (name) => {
-      const m = text.match(new RegExp("\\b" + name + " as (\\w+)"));
-      return m ? m[1] : null;
-    };
-    const writeAlias = aliasOf(writeMatch[1]);
-    const readAlias = aliasOf(readMatch[1]);
-    if (!writeAlias || !readAlias) continue;
-    let mod;
-    try { mod = await import(url); } catch { continue; }
-    const read = mod[readAlias];
-    const write = mod[writeAlias];
-    if (typeof read !== "function" || typeof write !== "function") continue;
-    w.__camThemeSettingsV1 = { read, write, url };
-    return { ok: true, cached: false, url, checked };
+  const fetched = new Map();
+  const checked = new Set();
+  const fetchText = async (url) => {
+    if (fetched.has(url)) return fetched.get(url);
+    let text = null;
+    try {
+      const response = await fetch(url);
+      // Electron custom-protocol responses can expose a readable body while
+      // `Response.ok` is false. Structural validation below is authoritative.
+      text = await response.text();
+    } catch {}
+    fetched.set(url, text);
+    if (text != null) checked.add(url);
+    return text;
+  };
+  const loadedSettingChunks = loadedUrls.filter((url) =>
+    /(?:^|\/)setting-storage-[A-Za-z0-9_-]+\.js(?:$|[?#])/.test(url)
+  );
+  const lazy715Candidates = async () => {
+    const candidates = new Set(loadedSettingChunks);
+    const chunkRef = /(?:\.\/)?setting-storage-[A-Za-z0-9_-]+\.js/g;
+    for (const sourceUrl of loadedUrls) {
+      const text = await fetchText(sourceUrl);
+      if (text == null) continue;
+      for (const match of text.matchAll(chunkRef)) {
+        try { candidates.add(new URL(match[0], sourceUrl).href); } catch {}
+      }
+    }
+    return [...candidates];
+  };
+  const resolveModule = async (adapter, candidates) => {
+    for (const url of candidates) {
+      const text = await fetchText(url);
+      if (text == null || !text.includes("set-setting")) continue;
+      const writeMatch = text.match(writeRe);
+      const readMatch = text.match(readRe);
+      if (!writeMatch || !readMatch) continue;
+      const aliasOf = (name) => {
+        const match = text.match(new RegExp("\\b" + name + " as (\\w+)"));
+        return match ? match[1] : null;
+      };
+      const writeAlias = aliasOf(writeMatch[1]);
+      const readAlias = aliasOf(readMatch[1]);
+      if (!writeAlias || !readAlias) continue;
+      let mod;
+      try { mod = await import(url); } catch { continue; }
+      const read = mod[readAlias];
+      const write = mod[writeAlias];
+      if (typeof read !== "function" || typeof write !== "function") continue;
+      w.__camThemeSettingsV1 = { read, write, url, adapter };
+      return { ok: true, cached: false, adapter, url, checked: checked.size };
+    }
+    return null;
+  };
+  for (const adapter of adapters) {
+    const candidates = adapter === "26.715" ? await lazy715Candidates() : loadedUrls;
+    const outcome = await resolveModule(adapter, candidates);
+    if (outcome != null) return outcome;
   }
-  return { ok: false, error: "settings module not found (" + checked + " chunks scanned)" };
+  return {
+    ok: false,
+    error: "settings module not found (adapters " + adapters.join(", ") +
+      "; " + checked.size + " chunks scanned)",
+  };
 })()"#;
+
+fn ensure_api_expression(version_hint: Option<&str>) -> String {
+    let preferred = adapter_order(version_hint)[0].id();
+    ENSURE_API_JS_TEMPLATE.replace(PREFERRED_ADAPTER_TOKEN, preferred)
+}
 
 #[derive(Debug, serde::Deserialize)]
 struct JsOutcome {
@@ -85,6 +179,10 @@ struct JsOutcome {
     error: Option<String>,
     #[serde(default)]
     values: Option<serde_json::Map<String, Value>>,
+    #[serde(default)]
+    adapter: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
 }
 
 async fn run_js(session: &CdpSession, expression: &str, what: &str) -> Result<JsOutcome> {
@@ -103,13 +201,24 @@ async fn run_js(session: &CdpSession, expression: &str, what: &str) -> Result<Js
 /// Make sure the settings API is reachable in this renderer. Cheap when
 /// already cached; a clean error otherwise (callers fall back to the file
 /// path).
-pub async fn ensure_api(session: &CdpSession) -> Result<()> {
-    run_js(session, ENSURE_API_JS, "定位设置接口").await.map(|_| ())
+pub async fn ensure_api(session: &CdpSession, version_hint: Option<&str>) -> Result<()> {
+    let expression = ensure_api_expression(version_hint);
+    let outcome = run_js(session, &expression, "定位设置接口").await?;
+    log::info!(
+        "native settings adapter selected adapter={} version_hint={} source={}",
+        outcome.adapter.as_deref().unwrap_or("cached-unknown"),
+        version_hint.unwrap_or("unknown"),
+        outcome.url.as_deref().unwrap_or("cached")
+    );
+    Ok(())
 }
 
 /// Read the five managed settings' live (effective) values.
-pub async fn read_snapshot(session: &CdpSession) -> Result<NativeSettingsSnapshot> {
-    ensure_api(session).await?;
+pub async fn read_snapshot(
+    session: &CdpSession,
+    version_hint: Option<&str>,
+) -> Result<NativeSettingsSnapshot> {
+    ensure_api(session, version_hint).await?;
     let keys_json = serde_json::to_string(&SETTING_KEYS).expect("static keys");
     let expression = format!(
         r#"(async () => {{
@@ -139,11 +248,15 @@ pub async fn read_snapshot(session: &CdpSession) -> Result<NativeSettingsSnapsho
 /// Write settings sequentially; the main process zod-parses each value, so a
 /// malformed one fails loudly (and we report which key). No partial-failure
 /// rollback here — callers hold the pre-write snapshot and decide.
-pub async fn write_values(session: &CdpSession, entries: &[(&str, Value)]) -> Result<()> {
+pub async fn write_values(
+    session: &CdpSession,
+    entries: &[(&str, Value)],
+    version_hint: Option<&str>,
+) -> Result<()> {
     if entries.is_empty() {
         return Ok(());
     }
-    ensure_api(session).await?;
+    ensure_api(session, version_hint).await?;
     let payload: Vec<Value> = entries
         .iter()
         .map(|(key, value)| serde_json::json!([key, value]))
@@ -302,9 +415,48 @@ mod tests {
             "await import(url)",
         ] {
             assert!(
-                ENSURE_API_JS.contains(fragment),
-                "ENSURE_API_JS lost fragment: {fragment}"
+                ENSURE_API_JS_TEMPLATE.contains(fragment),
+                "ENSURE_API_JS_TEMPLATE lost fragment: {fragment}"
             );
         }
+    }
+
+    #[test]
+    fn adapter_order_tracks_supported_codex_trains() {
+        assert_eq!(
+            adapter_order(Some("26.707.9981.0")),
+            [SettingsAdapter::V26_707, SettingsAdapter::V26_715]
+        );
+        assert_eq!(
+            adapter_order(Some("26.715.2305.0")),
+            [SettingsAdapter::V26_715, SettingsAdapter::V26_707]
+        );
+    }
+
+    #[test]
+    fn unknown_or_new_version_probes_latest_adapter_first() {
+        assert_eq!(
+            adapter_order(Some("unexpected")),
+            [SettingsAdapter::V26_715, SettingsAdapter::V26_707]
+        );
+        assert_eq!(
+            adapter_order(Some("26.706.1")),
+            [SettingsAdapter::V26_715, SettingsAdapter::V26_707]
+        );
+        assert_eq!(
+            adapter_order(None),
+            [SettingsAdapter::V26_715, SettingsAdapter::V26_707]
+        );
+    }
+
+    #[test]
+    fn discovery_script_embeds_versioned_probe_order_and_lazy_715_chunk() {
+        let legacy = ensure_api_expression(Some("26.707.9981.0"));
+        let current = ensure_api_expression(Some("26.715.2305.0"));
+        assert!(legacy.contains(r#"const preferred = "26.707""#));
+        assert!(current.contains(r#"const preferred = "26.715""#));
+        assert!(current.contains("setting-storage-"));
+        assert!(current.contains(r#"["26.715", "26.707"]"#));
+        assert!(!current.contains("response.ok"));
     }
 }

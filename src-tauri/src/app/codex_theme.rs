@@ -3,9 +3,9 @@
 //! and drive the restart path (graceful quit → native config.toml appearance
 //! sections → relaunch with a loopback CDP port → inject).
 //!
-//! Everything CDP-related is macOS-first (launching with
-//! `--remote-debugging-port` needs `open -n`); the commands report
-//! `supported: false` elsewhere so the UI can say so instead of erroring.
+//! CDP launch is platform-specific (`open -n` on macOS and Chromium arguments
+//! through the Windows portable/MSIX launchers); other platforms report
+//! `supported: false` so the UI can explain the unavailable actions.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -32,13 +32,13 @@ pub const THEME_CDP_PORT: u16 = 9345;
 /// persists its in-memory config on exit *after* the process count reaches
 /// zero (measured in the studio; writing earlier gets clobbered).
 const CONFIG_SETTLE: Duration = Duration::from_secs(2);
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const QUIT_TIMEOUT_SECS: u64 = 30;
 const CDP_WAIT: Duration = Duration::from_secs(45);
 
-/// How a restart-based flow syncs the native layer: try-on hot-syncs
-/// best-effort (degrading to CSS-only); a full apply falls back to the
-/// stopped-Codex transactional file write when the hot path fails.
+/// How a restart-based flow syncs the native layer: try-on requires a verified
+/// hot sync so the UI never reports a full theme while only CSS was applied;
+/// a full apply may fall back to the stopped-Codex transactional file write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeSync {
     Hot,
@@ -176,7 +176,7 @@ struct ServiceInner {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThemeStatusReport {
-    /// Whether this platform can theme Codex at all (macOS for now).
+    /// Whether this platform can theme Codex (macOS and Windows).
     pub supported: bool,
     /// The persisted selection (settings), i.e. what launches will apply.
     pub active_theme: Option<String>,
@@ -198,7 +198,27 @@ pub struct ThemeStatusReport {
 }
 
 fn theme_supported() -> bool {
-    cfg!(target_os = "macos")
+    cfg!(any(target_os = "macos", target_os = "windows"))
+}
+
+/// Best-effort installed-version hint for native settings discovery. The
+/// renderer adapters still validate their target module and fall back to the
+/// other supported train, because an update can replace the installed app
+/// between detection and launch.
+#[cfg(target_os = "windows")]
+fn codex_version_hint() -> Option<String> {
+    installed_windows_codex().ok().map(|installed| installed.version)
+}
+
+#[cfg(target_os = "macos")]
+fn codex_version_hint() -> Option<String> {
+    crate::app::mac_update::detect_managed_installed()
+        .map(|installed| installed.short_version)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn codex_version_hint() -> Option<String> {
+    None
 }
 
 /// Where managed skins live: the user-chosen store from settings, else the
@@ -602,10 +622,22 @@ fn curl_command() -> std::process::Command {
 /// Fetch a URL to stdout via system curl: https only, no retries into other
 /// protocols, hard timeout and size cap. `--retry` covers the transient
 /// connection resets this route sees in the wild (CDN + long-haul links).
-fn curl_fetch(url: &str, max_bytes: &str, timeout_secs: &str) -> Result<Vec<u8>, AppError> {
-    let output = curl_command()
+fn curl_fetch_attempt(
+    url: &str,
+    max_bytes: &str,
+    timeout_secs: &str,
+    schannel_best_effort: bool,
+) -> Result<std::process::Output, AppError> {
+    let mut command = curl_command();
+    #[cfg(target_os = "windows")]
+    if schannel_best_effort {
+        command.arg("--ssl-revoke-best-effort");
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = schannel_best_effort;
+    command
         .args([
-            "-sfL",
+            "-sSfL",
             "--proto",
             "=https",
             "--retry",
@@ -617,7 +649,46 @@ fn curl_fetch(url: &str, max_bytes: &str, timeout_secs: &str) -> Result<Vec<u8>,
             url,
         ])
         .output()
-        .map_err(|e| AppError::Engine(format!("curl 不可用: {e}")))?;
+        .map_err(|e| AppError::Engine(format!("curl 不可用: {e}")))
+}
+
+#[cfg(target_os = "windows")]
+fn curl_supports_schannel_best_effort() -> bool {
+    curl_command()
+        .args(["--help", "all"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .is_some_and(|output| {
+            String::from_utf8_lossy(&output.stdout).contains("--ssl-revoke-best-effort")
+        })
+}
+
+fn is_schannel_revocation_offline(exit_code: Option<i32>, stderr: &[u8]) -> bool {
+    let stderr = String::from_utf8_lossy(stderr);
+    exit_code == Some(35)
+        && (stderr.contains("CRYPT_E_REVOCATION_OFFLINE") || stderr.contains("0x80092013"))
+}
+
+fn curl_fetch(url: &str, max_bytes: &str, timeout_secs: &str) -> Result<Vec<u8>, AppError> {
+    let mut output = curl_fetch_attempt(url, max_bytes, timeout_secs, false)?;
+    #[cfg(target_os = "windows")]
+    if !output.status.success()
+        && is_schannel_revocation_offline(output.status.code(), &output.stderr)
+    {
+        if curl_supports_schannel_best_effort() {
+            log::warn!(
+                "theme catalog Schannel revocation endpoint unavailable; retrying best-effort url={}",
+                crate::app::logging::redact_url(url)
+            );
+            output = curl_fetch_attempt(url, max_bytes, timeout_secs, true)?;
+        } else {
+            log::warn!(
+                "theme catalog Schannel revocation endpoint unavailable and curl lacks safe retry support url={}",
+                crate::app::logging::redact_url(url)
+            );
+        }
+    }
     if !output.status.success() {
         return Err(AppError::Engine(format!(
             "下载失败 ({}): {}",
@@ -626,6 +697,22 @@ fn curl_fetch(url: &str, max_bytes: &str, timeout_secs: &str) -> Result<Vec<u8>,
         )));
     }
     Ok(output.stdout)
+}
+
+#[cfg(test)]
+mod catalog_network_tests {
+    use super::is_schannel_revocation_offline;
+
+    #[test]
+    fn detects_only_the_windows_revocation_offline_tls_error() {
+        let stderr = b"curl: (35) schannel: CRYPT_E_REVOCATION_OFFLINE (0x80092013)";
+        assert!(is_schannel_revocation_offline(Some(35), stderr));
+        assert!(!is_schannel_revocation_offline(Some(6), stderr));
+        assert!(!is_schannel_revocation_offline(
+            Some(35),
+            b"curl: (35) schannel: SEC_E_UNTRUSTED_ROOT"
+        ));
+    }
 }
 
 pub fn fetch_catalog() -> Result<Vec<CatalogSkin>, AppError> {
@@ -778,11 +865,10 @@ impl ThemeService {
             ));
         }
         if let Some(native) = lenient_native(&theme) {
-            // Native hot-switch is best-effort for try-on: a failure degrades
-            // to CSS-only rather than blocking the whole try-on.
-            if let Err(error) = self.hot_apply_native(&theme.config.id, &native, true).await {
-                log::warn!("原生主题热切失败，试穿降级为仅 CSS: {error}");
-            }
+            // A codex-theme-v1 package promises native appearance values. Do
+            // not silently claim success when only its CSS layer could apply.
+            self.hot_apply_native(&theme.config.id, &native, true)
+                .await?;
         }
         let handle = self.directive_handle().await;
         handle
@@ -814,23 +900,28 @@ impl ThemeService {
         for extra in targets {
             extra.session.close();
         }
+        let version_hint = codex_version_hint();
 
         let outcome: Result<(), AppError> = async {
-            native_hot::ensure_api(&session)
+            native_hot::ensure_api(&session, version_hint.as_deref())
                 .await
                 .map_err(|e| AppError::Engine(e.to_string()))?;
-            let before = native_hot::read_snapshot(&session)
+            let before = native_hot::read_snapshot(&session, version_hint.as_deref())
                 .await
                 .map_err(|e| AppError::Engine(e.to_string()))?;
             if stash_first && read_stash().is_none() {
                 write_stash(theme_id, before.clone())?;
             }
             let entries = native_hot::theme_write_entries(native);
-            if let Err(error) = native_hot::write_values(&session, &entries).await {
+            if let Err(error) =
+                native_hot::write_values(&session, &entries, version_hint.as_deref()).await
+            {
                 // Best-effort immediate revert to the pre-write values so a
                 // half-written palette never survives.
                 let revert = native_hot::snapshot_write_entries(&before);
-                if let Err(revert_error) = native_hot::write_values(&session, &revert).await {
+                if let Err(revert_error) =
+                    native_hot::write_values(&session, &revert, version_hint.as_deref()).await
+                {
                     log::error!("原生设置写入失败且回写也失败: {revert_error}");
                 }
                 return Err(AppError::Engine(error.to_string()));
@@ -885,8 +976,10 @@ impl ThemeService {
             for extra in targets {
                 extra.session.close();
             }
+            let version_hint = codex_version_hint();
             let entries = native_hot::snapshot_write_entries(&stash.settings);
-            let outcome = native_hot::write_values(&session, &entries).await;
+            let outcome =
+                native_hot::write_values(&session, &entries, version_hint.as_deref()).await;
             session.close();
             outcome.map_err(|e| AppError::Engine(e.to_string()))?;
             remove_stash();
@@ -1049,9 +1142,7 @@ impl ThemeService {
                         .file_apply_flow(settings, &dir, &theme_id, native)
                         .await;
                 }
-                Err(error) => {
-                    log::warn!("原生主题热切失败，试穿降级为仅 CSS: {error}");
-                }
+                Err(error) => return Err(error),
             }
         }
 
@@ -1135,7 +1226,7 @@ impl ThemeService {
                         // Codex was quit but nothing was committed — put the
                         // previous run state back.
                         if was_running {
-                            let _ = crate::app::mac_update::launch_codex();
+                            let _ = launch_codex_plain();
                         }
                         Err(error)
                     }
@@ -1191,7 +1282,7 @@ impl ThemeService {
                     }
                     rollback_tx_to_preimage(tx, &paths, &error_text);
                     if was_running {
-                        let _ = crate::app::mac_update::launch_codex();
+                        let _ = launch_codex_plain();
                     }
                 })
                 .await
@@ -1221,7 +1312,7 @@ impl ThemeService {
             if !has_backup(&paths) {
                 // Nothing to restore — still honor the run state.
                 if was_running {
-                    crate::app::mac_update::launch_codex()?;
+                    launch_codex_plain()?;
                 }
                 remove_stash();
                 return Ok(());
@@ -1264,14 +1355,14 @@ impl ThemeService {
                     tx.commit().map_err(|e| AppError::Engine(e.to_string()))?;
                     remove_stash();
                     if was_running {
-                        crate::app::mac_update::launch_codex()?;
+                        launch_codex_plain()?;
                     }
                     Ok(())
                 }
                 Err(error) => {
                     rollback_tx_to_preimage(tx, &paths, &error.to_string());
                     if was_running {
-                        let _ = crate::app::mac_update::launch_codex();
+                        let _ = launch_codex_plain();
                     }
                     Err(error)
                 }
@@ -1306,7 +1397,8 @@ fn quit_codex(installed: &std::path::Path) -> Result<(), AppError> {
 /// argument delivery (without a new instance, `open` merely activates the
 /// running app and drops the args) — callers must have quiesced Codex first.
 #[cfg(target_os = "macos")]
-fn launch_codex_with_cdp(    installed: &std::path::Path,
+fn launch_codex_with_cdp(
+    installed: &std::path::Path,
     port: u16,
     disable_self_updates: bool,
 ) -> Result<(), AppError> {
@@ -1331,26 +1423,110 @@ fn launch_codex_with_cdp(    installed: &std::path::Path,
         .map_err(|e| AppError::Engine(format!("以调试模式打开 Codex 失败: {e}")))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "macos")]
+fn launch_codex_plain() -> Result<(), AppError> {
+    crate::app::mac_update::launch_codex()
+}
+
+#[cfg(target_os = "windows")]
+fn windows_domain_settings() -> crate::domain::settings::AppSettings {
+    let saved = AppSettings::load();
+    let mut settings =
+        crate::domain::settings::AppSettings::new(String::new(), saved.install_root);
+    settings.disable_codex_self_updates = saved.disable_codex_self_updates;
+    settings
+}
+
+#[cfg(target_os = "windows")]
+fn installed_windows_codex() -> Result<codex_win_engine::InstalledWindowsCodex, AppError> {
+    crate::app::win_update::win_install_status(&windows_domain_settings())
+        .installed
+        .ok_or_else(|| AppError::Engine("没有可用的 Codex 安装".to_string()))
+}
+
+#[cfg(target_os = "windows")]
+fn installed_codex_path() -> Result<PathBuf, AppError> {
+    installed_windows_codex().map(|installed| PathBuf::from(installed.path))
+}
+
+#[cfg(target_os = "windows")]
+fn codex_running() -> bool {
+    installed_codex_path()
+        .and_then(|path| {
+            codex_win_engine::codex_running_for_root(&path)
+                .map_err(|e| AppError::Engine(e.to_string()))
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "windows")]
+fn quit_codex(installed: &std::path::Path) -> Result<(), AppError> {
+    codex_win_engine::close_codex_gracefully_for_root(QUIT_TIMEOUT_SECS, installed)
+        .map_err(|e| AppError::Engine(format!("退出 Codex 失败: {e}")))
+}
+
+#[cfg(target_os = "windows")]
+fn launch_codex_with_cdp(
+    installed: &std::path::Path,
+    port: u16,
+    disable_self_updates: bool,
+) -> Result<(), AppError> {
+    if disable_self_updates {
+        crate::app::codex_self_update::sync_setting(true)?;
+    }
+    let detected = installed_windows_codex()?;
+    if !codex_win_engine::same_windows_path(Path::new(&detected.path), installed) {
+        return Err(AppError::Engine(format!(
+            "Codex 安装位置在重启前发生变化：{} -> {}",
+            installed.display(),
+            detected.path
+        )));
+    }
+    log::info!(
+        "launching Windows Codex with CDP port={port} path={}",
+        installed.display()
+    );
+    codex_win_engine::launch_codex_with_options(
+        &detected,
+        codex_win_engine::LaunchOptions {
+            disable_codex_self_updates: disable_self_updates,
+            remote_debugging_port: Some(port),
+        },
+    )
+    .map_err(|e| AppError::Engine(format!("以调试模式打开 Codex 失败: {e}")))
+}
+
+#[cfg(target_os = "windows")]
+fn launch_codex_plain() -> Result<(), AppError> {
+    crate::app::win_update::launch_codex(&windows_domain_settings())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn installed_codex_path() -> Result<PathBuf, AppError> {
     Err(AppError::UnsupportedPlatform)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn codex_running() -> bool {
     false
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn quit_codex(_installed: &std::path::Path) -> Result<(), AppError> {
     Err(AppError::UnsupportedPlatform)
 }
 
-#[cfg(not(target_os = "macos"))]
-fn launch_codex_with_cdp(    _installed: &std::path::Path,
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn launch_codex_with_cdp(
+    _installed: &std::path::Path,
     _port: u16,
     _disable_self_updates: bool,
 ) -> Result<(), AppError> {
+    Err(AppError::UnsupportedPlatform)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn launch_codex_plain() -> Result<(), AppError> {
     Err(AppError::UnsupportedPlatform)
 }
 

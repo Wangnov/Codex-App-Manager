@@ -169,7 +169,7 @@ fn live_hot_settings_same_value_round_trip() {
             extra.session.close();
         }
 
-        let before = codex_theme_engine::native_hot::read_snapshot(&session)
+        let before = codex_theme_engine::native_hot::read_snapshot(&session, None)
             .await
             .expect("read snapshot");
         println!(
@@ -178,10 +178,10 @@ fn live_hot_settings_same_value_round_trip() {
         );
         let entries = codex_theme_engine::native_hot::snapshot_write_entries(&before);
         assert!(!entries.is_empty(), "effective reads should yield values");
-        codex_theme_engine::native_hot::write_values(&session, &entries)
+        codex_theme_engine::native_hot::write_values(&session, &entries, None)
             .await
             .expect("same-value write");
-        let after = codex_theme_engine::native_hot::read_snapshot(&session)
+        let after = codex_theme_engine::native_hot::read_snapshot(&session, None)
             .await
             .expect("re-read snapshot");
         assert_eq!(

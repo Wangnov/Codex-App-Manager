@@ -2145,7 +2145,9 @@ pub async fn win_adopt(state: State<'_, ManagerState>) -> Result<WinInstallStatu
         .map_err(Into::into)
 }
 
-/// Windows-only: open the installed Codex.
+/// Windows-only: open the installed Codex. A persisted theme uses the same
+/// debuggable launch + injection path as macOS before falling back to a plain
+/// launch when no theme is selected (or another operation owns the app).
 ///
 /// Async + `spawn_blocking` so PowerShell AUMID activation (or portable spawn)
 /// cannot freeze the WebView while the OS is cold-starting Codex. Errors still
@@ -2154,6 +2156,15 @@ pub async fn win_adopt(state: State<'_, ManagerState>) -> Result<WinInstallStatu
 pub async fn win_launch_codex(state: State<'_, ManagerState>) -> Result<(), CommandError> {
     if !matches!(state.target.os, OperatingSystem::Windows) {
         return Err(AppError::UnsupportedPlatform.into());
+    }
+    let persisted = PersistedAppSettings::load();
+    if persisted.codex_theme.is_some() && state.operations.snapshot().is_none() {
+        let themed =
+            crate::app::codex_theme::launch_with_active_theme(&state.codex_theme, &persisted)
+                .await?;
+        if themed {
+            return Ok(());
+        }
     }
     let settings = windows_domain_settings_for_persisted(&state);
     tauri::async_runtime::spawn_blocking(move || crate::app::win_update::launch_codex(&settings))

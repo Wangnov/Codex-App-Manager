@@ -11,7 +11,6 @@ use std::path::Path;
 
 use crate::EngineError;
 
-#[cfg(any(windows, test))]
 fn normalize_windows_path_text(value: &str) -> String {
     let mut normalized = value.replace('/', "\\").to_lowercase();
     if let Some(rest) = normalized.strip_prefix(r"\\?\unc\") {
@@ -22,10 +21,17 @@ fn normalize_windows_path_text(value: &str) -> String {
     normalized.trim_end_matches('\\').to_string()
 }
 
-#[cfg(any(windows, test))]
 fn normalized_windows_path(path: &Path) -> String {
     let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     normalize_windows_path_text(&resolved.to_string_lossy())
+}
+
+/// Compare Windows paths after resolving what can be resolved, removing the
+/// extended-path prefix, normalizing separators and folding case.
+pub fn same_windows_path(left: &Path, right: &Path) -> bool {
+    let left = normalized_windows_path(left);
+    let right = normalized_windows_path(right);
+    !left.is_empty() && left == right
 }
 
 #[cfg(any(windows, test))]
@@ -420,5 +426,17 @@ mod tests {
             normalize_windows_path_text(r"\\?\UNC\server\share\Codex\"),
             r"\\server\share\codex"
         );
+    }
+
+    #[test]
+    fn same_path_ignores_case_separators_and_extended_prefix() {
+        assert!(same_windows_path(
+            Path::new(r"\\?\C:\Users\Alice\Codex\"),
+            Path::new(r"c:/users/alice/codex")
+        ));
+        assert!(!same_windows_path(
+            Path::new(r"C:\Users\Alice\Codex"),
+            Path::new(r"C:\Users\Alice\Other")
+        ));
     }
 }

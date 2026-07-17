@@ -38,10 +38,45 @@ pub struct InstalledWindowsCodex {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LaunchOptions {
     pub disable_codex_self_updates: bool,
+    /// Start Electron's loopback DevTools endpoint for renderer theme injection.
+    /// `None` preserves the ordinary launch path.
+    pub remote_debugging_port: Option<u16>,
 }
 
 const CODEX_SELF_UPDATE_ENV_KEY: &str = "CODEX_SPARKLE_ENABLED";
 const CODEX_SELF_UPDATE_ENV_DISABLED: &str = "false";
+
+fn remote_debugging_arguments(port: u16) -> [String; 2] {
+    [
+        "--remote-debugging-address=127.0.0.1".to_string(),
+        format!("--remote-debugging-port={port}"),
+    ]
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RegisteredMsixApp {
+    package_family_name: String,
+    app_id: String,
+}
+
+fn registered_msix_aumid(json: &str, expected_family: &str) -> Result<String, EngineError> {
+    let entry: RegisteredMsixApp = serde_json::from_str(json)
+        .map_err(|e| EngineError::Io(format!("parse registered MSIX app entry: {e}")))?;
+    if !entry.package_family_name.eq_ignore_ascii_case(expected_family) {
+        return Err(EngineError::Io(format!(
+            "registered MSIX package family changed: expected {expected_family}, got {}",
+            entry.package_family_name
+        )));
+    }
+    let app_id = entry.app_id.trim();
+    if app_id.is_empty() {
+        return Err(EngineError::Io(
+            "registered MSIX app entry has no application id".to_string(),
+        ));
+    }
+    Ok(format!("{}!{app_id}", entry.package_family_name))
+}
 
 /// Filesystem mtime of `path` as Unix seconds, best-effort (None if unreadable).
 fn path_mtime_secs(path: &str) -> Option<u64> {
@@ -1351,6 +1386,9 @@ pub fn launch_codex_with_options(
         if options.disable_codex_self_updates {
             command.env(CODEX_SELF_UPDATE_ENV_KEY, CODEX_SELF_UPDATE_ENV_DISABLED);
         }
+        if let Some(port) = options.remote_debugging_port {
+            command.args(remote_debugging_arguments(port));
+        }
         match spawn_and_require_liveness(command, PORTABLE_LIVENESS_WINDOW) {
             Ok(LivenessResult::Survived { child }) => {
                 std::mem::forget(child);
@@ -1372,8 +1410,96 @@ pub fn launch_codex_with_options(
                 "launching MSIX Codex with updater disabled via persisted user environment"
             );
         }
-        launch_msix_app()
+        if let Some(port) = options.remote_debugging_port {
+            let arguments = remote_debugging_arguments(port).join(" ");
+            launch_msix_app_with_arguments(installed, &arguments)
+        } else {
+            launch_msix_app()
+        }
     }
+}
+
+#[cfg(windows)]
+fn launch_msix_app_with_arguments(
+    installed: &InstalledWindowsCodex,
+    arguments: &str,
+) -> Result<(), EngineError> {
+    use windows::core::HSTRING;
+    use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_LOCAL_SERVER,
+        COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::UI::Shell::{
+        ApplicationActivationManager, IApplicationActivationManager, AO_NONE,
+    };
+
+    let family = installed.package_family_name.as_deref().ok_or_else(|| {
+        EngineError::Io("MSIX Codex has no package family name for activation".to_string())
+    })?;
+    // Resolve through package registration instead of reading WindowsApps
+    // directly; its ACL is not guaranteed to grant ordinary desktop apps
+    // access to AppxManifest.xml.
+    let script = format!(
+        r#"
+$ErrorActionPreference = 'Stop'
+$pkg = Get-AppxPackage -Name {name} |
+  Where-Object {{ $_.PackageFamilyName -eq {family} }} |
+  Sort-Object -Property Version -Descending |
+  Select-Object -First 1
+if ($null -eq $pkg) {{ throw 'registered Codex package not found' }}
+$app = (Get-AppxPackageManifest $pkg -ErrorAction Stop).Package.Applications.Application
+if ($app -is [array]) {{ $app = $app[0] }}
+@{{
+  packageFamilyName = [string]$pkg.PackageFamilyName
+  appId = [string]$app.Id
+}} | ConvertTo-Json -Compress
+"#,
+        name = ps_quote(crate::OPENAI_PACKAGE_IDENTITY),
+        family = ps_quote(family),
+    );
+    let registered = run_powershell_json_with_limits(&script, RunLimits::probe())
+        .map_err(|e| e.into_install())?;
+    let aumid = HSTRING::from(registered_msix_aumid(&registered, family)?);
+    let arguments = HSTRING::from(arguments);
+
+    // Blocking launch calls run on a pool thread whose COM apartment is
+    // normally uninitialized. If the host initialized it differently already,
+    // RPC_E_CHANGED_MODE is safe to tolerate: COM is still available there.
+    let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    if initialized.is_err() && initialized != RPC_E_CHANGED_MODE {
+        return Err(EngineError::Io(format!(
+            "initialize COM for MSIX activation: {initialized:?}"
+        )));
+    }
+    let uninitialize = initialized.is_ok();
+    let outcome = (|| unsafe {
+        let manager: IApplicationActivationManager = CoCreateInstance(
+            &ApplicationActivationManager,
+            None,
+            CLSCTX_LOCAL_SERVER,
+        )
+        .map_err(|e| EngineError::Io(format!("create application activation manager: {e}")))?;
+        let pid = manager
+            .ActivateApplication(&aumid, &arguments, AO_NONE)
+            .map_err(|e| EngineError::Io(format!("activate MSIX Codex with arguments: {e}")))?;
+        log::debug!("activated MSIX Codex with arguments pid={pid}");
+        Ok(())
+    })();
+    if uninitialize {
+        unsafe { CoUninitialize() };
+    }
+    outcome
+}
+
+#[cfg(not(windows))]
+fn launch_msix_app_with_arguments(
+    _installed: &InstalledWindowsCodex,
+    _arguments: &str,
+) -> Result<(), EngineError> {
+    Err(EngineError::Io(
+        "MSIX launch with arguments is only available on Windows".to_string(),
+    ))
 }
 
 #[cfg(windows)]
@@ -1651,8 +1777,35 @@ fn capabilities_from_probe_json(value: &serde_json::Value) -> WinCapabilityRepor
 
 #[cfg(test)]
 mod tests {
+    use super::{registered_msix_aumid, remote_debugging_arguments};
     #[cfg(windows)]
     use super::*;
+
+    #[test]
+    fn builds_loopback_remote_debugging_arguments() {
+        assert_eq!(
+            remote_debugging_arguments(9345),
+            [
+                "--remote-debugging-address=127.0.0.1".to_string(),
+                "--remote-debugging-port=9345".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn registered_app_entry_must_match_the_detected_package_family() {
+        let json = r#"{"packageFamilyName":"OpenAI.Codex_abc","appId":"CodexApp"}"#;
+        assert_eq!(
+            registered_msix_aumid(json, "openai.codex_ABC").unwrap(),
+            "OpenAI.Codex_abc!CodexApp"
+        );
+        assert!(registered_msix_aumid(json, "OpenAI.Codex_other").is_err());
+        assert!(registered_msix_aumid(
+            r#"{"packageFamilyName":"OpenAI.Codex_abc","appId":""}"#,
+            "OpenAI.Codex_abc"
+        )
+        .is_err());
+    }
 
     #[cfg(windows)]
     const CONSTRAINED_APPX_MOCKS: &str = r#"

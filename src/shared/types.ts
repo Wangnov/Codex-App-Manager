@@ -599,7 +599,7 @@ export interface CodexThemeDaemonStatus {
 }
 
 export interface CodexThemeStatusReport {
-  /** Whether this platform can theme Codex at all (macOS for now). */
+  /** Whether this platform can theme Codex (macOS and Windows). */
   supported: boolean;
   /** The persisted selection — what manager-launches will apply. */
   activeTheme: string | null;
