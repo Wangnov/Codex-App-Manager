@@ -505,7 +505,11 @@ pub fn sha256_file(path: &Path) -> Result<String, EngineError> {
         }
         hasher.update(&buf[..read]);
     }
-    let sha256 = format!("{:x}", hasher.finalize());
+    let sha256 = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     let sha256_prefix = sha256.get(..12).unwrap_or(&sha256);
     log::info!("SHA256 calculation completed sha256_prefix={sha256_prefix}");
     Ok(sha256)
