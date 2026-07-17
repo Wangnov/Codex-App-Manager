@@ -9,7 +9,8 @@ import type {
 } from "../../shared/types";
 import { NavBar, Segmented, StatusBanner } from "../components";
 import { Icon } from "../icons";
-import { useI18n } from "../i18n";
+import { Sheet } from "../Sheet";
+import { useI18n, type TFn } from "../i18n";
 
 function isTauri(): boolean {
   return (
@@ -39,10 +40,8 @@ function parseColor(value: string): { r: number; g: number; b: number } | null {
   return null;
 }
 
-/** Theme packages name their colors freely (cream/amber/lcl/...), so the card
- *  art derives roles from the values instead: darkest = backdrop, most
- *  saturated = accent, lightest = ink. Every theme card becomes its own
- *  poster with zero bundled artwork. */
+/** Theme packages name their colors freely, so the card art derives roles from
+ *  the values: darkest = backdrop, most saturated = accent, lightest = ink. */
 function cardPalette(colors: Record<string, string>) {
   const parsed = Object.values(colors)
     .map((value) => ({ value, rgb: parseColor(value) }))
@@ -91,10 +90,12 @@ function PhotoCover({
   load,
   onZoom,
   zoomLabel,
+  className = "themecard-art themecard-art-photo",
 }: {
   load: () => Promise<string | null>;
   onZoom: (dataUrl: string) => void;
   zoomLabel: string;
+  className?: string;
 }) {
   const [dataUrl, setDataUrl] = useState<string | null>(null);
   const loadRef = useRef(load);
@@ -114,7 +115,7 @@ function PhotoCover({
   return (
     <button
       type="button"
-      className="themecard-art themecard-art-photo"
+      className={className}
       title={zoomLabel}
       disabled={!dataUrl}
       onClick={() => {
@@ -138,8 +139,6 @@ function Lightbox({ src, onClose }: { src: string | null; onClose: () => void })
   }, [src, onClose]);
   if (!src) return null;
   return (
-    // Backdrop click-to-dismiss is a mouse convenience; the keyboard path is
-    // Esc above. The close button carries the accessible control.
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events
     <div className="lightbox" onClick={onClose}>
       <img src={src} alt="" draggable={false} />
@@ -150,17 +149,134 @@ function Lightbox({ src, onClose }: { src: string | null; onClose: () => void })
   );
 }
 
-/** Case-insensitive multi-field match: name, id, description, author, tags,
- *  appearance and version all participate — not just the title. */
+/** Case-insensitive multi-field match. */
 function matches(query: string, fields: Array<string | null | undefined>): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
-  return q
-    .split(/\s+/)
-    .every((token) => fields.some((f) => (f ?? "").toLowerCase().includes(token)));
+  return q.split(/\s+/).every((token) => fields.some((f) => (f ?? "").toLowerCase().includes(token)));
 }
 
 type GalleryTab = "local" | "store";
+type ViewMode = "card" | "list";
+const VIEW_KEY = "cam.skins.view";
+const PAGE_SIZE: Record<ViewMode, number> = { card: 12, list: 20 };
+
+/** One row in the gallery, normalized across a local package and a catalog
+ *  entry so the card/list/detail chrome is shared. */
+interface Item {
+  kind: GalleryTab;
+  id: string;
+  name: string;
+  version: string | null;
+  author: string | null;
+  description: string;
+  codexVerified: string | null;
+  appearance: string | null;
+  license: string | null;
+  tags: string[];
+  colors: Record<string, string>;
+  hasPreview: boolean;
+  loadPreview: () => Promise<string | null>;
+  origin?: "dev" | "store"; // local only
+  installedVersion?: string | null; // store only: version present in the store
+}
+
+function localItem(theme: CodexThemeSummary): Item {
+  return {
+    kind: "local",
+    id: theme.id,
+    name: theme.name,
+    version: theme.meta.version,
+    author: theme.meta.author,
+    description: theme.description,
+    codexVerified: theme.meta.codexVerified,
+    appearance: theme.meta.appearance,
+    license: theme.meta.license,
+    tags: theme.meta.tags,
+    colors: theme.colors,
+    hasPreview: Boolean(theme.preview),
+    loadPreview: () => managerApi.codexThemePreview(theme.id),
+    origin: theme.origin,
+  };
+}
+
+function storeItem(skin: CatalogSkin, installedVersion: string | null): Item {
+  return {
+    kind: "store",
+    id: skin.id,
+    name: skin.name,
+    version: skin.version,
+    author: skin.author,
+    description: skin.description,
+    codexVerified: skin.codexVerified,
+    appearance: skin.appearance,
+    license: skin.license,
+    tags: skin.tags,
+    colors: {},
+    hasPreview: true,
+    loadPreview: () => managerApi.codexThemeCatalogPreview(skin.preview),
+    installedVersion,
+  };
+}
+
+/** Numbered pager. Renders nothing when everything fits on one page. */
+function Pagination({
+  page,
+  pages,
+  onPage,
+  label,
+}: {
+  page: number;
+  pages: number;
+  onPage: (p: number) => void;
+  label: TFn;
+}) {
+  if (pages <= 1) return null;
+  const nums = Array.from({ length: pages }, (_, i) => i).filter(
+    (i) => i === 0 || i === pages - 1 || Math.abs(i - page) <= 1,
+  );
+  const out: Array<number | "gap"> = [];
+  nums.forEach((n, i) => {
+    if (i > 0 && n - nums[i - 1] > 1) out.push("gap");
+    out.push(n);
+  });
+  return (
+    <nav className="pager" aria-label={label("themes.page.nav")}>
+      <button
+        className="pager-btn"
+        disabled={page === 0}
+        onClick={() => onPage(page - 1)}
+        aria-label={label("themes.page.prev")}
+      >
+        <Icon name="back" />
+      </button>
+      {out.map((n, i) =>
+        n === "gap" ? (
+          <span key={`gap${i}`} className="pager-gap">
+            …
+          </span>
+        ) : (
+          <button
+            key={n}
+            className={`pager-btn${n === page ? " active" : ""}`}
+            aria-current={n === page ? "page" : undefined}
+            onClick={() => onPage(n)}
+          >
+            {n + 1}
+          </button>
+        ),
+      )}
+      <button
+        className="pager-btn"
+        disabled={page >= pages - 1}
+        onClick={() => onPage(page + 1)}
+        aria-label={label("themes.page.next")}
+      >
+        <Icon name="chevron" />
+      </button>
+    </nav>
+  );
+}
 
 export function CodexThemes({ onBack }: { onBack: () => void }) {
   const { t } = useI18n();
@@ -177,6 +293,18 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
   const [tab, setTab] = useState<GalleryTab>("local");
   const [query, setQuery] = useState("");
   const [lightbox, setLightbox] = useState<string | null>(null);
+  const [view, setView] = useState<ViewMode>(() => {
+    try {
+      return localStorage.getItem(VIEW_KEY) === "list" ? "list" : "card";
+    } catch {
+      return "card";
+    }
+  });
+  const [page, setPage] = useState(0);
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [detail, setDetail] = useState<Item | null>(null);
+  const [confirmIds, setConfirmIds] = useState<string[] | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -203,10 +331,7 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
     return () => window.removeEventListener(SETTINGS_CHANGED_EVENT, onSettings);
   }, [refresh]);
 
-  // The online catalog loads independently of the local gallery — network
-  // latency (or being offline) must never hold the local list hostage.
   useEffect(() => {
-    if (!isTauri()) return;
     let cancelled = false;
     void managerApi
       .codexThemeCatalog()
@@ -221,13 +346,21 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
     };
   }, []);
 
-  // Keep the status line live while the view is open (daemon connects targets
-  // asynchronously after an apply).
   useEffect(() => {
     const id = window.setInterval(() => {
       void managerApi.codexThemeStatus().then(setStatus).catch(() => undefined);
     }, 3000);
     return () => window.clearInterval(id);
+  }, []);
+
+  const setViewMode = useCallback((next: ViewMode) => {
+    setView(next);
+    setPage(0);
+    try {
+      localStorage.setItem(VIEW_KEY, next);
+    } catch {
+      // view memory is a nicety
+    }
   }, []);
 
   const run = useCallback(
@@ -248,49 +381,102 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
   );
 
   const activeId = status?.activeTheme ?? null;
-  const tryingId = status?.daemon?.themeId && status.daemon.themeId !== activeId
-    ? status.daemon.themeId
-    : null;
-  // The kept theme has two live states: injected (daemon confirms it) and
-  // paused (off-live keeps the selection and the native palette; only the
-  // CSS layer is withdrawn for this session).
+  const tryingId =
+    status?.daemon?.themeId && status.daemon.themeId !== activeId ? status.daemon.themeId : null;
   const activeInjected = Boolean(activeId && status?.daemon?.themeId === activeId);
   const activePaused = Boolean(activeId && !status?.daemon?.themeId);
-  const themeName = (id: string | null) =>
-    (id && themes.find((theme) => theme.id === id)?.name) || id || "";
 
-  // The backend lists every root (dev first, then store) WITHOUT deduping so
-  // the store tab can see the store copy behind a same-id dev checkout. The
-  // local gallery shows resolution order: first occurrence per id wins.
+  // Dedup local list to resolution order (dev shadows store) for display.
   const localThemes = useMemo(() => {
     const seen = new Set<string>();
     return themes.filter((theme) => (seen.has(theme.id) ? false : (seen.add(theme.id), true)));
   }, [themes]);
 
-  const visibleThemes = localThemes.filter((theme) =>
-    matches(query, [
-      theme.name,
-      theme.id,
-      theme.description,
-      theme.meta.author,
-      theme.meta.version,
-      theme.meta.appearance,
-      theme.meta.codexVerified,
-      ...theme.meta.tags,
-    ]),
+  const storeVersionOf = useCallback(
+    (id: string) => themes.find((th) => th.id === id && th.origin === "store")?.meta.version ?? null,
+    [themes],
   );
-  const visibleCatalog = (catalog ?? []).filter((skin) =>
-    matches(query, [
-      skin.name,
-      skin.id,
-      skin.description,
-      skin.author,
-      skin.version,
-      skin.appearance,
-      skin.codexVerified,
-      ...skin.tags,
-    ]),
+
+  const items = useMemo<Item[]>(() => {
+    if (tab === "local") return localThemes.map(localItem);
+    return (catalog ?? []).map((skin) => storeItem(skin, storeVersionOf(skin.id)));
+  }, [tab, localThemes, catalog, storeVersionOf]);
+
+  const visible = useMemo(
+    () =>
+      items.filter((it) =>
+        matches(query, [
+          it.name,
+          it.id,
+          it.description,
+          it.author,
+          it.version,
+          it.appearance,
+          it.codexVerified,
+          ...it.tags,
+        ]),
+      ),
+    [items, query],
   );
+
+  const pageSize = PAGE_SIZE[view];
+  const pages = Math.max(1, Math.ceil(visible.length / pageSize));
+  // Reset paging when the working set changes underfoot.
+  useEffect(() => {
+    setPage(0);
+  }, [tab, query, view]);
+  const clampedPage = Math.min(page, pages - 1);
+  const paged = visible.slice(clampedPage * pageSize, clampedPage * pageSize + pageSize);
+
+  const themeName = (id: string | null) =>
+    (id && themes.find((theme) => theme.id === id)?.name) || id || "";
+
+  // A store-origin local package that isn't the standing selection can be
+  // removed; dev checkouts are the user's source and are protected.
+  const deletable = useCallback(
+    (it: Item) => it.kind === "local" && it.origin === "store" && it.id !== activeId,
+    [activeId],
+  );
+  const selectableOnPage = paged.filter(deletable);
+  const allSelected =
+    selectableOnPage.length > 0 && selectableOnPage.every((it) => selected.has(it.id));
+
+  const toggleSelect = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const toggleSelectAll = () =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allSelected) selectableOnPage.forEach((it) => next.delete(it.id));
+      else selectableOnPage.forEach((it) => next.add(it.id));
+      return next;
+    });
+  const exitSelect = () => {
+    setSelecting(false);
+    setSelected(new Set());
+  };
+
+  const doDelete = (ids: string[]) =>
+    run("delete", async () => {
+      for (const id of ids) await managerApi.codexThemeDelete(id);
+      setConfirmIds(null);
+      setSelected(new Set());
+      setSelecting(false);
+      setDetail(null);
+    });
+
+  const tryOn = (it: Item) =>
+    run(status?.cdpReady ? `tryon:${it.id}` : `tryon-restart:${it.id}`, () =>
+      status?.cdpReady
+        ? managerApi.codexThemeTryOn(it.id)
+        : managerApi.codexThemeTryOnRestart(it.id),
+    );
+  const installOnline = (it: Item) =>
+    run(`online:${it.id}`, () => managerApi.codexThemeInstallOnline(it.id));
 
   const saveDevDir = () =>
     run("devdir", async () => {
@@ -301,21 +487,15 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
       });
     });
 
-  const importSkin = () =>
-    run("import", async () => {
-      await managerApi.codexThemeImport();
-    });
+  const importSkin = () => run("import", async () => void (await managerApi.codexThemeImport()));
 
-  // Drag-and-drop delivery: Tauri intercepts native file drops and rebroadcasts
-  // them as webview events; install every dropped .codexskin.
+  // Drag-and-drop install of dropped .codexskin files.
   const dropHandler = useRef<(paths: string[]) => void>(() => undefined);
   dropHandler.current = (paths) => {
     const skins = paths.filter((p) => p.toLowerCase().endsWith(".codexskin"));
     if (!skins.length) return;
     void run("import", async () => {
-      for (const skin of skins) {
-        await managerApi.codexThemeImportPath(skin);
-      }
+      for (const skin of skins) await managerApi.codexThemeImportPath(skin);
     });
   };
   useEffect(() => {
@@ -325,9 +505,7 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
     void import("@tauri-apps/api/webview")
       .then(({ getCurrentWebview }) =>
         getCurrentWebview().onDragDropEvent((event) => {
-          if (event.payload.type === "drop") {
-            dropHandler.current(event.payload.paths);
-          }
+          if (event.payload.type === "drop") dropHandler.current(event.payload.paths);
         }),
       )
       .then((dispose) => {
@@ -340,6 +518,177 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
       unlisten?.();
     };
   }, []);
+
+  // ── per-item badges + primary action ──────────────────────────────────────
+  const badges = (it: Item) => {
+    const out: Array<{ key: string; cls: string; text: string; title?: string }> = [];
+    if (it.version) out.push({ key: "v", cls: "version", text: `v${it.version}` });
+    if (it.kind === "local" && it.origin === "dev")
+      out.push({ key: "dev", cls: "tag soon", text: t("themes.origin.dev"), title: t("themes.origin.devHint") });
+    if (it.id === activeId) out.push({ key: "active", cls: "tag ok", text: t("themes.inUse") });
+    if (it.id === tryingId) out.push({ key: "trying", cls: "tag soon", text: t("themes.trying") });
+    if (it.kind === "store" && it.installedVersion === it.version)
+      out.push({ key: "inst", cls: "tag ok", text: t("themes.online.installed") });
+    if (it.codexVerified)
+      out.push({
+        key: "cv",
+        cls: "tag soon",
+        text: `@${it.codexVerified.split(".").slice(0, 2).join(".")}`,
+        title: t("themes.verifiedHint", { v: it.codexVerified }),
+      });
+    return out;
+  };
+
+  const primary = (it: Item): { label: string; run: () => void } | null => {
+    if (it.kind === "store") {
+      const upToDate = it.installedVersion === it.version;
+      if (upToDate) return null;
+      const isUpgrade = it.installedVersion != null && it.installedVersion !== it.version;
+      const key = `online:${it.id}`;
+      return {
+        label:
+          busy === key
+            ? t("themes.online.installing")
+            : isUpgrade
+              ? t("themes.online.update", { v: it.version ?? "" })
+              : t("themes.online.install"),
+        run: () => installOnline(it),
+      };
+    }
+    if (it.id === activeId || it.id === tryingId) return null;
+    const key = status?.cdpReady ? `tryon:${it.id}` : `tryon-restart:${it.id}`;
+    return {
+      label:
+        busy === key
+          ? t("themes.busy.tryOn")
+          : status?.cdpReady
+            ? t("themes.tryOn")
+            : t("themes.tryOnRestart"),
+      run: () => tryOn(it),
+    };
+  };
+
+  const actionsFor = (it: Item, size: "sm") => {
+    const p = primary(it);
+    return (
+      <>
+        {p ? (
+          <button
+            className={`btn primary ${size}`}
+            disabled={busy !== null || (it.kind === "local" && !status?.supported)}
+            onClick={p.run}
+          >
+            {p.label}
+          </button>
+        ) : null}
+        <button
+          className={`btn ghost ${size} icon-only`}
+          onClick={() => setDetail(it)}
+          aria-label={t("themes.details")}
+          title={t("themes.details")}
+        >
+          <Icon name="info" />
+        </button>
+        {deletable(it) ? (
+          <button
+            className={`btn ghost ${size} icon-only danger`}
+            disabled={busy !== null}
+            onClick={() => setConfirmIds([it.id])}
+            aria-label={t("themes.delete")}
+            title={t("themes.delete")}
+          >
+            <Icon name="trash" />
+          </button>
+        ) : null}
+      </>
+    );
+  };
+
+  const selBox = (it: Item) =>
+    selecting && deletable(it) ? (
+      <label className="skin-check" title={t("themes.select")}>
+        <input
+          type="checkbox"
+          checked={selected.has(it.id)}
+          onChange={() => toggleSelect(it.id)}
+          aria-label={t("themes.select")}
+        />
+        <span aria-hidden="true">
+          <Icon name="check" />
+        </span>
+      </label>
+    ) : null;
+
+  const cover = (it: Item, className?: string) =>
+    it.hasPreview ? (
+      <PhotoCover
+        load={it.loadPreview}
+        onZoom={setLightbox}
+        zoomLabel={t("themes.zoom")}
+        className={className ?? "themecard-art themecard-art-photo"}
+      />
+    ) : (
+      <ThemeCardArt colors={it.colors} />
+    );
+
+  const renderCard = (it: Item) => (
+    <article
+      key={`${it.kind}:${it.id}`}
+      className={`themecard${it.id === activeId ? " active" : ""}${selected.has(it.id) ? " selected" : ""}`}
+    >
+      {selBox(it)}
+      {cover(it)}
+      <div className="themecard-body">
+        <div className="themecard-head">
+          <span className="themecard-name">{it.name}</span>
+          {badges(it).map((b) => (
+            <span key={b.key} className={b.cls === "version" ? "themecard-version" : b.cls} title={b.title}>
+              {b.text}
+            </span>
+          ))}
+        </div>
+        {it.author ? <span className="themecard-author">@{it.author}</span> : null}
+        {it.description ? <p className="themecard-desc">{it.description}</p> : null}
+        {Object.keys(it.colors).length ? (
+          <div className="themecard-swatches" aria-hidden="true">
+            {Object.entries(it.colors)
+              .slice(0, 10)
+              .map(([key, value]) => (
+                <span key={key} className="swatch" style={{ background: value }} title={key} />
+              ))}
+          </div>
+        ) : null}
+        <div className="themecard-actions">{actionsFor(it, "sm")}</div>
+      </div>
+    </article>
+  );
+
+  const renderRow = (it: Item) => (
+    <div
+      key={`${it.kind}:${it.id}`}
+      className={`skinrow${it.id === activeId ? " active" : ""}${selected.has(it.id) ? " selected" : ""}`}
+    >
+      {selBox(it)}
+      <div className="skinrow-thumb">{cover(it, "skinrow-cover")}</div>
+      <div className="skinrow-main">
+        <div className="skinrow-head">
+          <span className="skinrow-name">{it.name}</span>
+          {badges(it).map((b) => (
+            <span key={b.key} className={b.cls === "version" ? "themecard-version" : b.cls} title={b.title}>
+              {b.text}
+            </span>
+          ))}
+        </div>
+        <div className="skinrow-sub">
+          {it.author ? <span className="themecard-author">@{it.author}</span> : null}
+          {it.description ? <span className="skinrow-desc">{it.description}</span> : null}
+        </div>
+      </div>
+      <div className="skinrow-actions">{actionsFor(it, "sm")}</div>
+    </div>
+  );
+
+  const empty = tab === "local" ? loaded && items.length === 0 : catalog !== null && items.length === 0;
 
   return (
     <div className="pop">
@@ -435,9 +784,7 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
                 <button
                   className="btn primary sm"
                   disabled={busy !== null || !status?.supported}
-                  onClick={() =>
-                    void run(`apply:${activeId}`, () => managerApi.codexThemeApply(activeId))
-                  }
+                  onClick={() => void run(`apply:${activeId}`, () => managerApi.codexThemeApply(activeId))}
                 >
                   {busy === `apply:${activeId}` ? t("themes.busy.tryOn") : t("themes.enable")}
                 </button>
@@ -465,7 +812,10 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
               { key: "local", label: t("themes.tab.local") },
               { key: "store", label: t("themes.tab.store") },
             ]}
-            onChange={(key) => setTab(key as GalleryTab)}
+            onChange={(key) => {
+              setTab(key as GalleryTab);
+              exitSelect();
+            }}
           />
           <div className="themes-search">
             <Icon name="search" />
@@ -477,104 +827,92 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
               onChange={(event) => setQuery(event.target.value)}
             />
           </div>
+          <div className="view-toggle" role="group" aria-label={t("themes.view")}>
+            <button
+              className={`iconbtn${view === "card" ? " active" : ""}`}
+              aria-pressed={view === "card"}
+              title={t("themes.view.card")}
+              onClick={() => setViewMode("card")}
+            >
+              <Icon name="grid" />
+            </button>
+            <button
+              className={`iconbtn${view === "list" ? " active" : ""}`}
+              aria-pressed={view === "list"}
+              title={t("themes.view.list")}
+              onClick={() => setViewMode("list")}
+            >
+              <Icon name="list" />
+            </button>
+          </div>
+          {tab === "local" ? (
+            <button
+              className={`btn ghost sm${selecting ? " active" : ""}`}
+              onClick={() => (selecting ? exitSelect() : setSelecting(true))}
+            >
+              {selecting ? t("themes.select.done") : t("themes.select.manage")}
+            </button>
+          ) : null}
         </div>
+
+        {selecting && tab === "local" ? (
+          <div className="select-bar">
+            <label className="skin-check inline">
+              <input
+                type="checkbox"
+                checked={allSelected}
+                onChange={toggleSelectAll}
+                aria-label={t("themes.select.all")}
+              />
+              <span aria-hidden="true">
+                <Icon name="check" />
+              </span>
+            </label>
+            <span className="select-count">{t("themes.select.count", { n: String(selected.size) })}</span>
+            <span className="row-actions" style={{ marginInlineStart: "auto" }}>
+              <button
+                className="btn danger sm"
+                disabled={busy !== null || selected.size === 0}
+                onClick={() => setConfirmIds([...selected])}
+              >
+                {t("themes.select.delete", { n: String(selected.size) })}
+              </button>
+              <button className="btn ghost sm" onClick={exitSelect}>
+                {t("themes.select.cancel")}
+              </button>
+            </span>
+          </div>
+        ) : null}
+
+        {tab === "store" && catalogFailed ? (
+          <StatusBanner tone="info">{t("themes.online.offline")}</StatusBanner>
+        ) : null}
+        {tab === "store" && !catalogFailed && catalog === null ? (
+          <p className="themes-noresult">{t("themes.online.loading")}</p>
+        ) : null}
+
+        {view === "card" ? (
+          <div className="themegrid">{paged.map(renderCard)}</div>
+        ) : (
+          <div className="skinlist">{paged.map(renderRow)}</div>
+        )}
+        <Pagination page={clampedPage} pages={pages} onPage={setPage} label={t} />
+
+        {empty ? (
+          <section className="hero" style={{ paddingTop: 24 }}>
+            <Icon name="sliders" className="ricon" />
+            <div className="headline" style={{ fontSize: 16 }}>
+              {t("themes.empty.title")}
+            </div>
+            <div className="desc">{t("themes.empty.sub")}</div>
+          </section>
+        ) : null}
+        {!empty && loaded && visible.length === 0 ? (
+          <p className="themes-noresult">{t("themes.noResults")}</p>
+        ) : null}
 
         {tab === "local" ? (
           <>
-            <div className="themegrid">
-              {visibleThemes.map((theme) => {
-                const isActive = theme.id === activeId;
-                const isTrying = theme.id === tryingId;
-                return (
-                  <article key={theme.id} className={`themecard${isActive ? " active" : ""}`}>
-                    {theme.preview ? (
-                      <PhotoCover
-                        load={() => managerApi.codexThemePreview(theme.id)}
-                        onZoom={setLightbox}
-                        zoomLabel={t("themes.zoom")}
-                      />
-                    ) : (
-                      <ThemeCardArt colors={theme.colors} />
-                    )}
-                    <div className="themecard-body">
-                      <div className="themecard-head">
-                        <span className="themecard-name">{theme.name}</span>
-                        {theme.meta.version ? (
-                          <span className="themecard-version">v{theme.meta.version}</span>
-                        ) : null}
-                        {theme.origin === "dev" ? (
-                          <span className="tag soon" title={t("themes.origin.devHint")}>
-                            {t("themes.origin.dev")}
-                          </span>
-                        ) : null}
-                        {isActive ? <span className="tag ok">{t("themes.inUse")}</span> : null}
-                        {isTrying ? <span className="tag soon">{t("themes.trying")}</span> : null}
-                        {theme.meta.codexVerified ? (
-                          <span
-                            className="tag soon"
-                            title={t("themes.verifiedHint", { v: theme.meta.codexVerified })}
-                          >
-                            @{theme.meta.codexVerified.split(".").slice(0, 2).join(".")}
-                          </span>
-                        ) : null}
-                      </div>
-                      {theme.meta.author ? (
-                        <span className="themecard-author">@{theme.meta.author}</span>
-                      ) : null}
-                      {theme.description ? (
-                        <p className="themecard-desc">{theme.description}</p>
-                      ) : null}
-                      <div className="themecard-swatches" aria-hidden="true">
-                        {Object.entries(theme.colors)
-                          .slice(0, 10)
-                          .map(([key, value]) => (
-                            <span key={key} className="swatch" style={{ background: value }} title={key} />
-                          ))}
-                      </div>
-                      {!isActive && !isTrying ? (
-                        <div className="themecard-actions">
-                          <button
-                            className="btn primary sm"
-                            disabled={busy !== null || !status?.supported}
-                            onClick={() =>
-                              void run(
-                                status?.cdpReady
-                                  ? `tryon:${theme.id}`
-                                  : `tryon-restart:${theme.id}`,
-                                () =>
-                                  status?.cdpReady
-                                    ? managerApi.codexThemeTryOn(theme.id)
-                                    : managerApi.codexThemeTryOnRestart(theme.id),
-                              )
-                            }
-                          >
-                            {busy === `tryon:${theme.id}` || busy === `tryon-restart:${theme.id}`
-                              ? t("themes.busy.tryOn")
-                              : status?.cdpReady
-                                ? t("themes.tryOn")
-                                : t("themes.tryOnRestart")}
-                          </button>
-                        </div>
-                      ) : null}
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-
-            {loaded && themes.length === 0 ? (
-              <section className="hero" style={{ paddingTop: 24 }}>
-                <Icon name="sliders" className="ricon" />
-                <div className="headline" style={{ fontSize: 16 }}>
-                  {t("themes.empty.title")}
-                </div>
-                <div className="desc">{t("themes.empty.sub")}</div>
-              </section>
-            ) : null}
-            {loaded && themes.length > 0 && visibleThemes.length === 0 ? (
-              <p className="themes-noresult">{t("themes.noResults")}</p>
-            ) : null}
-
             <div className="group-h">{t("themes.storage.header")}</div>
             <div className="list">
               <div className="row">
@@ -589,34 +927,35 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
                   <button
                     className="btn ghost sm"
                     disabled={busy !== null}
-                    onClick={() => void run("store", async () => {
-                      const report = await managerApi.codexThemePickStoreDir();
-                      if (report) {
-                        setActionError(null);
-                        setStoreNote(
-                          t("themes.storage.migrated", {
-                            n: String(report.moved.length),
-                            skipped: report.skipped.length
-                              ? t("themes.storage.skipped", { m: String(report.skipped.length) })
-                              : "",
-                          }),
-                        );
-                      }
-                    })}
+                    onClick={() =>
+                      void run("store", async () => {
+                        const report = await managerApi.codexThemePickStoreDir();
+                        if (report) {
+                          setActionError(null);
+                          setStoreNote(
+                            t("themes.storage.migrated", {
+                              n: String(report.moved.length),
+                              skipped: report.skipped.length
+                                ? t("themes.storage.skipped", { m: String(report.skipped.length) })
+                                : "",
+                            }),
+                          );
+                        }
+                      })
+                    }
                   >
                     {t("themes.storage.change")}
                   </button>
-                  <button
-                    className="btn ghost sm"
-                    onClick={() => void managerApi.codexThemeOpenStore()}
-                  >
+                  <button className="btn ghost sm" onClick={() => void managerApi.codexThemeOpenStore()}>
                     {t("themes.storage.open")}
                   </button>
                 </span>
               </div>
               {storeNote ? (
                 <div className="row">
-                  <span className="rsub" role="status">{storeNote}</span>
+                  <span className="rsub" role="status">
+                    {storeNote}
+                  </span>
                 </div>
               ) : null}
             </div>
@@ -651,87 +990,176 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
               </div>
             </div>
           </>
-        ) : (
-          <>
-            {catalogFailed ? (
-              <StatusBanner tone="info">{t("themes.online.offline")}</StatusBanner>
-            ) : catalog === null ? (
-              <p className="themes-noresult">{t("themes.online.loading")}</p>
-            ) : (
-              <>
-                <div className="themegrid">
-                  {visibleCatalog.map((skin) => {
-                    // Compare against the STORE copy specifically — a same-id
-                    // dev checkout shadows it in resolution order but says
-                    // nothing about what the store has installed.
-                    const installed = themes.find(
-                      (theme) => theme.id === skin.id && theme.origin === "store",
-                    );
-                    const upToDate = installed && installed.meta.version === skin.version;
-                    const isUpgrade = installed && installed.meta.version !== skin.version;
-                    const busyKey = `online:${skin.id}`;
-                    return (
-                      <article key={skin.id} className="themecard">
-                        <PhotoCover
-                          load={() => managerApi.codexThemeCatalogPreview(skin.preview)}
-                          onZoom={setLightbox}
-                          zoomLabel={t("themes.zoom")}
-                        />
-                        <div className="themecard-body">
-                          <div className="themecard-head">
-                            <span className="themecard-name">{skin.name}</span>
-                            <span className="themecard-version">v{skin.version}</span>
-                            {skin.codexVerified ? (
-                              <span
-                                className="tag soon"
-                                title={t("themes.verifiedHint", { v: skin.codexVerified })}
-                              >
-                                @{skin.codexVerified.split(".").slice(0, 2).join(".")}
-                              </span>
-                            ) : null}
-                            {upToDate ? (
-                              <span className="tag ok">{t("themes.online.installed")}</span>
-                            ) : null}
-                          </div>
-                          {skin.author ? (
-                            <span className="themecard-author">@{skin.author}</span>
-                          ) : null}
-                          {skin.description ? (
-                            <p className="themecard-desc">{skin.description}</p>
-                          ) : null}
-                          {!upToDate ? (
-                            <div className="themecard-actions">
-                              <button
-                                className="btn primary sm"
-                                disabled={busy !== null}
-                                onClick={() =>
-                                  void run(busyKey, () =>
-                                    managerApi.codexThemeInstallOnline(skin.id),
-                                  )
-                                }
-                              >
-                                {busy === busyKey
-                                  ? t("themes.online.installing")
-                                  : isUpgrade
-                                    ? t("themes.online.update", { v: skin.version })
-                                    : t("themes.online.install")}
-                              </button>
-                            </div>
-                          ) : null}
-                        </div>
-                      </article>
-                    );
-                  })}
-                </div>
-                {catalog.length > 0 && visibleCatalog.length === 0 ? (
-                  <p className="themes-noresult">{t("themes.noResults")}</p>
-                ) : null}
-              </>
-            )}
-          </>
-        )}
+        ) : null}
       </div>
+
+      <DetailsSheet
+        item={detail}
+        onClose={() => setDetail(null)}
+        onZoom={setLightbox}
+        busy={busy}
+        deletable={detail ? deletable(detail) : false}
+        primary={detail ? primary(detail) : null}
+        onDelete={(id) => setConfirmIds([id])}
+        t={t}
+      />
+      <ConfirmDelete
+        ids={confirmIds}
+        names={(confirmIds ?? []).map((id) => themeName(id))}
+        busy={busy === "delete"}
+        onCancel={() => setConfirmIds(null)}
+        onConfirm={() => confirmIds && doDelete(confirmIds)}
+        t={t}
+      />
       <Lightbox src={lightbox} onClose={() => setLightbox(null)} />
     </div>
+  );
+}
+
+/** Full skin details, opened from a card/row info button. */
+function DetailsSheet({
+  item,
+  onClose,
+  onZoom,
+  busy,
+  deletable,
+  primary,
+  onDelete,
+  t,
+}: {
+  item: Item | null;
+  onClose: () => void;
+  onZoom: (url: string) => void;
+  busy: string | null;
+  deletable: boolean;
+  primary: { label: string; run: () => void } | null;
+  onDelete: (id: string) => void;
+  t: TFn;
+}) {
+  const rows = item
+    ? ([
+        ["themes.detail.id", item.id],
+        ["themes.detail.version", item.version ? `v${item.version}` : "—"],
+        ["themes.detail.author", item.author ? `@${item.author}` : "—"],
+        ["themes.detail.appearance", item.appearance ?? "—"],
+        ["themes.detail.verified", item.codexVerified ?? "—"],
+        ["themes.detail.license", item.license ?? "—"],
+        ["themes.detail.tags", item.tags.length ? item.tags.join(", ") : "—"],
+      ] as const)
+    : [];
+  return (
+    <Sheet open={item !== null} onDismiss={onClose} labelledBy="skin-detail-title">
+      {item ? (
+        <div className="skin-detail">
+          <div className="skin-detail-cover">
+            {item.hasPreview ? (
+              <PhotoCover
+                load={item.loadPreview}
+                onZoom={onZoom}
+                zoomLabel={t("themes.zoom")}
+                className="skin-detail-photo"
+              />
+            ) : (
+              <ThemeCardArt colors={item.colors} />
+            )}
+          </div>
+          <h2 className="skin-detail-name" id="skin-detail-title">
+            {item.name}
+          </h2>
+          {item.description ? <p className="skin-detail-desc">{item.description}</p> : null}
+          <dl className="skin-detail-meta">
+            {rows.map(([k, v]) => (
+              <div className="skin-detail-row" key={k}>
+                <dt>{t(k)}</dt>
+                <dd className={k === "themes.detail.id" ? "mono" : undefined}>{v}</dd>
+              </div>
+            ))}
+          </dl>
+          {Object.keys(item.colors).length ? (
+            <div className="themecard-swatches" aria-hidden="true">
+              {Object.entries(item.colors).map(([key, value]) => (
+                <span key={key} className="swatch" style={{ background: value }} title={key} />
+              ))}
+            </div>
+          ) : null}
+          <div className="sheet-actions row-actions">
+            {primary ? (
+              <button className="btn primary" disabled={busy !== null} onClick={primary.run}>
+                {primary.label}
+              </button>
+            ) : null}
+            {deletable ? (
+              <button
+                className="btn ghost danger"
+                disabled={busy !== null}
+                onClick={() => onDelete(item.id)}
+              >
+                {t("themes.delete")}
+              </button>
+            ) : null}
+            <button className="btn ghost" onClick={onClose} style={{ marginInlineStart: "auto" }}>
+              {t("themes.detail.close")}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div />
+      )}
+    </Sheet>
+  );
+}
+
+/** Delete confirmation for one skin or a batch. */
+function ConfirmDelete({
+  ids,
+  names,
+  busy,
+  onCancel,
+  onConfirm,
+  t,
+}: {
+  ids: string[] | null;
+  names: string[];
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+  t: TFn;
+}) {
+  const count = ids?.length ?? 0;
+  return (
+    <Sheet
+      open={ids !== null}
+      onDismiss={busy ? undefined : onCancel}
+      dismissable={!busy}
+      labelledBy="skin-del-title"
+      initialFocus="dismiss"
+    >
+      <div className="confirm">
+        <h2 className="confirm-title" id="skin-del-title">
+          {count > 1 ? t("themes.delete.confirmMany", { n: String(count) }) : t("themes.delete.confirmOne")}
+        </h2>
+        <p className="confirm-body">
+          {count > 1
+            ? t("themes.delete.bodyMany", { n: String(count) })
+            : t("themes.delete.bodyOne", { name: names[0] ?? "" })}
+        </p>
+        {count > 1 ? (
+          <ul className="confirm-list">
+            {names.slice(0, 8).map((n, i) => (
+              <li key={i}>{n}</li>
+            ))}
+            {names.length > 8 ? <li>… {t("themes.delete.more", { n: String(names.length - 8) })}</li> : null}
+          </ul>
+        ) : null}
+        <div className="sheet-actions row-actions">
+          <button className="btn ghost" disabled={busy} onClick={onCancel}>
+            {t("themes.delete.cancel")}
+          </button>
+          <button className="btn danger" disabled={busy} onClick={onConfirm}>
+            {busy ? t("themes.delete.deleting") : t("themes.delete.ok")}
+          </button>
+        </div>
+      </div>
+    </Sheet>
   );
 }

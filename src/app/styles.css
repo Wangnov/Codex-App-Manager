@@ -718,6 +718,7 @@ button.themecard-art:focus-visible {
   flex-direction: column;
   gap: 8px;
   padding: var(--space-sm) var(--space-md) var(--space-md);
+  flex: 1; /* fill the card so the action row pins to the bottom edge */
 }
 .themecard-head {
   display: flex;
@@ -747,7 +748,330 @@ button.themecard-art:focus-visible {
 .themecard-actions {
   display: flex;
   gap: 8px;
-  margin-top: 2px;
+  margin-top: auto; /* pin the row to the bottom edge, aligned across a row */
+  padding-top: 4px;
+}
+.themecard-actions .btn {
+  flex: 1;
+}
+/* Icon-only affordances (details, delete) stay square beside the primary. */
+.btn.icon-only {
+  flex: 0 0 auto;
+  padding: 6px;
+  width: 32px;
+  display: grid;
+  place-items: center;
+}
+.btn.icon-only svg {
+  width: 16px;
+  height: 16px;
+}
+.btn.ghost.icon-only.danger {
+  color: var(--danger);
+}
+.btn.ghost.icon-only.danger:hover:not(:disabled) {
+  background: var(--danger-tint);
+}
+
+/* View toggle (card / list) — a small icon segmented control in the toolbar. */
+.view-toggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-pill);
+  flex-shrink: 0;
+}
+.view-toggle .iconbtn {
+  width: 28px;
+  height: 26px;
+  border-radius: calc(var(--r-pill) - 2px);
+}
+.view-toggle .iconbtn.active {
+  background: var(--accent-tint);
+  color: var(--accent-deep, var(--accent));
+  border-color: transparent;
+}
+.view-toggle .iconbtn svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* Selection checkbox — a floating chip on cards, inline in the select bar. */
+.skin-check {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 3;
+  width: 22px;
+  height: 22px;
+  cursor: pointer;
+}
+.skin-check.inline {
+  position: static;
+}
+.skin-check input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.skin-check > span {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1.5px solid var(--line-2);
+  background: color-mix(in oklch, var(--surface) 80%, transparent);
+  backdrop-filter: blur(4px);
+  color: transparent;
+  transition: background 0.14s var(--ease), border-color 0.14s var(--ease), color 0.14s var(--ease);
+}
+.skin-check > span svg {
+  width: 14px;
+  height: 14px;
+}
+.skin-check input:checked + span {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.skin-check input:focus-visible + span {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.themecard.selected,
+.skinrow.selected {
+  border-color: color-mix(in oklch, var(--accent) 55%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--accent) 40%, transparent);
+}
+
+/* Batch selection bar. */
+.select-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+.select-count {
+  font-size: var(--fs-sm);
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+/* List view. */
+.skinlist {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+.skinrow {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: linear-gradient(var(--surface-top), var(--surface));
+  transition: border-color 0.16s var(--ease), box-shadow 0.16s var(--ease);
+}
+.skinrow:hover {
+  border-color: var(--line-2);
+  box-shadow: var(--elev-1);
+}
+.skinrow.selecting-pad {
+  padding-left: 38px;
+}
+.skinrow-thumb {
+  flex: 0 0 auto;
+  width: 64px;
+  aspect-ratio: 16 / 10;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background: var(--surface-3);
+}
+.skinrow-cover,
+.skinrow-thumb .themecard-art {
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+}
+.skinrow-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.skinrow-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.skinrow-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.skinrow-name {
+  font-weight: 620;
+  font-size: var(--fs-body);
+}
+.skinrow-sub {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.skinrow-desc {
+  color: var(--text-soft);
+  font-size: var(--fs-label);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.skinrow-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+}
+.skinrow .skin-check {
+  position: static;
+}
+
+/* Pagination. */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 6px 0 2px;
+}
+.pager-btn {
+  min-width: 30px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-2);
+  background: var(--surface);
+  color: var(--text-soft);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background 0.14s var(--ease), border-color 0.14s var(--ease), color 0.14s var(--ease);
+}
+.pager-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.pager-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.pager-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.pager-btn svg {
+  width: 15px;
+  height: 15px;
+}
+.pager-gap {
+  color: var(--text-faint);
+  padding: 0 2px;
+}
+
+/* Details sheet. */
+.skin-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.skin-detail-cover {
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--surface-3);
+}
+.skin-detail-photo {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  border-radius: 0;
+}
+.skin-detail-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.skin-detail-name {
+  font-size: var(--fs-lg);
+  font-weight: 680;
+  margin: 0;
+}
+.skin-detail-desc {
+  color: var(--text-soft);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  margin: 0;
+}
+.skin-detail-meta {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+.skin-detail-row {
+  display: flex;
+  gap: 10px;
+  font-size: var(--fs-sm);
+}
+.skin-detail-row dt {
+  flex: 0 0 84px;
+  color: var(--text-faint);
+}
+.skin-detail-row dd {
+  margin: 0;
+  color: var(--text);
+  min-width: 0;
+  word-break: break-word;
+}
+
+/* Delete confirmation dialog. */
+.confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.confirm-title {
+  font-size: var(--fs-lg);
+  font-weight: 680;
+  margin: 0;
+}
+.confirm-body {
+  color: var(--text-soft);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  margin: 0;
+}
+.confirm-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-soft);
+  font-size: var(--fs-sm);
+  max-height: 180px;
+  overflow-y: auto;
+}
+.confirm-list li {
+  margin: 2px 0;
 }
 
 /* Small button + success tag variants introduced by the gallery. */

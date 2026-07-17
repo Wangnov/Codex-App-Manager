@@ -1676,6 +1676,19 @@ pub fn codex_theme_keep(theme_ref: String) -> Result<(), CommandError> {
     Ok(())
 }
 
+/// Delete a managed skin from the store directory. Refuses the active
+/// selection (turn it off first — never silently un-theme a running Codex);
+/// dev-checkout copies are never touched (delete only the store copy).
+#[tauri::command]
+pub fn codex_theme_delete(theme_ref: String) -> Result<(), CommandError> {
+    let settings = PersistedAppSettings::load();
+    if settings.codex_theme.as_deref() == Some(theme_ref.as_str()) {
+        return Err(AppError::Engine("请先关闭该主题再删除".to_string()).into());
+    }
+    crate::app::codex_theme::delete_store_skin(&settings, &theme_ref)?;
+    Ok(())
+}
+
 /// Full apply: quiesce Codex → native appearance sections → relaunch with the
 /// debug port → inject → persist the selection.
 #[tauri::command]

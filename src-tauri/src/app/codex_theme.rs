@@ -301,6 +301,41 @@ pub fn migrate_store(old: &Path, new: &Path) -> Result<StoreMigrationReport, App
     Ok(report)
 }
 
+/// Delete a managed skin from the store directory. Only the store copy is
+/// removed — a dev checkout of the same id (the user's source) lives under
+/// `codex_theme_dir` and is never touched. Guards against path traversal and
+/// refuses to remove anything that isn't a real package directory.
+pub fn delete_store_skin(settings: &AppSettings, skin_id: &str) -> Result<(), AppError> {
+    let plain = !skin_id.is_empty()
+        && !skin_id.contains('/')
+        && !skin_id.contains('\\')
+        && !skin_id.contains("..")
+        && skin_id != "."
+        && skin_id != "..";
+    if !plain {
+        return Err(AppError::Engine(format!("非法皮肤 id: {skin_id}")));
+    }
+    let store = store_dir(settings)?;
+    let dir = store.join(skin_id);
+    // Lexical containment: the target must sit directly under the store.
+    if dir.parent() != Some(store.as_path()) {
+        return Err(AppError::Engine("路径越界，拒绝删除".to_string()));
+    }
+    if !dir.is_dir() {
+        return Err(AppError::Engine(format!("商店中没有该皮肤: {skin_id}")));
+    }
+    // Never rm -rf an arbitrary directory: it must carry a package manifest.
+    if !dir.join("theme.json").is_file() {
+        return Err(AppError::Engine(format!(
+            "{skin_id} 不是有效皮肤目录，拒绝删除"
+        )));
+    }
+    std::fs::remove_dir_all(&dir)
+        .map_err(|e| AppError::Internal(format!("删除皮肤失败: {e}")))?;
+    log::info!("deleted store skin id={skin_id}");
+    Ok(())
+}
+
 fn native_paths() -> Result<NativeThemePaths, AppError> {
     let config = paths::codex_home_dir()
         .ok_or_else(|| AppError::Internal("无法定位 ~/.codex".to_string()))?

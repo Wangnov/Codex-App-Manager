@@ -453,44 +453,68 @@ const FALLBACK_THEME_META: import("../shared/types").CodexThemeMeta = {
   previews: [],
 };
 
-const BROWSER_FALLBACK_THEMES: CodexThemeSummary[] = [
-  {
-    id: "guts-terminal",
-    name: "GUTS Terminal",
-    description: "TPC/GUTS command terminal from the Tiga concept sheets.",
-    dir: "/dev/themes/guts-terminal",
-    hasNativeTheme: true,
-    colors: {
-      base: "#1a1d24",
-      panel: "#232833",
-      accent: "#d97e2a",
-      ink: "#f2e9d8",
-      glow: "#e8a33d",
-      line: "#3a4150",
-    },
-    preview: null,
-    meta: { ...FALLBACK_THEME_META },
-    origin: "dev",
-  },
-  {
-    id: "asuka-eva02",
-    name: "Asuka EVA-02",
-    description: "NERV console styling around Unit-02's palette.",
-    dir: "/dev/themes/asuka-eva02",
-    hasNativeTheme: true,
-    colors: {
-      base: "#17131a",
-      panel: "#241c26",
-      accent: "#ff6a00",
-      ink: "#f5ede4",
-      glow: "#c8300e",
-      line: "#453343",
-    },
-    preview: null,
-    meta: { ...FALLBACK_THEME_META },
-    origin: "store",
-  },
+// Browser-preview mock corpus (dev only — never reached under Tauri, which
+// always calls the backend). Enough varied items to exercise pagination, list
+// view, selection and batch delete during layout work.
+const MOCK_PALETTES = [
+  { base: "#1a1d24", panel: "#232833", accent: "#d97e2a", ink: "#f2e9d8", line: "#3a4150" },
+  { base: "#17131a", panel: "#241c26", accent: "#ff6a00", ink: "#f5ede4", line: "#453343" },
+  { base: "#0f1420", panel: "#18203a", accent: "#3f7bd6", ink: "#e6eefb", line: "#26324f" },
+  { base: "#1c1008", panel: "#2a180d", accent: "#e8a33d", ink: "#f7e8c2", line: "#4a2f16" },
+  { base: "#120f16", panel: "#1e1826", accent: "#a86ee0", ink: "#efe7fb", line: "#332a44" },
+  { base: "#0d1712", panel: "#152720", accent: "#46c077", ink: "#e2f5ea", line: "#20402f" },
 ];
+const MOCK_SKINS = [
+  ["asuka-eva02", "NERV EVA-02 Asuka Terminal", "碇真嗣与 EVA 初号机：以 CAGE-01 拘束机库、同步诊断和紫绿装甲构成的 NERV 素材化主题。"],
+  ["caishen-jubao", "财神聚宝阁 · Fortune Pavilion", "金框红底玉字与元宝铜钱的招财主题。"],
+  ["three-kingdoms", "赤壁风云 · Three Kingdoms", "原创三国演义主题：关羽、青龙偃月刀、赤壁火光、军阵沙盘与三方旌旗构成雄浑而富戏剧性的 Codex 皮肤。"],
+  ["shinji-eva01", "NERV EVA-01 Shinji Synchronization Terminal", "碇真嗣与 EVA 初号机：以 CAGE-01 拘束机库、同步诊断和紫绿装甲构成的 NERV 素材化主题。"],
+  ["dilraba-starlight", "迪丽热巴 · STARLIGHT 星蝶光廊", ""],
+  ["luffy-onepiece", "Thousand Sunny — Dawn Adventure", "草帽一伙的黎明冒险配色。"],
+  ["kakashi-naruto", "Konoha ANBU — Lightning Copy Ninja", ""],
+  ["jensen-infinite-compute", "Jensen Infinite Compute", "皮革夹克与无尽算力的绿色矩阵。"],
+  ["mai-shiranui", "Shiranui Dojo — Scarlet Flame", "不知火舞的绯红烈焰道场。"],
+  ["ming-imperial", "大明宫阙 · Ming Imperial", ""],
+  ["kaworu-mark06", "SEELE Mark.06 Kaworu Terminal", "渚薰与 Mark.06 的月白终端。"],
+  ["jay-chou-inkstone", "周杰伦 · 墨键夜航", "水墨与钢琴键的夜航。"],
+  ["luo-feng-domain", "银河领主 — 罗峰·陨墨星域", "吞噬星空罗峰的星域主题。"],
+  ["rem-rezero", "Rem — Oni Maid Devotion", ""],
+  ["western-pure-land", "西方极乐 · Pure Land", "金莲与祥云的极乐净土。"],
+  ["trump-golden-order", "Golden Order", "描金秩序主题。"],
+];
+function mockTheme(index: number, origin: "dev" | "store"): CodexThemeSummary {
+  const [id, name, description] = MOCK_SKINS[index % MOCK_SKINS.length];
+  const p = MOCK_PALETTES[index % MOCK_PALETTES.length];
+  return {
+    id,
+    name,
+    description,
+    dir: `/dev/themes/${id}`,
+    hasNativeTheme: true,
+    colors: { ...p },
+    preview: null,
+    meta: { ...FALLBACK_THEME_META, version: `1.${index % 3}.0` },
+    origin,
+  };
+}
+const BROWSER_FALLBACK_THEMES: CodexThemeSummary[] = MOCK_SKINS.map((_, i) =>
+  mockTheme(i, i % 5 === 0 ? "dev" : "store"),
+);
+const BROWSER_FALLBACK_CATALOG: CatalogSkin[] = MOCK_SKINS.map(([id, name, description], i) => ({
+  id,
+  name,
+  description,
+  version: "1.2.0",
+  author: "Wangnov",
+  appearance: "dual",
+  license: "personal-use",
+  tags: [],
+  codexVerified: "26.715.21425",
+  bytes: 3_000_000 + i * 100_000,
+  sha256: "0".repeat(64),
+  pack: `packs/${id}-1.2.0.codexskin`,
+  preview: `previews/${id}.webp`,
+}));
 
 const BROWSER_FALLBACK_THEME_STATUS: CodexThemeStatusReport = {
   supported: true,
@@ -891,6 +915,14 @@ export const managerApi = {
     }
     return invoke<void>("codex_theme_keep", { themeRef });
   },
+  /** Delete a managed skin from the store dir (store copy only; refuses the
+   *  active selection and never touches a dev checkout). */
+  codexThemeDelete(themeRef: string): Promise<void> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve();
+    }
+    return invoke<void>("codex_theme_delete", { themeRef });
+  },
   /** Full apply: restart Codex debuggable + native config sections + inject. */
   codexThemeApply(themeRef: string): Promise<CodexThemeStatusReport> {
     if (!hasTauriRuntime()) {
@@ -939,7 +971,7 @@ export const managerApi = {
   /** Online skin catalog (skins.agentsmirror.com). */
   codexThemeCatalog(): Promise<CatalogSkin[]> {
     if (!hasTauriRuntime()) {
-      return Promise.resolve([]);
+      return Promise.resolve(BROWSER_FALLBACK_CATALOG);
     }
     return invoke<CatalogSkin[]>("codex_theme_catalog");
   },
