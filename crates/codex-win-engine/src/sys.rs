@@ -55,11 +55,13 @@ fn remote_debugging_arguments(port: u16) -> [String; 2] {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(any(windows, test))]
 struct RegisteredMsixApp {
     package_family_name: String,
     app_id: String,
 }
 
+#[cfg(any(windows, test))]
 fn registered_msix_aumid(json: &str, expected_family: &str) -> Result<String, EngineError> {
     let entry: RegisteredMsixApp = serde_json::from_str(json)
         .map_err(|e| EngineError::Io(format!("parse registered MSIX app entry: {e}")))?;

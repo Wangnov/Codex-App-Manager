@@ -699,22 +699,6 @@ fn curl_fetch(url: &str, max_bytes: &str, timeout_secs: &str) -> Result<Vec<u8>,
     Ok(output.stdout)
 }
 
-#[cfg(test)]
-mod catalog_network_tests {
-    use super::is_schannel_revocation_offline;
-
-    #[test]
-    fn detects_only_the_windows_revocation_offline_tls_error() {
-        let stderr = b"curl: (35) schannel: CRYPT_E_REVOCATION_OFFLINE (0x80092013)";
-        assert!(is_schannel_revocation_offline(Some(35), stderr));
-        assert!(!is_schannel_revocation_offline(Some(6), stderr));
-        assert!(!is_schannel_revocation_offline(
-            Some(35),
-            b"curl: (35) schannel: SEC_E_UNTRUSTED_ROOT"
-        ));
-    }
-}
-
 pub fn fetch_catalog() -> Result<Vec<CatalogSkin>, AppError> {
     let bytes = curl_fetch(&format!("{SKINS_BASE}/index.json"), CATALOG_MAX_BYTES, "15")?;
     let index: CatalogIndex = serde_json::from_slice(&bytes)
@@ -1551,5 +1535,21 @@ pub async fn launch_with_active_theme(
             log::warn!("themed launch failed, falling back to plain launch: {error}");
             Ok(false)
         }
+    }
+}
+
+#[cfg(test)]
+mod catalog_network_tests {
+    use super::is_schannel_revocation_offline;
+
+    #[test]
+    fn detects_only_the_windows_revocation_offline_tls_error() {
+        let stderr = b"curl: (35) schannel: CRYPT_E_REVOCATION_OFFLINE (0x80092013)";
+        assert!(is_schannel_revocation_offline(Some(35), stderr));
+        assert!(!is_schannel_revocation_offline(Some(6), stderr));
+        assert!(!is_schannel_revocation_offline(
+            Some(35),
+            b"curl: (35) schannel: SEC_E_UNTRUSTED_ROOT"
+        ));
     }
 }
