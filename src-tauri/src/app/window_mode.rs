@@ -92,6 +92,12 @@ pub fn apply_window_mode(
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| AppError::Internal("main window unavailable".into()))?;
+    // A maximized frame swallows set_size on some platforms; leave the
+    // maximized state before reshaping (the expanded workbench offers a
+    // maximize control, so collapsing from that state is a real path).
+    if window.is_maximized().unwrap_or(false) {
+        let _ = window.unmaximize();
+    }
     let scale = window.scale_factor().unwrap_or(1.0).max(0.1);
     let win_err = |op: &str, e: tauri::Error| AppError::Internal(format!("window {op}: {e}"));
 

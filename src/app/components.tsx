@@ -104,6 +104,26 @@ function ExpandButton() {
   );
 }
 
+/** Native maximize toggle — expanded only (compact is a fixed-size popover).
+ *  Collapsing from a maximized frame is handled backend-side (set_window_mode
+ *  un-maximizes first). */
+function MaximizeButton() {
+  const { t } = useI18n();
+  const windowMode = useWindowModeOptional();
+  if (windowMode?.mode !== "expanded") return null;
+  return (
+    <button
+      className="iconbtn winmax"
+      title={t("nav.maximize")}
+      onClick={() => {
+        if (isTauri()) void getCurrentWindow().toggleMaximize();
+      }}
+    >
+      <Icon name="maximize" />
+    </button>
+  );
+}
+
 /** The one close-confirm dialog. Raised by the backend close/exit guard (which
  *  covers the ✕, Alt+F4 and Cmd+Q alike) via app://confirm-quit, or by the
  *  browser-preview fallback. Mounted once at the app root so it overlays
@@ -356,6 +376,7 @@ export function TopBar({ children }: { children?: ReactNode }) {
           view transition (see App focus restore + data-page-focus). */}
       {children}
       <ExpandButton />
+      <MaximizeButton />
       <MinimizeButton />
       <CloseButton />
     </div>
@@ -405,6 +426,7 @@ export function NavBar({
       <div className="spacer" style={{ flex: 1 }} data-tauri-drag-region />
       {children}
       <ExpandButton />
+      <MaximizeButton />
       <MinimizeButton />
       <CloseButton />
     </div>

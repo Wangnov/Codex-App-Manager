@@ -479,6 +479,19 @@ impl ThemeService {
         }
     }
 
+    /// Try-on that first puts Codex into debug mode: graceful quit → relaunch
+    /// with the loopback CDP port → inject. Unlike the full apply it writes
+    /// NOTHING — no config.toml sections, no persisted selection; the top
+    /// banner's 保留 is what makes a try-on stick.
+    pub async fn try_on_with_restart(
+        &self,
+        settings: &AppSettings,
+        theme_ref: &str,
+    ) -> Result<(), AppError> {
+        self.restart_debuggable_and_inject(settings, theme_ref, false)
+            .await
+    }
+
     /// Full apply: quiesce Codex, write the native appearance sections, then
     /// relaunch with the loopback CDP port and inject. The only path that
     /// writes config.toml, honoring "only while Codex is stopped".
@@ -487,6 +500,16 @@ impl ThemeService {
         settings: &AppSettings,
         theme_ref: &str,
     ) -> Result<(), AppError> {
+        self.restart_debuggable_and_inject(settings, theme_ref, true)
+            .await
+    }
+
+    async fn restart_debuggable_and_inject(
+        &self,
+        settings: &AppSettings,
+        theme_ref: &str,
+        write_native: bool,
+    ) -> Result<(), AppError> {
         if !theme_supported() {
             return Err(AppError::UnsupportedPlatform);
         }
@@ -494,7 +517,7 @@ impl ThemeService {
         let theme = load_theme(&dir).map_err(|e| AppError::Engine(e.to_string()))?;
 
         let disable_self_updates = settings.disable_codex_self_updates;
-        let codex_theme_block = theme.codex_theme.clone();
+        let codex_theme_block = theme.codex_theme.clone().filter(|_| write_native);
         tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
             let installed = installed_codex_path()?;
             quit_codex(&installed)?;

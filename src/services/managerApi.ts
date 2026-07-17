@@ -873,6 +873,13 @@ export const managerApi = {
     }
     return invoke<CodexThemeStatusReport>("codex_theme_try_on", { themeRef });
   },
+  /** Try-on that restarts Codex into debug mode first; persists nothing. */
+  codexThemeTryOnRestart(themeRef: string): Promise<CodexThemeStatusReport> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve({ ...BROWSER_FALLBACK_THEME_STATUS });
+    }
+    return invoke<CodexThemeStatusReport>("codex_theme_try_on_restart", { themeRef });
+  },
   /** Persist the current try-on as the standing selection. */
   codexThemeKeep(themeRef: string): Promise<void> {
     if (!hasTauriRuntime()) {

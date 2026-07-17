@@ -32,6 +32,8 @@ export type IconName =
   | "collapse"
   | "house"
   | "palette"
+  | "maximize"
+  | "search"
   | "minimize"
   | "close";
 
@@ -172,6 +174,15 @@ const PATHS: Record<IconName, ReactNode> = {
       <circle className="cam-palette-dot" cx="12" cy="7.8" r="0.5" />
       <circle className="cam-palette-dot" cx="16" cy="10.2" r="0.5" />
       <circle className="cam-palette-dot" cx="8.6" cy="14.6" r="0.5" />
+    </g>
+  ),
+  maximize: (
+    <rect className="cam-maximize" x="5.5" y="5.5" width="13" height="13" rx="2" />
+  ),
+  search: (
+    <g className="cam-search">
+      <circle cx="11" cy="11" r="6" />
+      <line x1="15.5" y1="15.5" x2="19.5" y2="19.5" />
     </g>
   ),
   minimize: <line className="cam-minimize" x1="6" y1="12" x2="18" y2="12" />,

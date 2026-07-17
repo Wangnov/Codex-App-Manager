@@ -1645,6 +1645,22 @@ pub async fn codex_theme_try_on(
     Ok(state.codex_theme.status(&settings).await)
 }
 
+/// Try-on that restarts Codex into debug mode first. Persists nothing —
+/// the 保留 action on the try-on banner is what makes it stick.
+#[tauri::command]
+pub async fn codex_theme_try_on_restart(
+    state: State<'_, ManagerState>,
+    theme_ref: String,
+) -> Result<crate::app::codex_theme::ThemeStatusReport, CommandError> {
+    ensure_theme_may_restart_codex(&state)?;
+    let settings = PersistedAppSettings::load();
+    state
+        .codex_theme
+        .try_on_with_restart(&settings, &theme_ref)
+        .await?;
+    Ok(state.codex_theme.status(&settings).await)
+}
+
 /// Persist the selection (the daemon keeps whatever is currently injected;
 /// future launches through the manager apply it automatically).
 #[tauri::command]

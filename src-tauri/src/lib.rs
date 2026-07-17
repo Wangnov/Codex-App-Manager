@@ -772,6 +772,7 @@ pub fn run() {
             commands::codex_theme_list,
             commands::codex_theme_status,
             commands::codex_theme_try_on,
+            commands::codex_theme_try_on_restart,
             commands::codex_theme_keep,
             commands::codex_theme_apply,
             commands::codex_theme_off,
