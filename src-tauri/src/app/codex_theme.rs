@@ -545,11 +545,30 @@ fn curl_bin() -> &'static str {
     }
 }
 
+fn curl_command() -> std::process::Command {
+    let command = std::process::Command::new(curl_bin());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+
+        // The manager is a GUI application. Without CREATE_NO_WINDOW, every
+        // catalog or preview request opens a visible curl.exe console window.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut command = command;
+        command.creation_flags(CREATE_NO_WINDOW);
+        command
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        command
+    }
+}
+
 /// Fetch a URL to stdout via system curl: https only, no retries into other
 /// protocols, hard timeout and size cap. `--retry` covers the transient
 /// connection resets this route sees in the wild (CDN + long-haul links).
 fn curl_fetch(url: &str, max_bytes: &str, timeout_secs: &str) -> Result<Vec<u8>, AppError> {
-    let output = std::process::Command::new(curl_bin())
+    let output = curl_command()
         .args([
             "-sfL",
             "--proto",
