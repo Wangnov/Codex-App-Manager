@@ -6,7 +6,8 @@
 //! dependency of the cross-platform desktop app.
 //!
 //! Safety posture:
-//!   - do not elevate;
+//!   - keep normal installs unelevated; request one-shot UAC only to release an
+//!     exact SYSTEM Windows Update transaction blocking a verified local MSIX;
 //!   - do not change machine policy or trust stores;
 //!   - treat OpenAI Authenticode as the Windows trust anchor;
 //!   - fall back to portable only when the MSIX route is unavailable or fails.
@@ -63,8 +64,9 @@ pub use sys::{
     remove_msix_package, InstalledWindowsCodex, LaunchOptions, MsixRemoveReport,
 };
 pub use sys::{
-    install_msix_sideload, precheck_msix_dependencies, verify_msix_health,
-    verify_msix_health_with_options, MsixDependencyPrecheck, MsixHealthReport, MsixSideloadReport,
+    install_msix_sideload, install_msix_sideload_with_observer, precheck_msix_dependencies,
+    verify_msix_health, verify_msix_health_with_options, MsixDependencyPrecheck, MsixHealthReport,
+    MsixSideloadReport,
 };
 // Failure-kind constants for structured MSIX health outcomes.
 pub use sys::msix_failure;

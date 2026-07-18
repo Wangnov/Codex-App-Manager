@@ -1112,8 +1112,8 @@ fn run_old_msix_to_latest_msix() -> Result<SmokeReport, String> {
     step(&mut steps, "prefetch-verified-latest-msix", &latest)?;
     ensure_no_install(&settings, &mut steps)?;
 
-    let old_install =
-        install_msix_sideload(Path::new(&old.staged_path)).map_err(|e| format!("{e}"))?;
+    let old_install = install_msix_sideload(Path::new(&old.staged_path), OLD_MSIX_MONIKER)
+        .map_err(|e| format!("{e}"))?;
     step(&mut steps, "install-old-msix", &old_install)?;
     if !old_install.success {
         return Err(format!("old MSIX install failed: {}", old_install.message));

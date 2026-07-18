@@ -16,14 +16,15 @@ use codex_win_engine::{
     close_msix_codex_processes, codex_running_for_root, detect_installed_codex,
     detect_portable_install,
     download_to_with_progress_bounded_with_network, fetch_text_with_network, find_msix_sha256,
-    install_msix_sideload, install_portable_from_msix_with_observer, limits::MAX_PACKAGE_BYTES,
-    parse_manifest, pause_active_download, plan_update, precheck_msix_dependencies,
-    probe_capabilities, purge_codex_user_data, read_msix_identity, remove_msix_package,
-    sha256_file, uninstall_portable, validate_codex_identity, verify_msix_health_with_options,
-    verify_openai_authenticode, version_key, AuthenticodeReport, CapabilityState,
-    InstalledWindowsCodex, MsixHealthReport, MsixIdentity, MsixRemoveReport, MsixSideloadReport,
-    NetworkConfig, PortableBoundary, PortableInstallReport, PortableUninstallReport,
-    WinCapabilityReport, WinInstallRoute, WindowsRelease, WindowsUpdatePlan,
+    install_msix_sideload_with_observer, install_portable_from_msix_with_observer,
+    limits::MAX_PACKAGE_BYTES, parse_manifest, pause_active_download, plan_update,
+    precheck_msix_dependencies, probe_capabilities, purge_codex_user_data, read_msix_identity,
+    remove_msix_package, sha256_file, uninstall_portable, validate_codex_identity,
+    verify_msix_health_with_options, verify_openai_authenticode, version_key, AuthenticodeReport,
+    CapabilityState, EngineError, InstalledWindowsCodex, MsixHealthReport, MsixIdentity,
+    MsixRemoveReport, MsixSideloadReport, NetworkConfig, PortableBoundary, PortableInstallReport,
+    PortableUninstallReport, WinCapabilityReport, WinInstallRoute, WindowsRelease,
+    WindowsUpdatePlan,
 };
 
 use crate::app::install_tx::{ActiveInstallTx, InstallTxKind};
@@ -1206,32 +1207,45 @@ pub fn perform_windows_update_with_install_mode_network_and_phase(
         return Ok(report);
     }
 
-    if let Some(installed) = detect_installed_codex(PathBuf::from(&settings.install_root).as_path())
-    {
-        if installed.source == "msix" {
-            close_codex_gracefully_for_root(30, PathBuf::from(&installed.path).as_path())
-                .map_err(engine_err)?;
+    let installed_before_sideload =
+        detect_installed_codex(PathBuf::from(&settings.install_root).as_path());
+    let mut mark_recovery_ambiguous = || {
+        set_phase(OperationPhase::Committing);
+        if let Some(hook) = evidence {
+            hook(OperationEvidence::OutcomeAmbiguous);
         }
-    }
-    // A managed portable build (possibly under a previous install root) is not
-    // stopped by the MSIX sideload below, so close it first — otherwise it keeps
-    // running after we switch the user over to the MSIX package. `current_installed`
-    // comes from the provenance-aware detect_managed_codex above.
-    if let Some(previous) = &current_installed {
-        if previous.source == "portable" {
-            close_codex_gracefully_for_root(30, PathBuf::from(&previous.path).as_path())
-                .map_err(engine_err)?;
+    };
+    // Keep the user's current Codex running while conflict detection and its
+    // optional UAC recovery execute. The engine calls this fallible boundary
+    // only after recovery succeeds and immediately before Add-AppxPackage can
+    // mutate registration. A declined UAC prompt therefore leaves Codex open.
+    let mut close_codex_and_mark_install_started = || -> Result<(), EngineError> {
+        if let Some(installed) = &installed_before_sideload {
+            if installed.source == "msix" {
+                close_codex_gracefully_for_root(30, PathBuf::from(&installed.path).as_path())?;
+            }
         }
-    }
-    // Add-AppxPackage is the first operation on the MSIX route that can mutate
-    // installed package state. From here an error cannot prove the old state is
-    // intact, so renderer recovery must treat the outcome as ambiguous.
-    set_phase(OperationPhase::Committing);
-    if let Some(hook) = evidence {
-        hook(OperationEvidence::OutcomeAmbiguous);
-    }
-    let sideload =
-        install_msix_sideload(PathBuf::from(&staged_path).as_path()).map_err(engine_err)?;
+        // A managed portable build (possibly under a previous install root) is
+        // not stopped by an MSIX sideload, so close it at the same last safe
+        // boundary. `current_installed` is provenance-aware.
+        if let Some(previous) = &current_installed {
+            if previous.source == "portable" {
+                close_codex_gracefully_for_root(30, PathBuf::from(&previous.path).as_path())?;
+            }
+        }
+        set_phase(OperationPhase::Committing);
+        if let Some(hook) = evidence {
+            hook(OperationEvidence::OutcomeAmbiguous);
+        }
+        Ok(())
+    };
+    let sideload = install_msix_sideload_with_observer(
+        PathBuf::from(&staged_path).as_path(),
+        &stage.package_moniker,
+        &mut mark_recovery_ambiguous,
+        &mut close_codex_and_mark_install_started,
+    )
+    .map_err(engine_err)?;
 
     if sideload.success {
         // Add-AppxPackage returning success only means the cmdlet didn't throw.

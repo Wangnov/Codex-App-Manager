@@ -305,6 +305,8 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [detail, setDetail] = useState<Item | null>(null);
   const [confirmIds, setConfirmIds] = useState<string[] | null>(null);
+  const [refocusTick, setRefocusTick] = useState(0);
+  const selectBtnRef = useRef<HTMLButtonElement>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -467,7 +469,20 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
       setSelected(new Set());
       setSelecting(false);
       setDetail(null);
+      // The confirm dialog is about to unmount; its focus trap would restore
+      // focus to a now-removed control (dropping to <body>). Steer focus to a
+      // stable toolbar control instead — see the effect below.
+      setRefocusTick((t) => t + 1);
     });
+
+  // Land focus on the stable "manage selection" toolbar button after a delete,
+  // so keyboard users aren't stranded on <body> once the dialog and the deleted
+  // card are gone. Guarded to skip the initial mount (tick 0).
+  useEffect(() => {
+    if (refocusTick > 0) {
+      selectBtnRef.current?.focus();
+    }
+  }, [refocusTick]);
 
   const tryOn = (it: Item) =>
     run(status?.cdpReady ? `tryon:${it.id}` : `tryon-restart:${it.id}`, () =>
@@ -847,6 +862,7 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
           </div>
           {tab === "local" ? (
             <button
+              ref={selectBtnRef}
               className={`btn ghost sm${selecting ? " active" : ""}`}
               onClick={() => (selecting ? exitSelect() : setSelecting(true))}
             >

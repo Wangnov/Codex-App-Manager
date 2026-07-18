@@ -101,6 +101,8 @@ pub fn classify(message: &str) -> ErrorKind {
     if m.contains("access is denied")
         || m.contains("permission denied")
         || m.contains("operation not permitted")
+        || m.contains("administrator approval is required")
+        || m.contains("operation was canceled by the user")
         || m.contains("eacces")
         || m.contains("拒绝访问")
     {
@@ -147,7 +149,11 @@ pub fn classify(message: &str) -> ErrorKind {
     {
         return ErrorKind::Network;
     }
-    if m.contains("timed out") || m.contains("timeout") || m.contains("stalled") {
+    if m.contains("timed out")
+        || m.contains("timeout")
+        || m.contains("stalled")
+        || m.contains("exceeded total deadline")
+    {
         return ErrorKind::Timeout;
     }
     if m.contains("failure writing output") || m.contains("write error") {
@@ -252,6 +258,18 @@ mod tests {
         assert_eq!(classify("run Add-AppxPackage: deployment failed"), ErrorKind::Install);
         assert_eq!(classify("capability probe error: sideloading is disabled"), ErrorKind::Incompatible);
         assert_eq!(classify("download cancelled"), ErrorKind::Cancelled);
+        assert_eq!(
+            classify(
+                "install error: run Add-AppxPackage: powershell: process exceeded total deadline"
+            ),
+            ErrorKind::Timeout
+        );
+        assert_eq!(
+            classify(
+                "install error: administrator approval is required to release only that transaction"
+            ),
+            ErrorKind::Permission
+        );
     }
 
     #[test]
