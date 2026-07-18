@@ -2781,6 +2781,58 @@ button.row.danger:hover {
   font-size: var(--fs-caption);
   font-weight: 500;
 }
+.chip-count {
+  margin-inline-start: 5px;
+  opacity: 0.6;
+  font-weight: 500;
+}
+.chip-add {
+  border-style: dashed;
+}
+/* "Add to group" dropdown inside the multi-select bar. */
+.group-add-select {
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text-soft);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+.group-add-select:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* Create / rename / delete group modal body. */
+.group-modal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  text-align: start;
+}
+.group-modal h2 {
+  font-size: var(--fs-h2);
+  font-weight: 720;
+  letter-spacing: -0.02em;
+}
+.group-modal-input {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text-strong);
+  font-size: var(--fs-md);
+}
+.group-modal-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.group-modal-confirm {
+  color: var(--text-soft);
+  line-height: 1.5;
+}
 
 /* ── Result strip (update / install outcome) ─────────────────────────────── */
 /* Owns its lifecycle (auto-dismiss + ✕), unlike the static .banner notes. A

@@ -6,6 +6,7 @@ import type {
   CatalogSkin,
   CodexThemeStatusReport,
   CodexThemeSummary,
+  SkinGroup,
 } from "../../shared/types";
 import { NavBar, Ring, Segmented, StatusBanner } from "../components";
 import { Icon } from "../icons";
@@ -308,6 +309,13 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
   // sub-filters within it.
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
+  // Local-tab grouping: "all" | "store" | "dev" (derived source partitions) or a
+  // custom group id.
+  const [localGroup, setLocalGroup] = useState<string>("all");
+  const [groupModal, setGroupModal] = useState<{
+    mode: "create" | "rename" | "delete";
+    id?: string;
+  } | null>(null);
   const [storeNote, setStoreNote] = useState<string | null>(null);
   const [tab, setTab] = useState<GalleryTab>("local");
   const [query, setQuery] = useState("");
@@ -418,6 +426,8 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
     return themes.filter((theme) => (seen.has(theme.id) ? false : (seen.add(theme.id), true)));
   }, [themes]);
 
+  const groups = useMemo(() => settings?.skinGroups ?? [], [settings]);
+
   const storeVersionOf = useCallback(
     (id: string) => themes.find((th) => th.id === id && th.origin === "store")?.meta.version ?? null,
     [themes],
@@ -464,24 +474,35 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
   }, [tab, searched, selectedCategory]);
 
   const visible = useMemo(() => {
-    if (tab !== "store") return searched;
-    return searched.filter((it) => {
-      if (selectedCategory && (it.category || "other") !== selectedCategory) return false;
-      if (selectedTags.size && !it.tags.some((t) => selectedTags.has(t))) return false;
-      return true;
-    });
-  }, [tab, searched, selectedCategory, selectedTags]);
+    if (tab === "store") {
+      return searched.filter((it) => {
+        if (selectedCategory && (it.category || "other") !== selectedCategory) return false;
+        if (selectedTags.size && !it.tags.some((t) => selectedTags.has(t))) return false;
+        return true;
+      });
+    }
+    // Local: filter by derived source partition or a custom group's members.
+    if (localGroup === "store" || localGroup === "dev") {
+      return searched.filter((it) => it.origin === localGroup);
+    }
+    if (localGroup !== "all") {
+      const ids = new Set(groups.find((g) => g.id === localGroup)?.skinIds ?? []);
+      return searched.filter((it) => ids.has(it.id));
+    }
+    return searched;
+  }, [tab, searched, selectedCategory, selectedTags, localGroup, groups]);
 
   const pageSize = PAGE_SIZE[view];
   const pages = Math.max(1, Math.ceil(visible.length / pageSize));
   // Reset paging when the working set changes underfoot.
   useEffect(() => {
     setPage(0);
-  }, [tab, query, view, selectedCategory, selectedTags]);
-  // Leaving a tab clears the store category/tag filters.
+  }, [tab, query, view, selectedCategory, selectedTags, localGroup]);
+  // Leaving a tab clears filters (store category/tags and the local group).
   useEffect(() => {
     setSelectedCategory(null);
     setSelectedTags(new Set());
+    setLocalGroup("all");
   }, [tab]);
   const clampedPage = Math.min(page, pages - 1);
   const paged = visible.slice(clampedPage * pageSize, clampedPage * pageSize + pageSize);
@@ -495,9 +516,17 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
     (it: Item) => it.kind === "local" && it.origin === "store" && it.id !== activeId,
     [activeId],
   );
-  const selectableOnPage = paged.filter(deletable);
+  // In select mode every local skin is selectable (so any can be grouped);
+  // deletion is later narrowed to the removable subset.
+  const selectableOnPage = paged.filter((it) => it.kind === "local");
   const allSelected =
     selectableOnPage.length > 0 && selectableOnPage.every((it) => selected.has(it.id));
+  // Only store-origin skins can actually be deleted; a selection that also holds
+  // dev checkouts still deletes just the removable subset.
+  const selectedDeletable = useMemo(
+    () => [...selected].filter((id) => items.some((it) => it.id === id && deletable(it))),
+    [selected, items, deletable],
+  );
 
   const toggleSelect = (id: string) =>
     setSelected((prev) => {
@@ -531,6 +560,41 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
       else next.add(tag);
       return next;
     });
+
+  // Custom-group CRUD, persisted through settings (run() refreshes afterwards).
+  const persistGroups = (next: SkinGroup[]) =>
+    run("groups", async () => {
+      const current = settings ?? (await managerApi.getSettings());
+      await managerApi.setSettings({ ...current, skinGroups: next });
+    });
+  const createGroup = (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const id = crypto.randomUUID();
+    void persistGroups([...groups, { id, name: trimmed, skinIds: [] }]);
+    setLocalGroup(id);
+  };
+  const renameGroup = (id: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    void persistGroups(groups.map((g) => (g.id === id ? { ...g, name: trimmed } : g)));
+  };
+  const deleteGroup = (id: string) => {
+    void persistGroups(groups.filter((g) => g.id !== id));
+    setLocalGroup("all");
+  };
+  const addToGroup = (groupId: string, ids: string[]) =>
+    void persistGroups(
+      groups.map((g) =>
+        g.id === groupId ? { ...g, skinIds: [...new Set([...g.skinIds, ...ids])] } : g,
+      ),
+    );
+  const removeFromGroup = (groupId: string, ids: string[]) =>
+    void persistGroups(
+      groups.map((g) =>
+        g.id === groupId ? { ...g, skinIds: g.skinIds.filter((s) => !ids.includes(s)) } : g,
+      ),
+    );
 
   const doDelete = (ids: string[]) =>
     run("delete", async () => {
@@ -690,7 +754,7 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
   };
 
   const selBox = (it: Item) =>
-    selecting && deletable(it) ? (
+    selecting && it.kind === "local" ? (
       <label className="skin-check" title={t("themes.select")}>
         <input
           type="checkbox"
@@ -961,6 +1025,80 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
           ) : null}
         </div>
 
+        {tab === "local" && localThemes.length > 0 ? (
+          <div className="store-filters local-filters">
+            <div className="chip-row" role="group" aria-label={t("themes.group.label")}>
+              <button
+                type="button"
+                className={`chip${localGroup === "all" ? " active" : ""}`}
+                aria-pressed={localGroup === "all"}
+                onClick={() => setLocalGroup("all")}
+              >
+                {t("themes.group.all")}
+              </button>
+              {localThemes.some((it) => it.origin === "store") ? (
+                <button
+                  type="button"
+                  className={`chip${localGroup === "store" ? " active" : ""}`}
+                  aria-pressed={localGroup === "store"}
+                  onClick={() => setLocalGroup("store")}
+                >
+                  {t("themes.group.store")}
+                </button>
+              ) : null}
+              {localThemes.some((it) => it.origin === "dev") ? (
+                <button
+                  type="button"
+                  className={`chip${localGroup === "dev" ? " active" : ""}`}
+                  aria-pressed={localGroup === "dev"}
+                  onClick={() => setLocalGroup("dev")}
+                >
+                  {t("themes.group.dev")}
+                </button>
+              ) : null}
+              {groups.map((g) => (
+                <button
+                  key={g.id}
+                  type="button"
+                  className={`chip${localGroup === g.id ? " active" : ""}`}
+                  aria-pressed={localGroup === g.id}
+                  onClick={() => setLocalGroup(g.id)}
+                >
+                  {g.name}
+                  <span className="chip-count">{g.skinIds.length}</span>
+                </button>
+              ))}
+              <button
+                type="button"
+                className="chip chip-add"
+                onClick={() => setGroupModal({ mode: "create" })}
+              >
+                {t("themes.group.new")}
+              </button>
+            </div>
+            {groups.some((g) => g.id === localGroup) ? (
+              <div className="chip-row">
+                <button
+                  type="button"
+                  className="btn ghost sm"
+                  disabled={busy !== null}
+                  onClick={() => setGroupModal({ mode: "rename", id: localGroup })}
+                >
+                  {t("themes.group.rename")}
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost sm danger"
+                  disabled={busy !== null}
+                  onClick={() => setGroupModal({ mode: "delete", id: localGroup })}
+                >
+                  {t("themes.group.delete")}
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
         {selecting && tab === "local" ? (
           <div className="select-bar">
             <label className="skin-check inline">
@@ -975,13 +1113,48 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
               </span>
             </label>
             <span className="select-count">{t("themes.select.count", { n: String(selected.size) })}</span>
+            {groups.length > 0 ? (
+              <select
+                className="group-add-select"
+                value=""
+                disabled={busy !== null || selected.size === 0}
+                onChange={(e) => {
+                  if (e.target.value) {
+                    addToGroup(e.target.value, [...selected]);
+                    exitSelect();
+                  }
+                }}
+                aria-label={t("themes.group.addTo")}
+              >
+                <option value="" disabled>
+                  {t("themes.group.addTo")}
+                </option>
+                {groups.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name}
+                  </option>
+                ))}
+              </select>
+            ) : null}
             <span className="row-actions" style={{ marginInlineStart: "auto" }}>
+              {groups.some((g) => g.id === localGroup) ? (
+                <button
+                  className="btn ghost sm"
+                  disabled={busy !== null || selected.size === 0}
+                  onClick={() => {
+                    removeFromGroup(localGroup, [...selected]);
+                    exitSelect();
+                  }}
+                >
+                  {t("themes.group.removeFrom")}
+                </button>
+              ) : null}
               <button
                 className="btn danger sm"
-                disabled={busy !== null || selected.size === 0}
-                onClick={() => setConfirmIds([...selected])}
+                disabled={busy !== null || selectedDeletable.length === 0}
+                onClick={() => setConfirmIds(selectedDeletable)}
               >
-                {t("themes.select.delete", { n: String(selected.size) })}
+                {t("themes.select.delete", { n: String(selectedDeletable.length) })}
               </button>
               <button className="btn ghost sm" onClick={exitSelect}>
                 {t("themes.select.cancel")}
@@ -1158,6 +1331,15 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
         onConfirm={() => confirmIds && doDelete(confirmIds)}
         t={t}
       />
+      <GroupModal
+        state={groupModal}
+        groups={groups}
+        onClose={() => setGroupModal(null)}
+        onCreate={createGroup}
+        onRename={renameGroup}
+        onDelete={deleteGroup}
+        t={t}
+      />
       <Lightbox src={lightbox} onClose={() => setLightbox(null)} />
     </div>
   );
@@ -1312,6 +1494,95 @@ function ConfirmDelete({
           </button>
         </div>
       </div>
+    </Sheet>
+  );
+}
+
+/** Create / rename / delete a custom skin group. */
+function GroupModal({
+  state,
+  groups,
+  onClose,
+  onCreate,
+  onRename,
+  onDelete,
+  t,
+}: {
+  state: { mode: "create" | "rename" | "delete"; id?: string } | null;
+  groups: SkinGroup[];
+  onClose: () => void;
+  onCreate: (name: string) => void;
+  onRename: (id: string, name: string) => void;
+  onDelete: (id: string) => void;
+  t: TFn;
+}) {
+  const current = state?.id ? groups.find((g) => g.id === state.id) : undefined;
+  const [name, setName] = useState("");
+  useEffect(() => {
+    setName(state?.mode === "rename" ? (current?.name ?? "") : "");
+  }, [state, current]);
+  const isDelete = state?.mode === "delete";
+  const title =
+    state?.mode === "create"
+      ? t("themes.group.createTitle")
+      : state?.mode === "rename"
+        ? t("themes.group.renameTitle")
+        : t("themes.group.deleteTitle");
+  const submit = () => {
+    if (!state) return;
+    if (state.mode === "create") onCreate(name);
+    else if (state.mode === "rename" && state.id) onRename(state.id, name);
+    else if (state.mode === "delete" && state.id) onDelete(state.id);
+    onClose();
+  };
+  return (
+    <Sheet
+      open={state !== null}
+      onDismiss={onClose}
+      labelledBy="group-modal-title"
+      centeredInExpanded
+      initialFocus={isDelete ? "primary" : "first"}
+    >
+      {state ? (
+        <div className="group-modal">
+          <h2 id="group-modal-title">{title}</h2>
+          {isDelete ? (
+            <p className="group-modal-confirm">
+              {t("themes.group.deleteConfirm", { name: current?.name ?? "" })}
+            </p>
+          ) : (
+            <input
+              className="group-modal-input"
+              type="text"
+              value={name}
+              placeholder={t("themes.group.namePlaceholder")}
+              aria-label={t("themes.group.nameLabel")}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && name.trim()) submit();
+              }}
+            />
+          )}
+          <div className="sheet-actions row-actions">
+            <button
+              className={`btn ${isDelete ? "danger" : "primary"}`}
+              disabled={!isDelete && !name.trim()}
+              onClick={submit}
+            >
+              {isDelete
+                ? t("themes.group.delete")
+                : state.mode === "create"
+                  ? t("themes.group.create")
+                  : t("themes.group.save")}
+            </button>
+            <button className="btn ghost" onClick={onClose} style={{ marginInlineStart: "auto" }}>
+              {t("themes.detail.close")}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div />
+      )}
     </Sheet>
   );
 }

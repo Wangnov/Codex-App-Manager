@@ -163,6 +163,22 @@ pub struct AppSettings {
     /// page, which migrates existing skins to the new location.
     #[serde(default)]
     pub codex_theme_store_dir: Option<String>,
+    /// User-defined local skin groups, in display order. Each holds an ordered
+    /// list of skin ids; a skin may sit in several groups. The source partitions
+    /// (store-installed vs dev-local) are derived from each skin's origin, not
+    /// stored here.
+    #[serde(default)]
+    pub skin_groups: Vec<SkinGroup>,
+}
+
+/// A user-defined grouping of local skins.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkinGroup {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub skin_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -202,6 +218,8 @@ struct RawAppSettings {
     codex_theme_dir: Option<String>,
     #[serde(default)]
     codex_theme_store_dir: Option<String>,
+    #[serde(default)]
+    skin_groups: Vec<SkinGroup>,
 }
 
 fn default_true() -> bool {
@@ -242,6 +260,7 @@ impl Default for AppSettings {
             codex_theme: None,
             codex_theme_dir: None,
             codex_theme_store_dir: None,
+            skin_groups: Vec::new(),
         }
     }
 }
@@ -290,6 +309,7 @@ impl RawAppSettings {
                 codex_theme: self.codex_theme,
                 codex_theme_dir: self.codex_theme_dir,
                 codex_theme_store_dir: self.codex_theme_store_dir,
+                skin_groups: self.skin_groups,
             },
             unknown_source,
             newer_schema,
