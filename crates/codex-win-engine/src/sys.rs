@@ -517,7 +517,12 @@ function Get-ActiveWindowsUpdateDeployment {{
       if ($moniker.Count -eq 0 -or [string]$moniker[0].'#text' -ne $TargetMoniker) {{ continue }}
       $activityId = $event.ActivityId.ToString('B')
       $related = @(Get-WinEvent -LogName $DeploymentLog -FilterXPath "*[System[Correlation[@ActivityID='$activityId']]]" -ErrorAction Stop)
-      $terminal = @($related | Where-Object {{ 400, 401, 404 -contains [int]$_.Id }})
+      # 400 with Opcode=2 (Stop) is the provider's successful-completion
+      # record. 401/404 are failed-completion records; 603 is the start record.
+      $terminal = @($related | Where-Object {{
+        ([int]$_.Id -eq 400 -and [int]$_.Opcode -eq 2) -or
+        (401, 404 -contains [int]$_.Id)
+      }})
       if ($terminal.Count -gt 0) {{ continue }}
       $wuStart = @($related | Where-Object {{ [int]$_.Id -eq 603 }} | Select-Object -First 1)
       if ($wuStart.Count -eq 0) {{ continue }}
@@ -684,7 +689,13 @@ try {{
   Start-RestoreWatchdog ($stopped -join ',')
 
   $related = @(Get-WinEvent -LogName $DeploymentLog -FilterXPath "*[System[Correlation[@ActivityID='$ActivityId']]]" -ErrorAction Stop)
-  $terminal = @($related | Where-Object {{ 400, 401, 404 -contains [int]$_.Id }})
+  # Accept event 400 only when its ETW opcode is Stop. This avoids treating a
+  # differently shaped provider event as completion while preserving the
+  # documented success record emitted by AppXDeploymentServer.
+  $terminal = @($related | Where-Object {{
+    ([int]$_.Id -eq 400 -and [int]$_.Opcode -eq 2) -or
+    (401, 404 -contains [int]$_.Id)
+  }})
   if ($terminal.Count -gt 0) {{
     Signal-RecoveryFinished
     exit 0
@@ -2392,7 +2403,8 @@ function Get-AppxPackage {
         for script in [&detection, &recovery] {
             assert!(script.contains("MainPackageMoniker"));
             assert!(script.contains("ActivityID"));
-            assert!(script.contains("400, 401, 404"));
+            assert!(script.contains("[int]$_.Id -eq 400 -and [int]$_.Opcode -eq 2"));
+            assert!(script.contains("401, 404 -contains [int]$_.Id"));
             assert!(script.contains("DeploymentOperation"));
             assert!(script.contains("wuauserv"));
             assert!(script.contains("S-1-5-18"));
