@@ -53,6 +53,12 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
   if (previous?.mediaHandler && previous?.mediaQuery) {
     try { previous.mediaQuery.removeEventListener("change", previous.mediaHandler); } catch {}
   }
+  // Disable the old menu rule before its variables are cleared so the first
+  // pass of a hot-switched theme measures the shell's real base padding.
+  document.querySelectorAll(`.${WINDOWS_MENU_CLASS}`)
+    .forEach((node) => node.classList.remove(WINDOWS_MENU_CLASS));
+  document.querySelectorAll(`[${WINDOWS_MENU_REGION_ATTR}]`)
+    .forEach((node) => node.removeAttribute(WINDOWS_MENU_REGION_ATTR));
   if (previous?.appliedVars) {
     for (const name of previous.appliedVars) document.documentElement?.style.removeProperty(name);
   }
