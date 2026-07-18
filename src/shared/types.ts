@@ -642,6 +642,9 @@ export interface CatalogSkin {
   /** Catalog-relative paths, resolved backend-side against the pinned origin. */
   pack: string;
   preview: string;
+  /** Theme category for store grouping (anime/stars/tech/guofeng/games);
+   *  absent → grouped under "other". */
+  category?: string | null;
 }
 
 /** Main-window form factor: `compact` is the fixed 400×640 dashboard,

@@ -577,6 +577,10 @@ pub struct CatalogSkin {
     pub pack: String,
     #[serde(default)]
     pub preview: String,
+    /// Theme category for store grouping (e.g. "anime", "stars", "tech",
+    /// "guofeng", "games"). Absent → grouped under "other" in the UI.
+    #[serde(default)]
+    pub category: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]

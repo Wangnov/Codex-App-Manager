@@ -160,6 +160,18 @@ type GalleryTab = "local" | "store";
 type ViewMode = "card" | "list";
 const VIEW_KEY = "cam.skins.view";
 const PAGE_SIZE: Record<ViewMode, number> = { card: 12, list: 20 };
+// Store theme categories, in display order. A skin with no (or an unknown)
+// category falls into "other".
+const STORE_CATEGORIES = ["anime", "stars", "tech", "guofeng", "games", "other"] as const;
+const CATEGORY_KEY = {
+  all: "themes.category.all",
+  anime: "themes.category.anime",
+  stars: "themes.category.stars",
+  tech: "themes.category.tech",
+  guofeng: "themes.category.guofeng",
+  games: "themes.category.games",
+  other: "themes.category.other",
+} as const;
 
 /** One row in the gallery, normalized across a local package and a catalog
  *  entry so the card/list/detail chrome is shared. */
@@ -179,6 +191,7 @@ interface Item {
   loadPreview: () => Promise<string | null>;
   origin?: "dev" | "store"; // local only
   installedVersion?: string | null; // store only: version present in the store
+  category?: string | null; // store only: theme category for grouping
 }
 
 function localItem(theme: CodexThemeSummary): Item {
@@ -216,6 +229,7 @@ function storeItem(skin: CatalogSkin, installedVersion: string | null): Item {
     hasPreview: true,
     loadPreview: () => managerApi.codexThemeCatalogPreview(skin.preview),
     installedVersion,
+    category: skin.category ?? null,
   };
 }
 
@@ -290,6 +304,10 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
   const [catalog, setCatalog] = useState<CatalogSkin[] | null>(null);
   const [catalogFailed, setCatalogFailed] = useState(false);
   const [catalogLoading, setCatalogLoading] = useState(false);
+  // Store-tab grouping: a selected theme category (null = all) plus optional tag
+  // sub-filters within it.
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
   const [storeNote, setStoreNote] = useState<string | null>(null);
   const [tab, setTab] = useState<GalleryTab>("local");
   const [query, setQuery] = useState("");
@@ -410,7 +428,7 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
     return (catalog ?? []).map((skin) => storeItem(skin, storeVersionOf(skin.id)));
   }, [tab, localThemes, catalog, storeVersionOf]);
 
-  const visible = useMemo(
+  const searched = useMemo(
     () =>
       items.filter((it) =>
         matches(query, [
@@ -427,12 +445,44 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
     [items, query],
   );
 
+  // Categories actually present in the catalog, in display order (store only).
+  const storeCategories = useMemo(() => {
+    if (tab !== "store") return [] as string[];
+    const present = new Set((catalog ?? []).map((s) => s.category || "other"));
+    return STORE_CATEGORIES.filter((c) => present.has(c));
+  }, [tab, catalog]);
+
+  // Tags available within the current category + search (before tag filtering),
+  // so the sub-filter row only ever offers tags that can actually match.
+  const storeTags = useMemo(() => {
+    if (tab !== "store") return [] as string[];
+    const set = new Set<string>();
+    searched
+      .filter((it) => !selectedCategory || (it.category || "other") === selectedCategory)
+      .forEach((it) => it.tags.forEach((t) => set.add(t)));
+    return [...set].sort();
+  }, [tab, searched, selectedCategory]);
+
+  const visible = useMemo(() => {
+    if (tab !== "store") return searched;
+    return searched.filter((it) => {
+      if (selectedCategory && (it.category || "other") !== selectedCategory) return false;
+      if (selectedTags.size && !it.tags.some((t) => selectedTags.has(t))) return false;
+      return true;
+    });
+  }, [tab, searched, selectedCategory, selectedTags]);
+
   const pageSize = PAGE_SIZE[view];
   const pages = Math.max(1, Math.ceil(visible.length / pageSize));
   // Reset paging when the working set changes underfoot.
   useEffect(() => {
     setPage(0);
-  }, [tab, query, view]);
+  }, [tab, query, view, selectedCategory, selectedTags]);
+  // Leaving a tab clears the store category/tag filters.
+  useEffect(() => {
+    setSelectedCategory(null);
+    setSelectedTags(new Set());
+  }, [tab]);
   const clampedPage = Math.min(page, pages - 1);
   const paged = visible.slice(clampedPage * pageSize, clampedPage * pageSize + pageSize);
 
@@ -467,6 +517,20 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
     setSelecting(false);
     setSelected(new Set());
   };
+
+  // Store grouping: picking a category (toggle off to "all") resets tag filters;
+  // tags toggle independently.
+  const pickCategory = (c: string) => {
+    setSelectedCategory((cur) => (cur === c ? null : c));
+    setSelectedTags(new Set());
+  };
+  const toggleTag = (tag: string) =>
+    setSelectedTags((prev) => {
+      const next = new Set(prev);
+      if (next.has(tag)) next.delete(tag);
+      else next.add(tag);
+      return next;
+    });
 
   const doDelete = (ids: string[]) =>
     run("delete", async () => {
@@ -931,6 +995,47 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
         ) : null}
         {tab === "store" && !catalogFailed && catalog === null ? (
           <p className="themes-noresult">{t("themes.online.loading")}</p>
+        ) : null}
+
+        {tab === "store" && catalog && catalog.length > 0 ? (
+          <div className="store-filters">
+            <div className="chip-row" role="group" aria-label={t("themes.category.label")}>
+              <button
+                type="button"
+                className={`chip${selectedCategory === null ? " active" : ""}`}
+                aria-pressed={selectedCategory === null}
+                onClick={() => setSelectedCategory(null)}
+              >
+                {t(CATEGORY_KEY.all)}
+              </button>
+              {storeCategories.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  className={`chip${selectedCategory === c ? " active" : ""}`}
+                  aria-pressed={selectedCategory === c}
+                  onClick={() => pickCategory(c)}
+                >
+                  {t(CATEGORY_KEY[c as keyof typeof CATEGORY_KEY])}
+                </button>
+              ))}
+            </div>
+            {storeTags.length > 0 ? (
+              <div className="chip-row chip-row-tags">
+                {storeTags.map((tag) => (
+                  <button
+                    key={tag}
+                    type="button"
+                    className={`chip chip-tag${selectedTags.has(tag) ? " active" : ""}`}
+                    aria-pressed={selectedTags.has(tag)}
+                    onClick={() => toggleTag(tag)}
+                  >
+                    {tag}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
         ) : null}
 
         {view === "card" ? (

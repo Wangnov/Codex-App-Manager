@@ -2741,6 +2741,46 @@ button.row.danger:hover {
 .cam-icon.spin {
   animation: spin 0.8s linear infinite;
 }
+/* Store category + tag filter chips. */
+.store-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: var(--space-sm);
+}
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip {
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text-soft);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.16s var(--ease),
+    border-color 0.16s var(--ease),
+    color 0.16s var(--ease);
+}
+.chip:hover {
+  border-color: var(--accent);
+  color: var(--text-strong);
+}
+.chip.active {
+  background: var(--accent-tint);
+  border-color: var(--accent);
+  color: var(--accent-deep);
+}
+.chip-tag {
+  padding: 3px 10px;
+  font-size: var(--fs-caption);
+  font-weight: 500;
+}
 
 /* ── Result strip (update / install outcome) ─────────────────────────────── */
 /* Owns its lifecycle (auto-dismiss + ✕), unlike the static .banner notes. A

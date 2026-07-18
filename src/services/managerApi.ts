@@ -500,6 +500,12 @@ function mockTheme(index: number, origin: "dev" | "store"): CodexThemeSummary {
 const BROWSER_FALLBACK_THEMES: CodexThemeSummary[] = MOCK_SKINS.map((_, i) =>
   mockTheme(i, i % 5 === 0 ? "dev" : "store"),
 );
+const MOCK_CATEGORIES = ["anime", "stars", "tech", "guofeng", "games"];
+const MOCK_TAG_SETS = [
+  ["dark", "terminal"],
+  ["light", "minimal"],
+  ["dark", "vibrant"],
+];
 const BROWSER_FALLBACK_CATALOG: CatalogSkin[] = MOCK_SKINS.map(([id, name, description], i) => ({
   id,
   name,
@@ -508,12 +514,13 @@ const BROWSER_FALLBACK_CATALOG: CatalogSkin[] = MOCK_SKINS.map(([id, name, descr
   author: "Wangnov",
   appearance: "dual",
   license: "personal-use",
-  tags: [],
+  tags: MOCK_TAG_SETS[i % MOCK_TAG_SETS.length],
   codexVerified: "26.715.21425",
   bytes: 3_000_000 + i * 100_000,
   sha256: "0".repeat(64),
   pack: `packs/${id}-1.2.0.codexskin`,
   preview: `previews/${id}.webp`,
+  category: MOCK_CATEGORIES[i % MOCK_CATEGORIES.length],
 }));
 
 const BROWSER_FALLBACK_THEME_STATUS: CodexThemeStatusReport = {
