@@ -350,10 +350,8 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
     const shellRow = menu?.nextElementSibling;
     const sidebar = shellRow?.querySelector(":scope > aside.app-shell-left-panel");
     const main = shellRow?.querySelector(":scope > main.main-surface");
-    // Reconcile from the unmodified layout so padding never accumulates and
-    // responsive/theme changes to the surfaces are picked up on every pass.
-    menu?.classList.remove(WINDOWS_MENU_CLASS);
     const menuBox = menu?.getBoundingClientRect();
+    const integrated = Boolean(menu?.classList.contains(WINDOWS_MENU_CLASS));
     const eligible = Boolean(
       menu && sidebar && main && main === shellMain &&
       menuBox && menuBox.width > 0 && menuBox.height > 0
@@ -369,9 +367,12 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
 
     const sidebarStyle = getComputedStyle(sidebar);
     const mainStyle = getComputedStyle(main);
+    const appliedOffset = integrated ? menuBox.height : 0;
+    const basePadding = (style) =>
+      `${Math.max(0, (Number.parseFloat(style.paddingTop) || 0) - appliedOffset)}px`;
     setVar("--cts-windows-menu-height", `${menuBox.height}px`);
-    setVar("--cts-windows-sidebar-padding-top", sidebarStyle.paddingTop);
-    setVar("--cts-windows-main-padding-top", mainStyle.paddingTop);
+    setVar("--cts-windows-sidebar-padding-top", basePadding(sidebarStyle));
+    setVar("--cts-windows-main-padding-top", basePadding(mainStyle));
     setClass(menu, WINDOWS_MENU_CLASS, true);
     setVar("--cts-windows-sidebar-foreground", sidebarStyle.color);
     setVar("--cts-windows-main-foreground", mainStyle.color);
