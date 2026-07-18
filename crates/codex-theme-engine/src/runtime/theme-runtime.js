@@ -348,7 +348,11 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
     const shellRow = menu?.nextElementSibling;
     const sidebar = shellRow?.querySelector(":scope > aside.app-shell-left-panel");
     const main = shellRow?.querySelector(":scope > main.main-surface");
-    const eligible = Boolean(menu && sidebar && main && main === shellMain);
+    const menuBox = menu?.getBoundingClientRect();
+    const eligible = Boolean(
+      menu && sidebar && main && main === shellMain &&
+      menuBox && menuBox.width > 0 && menuBox.height > 0
+    );
 
     for (const stale of document.querySelectorAll(`.${WINDOWS_MENU_CLASS}`)) {
       if (!eligible || stale !== menu) stale.classList.remove(WINDOWS_MENU_CLASS);
@@ -358,8 +362,7 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
     }
     if (!eligible) return;
 
-    const menuHeight = menu.getBoundingClientRect().height || 36;
-    setVar("--cts-windows-menu-height", `${menuHeight}px`);
+    setVar("--cts-windows-menu-height", `${menuBox.height}px`);
     setClass(menu, WINDOWS_MENU_CLASS, true);
     setVar("--cts-windows-sidebar-foreground", getComputedStyle(sidebar).color);
     setVar("--cts-windows-main-foreground", getComputedStyle(main).color);
