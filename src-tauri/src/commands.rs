@@ -1779,9 +1779,12 @@ pub async fn codex_theme_catalog(
 /// Catalog cover preview as a data URL (relative path resolved only against
 /// the pinned catalog origin).
 #[tauri::command]
-pub async fn codex_theme_catalog_preview(preview: String) -> Result<String, CommandError> {
+pub async fn codex_theme_catalog_preview(
+    preview: String,
+    version: String,
+) -> Result<String, CommandError> {
     tauri::async_runtime::spawn_blocking(move || {
-        crate::app::codex_theme::catalog_preview_data_url(&preview)
+        crate::app::codex_theme::catalog_preview_data_url(&preview, &version)
     })
     .await
     .map_err(|e| AppError::Internal(format!("join: {e}")))?

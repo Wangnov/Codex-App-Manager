@@ -730,28 +730,41 @@ pub fn fetch_catalog() -> Result<Vec<CatalogSkin>, AppError> {
     Ok(skins)
 }
 
-/// On-disk cache for catalog preview thumbnails, keyed by a per-URL FNV-1a hash.
-/// Previews are immutable at a versioned catalog path (index.json points at new
-/// bytes when the art changes), so a hit never needs revalidation; any miss or
-/// IO error simply falls back to the network.
-fn preview_cache_path(url: &str) -> Option<PathBuf> {
+/// On-disk cache for catalog preview thumbnails, keyed by a per-URL FNV-1a hash
+/// PLUS the skin's version. A new cover published at the same `previews/<id>`
+/// path (with a version bump in index.json) therefore misses the stale cache
+/// and re-fetches, while repeat opens of the same version stay cache-hits. Any
+/// miss or IO error simply falls back to the network.
+fn preview_cache_path(url: &str, version: &str) -> Option<PathBuf> {
+    let vsafe: String = version
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let vsafe = if vsafe.is_empty() { "v".to_string() } else { vsafe };
     Some(
         paths::cache_dir()?
             .join("catalog-previews")
             .join(format!(
-                "{:016x}.webp",
-                crate::app::staging::fnv1a64(url.as_bytes())
+                "{:016x}-{}.webp",
+                crate::app::staging::fnv1a64(url.as_bytes()),
+                vsafe
             )),
     )
 }
 
-fn read_cached_preview(url: &str) -> Option<Vec<u8>> {
-    let path = preview_cache_path(url)?;
+fn read_cached_preview(url: &str, version: &str) -> Option<Vec<u8>> {
+    let path = preview_cache_path(url, version)?;
     std::fs::read(&path).ok().filter(|b| !b.is_empty())
 }
 
-fn write_cached_preview(url: &str, bytes: &[u8]) {
-    let Some(path) = preview_cache_path(url) else {
+fn write_cached_preview(url: &str, version: &str, bytes: &[u8]) {
+    let Some(path) = preview_cache_path(url, version) else {
         return;
     };
     let Some(parent) = path.parent() else {
@@ -764,16 +777,16 @@ fn write_cached_preview(url: &str, bytes: &[u8]) {
 }
 
 /// Catalog cover preview as a data URL (WebP, ≤ 2 MB by convention). Served from
-/// the on-disk cache when present, otherwise fetched once over the network and
-/// cached so later opens don't re-hit the mirror.
-pub fn catalog_preview_data_url(preview_rel: &str) -> Result<String, AppError> {
+/// the on-disk cache when present (keyed by url + version), otherwise fetched
+/// once over the network and cached so later opens don't re-hit the mirror.
+pub fn catalog_preview_data_url(preview_rel: &str, version: &str) -> Result<String, AppError> {
     use base64::Engine as _;
     let url = safe_catalog_path(preview_rel)?;
-    let bytes = match read_cached_preview(&url) {
+    let bytes = match read_cached_preview(&url, version) {
         Some(cached) => cached,
         None => {
             let fetched = curl_fetch(&url, "2097152", "15")?;
-            write_cached_preview(&url, &fetched);
+            write_cached_preview(&url, version, &fetched);
             fetched
         }
     };

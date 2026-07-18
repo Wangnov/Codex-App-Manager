@@ -983,11 +983,11 @@ export const managerApi = {
     return invoke<CatalogSkin[]>("codex_theme_catalog");
   },
   /** Catalog cover preview as a data URL. */
-  codexThemeCatalogPreview(preview: string): Promise<string> {
+  codexThemeCatalogPreview(preview: string, version: string): Promise<string> {
     if (!hasTauriRuntime()) {
       return Promise.reject(new Error("catalog requires the desktop app"));
     }
-    return invoke<string>("codex_theme_catalog_preview", { preview });
+    return invoke<string>("codex_theme_catalog_preview", { preview, version });
   },
   /** Pick a new skin-store directory and migrate skins; null on cancel. */
   codexThemePickStoreDir(): Promise<StoreMigrationReport | null> {
