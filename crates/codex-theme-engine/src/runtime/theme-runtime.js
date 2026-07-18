@@ -23,9 +23,11 @@ html.codex-theme-studio .cts-windows-menu-bar {
   inset: 0 0 auto 0 !important;
   height: var(--cts-windows-menu-height, 36px) !important;
 }
-html.codex-theme-studio .cts-windows-menu-bar + * > aside.app-shell-left-panel,
+html.codex-theme-studio .cts-windows-menu-bar + * > aside.app-shell-left-panel {
+  padding-top: calc(var(--cts-windows-menu-height, 36px) + var(--cts-windows-sidebar-padding-top, 0px)) !important;
+}
 html.codex-theme-studio .cts-windows-menu-bar + * > main.main-surface {
-  padding-top: var(--cts-windows-menu-height, 36px) !important;
+  padding-top: calc(var(--cts-windows-menu-height, 36px) + var(--cts-windows-main-padding-top, 0px)) !important;
 }
 html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="sidebar"] {
   color: var(--cts-windows-sidebar-foreground) !important;
@@ -348,6 +350,9 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
     const shellRow = menu?.nextElementSibling;
     const sidebar = shellRow?.querySelector(":scope > aside.app-shell-left-panel");
     const main = shellRow?.querySelector(":scope > main.main-surface");
+    // Reconcile from the unmodified layout so padding never accumulates and
+    // responsive/theme changes to the surfaces are picked up on every pass.
+    menu?.classList.remove(WINDOWS_MENU_CLASS);
     const menuBox = menu?.getBoundingClientRect();
     const eligible = Boolean(
       menu && sidebar && main && main === shellMain &&
@@ -362,10 +367,14 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
     }
     if (!eligible) return;
 
+    const sidebarStyle = getComputedStyle(sidebar);
+    const mainStyle = getComputedStyle(main);
     setVar("--cts-windows-menu-height", `${menuBox.height}px`);
+    setVar("--cts-windows-sidebar-padding-top", sidebarStyle.paddingTop);
+    setVar("--cts-windows-main-padding-top", mainStyle.paddingTop);
     setClass(menu, WINDOWS_MENU_CLASS, true);
-    setVar("--cts-windows-sidebar-foreground", getComputedStyle(sidebar).color);
-    setVar("--cts-windows-main-foreground", getComputedStyle(main).color);
+    setVar("--cts-windows-sidebar-foreground", sidebarStyle.color);
+    setVar("--cts-windows-main-foreground", mainStyle.color);
 
     const sidebarRight = sidebar.getBoundingClientRect().right;
     for (const control of menu.querySelectorAll("button, [role=button]")) {

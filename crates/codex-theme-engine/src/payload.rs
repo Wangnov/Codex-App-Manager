@@ -108,6 +108,8 @@ pub const REMOVE_EXPRESSION: &str = r#"(() => {
   document.querySelectorAll('.cts-windows-menu-bar').forEach((node) => node.classList.remove('cts-windows-menu-bar'));
   document.querySelectorAll('[data-cts-menu-region]').forEach((node) => node.removeAttribute('data-cts-menu-region'));
   document.documentElement?.style.removeProperty('--cts-windows-menu-height');
+  document.documentElement?.style.removeProperty('--cts-windows-sidebar-padding-top');
+  document.documentElement?.style.removeProperty('--cts-windows-main-padding-top');
   document.documentElement?.style.removeProperty('--cts-windows-sidebar-foreground');
   document.documentElement?.style.removeProperty('--cts-windows-main-foreground');
   document.getElementById('cts-style')?.remove();
@@ -123,6 +125,8 @@ pub const VERIFY_REMOVED_EXPRESSION: &str = r#"(() =>
   !document.querySelector('.cts-windows-menu-bar') &&
   !document.querySelector('[data-cts-menu-region]') &&
   !document.documentElement.style.getPropertyValue('--cts-windows-menu-height') &&
+  !document.documentElement.style.getPropertyValue('--cts-windows-sidebar-padding-top') &&
+  !document.documentElement.style.getPropertyValue('--cts-windows-main-padding-top') &&
   !document.documentElement.style.getPropertyValue('--cts-windows-sidebar-foreground') &&
   !document.documentElement.style.getPropertyValue('--cts-windows-main-foreground') &&
   !document.getElementById('cts-style') &&
@@ -255,6 +259,8 @@ mod tests {
             "cts-windows-menu-bar",
             "data-cts-menu-region",
             "--cts-windows-menu-height",
+            "--cts-windows-sidebar-padding-top",
+            "--cts-windows-main-padding-top",
             "--cts-windows-sidebar-foreground",
             "--cts-windows-main-foreground",
         ] {
