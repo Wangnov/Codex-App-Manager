@@ -1076,7 +1076,7 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
                 {t("themes.group.new")}
               </button>
             </div>
-            {groups.some((g) => g.id === localGroup) ? (
+            {selecting && groups.some((g) => g.id === localGroup) ? (
               <div className="chip-row">
                 <button
                   type="button"

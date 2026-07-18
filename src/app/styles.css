@@ -766,10 +766,10 @@ button.themecard-art:focus-visible {
   width: 16px;
   height: 16px;
 }
-.btn.ghost.icon-only.danger {
+.btn.ghost.danger {
   color: var(--danger);
 }
-.btn.ghost.icon-only.danger:hover:not(:disabled) {
+.btn.ghost.danger:hover:not(:disabled) {
   background: var(--danger-tint);
 }
 
@@ -824,10 +824,15 @@ button.themecard-art:focus-visible {
   height: 22px;
   border-radius: 6px;
   border: 1.5px solid var(--line-2);
-  background: color-mix(in oklch, var(--surface) 80%, transparent);
-  backdrop-filter: blur(4px);
+  /* Solid, not translucent+blur: a backdrop-filter here repaints on hover and
+     glitches/flickers across the many card checkboxes (multi-instance
+     compositing), toggling the checked look on and off. */
+  background: var(--surface-2);
   color: transparent;
-  transition: background 0.14s var(--ease), border-color 0.14s var(--ease), color 0.14s var(--ease);
+  transition:
+    background 0.14s var(--ease),
+    border-color 0.14s var(--ease),
+    color 0.14s var(--ease);
 }
 .skin-check > span svg {
   width: 14px;
