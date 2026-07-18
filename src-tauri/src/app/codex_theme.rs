@@ -321,6 +321,16 @@ pub fn delete_store_skin(settings: &AppSettings, skin_id: &str) -> Result<(), Ap
     if dir.parent() != Some(store.as_path()) {
         return Err(AppError::Engine("路径越界，拒绝删除".to_string()));
     }
+    // Refuse a symlink outright: the is_dir / theme.json checks below both
+    // follow links, so a link planted in the store could smuggle the delete to
+    // its target. Store packages are always real directories placed by
+    // move_dir — a link here is never legitimate. (symlink_metadata does not
+    // follow; a missing path falls through to the "not found" check below.)
+    if let Ok(meta) = std::fs::symlink_metadata(&dir) {
+        if meta.file_type().is_symlink() {
+            return Err(AppError::Engine(format!("{skin_id} 是符号链接，拒绝删除")));
+        }
+    }
     if !dir.is_dir() {
         return Err(AppError::Engine(format!("商店中没有该皮肤: {skin_id}")));
     }
@@ -1375,5 +1385,77 @@ pub async fn launch_with_active_theme(
             log::warn!("themed launch failed, falling back to plain launch: {error}");
             Ok(false)
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod delete_store_skin_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn test_dir(name: &str) -> PathBuf {
+        let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("test-data")
+            .join(format!("{name}-{}-{id}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn settings_with_store(store: &Path) -> AppSettings {
+        AppSettings {
+            codex_theme_store_dir: Some(store.to_string_lossy().into_owned()),
+            ..AppSettings::default()
+        }
+    }
+
+    #[test]
+    fn removes_a_real_package() {
+        let base = test_dir("delete-real");
+        let store = base.join("store");
+        let pkg = store.join("good");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("theme.json"), b"{}").unwrap();
+
+        delete_store_skin(&settings_with_store(&store), "good").unwrap();
+        assert!(!pkg.exists(), "the real package should be deleted");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn refuses_a_symlink_and_spares_its_target() {
+        let base = test_dir("delete-symlink");
+        let store = base.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+
+        // A real package the link resolves to; its manifest would let the
+        // follow-through is_dir()/theme.json checks pass without the guard.
+        let target = base.join("outside");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("theme.json"), b"{}").unwrap();
+
+        let link = store.join("linky");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let err = delete_store_skin(&settings_with_store(&store), "linky").unwrap_err();
+        assert!(matches!(err, AppError::Engine(_)), "a symlink must be refused");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the symlink itself must be left in place",
+        );
+        assert!(
+            target.join("theme.json").is_file(),
+            "the link target must survive untouched",
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
