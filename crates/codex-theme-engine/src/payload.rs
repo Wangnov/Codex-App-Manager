@@ -105,6 +105,8 @@ pub const REMOVE_EXPRESSION: &str = r#"(() => {
   document.documentElement?.classList.remove('codex-theme-studio');
   document.documentElement?.removeAttribute('data-cts-theme');
   document.documentElement?.removeAttribute('data-cts-shell');
+  document.querySelectorAll('.cts-windows-menu-bar').forEach((node) => node.classList.remove('cts-windows-menu-bar'));
+  document.querySelectorAll('[data-cts-menu-region]').forEach((node) => node.removeAttribute('data-cts-menu-region'));
   document.getElementById('cts-style')?.remove();
   document.getElementById('cts-chrome')?.remove();
   document.getElementById('cts-stage')?.remove();
@@ -115,6 +117,8 @@ pub const REMOVE_EXPRESSION: &str = r#"(() => {
 
 pub const VERIFY_REMOVED_EXPRESSION: &str = r#"(() =>
   !document.documentElement.classList.contains('codex-theme-studio') &&
+  !document.querySelector('.cts-windows-menu-bar') &&
+  !document.querySelector('[data-cts-menu-region]') &&
   !document.getElementById('cts-style') &&
   !document.getElementById('cts-chrome') &&
   !document.getElementById('cts-stage') &&
@@ -239,6 +243,16 @@ mod tests {
             assert!(
                 VERIFY_REMOVED_EXPRESSION.contains(id),
                 "removal verification misses {id}"
+            );
+        }
+        for marker in ["cts-windows-menu-bar", "data-cts-menu-region"] {
+            assert!(
+                REMOVE_EXPRESSION.contains(marker),
+                "remove expression misses {marker}"
+            );
+            assert!(
+                VERIFY_REMOVED_EXPRESSION.contains(marker),
+                "removal verification misses {marker}"
             );
         }
     }

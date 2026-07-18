@@ -15,6 +15,26 @@
   const ROOT_CLASS = "codex-theme-studio";
   const THEME_ATTR = "data-cts-theme";
   const SHELL_ATTR = "data-cts-shell";
+  const WINDOWS_MENU_CLASS = "cts-windows-menu-bar";
+  const WINDOWS_MENU_REGION_ATTR = "data-cts-menu-region";
+  const RUNTIME_CSS = `
+html.codex-theme-studio .cts-windows-menu-bar {
+  position: absolute !important;
+  inset: 0 0 auto 0 !important;
+  height: var(--cts-windows-menu-height, 36px) !important;
+}
+html.codex-theme-studio .cts-windows-menu-bar + div > aside.app-shell-left-panel,
+html.codex-theme-studio .cts-windows-menu-bar + div > main.main-surface {
+  padding-top: var(--cts-windows-menu-height, 36px) !important;
+}
+html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="sidebar"] {
+  color: var(--cts-windows-sidebar-foreground) !important;
+  -webkit-text-fill-color: var(--cts-windows-sidebar-foreground) !important;
+}
+html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
+  color: var(--cts-windows-main-foreground) !important;
+  -webkit-text-fill-color: var(--cts-windows-main-foreground) !important;
+}`;
   const VERSION = __CTS_VERSION_JSON__;
   const STAMP = __CTS_STAMP_JSON__;
   const THEME = themeConfig && typeof themeConfig === "object" ? themeConfig : {};
@@ -314,6 +334,44 @@
     });
   };
 
+  // Codex 26.715+ renders the Windows application menu (File/Edit/View/Help)
+  // as a separate 36px flex item above the sidebar/main row. Theme CSS written
+  // for the older in-main toolbar cannot reach that strip, so the stock canvas
+  // shows through. Move only this structurally verified menu out of flex flow,
+  // then use equivalent top padding on the real sidebar/main surfaces: their
+  // own theme backgrounds extend behind the menu without cloning per-theme
+  // artwork or changing any content geometry.
+  const integrateWindowsMenu = (shellMain) => {
+    const menu = document.querySelector(
+      '.app-header-tint[class~="group/application-menu-top-bar"]'
+    );
+    const shellRow = menu?.nextElementSibling;
+    const sidebar = shellRow?.querySelector(":scope > aside.app-shell-left-panel");
+    const main = shellRow?.querySelector(":scope > main.main-surface");
+    const eligible = Boolean(menu && sidebar && main && main === shellMain);
+
+    for (const stale of document.querySelectorAll(`.${WINDOWS_MENU_CLASS}`)) {
+      if (!eligible || stale !== menu) stale.classList.remove(WINDOWS_MENU_CLASS);
+    }
+    for (const stale of document.querySelectorAll(`[${WINDOWS_MENU_REGION_ATTR}]`)) {
+      if (!eligible || !menu.contains(stale)) stale.removeAttribute(WINDOWS_MENU_REGION_ATTR);
+    }
+    if (!eligible) return;
+
+    const menuHeight = menu.getBoundingClientRect().height || 36;
+    setVar("--cts-windows-menu-height", `${menuHeight}px`);
+    setClass(menu, WINDOWS_MENU_CLASS, true);
+    setVar("--cts-windows-sidebar-foreground", getComputedStyle(sidebar).color);
+    setVar("--cts-windows-main-foreground", getComputedStyle(main).color);
+
+    const sidebarRight = sidebar.getBoundingClientRect().right;
+    for (const control of menu.querySelectorAll("button, [role=button]")) {
+      const box = control.getBoundingClientRect();
+      const region = box.left + box.width / 2 <= sidebarRight ? "sidebar" : "main";
+      setAttr(control, WINDOWS_MENU_REGION_ATTR, region);
+    }
+  };
+
   const ensure = () => {
     if (window[DISABLED_KEY]) return;
     const root = document.documentElement;
@@ -334,11 +392,12 @@
       (document.head || root).appendChild(style);
     }
     if (style.dataset.ctsStamp !== STAMP) {
-      style.textContent = cssText;
+      style.textContent = `${cssText}\n\n${RUNTIME_CSS}`;
       style.dataset.ctsStamp = STAMP;
     }
 
     const shellMain = document.querySelector("main.main-surface") || document.querySelector("main");
+    integrateWindowsMenu(shellMain);
     const home = findHome(state?.homeSticky);
     if (state) state.homeSticky = home;
     for (const candidate of document.querySelectorAll('[role="main"].cts-home')) {
@@ -443,6 +502,8 @@
     document.querySelectorAll("[data-cts-glyph]").forEach((node) => node.removeAttribute("data-cts-glyph"));
     document.querySelectorAll("[data-cts-icon]").forEach((node) => node.removeAttribute("data-cts-icon"));
     document.querySelectorAll("[data-cts-logo]").forEach((node) => node.removeAttribute("data-cts-logo"));
+    document.querySelectorAll(`.${WINDOWS_MENU_CLASS}`).forEach((node) => node.classList.remove(WINDOWS_MENU_CLASS));
+    document.querySelectorAll(`[${WINDOWS_MENU_REGION_ATTR}]`).forEach((node) => node.removeAttribute(WINDOWS_MENU_REGION_ATTR));
     document.getElementById(STYLE_ID)?.remove();
     document.getElementById(CHROME_ID)?.remove();
     document.getElementById(STAGE_ID)?.remove();
