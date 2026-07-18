@@ -2708,6 +2708,39 @@ button.row.danger:hover {
   opacity: 0.5;
   cursor: default;
 }
+/* Manual dismiss ✕ for notification banners (errors/warnings the user can
+   clear). Tinted by the banner's own text color via currentColor. */
+.banner-close {
+  margin-inline-start: auto;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  opacity: 0.6;
+  border-radius: 6px;
+  cursor: pointer;
+  transition:
+    opacity 0.16s var(--ease),
+    background 0.16s var(--ease);
+}
+.banner-close:hover {
+  opacity: 1;
+  background: color-mix(in oklch, currentColor 14%, transparent);
+}
+.banner-close svg {
+  width: 14px;
+  height: 14px;
+}
+/* Spinning refresh icon while the catalog reloads. */
+.cam-icon.spin {
+  animation: spin 0.8s linear infinite;
+}
 
 /* ── Result strip (update / install outcome) ─────────────────────────────── */
 /* Owns its lifecycle (auto-dismiss + ✕), unlike the static .banner notes. A
@@ -2957,6 +2990,42 @@ button.row.danger:hover {
 .sheet-frame.is-closing {
   animation: sheet-sink 0.24s var(--ease-out) forwards;
 }
+/* Expanded workbench: an opted-in Sheet (theme details) becomes a centered
+   modal instead of a bottom sheet. The compact popover keeps the sheet form. */
+:root[data-window-mode="expanded"] .scrim.sheet-centerable {
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-md);
+}
+:root[data-window-mode="expanded"] .sheet-frame.sheet-centerable {
+  position: relative;
+  left: auto;
+  right: auto;
+  bottom: auto;
+  width: min(560px, 100%);
+  max-height: min(86%, calc(100% - 2 * var(--space-md)));
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-xl);
+  animation: modal-pop 0.26s var(--ease-sheet) both;
+}
+:root[data-window-mode="expanded"] .sheet-frame.sheet-centerable::after {
+  display: none;
+}
+:root[data-window-mode="expanded"] .sheet-frame.sheet-centerable.is-closing {
+  animation: modal-pop-out 0.2s var(--ease-out) forwards;
+}
+@keyframes modal-pop {
+  from {
+    transform: scale(0.96);
+    opacity: 0;
+  }
+}
+@keyframes modal-pop-out {
+  to {
+    transform: scale(0.97);
+    opacity: 0;
+  }
+}
 /* Reduced-motion: no enter/exit movement (the component also unmounts at once). */
 @media (prefers-reduced-motion: reduce) {
   .scrim,
@@ -2965,7 +3034,9 @@ button.row.danger:hover {
   .sheet,
   .scrim.is-closing,
   .quit-scrim.is-closing,
-  .sheet-frame.is-closing {
+  .sheet-frame.is-closing,
+  :root[data-window-mode="expanded"] .sheet-frame.sheet-centerable,
+  :root[data-window-mode="expanded"] .sheet-frame.sheet-centerable.is-closing {
     animation: none;
   }
 }

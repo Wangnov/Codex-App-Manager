@@ -20,6 +20,7 @@ export function Sheet({
   labelledBy,
   describedBy,
   initialFocus = "dismiss",
+  centeredInExpanded = false,
   children,
 }: {
   open: boolean;
@@ -29,6 +30,9 @@ export function Sheet({
   labelledBy?: string;
   describedBy?: string;
   initialFocus?: "first" | "primary" | "dismiss" | "container";
+  /** In the expanded workbench, render as a centered modal instead of a bottom
+   *  sheet. Ignored in compact mode (always a sheet there). */
+  centeredInExpanded?: boolean;
   children: ReactNode;
 }) {
   const sheetRef = useRef<HTMLDivElement>(null);
@@ -90,13 +94,16 @@ export function Sheet({
     // interactive semantics (role=dialog + aria-modal), so the scrim is inert
     // chrome, not a control.
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events
-    <div className={`${scrimClass}${closing ? " is-closing" : ""}`} onClick={dismiss}>
+    <div
+      className={`${scrimClass}${centeredInExpanded ? " sheet-centerable" : ""}${closing ? " is-closing" : ""}`}
+      onClick={dismiss}
+    >
       {/* onClick here is pure event plumbing — it stops a click INSIDE the sheet
           from bubbling to the backdrop-dismiss handler; it is not a control. */}
       {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
       <div
         ref={frameRef}
-        className={`sheet-frame${closing ? " is-closing" : ""}`}
+        className={`sheet-frame${centeredInExpanded ? " sheet-centerable" : ""}${closing ? " is-closing" : ""}`}
         onClick={(event) => event.stopPropagation()}
       >
         <div

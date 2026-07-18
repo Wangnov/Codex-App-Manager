@@ -289,6 +289,7 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
   const [loaded, setLoaded] = useState(false);
   const [catalog, setCatalog] = useState<CatalogSkin[] | null>(null);
   const [catalogFailed, setCatalogFailed] = useState(false);
+  const [catalogLoading, setCatalogLoading] = useState(false);
   const [storeNote, setStoreNote] = useState<string | null>(null);
   const [tab, setTab] = useState<GalleryTab>("local");
   const [query, setQuery] = useState("");
@@ -307,6 +308,9 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
   const [confirmIds, setConfirmIds] = useState<string[] | null>(null);
   const [refocusTick, setRefocusTick] = useState(0);
   const selectBtnRef = useRef<HTMLButtonElement>(null);
+  // Daemon errors come from polled status, so dismissing must remember the
+  // exact message and re-show only when a *different* error arrives.
+  const [dismissedDaemonError, setDismissedDaemonError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -333,20 +337,22 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
     return () => window.removeEventListener(SETTINGS_CHANGED_EVENT, onSettings);
   }, [refresh]);
 
-  useEffect(() => {
-    let cancelled = false;
-    void managerApi
-      .codexThemeCatalog()
-      .then((skins) => {
-        if (!cancelled) setCatalog(skins);
-      })
-      .catch(() => {
-        if (!cancelled) setCatalogFailed(true);
-      });
-    return () => {
-      cancelled = true;
-    };
+  const loadCatalog = useCallback(async () => {
+    setCatalogLoading(true);
+    try {
+      const skins = await managerApi.codexThemeCatalog();
+      setCatalog(skins);
+      setCatalogFailed(false);
+    } catch {
+      setCatalogFailed(true);
+    } finally {
+      setCatalogLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void loadCatalog();
+  }, [loadCatalog]);
 
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -725,9 +731,18 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
         {status && !status.supported ? (
           <StatusBanner tone="info">{t("themes.status.unsupported")}</StatusBanner>
         ) : null}
-        {actionError ? <StatusBanner tone="err">{actionError}</StatusBanner> : null}
-        {status?.daemon?.lastError && !actionError ? (
-          <StatusBanner tone="warn">
+        {actionError ? (
+          <StatusBanner tone="err" onClose={() => setActionError(null)}>
+            {actionError}
+          </StatusBanner>
+        ) : null}
+        {status?.daemon?.lastError &&
+        !actionError &&
+        status.daemon.lastError !== dismissedDaemonError ? (
+          <StatusBanner
+            tone="warn"
+            onClose={() => setDismissedDaemonError(status.daemon?.lastError ?? null)}
+          >
             {t("themes.status.daemonError", { error: status.daemon.lastError })}
           </StatusBanner>
         ) : null}
@@ -867,6 +882,17 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
               onClick={() => (selecting ? exitSelect() : setSelecting(true))}
             >
               {selecting ? t("themes.select.done") : t("themes.select.manage")}
+            </button>
+          ) : null}
+          {tab === "store" ? (
+            <button
+              className="btn ghost sm"
+              onClick={() => void loadCatalog()}
+              disabled={catalogLoading}
+              title={t("themes.refresh")}
+            >
+              <Icon name="refresh" className={catalogLoading ? "spin" : undefined} />
+              {t("themes.refresh")}
             </button>
           ) : null}
         </div>
@@ -1064,7 +1090,12 @@ function DetailsSheet({
       ] as const)
     : [];
   return (
-    <Sheet open={item !== null} onDismiss={onClose} labelledBy="skin-detail-title">
+    <Sheet
+      open={item !== null}
+      onDismiss={onClose}
+      labelledBy="skin-detail-title"
+      centeredInExpanded
+    >
       {item ? (
         <div className="skin-detail">
           <div className="skin-detail-cover">

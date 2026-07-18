@@ -98,7 +98,7 @@ pub fn download_cache_path(url: &str, file_name: &str) -> Result<PathBuf, AppErr
 /// the cache on every upgrade. Collision resistance isn't security-critical: the
 /// artifact's size + EdDSA/SHA-256 verification is the real gate; this only
 /// namespaces per-URL partials so different targets never resume onto each other.
-fn fnv1a64(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for &b in bytes {
         hash ^= b as u64;

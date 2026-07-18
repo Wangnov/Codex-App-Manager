@@ -106,6 +106,14 @@ pub fn data_dir() -> Option<PathBuf> {
     select_data_dir(smoke_data_dir_from_env(), production)
 }
 
+/// Manager cache directory for re-downloadable, non-critical content (currently
+/// catalog preview thumbnails). Safe to clear at any time — distinct from
+/// `data_dir`, which holds settings/provenance that must persist.
+pub fn cache_dir() -> Option<PathBuf> {
+    directories::ProjectDirs::from("io.github", "wangnov", "codexappmanager")
+        .map(|dirs| dirs.cache_dir().to_path_buf())
+}
+
 pub fn packaged_smoke_run_id() -> Option<String> {
     match smoke_data_dir_from_env() {
         SmokeDataDir::Valid { run_id, .. } => Some(run_id),

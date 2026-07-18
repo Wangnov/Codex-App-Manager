@@ -514,12 +514,16 @@ export function StatusBanner({
   children,
   action,
   icon,
+  onClose,
 }: {
   tone: "err" | "info" | "ok" | "warn";
   children: ReactNode;
   action?: ReactNode;
   icon?: IconName;
+  /** When set, renders a trailing ✕ that calls this to dismiss the banner. */
+  onClose?: () => void;
 }) {
+  const { t } = useI18n();
   const isError = tone === "err";
   const resolvedIcon: IconName =
     icon ?? (isError ? "alert" : tone === "ok" ? "check" : "info");
@@ -530,6 +534,17 @@ export function StatusBanner({
         {children}
       </span>
       {action}
+      {onClose ? (
+        <button
+          type="button"
+          className="banner-close"
+          onClick={onClose}
+          aria-label={t("themes.detail.close")}
+          title={t("themes.detail.close")}
+        >
+          <Icon name="close" />
+        </button>
+      ) : null}
     </div>
   );
 }

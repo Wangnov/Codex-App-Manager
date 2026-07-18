@@ -726,11 +726,53 @@ pub fn fetch_catalog() -> Result<Vec<CatalogSkin>, AppError> {
     Ok(skins)
 }
 
-/// Catalog cover preview as a data URL (WebP, ≤ 2 MB by convention).
+/// On-disk cache for catalog preview thumbnails, keyed by a per-URL FNV-1a hash.
+/// Previews are immutable at a versioned catalog path (index.json points at new
+/// bytes when the art changes), so a hit never needs revalidation; any miss or
+/// IO error simply falls back to the network.
+fn preview_cache_path(url: &str) -> Option<PathBuf> {
+    Some(
+        paths::cache_dir()?
+            .join("catalog-previews")
+            .join(format!(
+                "{:016x}.webp",
+                crate::app::staging::fnv1a64(url.as_bytes())
+            )),
+    )
+}
+
+fn read_cached_preview(url: &str) -> Option<Vec<u8>> {
+    let path = preview_cache_path(url)?;
+    std::fs::read(&path).ok().filter(|b| !b.is_empty())
+}
+
+fn write_cached_preview(url: &str, bytes: &[u8]) {
+    let Some(path) = preview_cache_path(url) else {
+        return;
+    };
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    // Best-effort: a cache write failure must never fail the preview.
+    if std::fs::create_dir_all(parent).is_ok() {
+        let _ = std::fs::write(&path, bytes);
+    }
+}
+
+/// Catalog cover preview as a data URL (WebP, ≤ 2 MB by convention). Served from
+/// the on-disk cache when present, otherwise fetched once over the network and
+/// cached so later opens don't re-hit the mirror.
 pub fn catalog_preview_data_url(preview_rel: &str) -> Result<String, AppError> {
     use base64::Engine as _;
     let url = safe_catalog_path(preview_rel)?;
-    let bytes = curl_fetch(&url, "2097152", "15")?;
+    let bytes = match read_cached_preview(&url) {
+        Some(cached) => cached,
+        None => {
+            let fetched = curl_fetch(&url, "2097152", "15")?;
+            write_cached_preview(&url, &fetched);
+            fetched
+        }
+    };
     Ok(format!(
         "data:image/webp;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
