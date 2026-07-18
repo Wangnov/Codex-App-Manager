@@ -1055,7 +1055,7 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
           ) : null}
         </div>
 
-        {tab === "local" && localThemes.length > 0 ? (
+        {tab === "local" && (localThemes.length > 0 || groups.length > 0) ? (
           <div className="store-filters local-filters">
             <div className="chip-row" role="group" aria-label={t("themes.group.label")}>
               <button
@@ -1366,7 +1366,12 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
         state={groupModal}
         groups={groups}
         busy={busy}
-        onClose={() => setGroupModal(null)}
+        onClose={() => {
+          setGroupModal(null);
+          // Return focus to the stable toolbar button; the dialog's opener may
+          // be disabled/removed after a submit, which would drop focus to body.
+          setRefocusTick((tk) => tk + 1);
+        }}
         onCreate={createGroup}
         onRename={renameGroup}
         onDelete={deleteGroup}
@@ -1593,7 +1598,7 @@ function GroupModal({
               aria-label={t("themes.group.nameLabel")}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && name.trim()) submit();
+                if (e.key === "Enter" && !e.nativeEvent.isComposing && name.trim()) submit();
               }}
             />
           )}

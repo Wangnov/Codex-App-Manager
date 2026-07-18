@@ -857,6 +857,9 @@ button.themecard-art:focus-visible {
 .select-bar {
   display: flex;
   align-items: center;
+  /* Wrap in the compact 400-wide window: the add-to-group select + remove /
+     delete / cancel can't fit one row there, and .pop clips the overflow. */
+  flex-wrap: wrap;
   gap: 10px;
   padding: 8px 12px;
   border: 1px solid var(--line-2);
