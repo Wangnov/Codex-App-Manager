@@ -574,30 +574,43 @@ export function CodexThemes({ onBack }: { onBack: () => void }) {
       return next;
     });
 
-  // Custom-group CRUD, persisted through settings (run() refreshes afterwards).
-  const persistGroups = (next: SkinGroup[]) =>
-    run("groups", async () => {
+  // Custom-group CRUD, persisted through settings. Returns whether the write
+  // landed, so callers switch the active filter only on success (a rejected
+  // save must not point localGroup at a group that was never persisted).
+  const persistGroups = async (next: SkinGroup[]): Promise<boolean> => {
+    if (busy) return false;
+    setBusy("groups");
+    setActionError(null);
+    try {
       const current = settings ?? (await managerApi.getSettings());
       await managerApi.setSettings({ ...current, skinGroups: next });
-    });
-  const createGroup = (name: string) => {
+      await refresh();
+      return true;
+    } catch (cause) {
+      setActionError(errorMessage(cause));
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  };
+  const createGroup = async (name: string) => {
     const trimmed = name.trim();
-    // Guard on busy: run() no-ops while another op holds the lock, which would
-    // otherwise switch to a group id that never got persisted.
     if (!trimmed || busy !== null) return;
     const id = crypto.randomUUID();
-    void persistGroups([...groups, { id, name: trimmed, skinIds: [] }]);
-    setLocalGroup(id);
+    if (await persistGroups([...groups, { id, name: trimmed, skinIds: [] }])) {
+      setLocalGroup(id);
+    }
   };
   const renameGroup = (id: string, name: string) => {
     const trimmed = name.trim();
     if (!trimmed || busy !== null) return;
     void persistGroups(groups.map((g) => (g.id === id ? { ...g, name: trimmed } : g)));
   };
-  const deleteGroup = (id: string) => {
+  const deleteGroup = async (id: string) => {
     if (busy !== null) return;
-    void persistGroups(groups.filter((g) => g.id !== id));
-    setLocalGroup("all");
+    if (await persistGroups(groups.filter((g) => g.id !== id))) {
+      setLocalGroup("all");
+    }
   };
   const addToGroup = (groupId: string, ids: string[]) =>
     void persistGroups(

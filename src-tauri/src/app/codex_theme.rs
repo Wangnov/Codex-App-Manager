@@ -758,21 +758,46 @@ fn preview_cache_path(url: &str, version: &str) -> Option<PathBuf> {
     )
 }
 
+/// Cheap structural check that bytes look like a WebP (RIFF container + WEBP
+/// fourcc) — gates what we cache and rejects partial/corrupt hits.
+fn is_webp(bytes: &[u8]) -> bool {
+    bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP"
+}
+
 fn read_cached_preview(url: &str, version: &str) -> Option<Vec<u8>> {
     let path = preview_cache_path(url, version)?;
-    std::fs::read(&path).ok().filter(|b| !b.is_empty())
+    let bytes = std::fs::read(&path).ok()?;
+    if is_webp(&bytes) {
+        Some(bytes)
+    } else {
+        // A truncated/corrupt entry (e.g. a crash mid-write) would otherwise
+        // hit forever — drop it so the caller re-fetches from the network.
+        let _ = std::fs::remove_file(&path);
+        None
+    }
 }
 
 fn write_cached_preview(url: &str, version: &str, bytes: &[u8]) {
+    // Only cache plausibly-complete WebP bytes, and write via a temp file +
+    // atomic rename so a crash or full disk never leaves a non-empty partial
+    // that later reads back as a valid hit.
+    if !is_webp(bytes) {
+        return;
+    }
     let Some(path) = preview_cache_path(url, version) else {
         return;
     };
     let Some(parent) = path.parent() else {
         return;
     };
-    // Best-effort: a cache write failure must never fail the preview.
-    if std::fs::create_dir_all(parent).is_ok() {
-        let _ = std::fs::write(&path, bytes);
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let tmp = path.with_extension("webp.tmp");
+    if std::fs::write(&tmp, bytes).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    } else {
+        let _ = std::fs::remove_file(&tmp);
     }
 }
 
