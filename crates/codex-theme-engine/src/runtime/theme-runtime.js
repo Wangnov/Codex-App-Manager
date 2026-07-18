@@ -23,8 +23,8 @@ html.codex-theme-studio .cts-windows-menu-bar {
   inset: 0 0 auto 0 !important;
   height: var(--cts-windows-menu-height, 36px) !important;
 }
-html.codex-theme-studio .cts-windows-menu-bar + div > aside.app-shell-left-panel,
-html.codex-theme-studio .cts-windows-menu-bar + div > main.main-surface {
+html.codex-theme-studio .cts-windows-menu-bar + * > aside.app-shell-left-panel,
+html.codex-theme-studio .cts-windows-menu-bar + * > main.main-surface {
   padding-top: var(--cts-windows-menu-height, 36px) !important;
 }
 html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="sidebar"] {
