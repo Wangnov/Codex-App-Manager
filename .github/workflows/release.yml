@@ -217,7 +217,7 @@ jobs:
             exit 1
           }
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -239,7 +239,7 @@ jobs:
       # The root checkout contains only the trusted default-branch workflow and
       # release scripts. Check out application source separately by the already
       # verified commit SHA, never by a mutable tag name.
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.tag_source.outputs.release_source_sha }}
           path: release-source
@@ -347,11 +347,11 @@ jobs:
             exit 1
           }
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.prepare.outputs.release_source_sha }}
           path: release-source
@@ -695,7 +695,7 @@ jobs:
             exit 1
           }
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -734,7 +734,7 @@ jobs:
       # Re-run this gate inside every release-job attempt. GitHub's "Re-run
       # failed jobs" does not re-run prepare, and no immutable publication may
       # rely only on a previous attempt's source or ancestry decision.
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.tag_source.outputs.release_source_sha }}
           path: release-source
