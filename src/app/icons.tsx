@@ -37,7 +37,12 @@ export type IconName =
   | "minimize"
   | "grid"
   | "list"
-  | "close";
+  | "close"
+  | "key"
+  | "eye"
+  | "eyeOff"
+  | "logOut"
+  | "link";
 
 const PATHS: Record<IconName, ReactNode> = {
   grid: (
@@ -210,6 +215,38 @@ const PATHS: Record<IconName, ReactNode> = {
     <>
       <line className="cam-close-a" x1="6" y1="6" x2="18" y2="18" />
       <line className="cam-close-b" x1="18" y1="6" x2="6" y2="18" />
+    </>
+  ),
+  key: (
+    <>
+      <circle cx="8.5" cy="15.5" r="4.5" />
+      <path d="m11.7 12.3 8-8M16.5 7.5l2 2M14.3 9.7l2 2" />
+    </>
+  ),
+  eye: (
+    <>
+      <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+      <circle cx="12" cy="12" r="2.5" />
+    </>
+  ),
+  eyeOff: (
+    <>
+      <path d="M3 3l18 18" />
+      <path d="M10.6 6.2A10.2 10.2 0 0 1 12 6c6 0 9.5 6 9.5 6a16 16 0 0 1-2.2 2.9M6.2 6.3A15.5 15.5 0 0 0 2.5 12s3.5 6 9.5 6a10.4 10.4 0 0 0 3.5-.6" />
+      <path d="M10.2 10.2a2.5 2.5 0 0 0 3.6 3.6" />
+    </>
+  ),
+  logOut: (
+    <>
+      <path d="M10 5H6.5A1.5 1.5 0 0 0 5 6.5v11A1.5 1.5 0 0 0 6.5 19H10" />
+      <path d="M14 8l4 4-4 4M18 12H9" />
+    </>
+  ),
+  link: (
+    <>
+      <path d="m9.5 14.5-1 1a3.5 3.5 0 1 1-5-5l3-3a3.5 3.5 0 0 1 5 0" />
+      <path d="m14.5 9.5 1-1a3.5 3.5 0 1 1 5 5l-3 3a3.5 3.5 0 0 1-5 0" />
+      <path d="m8.5 15.5 7-7" />
     </>
   ),
 };

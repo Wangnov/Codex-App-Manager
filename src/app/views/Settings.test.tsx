@@ -64,7 +64,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function renderSettings() {
+function renderSettings({ onOpenConfig = vi.fn() }: { onOpenConfig?: () => void } = {}) {
   return render(
     <ThemeProvider>
       <I18nProvider>
@@ -72,7 +72,7 @@ function renderSettings() {
           onBack={vi.fn()}
           onOpenAbout={vi.fn()}
           onOpenUninstall={vi.fn()}
-          onOpenConfig={vi.fn()}
+          onOpenConfig={onOpenConfig}
           onOpenThemes={vi.fn()}
         />
       </I18nProvider>
@@ -229,13 +229,21 @@ describe("Settings runtime contract", () => {
     expect(screen.getByText("尽量遵循系统代理；不保证完整 PAC 行为")).toBeInTheDocument();
   });
 
-  it("disables the unfinished Codex config entry", async () => {
+  it("opens API configuration from the former placeholder entry", async () => {
+    const user = userEvent.setup();
+    const onOpenConfig = vi.fn();
+    localStorage.setItem("cam.lang", "en");
     api.getSettings.mockResolvedValue(settings());
-    renderSettings();
-    await waitFor(() => expect(screen.queryByText("正在加载设置…")).not.toBeInTheDocument());
-    const config = screen.getByRole("button", { name: /Codex 配置管理/ });
-    expect(config).toBeDisabled();
-    expect(screen.getByText("当前版本尚未提供")).toBeInTheDocument();
+    renderSettings({ onOpenConfig });
+    await waitFor(() =>
+      expect(screen.queryByText(CATALOG.en["settings.loading"])).not.toBeInTheDocument(),
+    );
+
+    const config = screen.getByRole("button", { name: CATALOG.en["config.title"] });
+    expect(config).toBeEnabled();
+    expect(screen.queryByText(CATALOG.en["settings.more.soon"])).not.toBeInTheDocument();
+    await user.click(config);
+    expect(onOpenConfig).toHaveBeenCalledOnce();
   });
 
   it("keeps repair actions collapsed under More until requested", async () => {

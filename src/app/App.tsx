@@ -69,7 +69,15 @@ function Shell() {
           Settings section. Jumping home reuses the same cross-fade as the
           NavBar back path so the two routes feel identical. */}
       <Rail
-        section={view === "home" ? "home" : view === "themes" ? "themes" : "settings"}
+        section={
+          view === "home"
+            ? "home"
+            : view === "config"
+              ? "config"
+              : view === "themes"
+                ? "themes"
+                : "settings"
+        }
         onNavigate={(section) => {
           const target: View = section;
           if (target === view) return;

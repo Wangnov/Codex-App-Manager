@@ -94,6 +94,95 @@ describe("catalog placeholders", () => {
   });
 });
 
+const API_CONFIG_KEYS = [
+  "config.title",
+  "config.service",
+  "config.restoring",
+  "config.signedOut",
+  "config.connected",
+  "config.interrupted",
+  "config.email",
+  "config.password",
+  "config.showPassword",
+  "config.hidePassword",
+  "config.remember",
+  "config.login",
+  "config.loggingIn",
+  "config.logout",
+  "config.refresh",
+  "config.refreshing",
+  "config.empty",
+  "config.stale",
+  "config.retry",
+  "config.status.active",
+  "config.status.inactive",
+  "config.status.quotaExhausted",
+  "config.status.expired",
+  "config.group",
+  "config.quota",
+  "config.quotaValue",
+  "config.expiry",
+  "config.unlimited",
+  "config.noExpiry",
+  "config.enabled",
+  "config.importCcs",
+  "config.importingCcs",
+  "config.writeLocal",
+  "config.writingLocal",
+  "config.confirm.title",
+  "config.confirm.body",
+  "config.confirm.closeWarning",
+  "config.confirm.action",
+  "config.confirm.cancel",
+  "config.backupPath",
+  "config.ccsSent",
+  "config.writeSuccess",
+  "config.writeRestored",
+  "config.recoveryRequired",
+  "config.restart",
+  "config.restarting",
+  "config.restartFailed",
+  "config.account",
+  "config.host",
+  "config.previous",
+  "config.next",
+  "config.page",
+  "config.rememberWarning",
+  "config.error.desktopRequired",
+  "config.error.invalidCredentials",
+  "config.error.forbidden",
+  "config.error.rateLimited",
+  "config.error.timeout",
+  "config.error.network",
+  "config.error.invalidResponse",
+  "config.error.apiRejected",
+  "config.error.twoFactorUnsupported",
+  "config.error.turnstileUnsupported",
+  "config.error.credentialStore",
+  "config.error.signedOut",
+  "config.error.keyUnavailable",
+  "config.error.persistence",
+  "config.error.unsupportedPlatform",
+  "config.error.providerPathUnavailable",
+  "config.error.providerUnsafeDestination",
+  "config.error.providerBusy",
+  "config.error.providerEmptyKey",
+  "config.error.providerIo",
+  "config.error.ccsUnavailable",
+  "config.error.unknown",
+] as const;
+
+describe("API configuration catalog copy", () => {
+  it("keeps every API configuration key present in all locales", () => {
+    for (const { code } of LANGS) {
+      const catalog = CATALOG[code] as Record<string, string>;
+      for (const key of API_CONFIG_KEYS) {
+        expect(catalog[key], `${code}:${key}`).toBeTruthy();
+      }
+    }
+  });
+});
+
 const SAFETY_CRITICAL_PREFIXES = [
   "install.partial.",
   "settings.health.",

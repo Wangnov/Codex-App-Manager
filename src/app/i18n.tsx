@@ -9,6 +9,7 @@ import {
 } from "react";
 
 import { withViewTransition } from "./viewTransition";
+import { API_CONFIG_COPY } from "./apiConfigCopy";
 
 export type Lang =
   | "en"
@@ -407,6 +408,7 @@ const ZH = {
 
   "config.soon": "即将支持",
   "config.desc": "在这里管理 ~/.codex 里的会话、登录与配置。",
+  ...API_CONFIG_COPY["zh-CN"],
 
   "source.auto": "自动",
   "source.mirror": "镜像",
@@ -811,6 +813,7 @@ const EN: Record<Key, string> = {
 
   "config.soon": "Coming soon",
   "config.desc": "Manage the sessions, sign-in and config inside ~/.codex here.",
+  ...API_CONFIG_COPY.en,
 
   "source.auto": "Automatic",
   "source.mirror": "Mirror",
@@ -1212,6 +1215,7 @@ const FR: Record<Key, string> = {
 
   "config.soon": "Bientôt disponible",
   "config.desc": "Gérez les sessions, la connexion et la configuration dans ~/.codex ici.",
+  ...API_CONFIG_COPY.fr,
 
   "source.auto": "Automatique",
   "source.mirror": "Miroir",
@@ -1623,6 +1627,7 @@ const ZH_TW: Record<Key, string> = {
 
   "config.soon": "即將推出",
   "config.desc": "在此管理 ~/.codex 中的工作階段、登入狀態與設定。",
+  ...API_CONFIG_COPY["zh-TW"],
 
   "source.auto": "自動",
   "source.mirror": "鏡像",
@@ -2034,6 +2039,7 @@ const DE: Record<Key, string> = {
 
   "config.soon": "Demnächst verfügbar",
   "config.desc": "Sitzungen, Anmeldung und Konfiguration in ~/.codex hier verwalten.",
+  ...API_CONFIG_COPY.de,
 
   "source.auto": "Automatisch",
   "source.mirror": "Spiegel",
@@ -2446,6 +2452,7 @@ const KO: Record<Key, string> = {
 
   "config.soon": "곧 지원 예정",
   "config.desc": "~/.codex 안의 세션, 로그인 및 구성을 여기서 관리하세요.",
+  ...API_CONFIG_COPY.ko,
 
   "source.auto": "자동",
   "source.mirror": "미러",
@@ -2840,6 +2847,7 @@ const JA: Record<Key, string> = {
   "uninstall.confirm2.body": "サインイン情報、セッション、設定（{path}）が完全に削除されます — この操作は元に戻せません。",
   "config.soon": "近日公開",
   "config.desc": "~/.codex 内のセッション、サインイン情報、設定をここで管理します。",
+  ...API_CONFIG_COPY.ja,
   "source.auto": "自動",
   "source.mirror": "ミラー",
   "source.official": "公式",
@@ -3232,6 +3240,7 @@ const RU: Record<Key, string> = {
   "uninstall.confirm2.body": "Данные для входа, сессии и конфигурация ({path}) будут удалены безвозвратно — отменить это действие невозможно.",
   "config.soon": "Скоро",
   "config.desc": "Управляйте сессиями, данными для входа и конфигурацией в ~/.codex.",
+  ...API_CONFIG_COPY.ru,
   "source.auto": "Автоматически",
   "source.mirror": "Зеркало",
   "source.official": "Официальный",
@@ -3624,6 +3633,7 @@ const AR: Record<Key, string> = {
   "uninstall.confirm2.body": "ستُحذف تسجيل الدخول والجلسات والإعدادات ({path}) نهائياً — لا يمكن التراجع.",
   "config.soon": "قريباً",
   "config.desc": "أدِر الجلسات وتسجيل الدخول والإعدادات داخل ~/.codex من هنا.",
+  ...API_CONFIG_COPY.ar,
   "source.auto": "تلقائي",
   "source.mirror": "نسخة مرآة",
   "source.official": "رسمي",
@@ -4016,6 +4026,7 @@ const ES: Record<Key, string> = {
   "uninstall.confirm2.body": "El inicio de sesión, las sesiones y la configuración ({path}) se eliminarán de forma permanente — esta acción no se puede deshacer.",
   "config.soon": "Próximamente",
   "config.desc": "Gestiona aquí las sesiones, el inicio de sesión y la configuración en ~/.codex.",
+  ...API_CONFIG_COPY.es,
   "source.auto": "Automático",
   "source.mirror": "Espejo",
   "source.official": "Oficial",
@@ -4408,6 +4419,7 @@ const PT_BR: Record<Key, string> = {
   "uninstall.confirm2.body": "Login, sessões e configurações ({path}) serão excluídos permanentemente — isso não pode ser desfeito.",
   "config.soon": "Em breve",
   "config.desc": "Gerencie as sessões, login e configurações dentro de ~/.codex aqui.",
+  ...API_CONFIG_COPY["pt-BR"],
   "source.auto": "Automático",
   "source.mirror": "Espelho",
   "source.official": "Oficial",

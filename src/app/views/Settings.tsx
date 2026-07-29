@@ -114,13 +114,12 @@ export function Settings({
   onBack,
   onOpenAbout,
   onOpenUninstall,
-  onOpenConfig: _onOpenConfig,
+  onOpenConfig,
   onOpenThemes,
 }: {
   onBack: () => void;
   onOpenAbout: () => void;
   onOpenUninstall: () => void;
-  /** Reserved: Codex config is not shippable yet; entry stays disabled. */
   onOpenConfig: () => void;
   onOpenThemes: () => void;
 }) {
@@ -911,16 +910,15 @@ export function Settings({
             <button
               className="row"
               type="button"
-              disabled
-              aria-disabled="true"
-              title={t("settings.more.configUnavailable")}
+              aria-label={t("config.title")}
+              onClick={onOpenConfig}
             >
-              <Icon name="sliders" className="ricon" />
+              <Icon name="key" className="ricon" />
               <span className="rtext">
-                <span className="rtitle">{t("settings.more.config")}</span>
-                <span className="rsub">{t("settings.more.configUnavailable")}</span>
+                <span className="rtitle">{t("config.title")}</span>
+                <span className="rsub">{t("config.service")}</span>
               </span>
-              <span className="tag soon">{t("settings.more.soon")}</span>
+              <Icon name="chevron" className="chev" />
             </button>
             <button className="row" onClick={onOpenAbout}>
               <Icon name="info" className="ricon" />
