@@ -17,6 +17,10 @@ vi.mock("../../services/managerApi", async (importOriginal) => {
       apiConfigSession: vi.fn(),
       apiConfigLogin: vi.fn(),
       apiConfigKeys: vi.fn(),
+      apiConfigLogout: vi.fn(),
+      apiConfigImportCcs: vi.fn(),
+      apiConfigWriteLocal: vi.fn(),
+      apiConfigRestartCodex: vi.fn(),
     },
   };
 });
@@ -69,6 +73,10 @@ describe("CodexConfig signed-out orchestration", () => {
     api.apiConfigSession.mockReset();
     api.apiConfigLogin.mockReset();
     api.apiConfigKeys.mockReset();
+    api.apiConfigLogout.mockReset();
+    api.apiConfigImportCcs.mockReset();
+    api.apiConfigWriteLocal.mockReset();
+    api.apiConfigRestartCodex.mockReset();
   });
 
   it("shows a stable restoring state before deciding which view to render", async () => {
@@ -117,6 +125,39 @@ describe("CodexConfig signed-out orchestration", () => {
       "The email or password is incorrect.",
     );
     expect(screen.queryByText("backend text that must not be shown")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Password")).toHaveValue("");
+  });
+
+  it("logs out to a password-empty form while retaining the returned email", async () => {
+    const user = userEvent.setup();
+    api.apiConfigSession.mockResolvedValue(CONNECTED);
+    api.apiConfigKeys.mockResolvedValue({
+      ...KEYS,
+      items: [
+        {
+          id: 1,
+          name: "Primary",
+          groupName: "OpenAI",
+          maskedKey: "sk-a••••123",
+          status: "active",
+          quota: 0,
+          quotaUsed: 0,
+          expiresAt: null,
+          actionable: true,
+          enabled: true,
+        },
+      ],
+    });
+    api.apiConfigLogout.mockResolvedValue({
+      ...SIGNED_OUT,
+      email: "saved@example.com",
+    });
+    renderConfig();
+
+    await user.click(await screen.findByRole("button", { name: "Sign out" }));
+
+    expect(api.apiConfigLogout).toHaveBeenCalledOnce();
+    expect(await screen.findByLabelText("Email")).toHaveValue("saved@example.com");
     expect(screen.getByLabelText("Password")).toHaveValue("");
   });
 });

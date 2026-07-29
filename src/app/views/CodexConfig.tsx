@@ -6,6 +6,7 @@ import { NavBar } from "../components";
 import { Icon } from "../icons";
 import { useI18n } from "../i18n";
 import { ApiLoginForm } from "./apiConfig/ApiLoginForm";
+import { ApiKeyList } from "./apiConfig/ApiKeyList";
 
 export function CodexConfig({ onBack }: { onBack: () => void }) {
   const { t } = useI18n();
@@ -76,14 +77,25 @@ export function CodexConfig({ onBack }: { onBack: () => void }) {
             warning={session.warning}
             onLogin={login}
           />
+        ) : keys ? (
+          <ApiKeyList
+            session={session}
+            keys={keys}
+            initialErrorCode={loginError}
+            onKeysChange={setKeys}
+            onLogout={(signedOut) => {
+              setSession(signedOut);
+              setKeys(null);
+              setLoginError(null);
+            }}
+          />
         ) : (
-          <section className="api-config-connected" aria-live="polite">
-            <div className="banner ok" role="status">
-              <Icon name="link" />
-              <span>{t("config.connected")}</span>
-            </div>
-            <span className="api-config-connected-email">{session.email}</span>
-            {keys ? <span className="api-config-key-count">{keys.items.length}</span> : null}
+          <section className="api-config-restoring" role="status">
+            <span className="api-config-login-mark" aria-hidden="true">
+              <Icon name="loader" />
+            </span>
+            <h1>{t("config.refreshing")}</h1>
+            <p>{session.email}</p>
           </section>
         )}
       </div>
