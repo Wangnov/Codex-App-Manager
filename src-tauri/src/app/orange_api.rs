@@ -81,6 +81,8 @@ struct ApiEnvelope<T> {
 pub struct PublicSettings {
     #[serde(default)]
     pub turnstile_enabled: bool,
+    #[serde(default)]
+    pub site_name: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -358,7 +360,7 @@ mod tests {
                 then.status(200).json_body_obj(&serde_json::json!({
                     "code": 0,
                     "message": "success",
-                    "data": {"turnstile_enabled": true}
+                    "data": {"turnstile_enabled": true, "site_name": "Cylon API"}
                 }));
             })
             .await;
@@ -376,7 +378,9 @@ mod tests {
             .await;
         let client = OrangeApiClient::for_test(server.base_url());
 
-        assert!(client.public_settings().await.unwrap().turnstile_enabled);
+        let public = client.public_settings().await.unwrap();
+        assert!(public.turnstile_enabled);
+        assert_eq!(public.site_name, "Cylon API");
         assert_eq!(
             client.login("a@b.test", "pw").await.unwrap(),
             LoginOutcome::RequiresTwoFactor

@@ -248,6 +248,9 @@ describe("ApiKeyList", () => {
     );
     expect(screen.getByText("Showing the last available list. Refresh failed.")).toBeInTheDocument();
     expect(screen.getByText("Connection interrupted")).toBeInTheDocument();
+    const staleRow = screen.getByTestId("api-key-1");
+    expect(within(staleRow).getByRole("button", { name: "Import to CCS" })).toBeDisabled();
+    expect(within(staleRow).getByRole("button", { name: "Write to computer" })).toBeDisabled();
 
     rerender(
       <ThemeProvider>

@@ -104,7 +104,7 @@ export function ApiKeyList({
   };
 
   const importCcs = async (keyId: number) => {
-    if (importingId != null) return;
+    if (keys.stale || importingId != null) return;
     setImportingId(keyId);
     setActionError(null);
     setCcsNotice(null);
@@ -119,7 +119,7 @@ export function ApiKeyList({
   };
 
   const writeLocal = async (key: ApiConfigKey) => {
-    if (writingId != null) return;
+    if (keys.stale || writingId != null) return;
     setConfirmKey(null);
     setWritingId(key.id);
     setActionError(null);
@@ -302,7 +302,7 @@ export function ApiKeyList({
                   <button
                     className="btn ghost"
                     type="button"
-                    disabled={!key.actionable || importing}
+                    disabled={keys.stale || !key.actionable || importing}
                     onClick={() => void importCcs(key.id)}
                   >
                     <Icon name={importing ? "loader" : "link"} />
@@ -311,7 +311,7 @@ export function ApiKeyList({
                   <button
                     className="btn"
                     type="button"
-                    disabled={!key.actionable || writing}
+                    disabled={keys.stale || !key.actionable || writing}
                     onClick={() => setConfirmKey(key)}
                   >
                     <Icon name={writing ? "loader" : "download"} />
@@ -360,7 +360,13 @@ export function ApiKeyList({
           <button className="btn ghost" type="button" data-sheet-dismiss onClick={() => setConfirmKey(null)}>
             {t("config.confirm.cancel")}
           </button>
-          <button className="btn primary" type="button" data-sheet-primary onClick={() => confirmKey && void writeLocal(confirmKey)}>
+          <button
+            className="btn primary"
+            type="button"
+            data-sheet-primary
+            disabled={keys.stale}
+            onClick={() => confirmKey && void writeLocal(confirmKey)}
+          >
             {t("config.confirm.action")}
           </button>
         </div>

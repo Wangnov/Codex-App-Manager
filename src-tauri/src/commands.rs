@@ -1175,8 +1175,10 @@ pub async fn api_config_import_ccs(
         .full_key(key_id)
         .await
         .map_err(orange_command_error)?;
+    let provider_name = state.orange.provider_name().await;
     tauri::async_runtime::spawn_blocking(move || {
-        crate::app::codex_provider::import_into_ccswitch(&api_key).map_err(provider_command_error)
+        crate::app::codex_provider::import_into_ccswitch(&provider_name, &api_key)
+            .map_err(provider_command_error)
     })
     .await
     .map_err(|error| AppError::Internal(format!("CC Switch task failed: {error}")))?
@@ -1213,8 +1215,35 @@ pub async fn api_config_write_local(
     Ok(report)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApiConfigRestartPlan {
+    Themed,
+    Plain,
+}
+
+fn api_config_restart_plan(has_active_theme: bool, operation_active: bool) -> ApiConfigRestartPlan {
+    if has_active_theme && !operation_active {
+        ApiConfigRestartPlan::Themed
+    } else {
+        ApiConfigRestartPlan::Plain
+    }
+}
+
 #[tauri::command]
-pub async fn api_config_restart_codex() -> Result<(), CommandError> {
+pub async fn api_config_restart_codex(state: State<'_, ManagerState>) -> Result<(), CommandError> {
+    let settings = PersistedAppSettings::load();
+    if api_config_restart_plan(
+        settings.codex_theme.is_some(),
+        state.operations.snapshot().is_some(),
+    ) == ApiConfigRestartPlan::Themed
+    {
+        let themed =
+            crate::app::codex_theme::launch_with_active_theme(&state.codex_theme, &settings)
+                .await?;
+        if themed {
+            return Ok(());
+        }
+    }
     tauri::async_runtime::spawn_blocking(crate::app::codex_theme::restart_codex_plain)
         .await
         .map_err(|error| AppError::Internal(format!("Codex restart task failed: {error}")))?
@@ -2458,9 +2487,9 @@ pub async fn win_uninstall(
 #[cfg(test)]
 mod tests {
     use super::{
-        install_root_from_picked_dir, manager_update_matches_confirmation,
-        normalize_windows_source_base, validate_install_root_path, INSTALL_LOCATION_PROBE_PREFIX,
-        validated_custom_proxy_for_settings,
+        api_config_restart_plan, install_root_from_picked_dir, manager_update_matches_confirmation,
+        normalize_windows_source_base, validate_install_root_path,
+        validated_custom_proxy_for_settings, ApiConfigRestartPlan, INSTALL_LOCATION_PROBE_PREFIX,
     };
     use std::fs;
 
@@ -2491,6 +2520,22 @@ mod tests {
             Some("https://example.test/custom")
         );
         assert!(normalize_windows_source_base("   ").is_none());
+    }
+
+    #[test]
+    fn api_config_restart_prefers_the_active_theme_only_when_idle() {
+        assert_eq!(
+            api_config_restart_plan(true, false),
+            ApiConfigRestartPlan::Themed
+        );
+        assert_eq!(
+            api_config_restart_plan(false, false),
+            ApiConfigRestartPlan::Plain
+        );
+        assert_eq!(
+            api_config_restart_plan(true, true),
+            ApiConfigRestartPlan::Plain
+        );
     }
 
     #[test]

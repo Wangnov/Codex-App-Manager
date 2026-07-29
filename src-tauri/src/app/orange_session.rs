@@ -73,6 +73,8 @@ pub struct OrangeKeyList {
 struct SessionMetadata {
     last_email: Option<String>,
     remember_login: bool,
+    #[serde(default)]
+    site_name: Option<String>,
 }
 
 trait RefreshTokenStore: Send + Sync {
@@ -138,6 +140,7 @@ struct SessionState {
     refresh_token: Option<String>,
     expires_at: Option<Instant>,
     email: Option<String>,
+    site_name: Option<String>,
     warning: Option<String>,
     restore_attempted: bool,
     keys: Vec<RawApiKey>,
@@ -161,6 +164,7 @@ impl OrangeSessionService {
         Self {
             state: Mutex::new(SessionState {
                 email: metadata.last_email.clone(),
+                site_name: metadata.site_name.clone(),
                 ..SessionState::default()
             }),
             metadata: Mutex::new(metadata),
@@ -178,6 +182,7 @@ impl OrangeSessionService {
         Self {
             state: Mutex::new(SessionState {
                 email: metadata.last_email.clone(),
+                site_name: metadata.site_name.clone(),
                 ..SessionState::default()
             }),
             metadata: Mutex::new(metadata),
@@ -235,7 +240,8 @@ impl OrangeSessionService {
         let mut state = self.state.lock().await;
         self.ensure_client(&mut state, proxy)?;
         let client = state.client.clone().ok_or(OrangeError::Network)?;
-        if client.public_settings().await?.turnstile_enabled {
+        let public_settings = client.public_settings().await?;
+        if public_settings.turnstile_enabled {
             return Err(OrangeError::TurnstileUnsupported);
         }
         let LoginOutcome::Authenticated(tokens) = client.login(&email, &password).await? else {
@@ -248,6 +254,7 @@ impl OrangeSessionService {
         state.refresh_token = refresh_token.clone();
         state.expires_at = expires_at;
         state.email = Some(tokens.user.email.clone());
+        state.site_name = non_empty(public_settings.site_name);
         state.warning = None;
         state.restore_attempted = true;
         state.keys.clear();
@@ -257,6 +264,7 @@ impl OrangeSessionService {
             let mut metadata = self.metadata.lock().await;
             metadata.last_email = Some(tokens.user.email);
             metadata.remember_login = remember && refresh_token.is_some();
+            metadata.site_name = state.site_name.clone();
             match persist_metadata(self.metadata_path.as_deref(), &metadata) {
                 Ok(()) => true,
                 Err(error) => {
@@ -335,7 +343,7 @@ impl OrangeSessionService {
                     .map(|key| project_key(key, local_key, now))
                     .collect();
                 state.keys = keys;
-                state.warning = None;
+                clear_transient_request_warning(&mut state.warning);
                 state.projected = OrangeKeyList {
                     items,
                     stale: false,
@@ -378,12 +386,24 @@ impl OrangeSessionService {
 
     pub async fn full_key(&self, id: u64) -> Result<String, OrangeError> {
         let state = self.state.lock().await;
+        if state.projected.stale {
+            return Err(OrangeError::KeyUnavailable);
+        }
         state
             .keys
             .iter()
             .find(|key| key.id == id && key.actionable_at(unix_now()))
             .map(|key| key.key.clone())
             .ok_or(OrangeError::KeyUnavailable)
+    }
+
+    pub async fn provider_name(&self) -> String {
+        self.state
+            .lock()
+            .await
+            .site_name
+            .clone()
+            .unwrap_or_else(|| "OrangeAPI".into())
     }
 
     pub async fn mark_enabled(&self, id: u64) {
@@ -427,7 +447,7 @@ impl OrangeSessionService {
         state.access_token = Some(tokens.access_token);
         state.refresh_token = Some(tokens.refresh_token.clone());
         state.expires_at = Some(expires_at);
-        state.warning = None;
+        clear_transient_request_warning(&mut state.warning);
         let remembered = self.metadata.lock().await.remember_login;
         if remembered {
             if let Err(error) = self.token_store.save(&tokens.refresh_token) {
@@ -504,6 +524,7 @@ impl OrangeSessionService {
         state.access_token = None;
         state.refresh_token = None;
         state.expires_at = None;
+        state.site_name = None;
         state.keys.clear();
         state.projected = OrangeKeyList::default();
     }
@@ -550,6 +571,27 @@ fn expiry_after(seconds: u64) -> Result<Instant, OrangeError> {
 
 fn refresh_error_ends_session(error: &OrangeError) -> bool {
     matches!(error, OrangeError::Unauthorized | OrangeError::SignedOut)
+}
+
+fn non_empty(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn clear_transient_request_warning(warning: &mut Option<String>) {
+    if warning.as_deref().is_some_and(|code| {
+        matches!(
+            code,
+            "orange_forbidden"
+                | "orange_rate_limited"
+                | "orange_timeout"
+                | "orange_network"
+                | "orange_invalid_response"
+                | "orange_api_rejected"
+        )
+    }) {
+        *warning = None;
+    }
 }
 
 impl Default for OrangeSessionService {
@@ -712,6 +754,22 @@ mod tests {
         }
     }
 
+    struct FailingSaveTokenStore;
+
+    impl RefreshTokenStore for FailingSaveTokenStore {
+        fn load(&self) -> Result<Option<String>, OrangeError> {
+            Ok(None)
+        }
+
+        fn save(&self, _token: &str) -> Result<(), OrangeError> {
+            Err(OrangeError::CredentialStore)
+        }
+
+        fn clear(&self) -> Result<(), OrangeError> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn masks_without_leaking_short_or_long_keys() {
         assert_eq!(mask_api_key("sk-1234567890"), "sk-1*****890");
@@ -810,6 +868,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn provider_name_falls_back_when_public_site_name_is_empty() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("test-data")
+            .join(format!("orange-provider-name-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let service = OrangeSessionService::for_test(
+            root.join("session.json"),
+            Arc::new(MemoryTokenStore::default()),
+            SessionMetadata::default(),
+        );
+
+        assert_eq!(service.provider_name().await, "OrangeAPI");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn restored_session_metadata_keeps_the_public_provider_name() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("test-data")
+            .join(format!("orange-restored-name-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let service = OrangeSessionService::for_test(
+            root.join("session.json"),
+            Arc::new(MemoryTokenStore::default()),
+            SessionMetadata {
+                last_email: Some("a@b.test".into()),
+                remember_login: true,
+                site_name: Some("Cylon API".into()),
+            },
+        );
+
+        assert_eq!(service.provider_name().await, "Cylon API");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn refresh_rejection_clears_the_local_session() {
         let server = MockServer::start_async().await;
         server
@@ -837,6 +933,7 @@ mod tests {
             SessionMetadata {
                 last_email: Some("a@b.test".into()),
                 remember_login: true,
+                site_name: None,
             },
         );
         {
@@ -883,6 +980,7 @@ mod tests {
             SessionMetadata {
                 last_email: Some("a@b.test".into()),
                 remember_login: true,
+                site_name: None,
             },
         );
         {
@@ -894,6 +992,7 @@ mod tests {
             state.refresh_token = Some("refresh".into());
             state.expires_at = Some(Instant::now());
             state.email = Some("a@b.test".into());
+            state.keys = vec![key("active", "active", 0.0, 0.0)];
             state.projected = OrangeKeyList {
                 items: vec![cached],
                 stale: false,
@@ -905,6 +1004,10 @@ mod tests {
 
         assert!(keys.stale);
         assert_eq!(keys.items.len(), 1);
+        assert_eq!(
+            service.full_key(1).await.unwrap_err(),
+            OrangeError::KeyUnavailable
+        );
         let state = service.state.lock().await;
         assert_eq!(state.access_token.as_deref(), Some("expired-access"));
         assert_eq!(state.refresh_token.as_deref(), Some("refresh"));
@@ -912,6 +1015,71 @@ mod tests {
         drop(state);
         assert_eq!(token_store.load().unwrap().as_deref(), Some("refresh"));
         assert!(service.metadata.lock().await.remember_login);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn successful_key_fetch_preserves_a_credential_store_warning() {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/api/v1/keys")
+                    .header("authorization", "Bearer new-access");
+                then.status(200).json_body_obj(&serde_json::json!({
+                    "code": 0,
+                    "data": {"items": [], "total": 0, "page": 1, "page_size": 50, "pages": 0}
+                }));
+            })
+            .await;
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("test-data")
+            .join(format!(
+                "orange-credential-warning-{}",
+                uuid::Uuid::new_v4()
+            ));
+        fs::create_dir_all(&root).unwrap();
+        let service = OrangeSessionService::for_test(
+            root.join("session.json"),
+            Arc::new(FailingSaveTokenStore),
+            SessionMetadata {
+                last_email: Some("a@b.test".into()),
+                remember_login: true,
+                site_name: None,
+            },
+        );
+        {
+            let mut state = service.state.lock().await;
+            state.proxy = Some(OrangeProxy::Direct);
+            state.client = Some(OrangeApiClient::for_test(server.base_url()));
+            service
+                .apply_refreshed_tokens(
+                    &mut state,
+                    TokenPair {
+                        access_token: "new-access".into(),
+                        refresh_token: "new-refresh".into(),
+                        expires_in: 3600,
+                        token_type: Some("Bearer".into()),
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                state.warning.as_deref(),
+                Some(OrangeError::CredentialStore.code())
+            );
+        }
+
+        service.refresh_keys(None).await.unwrap();
+        let view = service.session_view(OrangeProxy::Direct).await.unwrap();
+
+        assert_eq!(
+            view.warning.as_deref(),
+            Some(OrangeError::CredentialStore.code())
+        );
+        assert!(!view.remembered);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -937,6 +1105,7 @@ mod tests {
             SessionMetadata {
                 last_email: Some("a@b.test".into()),
                 remember_login: true,
+                site_name: None,
             },
         );
         {
@@ -1063,6 +1232,7 @@ mod tests {
             SessionMetadata {
                 last_email: Some("a@b.test".into()),
                 remember_login: true,
+                site_name: None,
             },
         );
         {
@@ -1096,7 +1266,7 @@ mod tests {
                 when.method(GET).path("/api/v1/settings/public");
                 then.status(200).json_body_obj(&serde_json::json!({
                     "code": 0,
-                    "data": {"turnstile_enabled": false}
+                    "data": {"turnstile_enabled": false, "site_name": "Cylon API"}
                 }));
             })
             .await;
@@ -1142,6 +1312,7 @@ mod tests {
         assert!(view.authenticated);
         assert!(!view.remembered);
         assert_eq!(view.warning.as_deref(), Some("orange_persistence"));
+        assert_eq!(service.provider_name().await, "Cylon API");
         assert!(token_store.load().unwrap().is_none());
         let _ = fs::remove_dir_all(root);
     }
@@ -1165,6 +1336,7 @@ mod tests {
             SessionMetadata {
                 last_email: Some("a@b.test".into()),
                 remember_login: true,
+                site_name: None,
             },
         );
         {
@@ -1196,6 +1368,7 @@ mod tests {
         let metadata = SessionMetadata {
             last_email: Some("a@b.test".into()),
             remember_login: true,
+            site_name: Some("Cylon API".into()),
         };
         let service = OrangeSessionService::for_test(
             path.clone(),
@@ -1205,6 +1378,7 @@ mod tests {
         service.set_remembered(true).await.unwrap();
         let serialized = fs::read_to_string(path).unwrap();
         assert!(serialized.contains("a@b.test"));
+        assert!(serialized.contains("Cylon API"));
         assert!(!serialized.contains("password"));
         assert!(!serialized.contains("token"));
         let _ = fs::remove_dir_all(root);
