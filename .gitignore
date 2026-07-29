@@ -4,6 +4,7 @@ target/
 src-tauri/target/
 src-tauri/gen/schemas/
 .devserver/
+.worktrees/
 
 .DS_Store
 *.log
