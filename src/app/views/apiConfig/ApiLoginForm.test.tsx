@@ -112,10 +112,33 @@ describe("ApiLoginForm", () => {
   });
 
   it("localizes secure-store and desktop-only warnings", () => {
-    renderLogin({ errorCode: "desktop_required", warning: "orange_credential_store" });
+    const { rerender } = render(
+      <I18nProvider>
+        <ApiLoginForm
+          email={null}
+          errorCode="desktop_required"
+          warning="orange_credential_store"
+          onLogin={vi.fn()}
+        />
+      </I18nProvider>,
+    );
 
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Open the desktop app to use API configuration.",
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Signed in, but the refresh token could not be saved securely.",
+    );
+
+    rerender(
+      <I18nProvider>
+        <ApiLoginForm
+          email={null}
+          errorCode={null}
+          warning="orange_refresh_unavailable"
+          onLogin={vi.fn()}
+        />
+      </I18nProvider>,
     );
     expect(screen.getByRole("status")).toHaveTextContent(
       "Signed in, but the refresh token could not be saved securely.",

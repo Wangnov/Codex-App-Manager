@@ -20,6 +20,7 @@ const ERROR_KEYS: Record<string, TKey> = {
   provider_unsafe_destination: "config.error.providerUnsafeDestination",
   provider_busy: "config.error.providerBusy",
   provider_empty_key: "config.error.providerEmptyKey",
+  provider_backup_failed: "config.error.providerIo",
   provider_io: "config.error.providerIo",
   ccswitch_unavailable: "config.error.ccsUnavailable",
 };
@@ -31,6 +32,8 @@ export function apiConfigErrorText(code: string | null, t: TFn): string | null {
 
 export function apiConfigWarningText(code: string | null, t: TFn): string | null {
   if (!code) return null;
-  if (code === "orange_credential_store") return t("config.rememberWarning");
+  if (code === "orange_credential_store" || code === "orange_refresh_unavailable") {
+    return t("config.rememberWarning");
+  }
   return apiConfigErrorText(code, t);
 }

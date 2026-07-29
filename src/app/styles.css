@@ -3687,6 +3687,12 @@ button.row.danger:hover {
 .api-config-connection-state .dot {
   background: var(--success);
 }
+.api-config-connection-state.interrupted {
+  color: var(--amber-deep);
+}
+.api-config-connection-state.interrupted .dot {
+  background: var(--amber);
+}
 .api-config-connection-copy strong {
   min-width: 0;
   overflow: hidden;

@@ -10,7 +10,7 @@ import type {
 import { Icon } from "../../icons";
 import { useI18n, type TKey } from "../../i18n";
 import { Sheet } from "../../Sheet";
-import { apiConfigErrorText } from "./errors";
+import { apiConfigErrorText, apiConfigWarningText } from "./errors";
 
 const PAGE_SIZE = 20;
 
@@ -25,17 +25,26 @@ function statusKey(status: ApiConfigKey["status"]): TKey {
   return STATUS_KEYS[status];
 }
 
+function formatExpiry(expiresAt: string | null, lang: string, noExpiry: string): string {
+  if (!expiresAt) return noExpiry;
+  const date = new Date(expiresAt);
+  if (!Number.isFinite(date.getTime())) return expiresAt;
+  return new Intl.DateTimeFormat(lang, { dateStyle: "medium" }).format(date);
+}
+
 export function ApiKeyList({
   session,
   keys,
   initialErrorCode,
   onKeysChange,
+  onSessionChange,
   onLogout,
 }: {
   session: ApiConfigSession;
   keys: ApiConfigKeyListModel;
   initialErrorCode: string | null;
   onKeysChange: (keys: ApiConfigKeyListModel) => void;
+  onSessionChange: (session: ApiConfigSession) => void;
   onLogout: (session: ApiConfigSession) => void;
 }) {
   const { t, lang } = useI18n();
@@ -73,8 +82,22 @@ export function ApiKeyList({
     setActionError(null);
     try {
       onKeysChange(await managerApi.apiConfigKeys());
+      const current = await managerApi.apiConfigSession().catch(() => null);
+      if (current) onSessionChange(current);
     } catch (cause) {
-      setActionError(errorCode(cause) ?? "unknown");
+      const code = errorCode(cause) ?? "unknown";
+      if (code === "orange_signed_out") {
+        const signedOut = await managerApi.apiConfigSession().catch(() => ({
+          ...session,
+          authenticated: false,
+          remembered: false,
+          connection: "signed_out" as const,
+          warning: code,
+        }));
+        onLogout({ ...signedOut, warning: signedOut.warning ?? code });
+      } else {
+        setActionError(code);
+      }
     } finally {
       setRefreshing(false);
     }
@@ -150,6 +173,14 @@ export function ApiKeyList({
   };
 
   const errorText = apiConfigErrorText(actionError, t);
+  const persistentWarning = [
+    "orange_credential_store",
+    "orange_refresh_unavailable",
+    "orange_persistence",
+  ].includes(session.warning ?? "")
+    ? apiConfigWarningText(session.warning, t)
+    : null;
+  const interrupted = keys.stale || session.connection === "interrupted";
   const reportMessage =
     writeReport?.outcome === "committed"
       ? t("config.writeSuccess")
@@ -166,9 +197,9 @@ export function ApiKeyList({
     <section className="api-config-connected api-config-with-footer">
       <header className="api-config-connection">
         <div className="api-config-connection-copy">
-          <span className="api-config-connection-state">
-            <span className="dot live" aria-hidden="true" />
-            {t(session.connection === "interrupted" ? "config.interrupted" : "config.connected")}
+          <span className={`api-config-connection-state${interrupted ? " interrupted" : ""}`}>
+            <span className={`dot${interrupted ? "" : " live"}`} aria-hidden="true" />
+            {t(interrupted ? "config.interrupted" : "config.connected")}
           </span>
           <strong>{session.email}</strong>
           <span>{t("config.service")}</span>
@@ -189,6 +220,12 @@ export function ApiKeyList({
         <div className="banner err" role="alert">
           <Icon name="alert" />
           <span>{errorText}</span>
+        </div>
+      ) : null}
+      {persistentWarning ? (
+        <div className="banner warn" role="status">
+          <Icon name="alert" />
+          <span>{persistentWarning}</span>
         </div>
       ) : null}
       {keys.stale ? (
@@ -240,9 +277,7 @@ export function ApiKeyList({
           {visibleKeys.map((key) => {
             const importing = importingId === key.id;
             const writing = writingId === key.id;
-            const expiry = key.expiresAt
-              ? new Intl.DateTimeFormat(lang, { dateStyle: "medium" }).format(new Date(key.expiresAt))
-              : t("config.noExpiry");
+            const expiry = formatExpiry(key.expiresAt, lang, t("config.noExpiry"));
             const quota = key.quota <= 0
               ? t("config.unlimited")
               : t("config.quotaValue", { used: key.quotaUsed, quota: key.quota });

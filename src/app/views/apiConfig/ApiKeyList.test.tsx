@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -19,6 +19,7 @@ vi.mock("../../../services/managerApi", async (importOriginal) => {
     ...actual,
     managerApi: {
       ...actual.managerApi,
+      apiConfigSession: vi.fn(),
       apiConfigKeys: vi.fn(),
       apiConfigLogout: vi.fn(),
       apiConfigImportCcs: vi.fn(),
@@ -78,6 +79,7 @@ function renderKeyList(
     keys,
     initialErrorCode: null,
     onKeysChange: vi.fn(),
+    onSessionChange: vi.fn(),
     onLogout: vi.fn(),
     ...overrides,
   };
@@ -95,11 +97,18 @@ describe("ApiKeyList", () => {
   beforeEach(() => {
     localStorage.setItem("cam.lang", "en");
     api.apiConfigKeys.mockReset();
+    api.apiConfigSession.mockReset();
     api.apiConfigLogout.mockReset();
     api.apiConfigImportCcs.mockReset();
     api.apiConfigWriteLocal.mockReset();
     api.apiConfigRestartCodex.mockReset();
     api.apiConfigKeys.mockResolvedValue(list([activeKey({ enabled: true })]));
+    api.apiConfigSession.mockResolvedValue({
+      ...SESSION,
+      authenticated: false,
+      connection: "signed_out",
+      remembered: false,
+    });
     api.apiConfigLogout.mockResolvedValue({ ...SESSION, authenticated: false, connection: "signed_out" });
     api.apiConfigImportCcs.mockResolvedValue(undefined);
     api.apiConfigWriteLocal.mockResolvedValue(WRITE_REPORT);
@@ -121,6 +130,12 @@ describe("ApiKeyList", () => {
     expect(within(inactive).getByRole("button", { name: "Write to computer" })).toBeDisabled();
   });
 
+  it("renders an invalid expiry value without crashing the key list", () => {
+    renderKeyList(list([activeKey({ expiresAt: "not-a-date", actionable: false })]));
+
+    expect(screen.getByText("not-a-date")).toBeInTheDocument();
+  });
+
   it("keeps key actions stable and the logout footer outside list rows", () => {
     const { container } = render(
       <ThemeProvider>
@@ -130,6 +145,7 @@ describe("ApiKeyList", () => {
             keys={list([activeKey({ id: 1 }), activeKey({ id: 2 })])}
             initialErrorCode={null}
             onKeysChange={vi.fn()}
+            onSessionChange={vi.fn()}
             onLogout={vi.fn()}
           />
         </I18nProvider>
@@ -171,6 +187,50 @@ describe("ApiKeyList", () => {
     expect(screen.queryByText("secret backend text")).not.toBeInTheDocument();
   });
 
+  it("keeps secure-storage warnings visible after login transitions to the list", () => {
+    renderKeyList(list([activeKey()]), {
+      session: {
+        ...SESSION,
+        connection: "interrupted",
+        warning: "orange_credential_store",
+      },
+    });
+
+    expect(screen.getByText("Signed in, but the refresh token could not be saved securely."))
+      .toBeInTheDocument();
+  });
+
+  it("syncs the connected session after a successful refresh", async () => {
+    const user = userEvent.setup();
+    const onSessionChange = vi.fn();
+    api.apiConfigSession.mockResolvedValue(SESSION);
+    renderKeyList(list([activeKey()], true), {
+      session: { ...SESSION, connection: "interrupted", warning: "orange_network" },
+      onSessionChange,
+    });
+
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+
+    await waitFor(() => expect(onSessionChange).toHaveBeenCalledWith(SESSION));
+  });
+
+  it("returns to sign-in when a refresh reports an expired session", async () => {
+    const user = userEvent.setup();
+    const onLogout = vi.fn();
+    api.apiConfigKeys.mockRejectedValue({
+      code: "orange_signed_out",
+      message: "backend text that must not be shown",
+    });
+    renderKeyList(list([activeKey()]), { onLogout });
+
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+
+    await waitFor(() => expect(onLogout).toHaveBeenCalledWith(expect.objectContaining({
+      authenticated: false,
+      email: "saved@example.com",
+    })));
+  });
+
   it("shows stale and empty states explicitly", () => {
     const { rerender } = render(
       <ThemeProvider>
@@ -180,12 +240,14 @@ describe("ApiKeyList", () => {
             keys={list([activeKey()], true)}
             initialErrorCode={null}
             onKeysChange={vi.fn()}
+            onSessionChange={vi.fn()}
             onLogout={vi.fn()}
           />
         </I18nProvider>
       </ThemeProvider>,
     );
     expect(screen.getByText("Showing the last available list. Refresh failed.")).toBeInTheDocument();
+    expect(screen.getByText("Connection interrupted")).toBeInTheDocument();
 
     rerender(
       <ThemeProvider>
@@ -195,6 +257,7 @@ describe("ApiKeyList", () => {
             keys={list([])}
             initialErrorCode={null}
             onKeysChange={vi.fn()}
+            onSessionChange={vi.fn()}
             onLogout={vi.fn()}
           />
         </I18nProvider>
@@ -239,6 +302,7 @@ describe("ApiKeyList", () => {
   });
 
   it.each([
+    ["failed_before_mutation", "The local Codex files could not be updated."],
     ["restored", "The write failed. The original files were restored and verified."],
     ["recovery_required", "Automatic recovery failed. Restore the files from this backup."],
   ] as const)("reports the %s write outcome with its backup", async (outcome, message) => {
@@ -248,7 +312,7 @@ describe("ApiKeyList", () => {
       outcome,
       writeVerified: false,
       rollbackVerified: outcome === "restored",
-      errorCode: "provider_io",
+      errorCode: outcome === "failed_before_mutation" ? "provider_backup_failed" : "provider_io",
     });
     renderKeyList(list([activeKey()]));
 

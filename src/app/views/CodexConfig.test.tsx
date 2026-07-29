@@ -160,4 +160,44 @@ describe("CodexConfig signed-out orchestration", () => {
     expect(await screen.findByLabelText("Email")).toHaveValue("saved@example.com");
     expect(screen.getByLabelText("Password")).toHaveValue("");
   });
+
+  it("returns to sign-in when the restored session expires while loading keys", async () => {
+    api.apiConfigSession
+      .mockResolvedValueOnce(CONNECTED)
+      .mockResolvedValueOnce(SIGNED_OUT);
+    api.apiConfigKeys.mockRejectedValue({
+      code: "orange_signed_out",
+      message: "backend text that must not be shown",
+    });
+
+    renderConfig();
+
+    expect(await screen.findByLabelText("Email")).toHaveValue("saved@example.com");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "The session has expired. Sign in again.",
+    );
+    expect(screen.queryByText("backend text that must not be shown")).not.toBeInTheDocument();
+  });
+
+  it("syncs the interrupted session when the initial key request fails", async () => {
+    api.apiConfigSession
+      .mockResolvedValueOnce(CONNECTED)
+      .mockResolvedValueOnce({
+        ...CONNECTED,
+        connection: "interrupted",
+        warning: "orange_network",
+      });
+    api.apiConfigKeys.mockRejectedValue({
+      code: "orange_network",
+      message: "backend text that must not be shown",
+    });
+
+    renderConfig();
+
+    expect(await screen.findByText("Connection interrupted")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "OrangeAPI could not be reached. Check the network or proxy.",
+    );
+    expect(api.apiConfigSession).toHaveBeenCalledTimes(2);
+  });
 });

@@ -8,6 +8,12 @@ import { useI18n } from "../i18n";
 import { ApiLoginForm } from "./apiConfig/ApiLoginForm";
 import { ApiKeyList } from "./apiConfig/ApiKeyList";
 
+const EMPTY_KEYS: ApiConfigKeyList = {
+  items: [],
+  stale: false,
+  fetchedAtUnix: 0,
+};
+
 export function CodexConfig({ onBack }: { onBack: () => void }) {
   const { t } = useI18n();
   const [session, setSession] = useState<ApiConfigSession | null>(null);
@@ -26,7 +32,38 @@ export function CodexConfig({ onBack }: { onBack: () => void }) {
           const list = await managerApi.apiConfigKeys();
           if (!cancelled) setKeys(list);
         } catch (cause) {
-          if (!cancelled) setLoginError(errorCode(cause) ?? "unknown");
+          if (cancelled) return;
+          const code = errorCode(cause) ?? "unknown";
+          setLoginError(code);
+          if (code === "orange_signed_out") {
+            try {
+              const current = await managerApi.apiConfigSession();
+              if (!cancelled) {
+                setSession(current);
+                if (current.authenticated) setKeys(EMPTY_KEYS);
+              }
+            } catch {
+              if (!cancelled) {
+                setSession({
+                  ...restored,
+                  authenticated: false,
+                  remembered: false,
+                  connection: "signed_out",
+                  warning: code,
+                });
+              }
+            }
+          } else {
+            const current = await managerApi.apiConfigSession().catch(() => ({
+              ...restored,
+              connection: "interrupted" as const,
+              warning: code,
+            }));
+            if (!cancelled) {
+              setSession(current);
+              setKeys(EMPTY_KEYS);
+            }
+          }
         }
       })
       .catch((cause) => {
@@ -50,8 +87,32 @@ export function CodexConfig({ onBack }: { onBack: () => void }) {
     try {
       const connected = await managerApi.apiConfigLogin(email, password, remember);
       setSession(connected);
-      const list = await managerApi.apiConfigKeys();
-      setKeys(list);
+      try {
+        setKeys(await managerApi.apiConfigKeys());
+      } catch (cause) {
+        const code = errorCode(cause) ?? "unknown";
+        if (code === "orange_signed_out") {
+          const current = await managerApi.apiConfigSession().catch(() => ({
+            ...connected,
+            authenticated: false,
+            remembered: false,
+            connection: "signed_out" as const,
+            warning: code,
+          }));
+          setSession(current);
+          if (current.authenticated) setKeys(EMPTY_KEYS);
+        } else {
+          setSession(
+            await managerApi.apiConfigSession().catch(() => ({
+              ...connected,
+              connection: "interrupted" as const,
+              warning: code,
+            })),
+          );
+          setKeys(EMPTY_KEYS);
+        }
+        throw cause;
+      }
     } catch (cause) {
       setLoginError(errorCode(cause) ?? "unknown");
       throw cause;
@@ -83,10 +144,11 @@ export function CodexConfig({ onBack }: { onBack: () => void }) {
             keys={keys}
             initialErrorCode={loginError}
             onKeysChange={setKeys}
+            onSessionChange={setSession}
             onLogout={(signedOut) => {
               setSession(signedOut);
               setKeys(null);
-              setLoginError(null);
+              setLoginError(signedOut.warning);
             }}
           />
         ) : (
