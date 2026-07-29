@@ -16,6 +16,77 @@ beforeEach(() => {
   localStorage.clear();
 });
 
+describe("API configuration IPC", () => {
+  const session = {
+    authenticated: true,
+    email: "user@example.com",
+    remembered: true,
+    connection: "connected" as const,
+    warning: null,
+  };
+  const keys = {
+    items: [
+      {
+        id: 41,
+        name: "Primary",
+        groupName: "OpenAI",
+        maskedKey: "sk-a*****xyz",
+        status: "active" as const,
+        quota: 0,
+        quotaUsed: 1,
+        expiresAt: null,
+        actionable: true,
+        enabled: false,
+      },
+    ],
+    stale: false,
+    fetchedAtUnix: 1,
+  };
+
+  it("invokes key actions by ID without returning full secrets to the renderer", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    invokeMock
+      .mockResolvedValueOnce(session)
+      .mockResolvedValueOnce(keys)
+      .mockResolvedValueOnce(undefined);
+
+    await managerApi.apiConfigSession();
+    await managerApi.apiConfigKeys();
+    await managerApi.apiConfigImportCcs(41);
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "api_config_session");
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "api_config_keys");
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "api_config_import_ccs", { keyId: 41 });
+    expect(JSON.stringify(invokeMock.mock.calls)).not.toContain("sk-secret");
+  });
+
+  it("rejects malformed key statuses at the IPC boundary", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    invokeMock.mockResolvedValue({
+      ...keys,
+      items: [{ ...keys.items[0], status: "mystery" }],
+    });
+
+    await expect(managerApi.apiConfigKeys()).rejects.toMatchObject({
+      code: "contract_mismatch",
+    });
+  });
+
+  it("keeps browser preview signed out and blocks mutating actions", async () => {
+    await expect(managerApi.apiConfigSession()).resolves.toEqual({
+      authenticated: false,
+      email: null,
+      remembered: false,
+      connection: "signed_out",
+      warning: "desktop_required",
+    });
+    await expect(managerApi.apiConfigLogin("a@b.test", "pw", true)).rejects.toMatchObject({
+      code: "desktop_required",
+    });
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+});
+
 describe("isNetworkError", () => {
   it("classifies transport and TLS failures as connectivity errors", () => {
     expect(

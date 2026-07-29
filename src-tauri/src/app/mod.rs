@@ -1,4 +1,5 @@
 pub mod atomic_file;
+pub mod codex_provider;
 pub mod codex_self_update;
 pub mod codex_theme;
 pub mod config_health;
@@ -10,6 +11,8 @@ pub mod mac_update;
 pub mod op_phase;
 pub mod operation_outcome;
 pub mod oplock;
+pub mod orange_api;
+pub mod orange_session;
 pub mod paths;
 pub mod provenance;
 pub mod settings_store;

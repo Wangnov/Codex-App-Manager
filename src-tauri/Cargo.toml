@@ -28,7 +28,7 @@ codex-win-engine = { path = "../crates/codex-win-engine" }
 directories = "6.0.0"
 fs4 = "1.1"
 log = "0.4"
-reqwest = { version = "0.13.4", default-features = false, features = ["socks", "system-proxy"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "query", "rustls", "socks", "system-proxy"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.11"
@@ -40,7 +40,8 @@ tauri-plugin-process = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 thiserror = "2.0"
-tokio = { version = "1", features = ["sync", "time"] }
+time = { version = "0.3", features = ["parsing"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 url = "2.5"
 uuid = { version = "1", features = ["v4"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
@@ -51,5 +52,12 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 # Keep these pinned to Tauri/Wry's WebView2 ABI: the platform handle returned
 # by `WebviewWindow::with_webview` exposes these exact COM interfaces.
+keyring = { version = "4.1.5", default-features = false, features = ["v1"] }
 webview2-com = "=0.38.2"
 windows-core = "0.61.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "4.1.5", default-features = false, features = ["v1"] }
+
+[dev-dependencies]
+httpmock = "0.8.3"

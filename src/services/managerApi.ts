@@ -4,6 +4,9 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import type {
   AncillaryRetryReport,
   AncillaryRetryRequest,
+  ApiConfigKeyList,
+  ApiConfigSession,
+  ApiConfigWriteReport,
   AppSettings,
   CatalogSkin,
   CodexThemeStatusReport,
@@ -603,7 +606,143 @@ function guardWinReport(report: WinUpdateReport): WinUpdateReport {
   return report;
 }
 
+const API_CONFIG_CONNECTIONS = new Set(["signed_out", "connected", "interrupted"]);
+const API_CONFIG_KEY_STATUSES = new Set([
+  "active",
+  "inactive",
+  "quota_exhausted",
+  "expired",
+]);
+const API_CONFIG_WRITE_OUTCOMES = new Set([
+  "committed",
+  "failed_before_mutation",
+  "restored",
+  "recovery_required",
+]);
+
+function nullableString(value: unknown): boolean {
+  return value === null || typeof value === "string";
+}
+
+function guardApiConfigSession(session: ApiConfigSession): ApiConfigSession {
+  const value = session as unknown;
+  if (
+    !isRecord(value) ||
+    typeof value.authenticated !== "boolean" ||
+    !nullableString(value.email) ||
+    typeof value.remembered !== "boolean" ||
+    typeof value.connection !== "string" ||
+    !API_CONFIG_CONNECTIONS.has(value.connection) ||
+    !nullableString(value.warning)
+  ) {
+    throw contractError("API configuration session");
+  }
+  return session;
+}
+
+function guardApiConfigKeys(keys: ApiConfigKeyList): ApiConfigKeyList {
+  const value = keys as unknown;
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.items) ||
+    typeof value.stale !== "boolean" ||
+    typeof value.fetchedAtUnix !== "number" ||
+    !Number.isFinite(value.fetchedAtUnix)
+  ) {
+    throw contractError("API key list");
+  }
+  for (const item of value.items) {
+    if (
+      !isRecord(item) ||
+      typeof item.id !== "number" ||
+      !Number.isSafeInteger(item.id) ||
+      item.id < 0 ||
+      typeof item.name !== "string" ||
+      typeof item.groupName !== "string" ||
+      typeof item.maskedKey !== "string" ||
+      typeof item.status !== "string" ||
+      !API_CONFIG_KEY_STATUSES.has(item.status) ||
+      typeof item.quota !== "number" ||
+      !Number.isFinite(item.quota) ||
+      typeof item.quotaUsed !== "number" ||
+      !Number.isFinite(item.quotaUsed) ||
+      !nullableString(item.expiresAt) ||
+      typeof item.actionable !== "boolean" ||
+      typeof item.enabled !== "boolean"
+    ) {
+      throw contractError("API key list");
+    }
+  }
+  return keys;
+}
+
+function guardApiConfigWrite(report: ApiConfigWriteReport): ApiConfigWriteReport {
+  const value = report as unknown;
+  if (
+    !isRecord(value) ||
+    typeof value.outcome !== "string" ||
+    !API_CONFIG_WRITE_OUTCOMES.has(value.outcome) ||
+    !nullableString(value.backupDir) ||
+    typeof value.configPath !== "string" ||
+    typeof value.authPath !== "string" ||
+    typeof value.codexWasRunning !== "boolean" ||
+    typeof value.writeVerified !== "boolean" ||
+    typeof value.rollbackVerified !== "boolean" ||
+    !nullableString(value.errorCode)
+  ) {
+    throw contractError("API configuration write report");
+  }
+  return report;
+}
+
+function desktopRequired(): Promise<never> {
+  return Promise.reject({
+    code: "desktop_required",
+    message: "API configuration requires the desktop app.",
+  } satisfies CommandError);
+}
+
 export const managerApi = {
+  apiConfigSession(): Promise<ApiConfigSession> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve({
+        authenticated: false,
+        email: null,
+        remembered: false,
+        connection: "signed_out",
+        warning: "desktop_required",
+      });
+    }
+    return invoke<ApiConfigSession>("api_config_session").then(guardApiConfigSession);
+  },
+  apiConfigLogin(email: string, password: string, remember: boolean): Promise<ApiConfigSession> {
+    if (!hasTauriRuntime()) return desktopRequired();
+    return invoke<ApiConfigSession>("api_config_login", { email, password, remember }).then(
+      guardApiConfigSession,
+    );
+  },
+  apiConfigKeys(): Promise<ApiConfigKeyList> {
+    if (!hasTauriRuntime()) return desktopRequired();
+    return invoke<ApiConfigKeyList>("api_config_keys").then(guardApiConfigKeys);
+  },
+  apiConfigLogout(): Promise<ApiConfigSession> {
+    if (!hasTauriRuntime()) return desktopRequired();
+    return invoke<ApiConfigSession>("api_config_logout").then(guardApiConfigSession);
+  },
+  apiConfigImportCcs(keyId: number): Promise<void> {
+    if (!hasTauriRuntime()) return desktopRequired();
+    return invoke<void>("api_config_import_ccs", { keyId });
+  },
+  apiConfigWriteLocal(keyId: number): Promise<ApiConfigWriteReport> {
+    if (!hasTauriRuntime()) return desktopRequired();
+    return invoke<ApiConfigWriteReport>("api_config_write_local", { keyId }).then(
+      guardApiConfigWrite,
+    );
+  },
+  apiConfigRestartCodex(): Promise<void> {
+    if (!hasTauriRuntime()) return desktopRequired();
+    return invoke<void>("api_config_restart_codex");
+  },
   armDestructive(kind: OperationKind): Promise<OperationToken> {
     if (!hasTauriRuntime()) {
       return Promise.resolve(`browser-dev-token-${kind}`);

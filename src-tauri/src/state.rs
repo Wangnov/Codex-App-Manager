@@ -32,6 +32,8 @@ pub struct ManagerState {
     pub frontend: FrontendGate,
     /// Codex UI theme orchestration (daemon handle + status).
     pub codex_theme: crate::app::codex_theme::ThemeService,
+    /// OrangeAPI authentication and full-key cache. Secrets remain in Rust.
+    pub orange: crate::app::orange_session::OrangeSessionService,
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -92,6 +94,7 @@ impl ManagerState {
             config_health,
             frontend: FrontendGate::default(),
             codex_theme: crate::app::codex_theme::ThemeService::default(),
+            orange: crate::app::orange_session::OrangeSessionService::default(),
         }
     }
 

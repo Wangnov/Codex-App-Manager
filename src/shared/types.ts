@@ -252,6 +252,53 @@ export interface ConfigHealth {
   provenanceBackupAvailable: boolean;
 }
 
+export type ApiConfigConnection = "signed_out" | "connected" | "interrupted";
+export type ApiConfigKeyStatus = "active" | "inactive" | "quota_exhausted" | "expired";
+
+export interface ApiConfigSession {
+  authenticated: boolean;
+  email: string | null;
+  remembered: boolean;
+  connection: ApiConfigConnection;
+  warning: string | null;
+}
+
+export interface ApiConfigKey {
+  id: number;
+  name: string;
+  groupName: string;
+  maskedKey: string;
+  status: ApiConfigKeyStatus;
+  quota: number;
+  quotaUsed: number;
+  expiresAt: string | null;
+  actionable: boolean;
+  enabled: boolean;
+}
+
+export interface ApiConfigKeyList {
+  items: ApiConfigKey[];
+  stale: boolean;
+  fetchedAtUnix: number;
+}
+
+export type ApiConfigWriteOutcome =
+  | "committed"
+  | "failed_before_mutation"
+  | "restored"
+  | "recovery_required";
+
+export interface ApiConfigWriteReport {
+  outcome: ApiConfigWriteOutcome;
+  backupDir: string | null;
+  configPath: string;
+  authPath: string;
+  codexWasRunning: boolean;
+  writeVerified: boolean;
+  rollbackVerified: boolean;
+  errorCode: string | null;
+}
+
 export type ConfigWhich = "settings" | "provenance";
 
 export interface Diagnostics {

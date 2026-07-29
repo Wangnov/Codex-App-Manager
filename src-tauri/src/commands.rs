@@ -27,6 +27,8 @@ use crate::app::oplock::{
     OperationCompletion, OperationError, OperationGuard, OperationKind, OperationManager,
     OperationProgress, OperationSnapshot, OperationToken,
 };
+use crate::app::orange_api::{OrangeError, OrangeProxy};
+use crate::app::orange_session::{OrangeKeyList, OrangeSessionView};
 use crate::app::paths;
 use crate::app::provenance::ProvenanceStore;
 use crate::app::settings_store::AppSettings as PersistedAppSettings;
@@ -49,6 +51,8 @@ use crate::domain::settings::AppSettings as DomainAppSettings;
 use crate::domain::target::OperatingSystem;
 use crate::errors::{AppError, CommandError};
 use crate::state::ManagerState;
+
+static PROVIDER_COMMAND_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn normalize_windows_source_base(raw: &str) -> Option<String> {
     let mut base = raw.trim().trim_end_matches('/').to_string();
@@ -125,6 +129,33 @@ fn validated_custom_proxy_for_settings(raw: &str, context: &str) -> Result<Strin
         log::warn!("url_guard rejected {context} proxy reason={e}");
         AppError::Engine(e.to_string())
     })
+}
+
+fn orange_proxy_for_settings() -> Result<OrangeProxy, CommandError> {
+    let saved = PersistedAppSettings::load();
+    match saved.proxy_mode {
+        ProxyMode::System => Ok(OrangeProxy::System),
+        ProxyMode::Direct => Ok(OrangeProxy::Direct),
+        ProxyMode::Custom => {
+            validated_custom_proxy_for_settings(&saved.custom_proxy_url, "OrangeAPI")
+                .map(OrangeProxy::Custom)
+                .map_err(Into::into)
+        }
+    }
+}
+
+fn orange_command_error(error: OrangeError) -> CommandError {
+    CommandError {
+        code: error.code().to_string(),
+        message: error.to_string(),
+    }
+}
+
+fn provider_command_error(error: crate::app::codex_provider::ProviderWriteError) -> CommandError {
+    CommandError {
+        code: error.code().to_string(),
+        message: error.to_string(),
+    }
 }
 
 fn mac_network_config_for_settings() -> Result<codex_mac_engine::NetworkConfig, AppError> {
@@ -1083,6 +1114,111 @@ pub fn set_settings(
         s.disable_codex_self_updates
     );
     Ok(s)
+}
+
+#[tauri::command]
+pub async fn api_config_session(
+    state: State<'_, ManagerState>,
+) -> Result<OrangeSessionView, CommandError> {
+    state
+        .orange
+        .session_view(orange_proxy_for_settings()?)
+        .await
+        .map_err(orange_command_error)
+}
+
+#[tauri::command]
+pub async fn api_config_login(
+    state: State<'_, ManagerState>,
+    email: String,
+    password: String,
+    remember: bool,
+) -> Result<OrangeSessionView, CommandError> {
+    state
+        .orange
+        .login(
+            orange_proxy_for_settings()?,
+            email.trim().to_string(),
+            password,
+            remember,
+        )
+        .await
+        .map_err(orange_command_error)
+}
+
+#[tauri::command]
+pub async fn api_config_keys(
+    state: State<'_, ManagerState>,
+) -> Result<OrangeKeyList, CommandError> {
+    let local_key = crate::app::codex_provider::read_local_api_key();
+    state
+        .orange
+        .refresh_keys(local_key.as_deref())
+        .await
+        .map_err(orange_command_error)
+}
+
+#[tauri::command]
+pub async fn api_config_logout(
+    state: State<'_, ManagerState>,
+) -> Result<OrangeSessionView, CommandError> {
+    state.orange.logout().await.map_err(orange_command_error)
+}
+
+#[tauri::command]
+pub async fn api_config_import_ccs(
+    state: State<'_, ManagerState>,
+    key_id: u64,
+) -> Result<(), CommandError> {
+    let api_key = state
+        .orange
+        .full_key(key_id)
+        .await
+        .map_err(orange_command_error)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::app::codex_provider::import_into_ccswitch(&api_key).map_err(provider_command_error)
+    })
+    .await
+    .map_err(|error| AppError::Internal(format!("CC Switch task failed: {error}")))?
+}
+
+#[tauri::command]
+pub async fn api_config_write_local(
+    state: State<'_, ManagerState>,
+    key_id: u64,
+) -> Result<crate::app::codex_provider::ProviderWriteReport, CommandError> {
+    let api_key = state
+        .orange
+        .full_key(key_id)
+        .await
+        .map_err(orange_command_error)?;
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        let _guard = PROVIDER_COMMAND_LOCK.try_lock().map_err(|_| CommandError {
+            code: "provider_busy".into(),
+            message: "another Codex provider write is already running".into(),
+        })?;
+        let permit = crate::app::codex_provider::begin_provider_write()
+            .map_err(provider_command_error)?;
+        let was_running = crate::app::codex_theme::stop_for_external_config_write()
+            .map_err(CommandError::from)?;
+        crate::app::codex_provider::write_provider_files(permit, &api_key, was_running)
+            .map_err(provider_command_error)
+    })
+    .await
+    .map_err(|error| AppError::Internal(format!("Codex provider task failed: {error}")))??;
+
+    if report.outcome == crate::app::codex_provider::ProviderWriteOutcome::Committed {
+        state.orange.mark_enabled(key_id).await;
+    }
+    Ok(report)
+}
+
+#[tauri::command]
+pub async fn api_config_restart_codex() -> Result<(), CommandError> {
+    tauri::async_runtime::spawn_blocking(crate::app::codex_theme::restart_codex_plain)
+        .await
+        .map_err(|error| AppError::Internal(format!("Codex restart task failed: {error}")))?
+        .map_err(Into::into)
 }
 
 #[tauri::command]

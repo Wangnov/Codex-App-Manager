@@ -1465,8 +1465,13 @@ fn installed_codex_path() -> Result<PathBuf, AppError> {
 #[cfg(target_os = "macos")]
 fn codex_running() -> bool {
     installed_codex_path()
-        .map(|path| codex_mac_engine::swap::codex_running_at(&path))
+        .and_then(|path| codex_running_at_checked(&path))
         .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn codex_running_at_checked(installed: &std::path::Path) -> Result<bool, AppError> {
+    Ok(codex_mac_engine::swap::codex_running_at(installed))
 }
 
 #[cfg(target_os = "macos")]
@@ -1534,11 +1539,14 @@ fn installed_codex_path() -> Result<PathBuf, AppError> {
 #[cfg(target_os = "windows")]
 fn codex_running() -> bool {
     installed_codex_path()
-        .and_then(|path| {
-            codex_win_engine::codex_running_for_root(&path)
-                .map_err(|e| AppError::Engine(e.to_string()))
-        })
+        .and_then(|path| codex_running_at_checked(&path))
         .unwrap_or(false)
+}
+
+#[cfg(target_os = "windows")]
+fn codex_running_at_checked(installed: &std::path::Path) -> Result<bool, AppError> {
+    codex_win_engine::codex_running_for_root(installed)
+        .map_err(|error| AppError::Engine(error.to_string()))
 }
 
 #[cfg(target_os = "windows")]
@@ -1594,6 +1602,11 @@ fn codex_running() -> bool {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn codex_running_at_checked(_installed: &std::path::Path) -> Result<bool, AppError> {
+    Err(AppError::UnsupportedPlatform)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn quit_codex(_installed: &std::path::Path) -> Result<(), AppError> {
     Err(AppError::UnsupportedPlatform)
 }
@@ -1610,6 +1623,73 @@ fn launch_codex_with_cdp(
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn launch_codex_plain() -> Result<(), AppError> {
     Err(AppError::UnsupportedPlatform)
+}
+
+/// Stop Codex before replacing configuration it persists again on exit.
+pub fn stop_for_external_config_write() -> Result<bool, AppError> {
+    let installed = installed_codex_path()?;
+    stop_detected_codex(
+        &installed,
+        codex_running_at_checked,
+        quit_codex,
+        || std::thread::sleep(CONFIG_SETTLE),
+    )
+}
+
+pub fn restart_codex_plain() -> Result<(), AppError> {
+    let installed = installed_codex_path()?;
+    stop_detected_codex(
+        &installed,
+        codex_running_at_checked,
+        quit_codex,
+        || std::thread::sleep(CONFIG_SETTLE),
+    )?;
+    launch_codex_plain()
+}
+
+fn stop_detected_codex<Detect, Quit, Settle>(
+    installed: &std::path::Path,
+    detect: Detect,
+    quit: Quit,
+    settle: Settle,
+) -> Result<bool, AppError>
+where
+    Detect: FnOnce(&std::path::Path) -> Result<bool, AppError>,
+    Quit: FnOnce(&std::path::Path) -> Result<(), AppError>,
+    Settle: FnOnce(),
+{
+    let was_running = detect(installed)?;
+    if was_running {
+        quit(installed)?;
+        settle();
+    }
+    Ok(was_running)
+}
+
+#[cfg(test)]
+mod external_config_write_tests {
+    use std::path::Path;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::*;
+
+    #[test]
+    fn process_detection_errors_abort_before_quitting_codex() {
+        let quit_called = AtomicBool::new(false);
+
+        let result = stop_detected_codex(
+            Path::new("Codex"),
+            |_| Err(AppError::Internal("process detection failed".into())),
+            |_| {
+                quit_called.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+            || {},
+        );
+
+        assert!(result.is_err());
+        assert!(!quit_called.load(Ordering::SeqCst));
+    }
 }
 
 /// Launch hook for the ordinary 〔打开 Codex〕 action: when a theme is the

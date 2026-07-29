@@ -134,6 +134,14 @@ pub fn provenance_path() -> Option<PathBuf> {
     data_dir().map(|dir| dir.join("provenance.json"))
 }
 
+pub fn orange_session_path() -> Option<PathBuf> {
+    data_dir().map(|dir| dir.join("orangeapi-session.json"))
+}
+
+pub fn orange_backup_root() -> Option<PathBuf> {
+    data_dir().map(|dir| dir.join("orangeapi-backups"))
+}
+
 pub fn codex_home_dir() -> Option<PathBuf> {
     directories::UserDirs::new().map(|dirs| dirs.home_dir().join(".codex"))
 }
