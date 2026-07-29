@@ -121,6 +121,28 @@ describe("ApiKeyList", () => {
     expect(within(inactive).getByRole("button", { name: "Write to computer" })).toBeDisabled();
   });
 
+  it("keeps key actions stable and the logout footer outside list rows", () => {
+    const { container } = render(
+      <ThemeProvider>
+        <I18nProvider>
+          <ApiKeyList
+            session={SESSION}
+            keys={list([activeKey({ id: 1 }), activeKey({ id: 2 })])}
+            initialErrorCode={null}
+            onKeysChange={vi.fn()}
+            onLogout={vi.fn()}
+          />
+        </I18nProvider>
+      </ThemeProvider>,
+    );
+
+    expect(container.querySelectorAll(".api-key-actions")).toHaveLength(2);
+    expect(container.querySelector(".api-key-list .api-config-logout")).toBeNull();
+    expect(container.querySelector(".api-config-connected")).toHaveClass(
+      "api-config-with-footer",
+    );
+  });
+
   it("paginates locally in stable 20-row pages", async () => {
     const user = userEvent.setup();
     const items = Array.from({ length: 21 }, (_, index) =>

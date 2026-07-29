@@ -3507,6 +3507,436 @@ button.row.danger:hover {
   box-shadow: var(--elev-1);
 }
 
+/* ── API configuration ─────────────────────────────────────────────────── */
+.api-config-view {
+  min-width: 0;
+}
+.api-config-scroll {
+  padding: var(--space-md);
+  gap: var(--space-md);
+}
+.api-config-restoring {
+  min-height: 320px;
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-soft);
+  text-align: center;
+}
+.api-config-restoring h1 {
+  margin: 4px 0 0;
+  color: var(--text);
+  font-size: var(--fs-lg);
+  font-weight: 650;
+  letter-spacing: 0;
+}
+.api-config-restoring p {
+  margin: 0;
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+.api-config-restoring .api-config-login-mark .cam-icon-loader {
+  animation: spin 1s linear infinite;
+}
+
+.api-config-login {
+  width: min(100%, 430px);
+  margin: auto;
+  padding: var(--space-lg) 0;
+  display: grid;
+  gap: var(--space-md);
+}
+.api-config-login-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  text-align: start;
+}
+.api-config-login-heading h1 {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-h2);
+  line-height: 1.25;
+  letter-spacing: 0;
+}
+.api-config-login-heading p {
+  margin: 4px 0 0;
+  color: var(--text-faint);
+  font-size: var(--fs-sm);
+}
+.api-config-login-mark {
+  width: 46px;
+  height: 46px;
+  flex: 0 0 46px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--accent-deep);
+  box-shadow: var(--elev-1);
+}
+.api-config-login-mark svg {
+  width: 22px;
+  height: 22px;
+}
+.api-config-login-form {
+  display: grid;
+  gap: var(--space-sm);
+}
+.api-config-field {
+  display: grid;
+  gap: 6px;
+  color: var(--text-soft);
+  font-size: var(--fs-label);
+  font-weight: 650;
+  text-align: start;
+}
+.api-config-field .input {
+  height: 44px;
+  padding: 10px 12px;
+  font-size: var(--fs-body);
+}
+.api-config-password {
+  position: relative;
+  display: block;
+}
+.api-config-password .input {
+  padding-inline-end: 46px;
+}
+.api-config-password-toggle {
+  position: absolute;
+  inset-inline-end: 4px;
+  top: 4px;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-faint);
+}
+.api-config-password-toggle:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--text);
+}
+.api-config-password-toggle svg {
+  width: 18px;
+  height: 18px;
+}
+.api-config-remember {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--text-soft);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.api-config-remember input {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.api-config-login-submit {
+  width: 100%;
+  min-height: 44px;
+}
+
+.api-config-connected {
+  container: api-config / inline-size;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+.api-config-with-footer {
+  padding-bottom: var(--space-xs);
+}
+.api-config-connection {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 36px;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 4px 0 var(--space-sm);
+  border-bottom: 1px solid var(--line);
+}
+.api-config-connection-copy {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: var(--space-sm);
+  row-gap: 3px;
+  text-align: start;
+}
+.api-config-connection-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--success-deep);
+  font-size: var(--fs-label);
+  font-weight: 700;
+}
+.api-config-connection-state .dot {
+  background: var(--success);
+}
+.api-config-connection-copy strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--fs-body);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.api-config-connection-copy > span:last-child {
+  grid-column: 1 / -1;
+  color: var(--text-faint);
+  font-size: var(--fs-caption);
+}
+.api-config-refresh {
+  width: 36px;
+  height: 36px;
+}
+.api-config-refresh .cam-icon-loader,
+.api-key-actions .cam-icon-loader,
+.api-config-login-submit .cam-icon-loader,
+.api-config-logout .cam-icon-loader,
+.api-config-restart .cam-icon-loader {
+  animation: spin 1s linear infinite;
+}
+
+.api-key-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-sm);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.api-key-row {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto auto auto auto;
+  gap: 10px;
+  padding: var(--space-sm);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  box-shadow: var(--elev-1);
+}
+.api-key-heading {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+.api-key-heading > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  text-align: start;
+}
+.api-key-heading strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--fs-body);
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.api-key-heading > div:first-child span {
+  color: var(--text-faint);
+  font-size: var(--fs-caption);
+  overflow-wrap: anywhere;
+}
+.api-key-tags {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.tag.enabled {
+  color: var(--success-deep);
+  border-color: color-mix(in oklch, var(--success) 28%, transparent);
+  background: var(--success-tint);
+}
+.api-key-status.inactive,
+.api-key-status.expired,
+.api-key-status.quota_exhausted {
+  color: var(--text-faint);
+}
+.api-key-masked {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-soft);
+  font-family: var(--mono);
+  font-size: var(--fs-label);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.api-key-meta {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-xs);
+  margin: 0;
+}
+.api-key-meta > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.api-key-meta dt {
+  color: var(--text-faint);
+  font-size: var(--fs-caption);
+}
+.api-key-meta dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text-soft);
+  font-size: var(--fs-label);
+  overflow-wrap: anywhere;
+}
+.api-key-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  gap: var(--space-xs);
+}
+.api-key-actions .btn {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  font-size: var(--fs-label);
+  line-height: 1.25;
+}
+
+.api-config-empty {
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-faint);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+.api-config-empty svg {
+  width: 28px;
+  height: 28px;
+}
+.api-config-pagination {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-xs);
+}
+.api-config-pagination span {
+  color: var(--text-faint);
+  font-size: var(--fs-caption);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.api-config-pagination .btn {
+  min-height: 36px;
+  padding: 7px 10px;
+  font-size: var(--fs-label);
+}
+.api-config-logout {
+  margin-top: auto;
+  padding-top: var(--space-md);
+  display: flex;
+  justify-content: flex-end;
+  border-top: 1px solid var(--line);
+}
+.api-config-logout .btn {
+  min-width: 116px;
+  min-height: 40px;
+}
+.api-config-write-report {
+  display: grid;
+  gap: var(--space-xs);
+}
+.api-config-backup {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 0 2px;
+  color: var(--text-faint);
+  font-size: var(--fs-caption);
+  text-align: start;
+}
+.api-config-backup code {
+  min-width: 0;
+  padding: 8px 9px;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text-soft);
+  font-family: var(--mono);
+  font-size: var(--fs-caption);
+  line-height: 1.45;
+}
+.api-config-restart {
+  justify-self: end;
+  min-height: 40px;
+}
+
+@container api-config (min-width: 480px) {
+  .api-key-actions {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+@container api-config (min-width: 720px) {
+  .api-key-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+  }
+  .api-key-row {
+    grid-template-rows: auto auto auto 1fr;
+  }
+  .api-key-actions {
+    align-self: end;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .api-config-restoring .cam-icon-loader,
+  .api-config-refresh .cam-icon-loader,
+  .api-key-actions .cam-icon-loader,
+  .api-config-login-submit .cam-icon-loader,
+  .api-config-logout .cam-icon-loader,
+  .api-config-restart .cam-icon-loader {
+    animation: none;
+  }
+}
+[dir="rtl"] .api-config-connection-copy,
+[dir="rtl"] .api-config-login-heading,
+[dir="rtl"] .api-config-field,
+[dir="rtl"] .api-key-heading > div:first-child,
+[dir="rtl"] .api-config-backup {
+  text-align: end;
+}
+[dir="rtl"] .api-config-connection-copy strong,
+[dir="rtl"] .api-config-connection-copy > span:last-child,
+[dir="rtl"] .api-key-masked,
+[dir="rtl"] .api-config-backup code {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
 /* ── RTL (Arabic) ────────────────────────────────────────────────────────────
    Most layout mirrors automatically via flexbox + logical properties. These
    are the few physical bits that need an explicit flip. */

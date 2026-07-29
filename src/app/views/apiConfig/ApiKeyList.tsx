@@ -163,7 +163,7 @@ export function ApiKeyList({
   const reportRole = writeReport?.outcome === "committed" ? "status" : "alert";
 
   return (
-    <section className="api-config-connected">
+    <section className="api-config-connected api-config-with-footer">
       <header className="api-config-connection">
         <div className="api-config-connection-copy">
           <span className="api-config-connection-state">

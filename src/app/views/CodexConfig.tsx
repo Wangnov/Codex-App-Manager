@@ -61,7 +61,7 @@ export function CodexConfig({ onBack }: { onBack: () => void }) {
   return (
     <div className="pop api-config-view">
       <NavBar title={t("config.title")} onBack={onBack} />
-      <div className="scroll view api-config-scroll">
+      <div className="scroll scroll-wide view api-config-scroll">
         {session == null ? (
           <section className="api-config-restoring" role="status">
             <span className="api-config-login-mark" aria-hidden="true">
