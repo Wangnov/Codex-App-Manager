@@ -203,10 +203,11 @@ animation, button, banner, list, and sheet patterns.
 ### 5.4 Write interaction
 
 Write locally opens a confirmation sheet naming `config.toml` and `auth.json`
-and stating that both existing files will be backed up and replaced. On verified
+and stating that both existing files will be backed up and replaced. The sheet
+also states that a running Codex must close before the write. On verified
 success, the selected row becomes Enabled, a success result shows the backup
-location, and a Restart Codex button appears. If Codex is not running, that
-button starts it.
+location, and a Restart Codex button appears. The button reopens Codex after a
+write that closed it; if Codex was already stopped, the button starts it.
 
 ## 6. CC Switch Import
 
@@ -270,20 +271,26 @@ This is an intentional full replacement, not a merge.
 ### 7.1 Two-file transaction
 
 1. Acquire a process-wide exclusive provider-write lock.
-2. Resolve the real Codex home and reject unsafe symlink/path cases.
-3. Read both preimages and record whether either file was absent.
-4. Create an App Manager backup directory under
+2. Resolve the detected Codex installation and determine whether it is running.
+3. If running, request a graceful quit, wait for process exit, and then wait the
+   existing two-second configuration settle interval. Never force-kill. This is
+   required because Codex persists in-memory configuration after process exit
+   and would otherwise overwrite the replacement.
+4. Resolve the real Codex home and reject unsafe symlink/path cases.
+5. Read both preimages and record whether either file was absent.
+6. Create an App Manager backup directory under
    `orangeapi-backups/<timestamp-id>/` containing original files and a manifest
    with source paths, existence markers, timestamp, and SHA-256 hashes.
-5. Stage replacement files on the same filesystem as `~/.codex` and atomically
+7. Stage replacement files on the same filesystem as `~/.codex` and atomically
    replace each destination.
-6. Re-read both files and verify exact expected bytes/hashes plus the parsed
+8. Re-read both files and verify exact expected bytes/hashes plus the parsed
    `OPENAI_API_KEY`.
-7. On any failure, restore both preimages (including deleting a destination that
+9. On any failure, restore both preimages (including deleting a destination that
    was originally absent), verify the restoration, and retain transaction
    evidence.
-8. Return one of: committed, failed without mutation, failed and restored, or
-   recovery required. The last state includes the backup path for manual repair.
+10. Return one of: committed, failed without mutation, failed and restored, or
+    recovery required. The last state includes the backup path for manual
+    repair and whether Codex was closed.
 
 Backups are retained and never automatically deleted by this feature.
 
