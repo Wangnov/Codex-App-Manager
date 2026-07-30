@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import indexHtml from "../../index.html?raw";
 import capabilityJson from "../../src-tauri/capabilities/default.json";
 import tauriConfigJson from "../../src-tauri/tauri.conf.json";
 
@@ -15,6 +16,10 @@ interface Capability {
 }
 
 describe("desktop trust-boundary config", () => {
+  it("stamps expanded mode before the renderer's first paint", () => {
+    expect(indexHtml).toContain('<html lang="zh-CN" data-window-mode="expanded">');
+  });
+
   it("keeps the main webview under the native navigation builder", () => {
     const config = tauriConfigJson as TauriConfig;
     expect(config.app.windows.find((window) => window.label === "main")?.create).toBe(false);

@@ -284,8 +284,8 @@ input {
 }
 
 /* ── Window modes ────────────────────────────────────────────────────────── */
-/* Two shapes, one window: the compact 400×640 dashboard (default — nothing
-   below applies) and the expanded desktop workbench. Switch choreography: the
+/* Two shapes, one window: the expanded desktop workbench is the startup
+   default; compact remains an explicit 400×640 posture. During a switch, the
    stage fades out, the native window snaps to its new frame behind the veil,
    and the new layout fades back in (the rail adds its own slide). Reduced
    motion drops the veil — the switch becomes a single hard cut. */

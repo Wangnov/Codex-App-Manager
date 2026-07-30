@@ -14,10 +14,9 @@ import { managerApi } from "../services/managerApi";
 import type { WindowMode } from "../shared/types";
 import { installWindowDragHandler } from "./windowDrag";
 
-/** Remembered expanded size (logical px, JSON `{width,height}`). The *mode*
- *  itself is deliberately not persisted: the manager is an at-a-glance popover
- *  first, so every launch starts compact and the workbench is a per-session
- *  posture. */
+/** Remembered expanded size (logical px, JSON `{width,height}`). Startup mode
+ *  itself is deliberately fixed to expanded; compact remains a per-session
+ *  posture selected through the rail. */
 const LS_SIZE_KEY = "cam.windowSize.expanded";
 
 /** How long the stage fade-out gets before the native resize fires — matches
@@ -69,7 +68,7 @@ function storeSize(size: { width: number; height: number }) {
 const wait = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 
 export function WindowModeProvider({ children }: { children: ReactNode }) {
-  const [mode, setModeState] = useState<WindowMode>("compact");
+  const [mode, setModeState] = useState<WindowMode>("expanded");
   const [switching, setSwitching] = useState(false);
   const modeRef = useRef(mode);
   modeRef.current = mode;

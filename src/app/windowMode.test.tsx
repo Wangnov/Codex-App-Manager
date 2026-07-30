@@ -52,19 +52,28 @@ async function expand() {
   );
 }
 
-describe("window modes", () => {
-  it("starts compact: mode stamped on <html>, rail hidden, expand offered", () => {
-    render(<Harness />);
-    expect(document.documentElement.dataset.windowMode).toBe("compact");
-    expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
-    expect(screen.getByTitle(/expand workspace/i)).toBeInTheDocument();
-  });
+async function collapse() {
+  fireEvent.click(screen.getByRole("button", { name: /collapse workspace/i }));
+  await waitFor(() =>
+    expect(document.documentElement.dataset.windowMode).toBe("compact"),
+  );
+}
 
-  it("expanding shows the rail, retires the expand control and remembers the size", async () => {
+describe("window modes", () => {
+  it("starts expanded: mode stamped on <html>, rail shown, collapse offered", () => {
     render(<Harness />);
-    await expand();
+    expect(document.documentElement.dataset.windowMode).toBe("expanded");
     expect(screen.getByRole("navigation")).toBeInTheDocument();
     expect(screen.queryByTitle(/expand workspace/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /collapse workspace/i })).toBeInTheDocument();
+  });
+
+  it("collapse hides the rail and re-expansion restores it with size memory", async () => {
+    render(<Harness />);
+    await collapse();
+    expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+    await expand();
+    expect(screen.getByRole("navigation")).toBeInTheDocument();
     // The echoed (browser-fallback default) size is persisted for next time.
     expect(JSON.parse(localStorage.getItem("cam.windowSize.expanded") ?? "null")).toEqual({
       width: 1100,
@@ -74,7 +83,6 @@ describe("window modes", () => {
 
   it("rail navigation reports sections and marks the active one", async () => {
     render(<Harness />);
-    await expand();
     const settings = screen.getByRole("button", { name: /^settings$/i });
     fireEvent.click(settings);
     expect(screen.getByTestId("active-section")).toHaveTextContent("settings");
@@ -83,11 +91,7 @@ describe("window modes", () => {
 
   it("rail collapse returns to compact and removes the rail", async () => {
     render(<Harness />);
-    await expand();
-    fireEvent.click(screen.getByRole("button", { name: /collapse workspace/i }));
-    await waitFor(() =>
-      expect(document.documentElement.dataset.windowMode).toBe("compact"),
-    );
+    await collapse();
     expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
   });
 
@@ -99,7 +103,6 @@ describe("window modes", () => {
 
   it("nav lock disables rail navigation but not collapse", async () => {
     render(<Harness />);
-    await expand();
     // An in-flight operation (ProgressScreen) takes the lock — the rail's
     // exits must close so no concurrent operation can start, while collapsing
     // the window (shape only, view untouched) stays available.
