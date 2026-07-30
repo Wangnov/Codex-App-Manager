@@ -17,14 +17,16 @@
         "label": "main",
         "create": false,
         "title": "Codex App Manager",
-        "width": 400,
-        "height": 640,
-        "resizable": false,
+        "width": 1100,
+        "height": 720,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true,
         "decorations": false,
         "transparent": true,
         "visible": false,
         "center": true,
-        "shadow": false
+        "shadow": true
       }
     ],
     "security": {

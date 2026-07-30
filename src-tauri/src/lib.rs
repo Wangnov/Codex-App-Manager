@@ -456,6 +456,17 @@ fn build_main_window(app: &tauri::App) -> tauri::Result<()> {
         .build()?;
     #[cfg(target_os = "windows")]
     configure_windows_browser_accelerators(app, &window, browser_accelerators_enabled(cfg!(dev)))?;
+    crate::app::window_mode::apply_window_mode(
+        app.handle(),
+        crate::app::window_mode::INITIAL_WINDOW_MODE,
+        None,
+        None,
+    )
+    .map_err(|error| {
+        tauri::Error::Io(std::io::Error::other(format!(
+            "failed to establish initial window mode: {error}"
+        )))
+    })?;
     #[cfg(not(target_os = "windows"))]
     let _ = window;
     Ok(())
