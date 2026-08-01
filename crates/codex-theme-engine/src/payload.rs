@@ -105,6 +105,10 @@ pub const REMOVE_EXPRESSION: &str = r#"(() => {
   document.documentElement?.classList.remove('codex-theme-studio');
   document.documentElement?.removeAttribute('data-cts-theme');
   document.documentElement?.removeAttribute('data-cts-shell');
+  document.querySelectorAll('[data-cts-main-surface-compat]').forEach((node) => {
+    node.classList.remove('main-surface');
+    node.removeAttribute('data-cts-main-surface-compat');
+  });
   document.querySelectorAll('.cts-windows-menu-bar').forEach((node) => node.classList.remove('cts-windows-menu-bar'));
   document.querySelectorAll('[data-cts-menu-region]').forEach((node) => node.removeAttribute('data-cts-menu-region'));
   document.documentElement?.style.removeProperty('--cts-windows-menu-height');
@@ -133,6 +137,7 @@ pub const VERIFY_REMOVED_EXPRESSION: &str = r#"(() =>
   !document.getElementById('cts-chrome') &&
   !document.getElementById('cts-stage') &&
   !document.getElementById('cts-intro') &&
+  !document.querySelector('[data-cts-main-surface-compat]') &&
   !window.__CODEX_THEME_STUDIO__
 )()"#;
 
@@ -157,6 +162,9 @@ pub fn verify_expression(expected_version: &str) -> Result<String> {
       }};
     }};
     const chrome = document.getElementById('cts-chrome');
+    const stage = document.getElementById('cts-stage');
+    const mainSurfaceNode = document.querySelector('main[data-app-shell-main-surface], main.main-surface');
+    const mainSurface = box(mainSurfaceNode);
     const state = window.__CODEX_THEME_STUDIO__;
     const composer = box(document.querySelector('.composer-surface-chrome'));
     const sidebar = box(document.querySelector('aside.app-shell-left-panel'));
@@ -167,6 +175,10 @@ pub fn verify_expression(expected_version: &str) -> Result<String> {
       stylePresent: Boolean(document.getElementById('cts-style')),
       chromePresent: Boolean(chrome),
       chromePointerEvents: chrome ? getComputedStyle(chrome).pointerEvents : null,
+      mainSurface,
+      mainSurfaceMode: mainSurfaceNode?.hasAttribute('data-app-shell-main-surface') ? 'current' : (mainSurfaceNode ? 'legacy' : null),
+      mainSurfaceCompatible: Boolean(mainSurfaceNode?.classList.contains('main-surface')),
+      stageAttachedToMainSurface: !stage || stage.parentElement === mainSurfaceNode,
       composer,
       sidebar,
       viewport: {{ width: innerWidth, height: innerHeight }},
@@ -180,6 +192,9 @@ pub fn verify_expression(expected_version: &str) -> Result<String> {
       result.version === {version_json} &&
       result.stylePresent &&
       (!result.chromePresent || result.chromePointerEvents === 'none') &&
+      Boolean(result.mainSurface?.visible) &&
+      result.mainSurfaceCompatible &&
+      result.stageAttachedToMainSurface &&
       Boolean(result.composer?.visible) &&
       Boolean(result.sidebar?.visible) &&
       !result.documentOverflow.x
@@ -224,6 +239,8 @@ mod tests {
         // The CSS rides as a JSON string literal, so quotes appear escaped.
         assert!(built.payload.contains("--cts-asset-wall: url(\\\"data:image/png;base64,"));
         assert!(built.payload.contains("data-cts-layer"));
+        assert!(built.payload.contains("main[data-app-shell-main-surface]"));
+        assert!(built.payload.contains("data-cts-main-surface-compat"));
         assert_eq!(built.asset_count, 1);
         assert!(built.stamp.starts_with(&format!("{ENGINE_VERSION}:fixture:")));
     }
@@ -256,6 +273,7 @@ mod tests {
             );
         }
         for marker in [
+            "data-cts-main-surface-compat",
             "cts-windows-menu-bar",
             "data-cts-menu-region",
             "--cts-windows-menu-height",
@@ -276,9 +294,26 @@ mod tests {
     }
 
     #[test]
+    fn runtime_supports_current_and_legacy_main_surfaces() {
+        let current = RUNTIME_TEMPLATE
+            .find("main[data-app-shell-main-surface]")
+            .expect("current main-surface selector");
+        let legacy = RUNTIME_TEMPLATE
+            .find("main.${LEGACY_SHELL_MAIN_CLASS}")
+            .expect("legacy main-surface selector");
+        assert!(current < legacy, "current semantic marker must win");
+        assert!(!RUNTIME_TEMPLATE.contains(
+            "document.querySelector(\"main.main-surface\") || document.querySelector(\"main\")"
+        ));
+    }
+
+    #[test]
     fn verify_expression_embeds_version() {
         let expr = verify_expression("9.9.9").unwrap();
         assert!(expr.contains("\"9.9.9\""));
         assert!(expr.contains("result.pass"));
+        assert!(expr.contains("mainSurfaceMode"));
+        assert!(expr.contains("mainSurfaceCompatible"));
+        assert!(expr.contains("stageAttachedToMainSurface"));
     }
 }
