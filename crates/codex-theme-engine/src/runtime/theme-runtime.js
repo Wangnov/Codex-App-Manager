@@ -15,6 +15,8 @@
   const ROOT_CLASS = "codex-theme-studio";
   const THEME_ATTR = "data-cts-theme";
   const SHELL_ATTR = "data-cts-shell";
+  const SHELL_MAIN_COMPAT_ATTR = "data-cts-main-surface-compat";
+  const LEGACY_SHELL_MAIN_CLASS = "main-surface";
   const WINDOWS_MENU_CLASS = "cts-windows-menu-bar";
   const WINDOWS_MENU_REGION_ATTR = "data-cts-menu-region";
   const RUNTIME_CSS = `
@@ -96,6 +98,31 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
 
   const setClass = (node, name, on) => {
     if (node.classList.contains(name) !== on) node.classList.toggle(name, on);
+  };
+
+  // Codex <= 26.715 exposed the content surface as `main.main-surface`.
+  // Codex 26.727 replaced that class with the stable
+  // `data-app-shell-main-surface` attribute and also introduced an unrelated
+  // full-window <main> before it. Prefer the current semantic marker, keep the
+  // legacy selector for old clients, and add the legacy class only as a
+  // runtime-owned compatibility shim so existing theme packages keep working.
+  const releaseShellMainCompat = (node) => {
+    if (!node?.hasAttribute(SHELL_MAIN_COMPAT_ATTR)) return;
+    node.classList.remove(LEGACY_SHELL_MAIN_CLASS);
+    node.removeAttribute(SHELL_MAIN_COMPAT_ATTR);
+  };
+
+  const resolveShellMain = () => {
+    const shellMain = document.querySelector("main[data-app-shell-main-surface]") ||
+      document.querySelector(`main.${LEGACY_SHELL_MAIN_CLASS}`);
+    for (const candidate of document.querySelectorAll(`[${SHELL_MAIN_COMPAT_ATTR}]`)) {
+      if (candidate !== shellMain) releaseShellMainCompat(candidate);
+    }
+    if (shellMain && !shellMain.classList.contains(LEGACY_SHELL_MAIN_CLASS)) {
+      shellMain.classList.add(LEGACY_SHELL_MAIN_CLASS);
+      shellMain.setAttribute(SHELL_MAIN_COMPAT_ATTR, "true");
+    }
+    return shellMain;
   };
 
   const detectShellMode = () => {
@@ -415,7 +442,7 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
       style.dataset.ctsStamp = STAMP;
     }
 
-    const shellMain = document.querySelector("main.main-surface") || document.querySelector("main");
+    const shellMain = resolveShellMain();
     integrateWindowsMenu(shellMain);
     const home = findHome(state?.homeSticky);
     if (state) state.homeSticky = home;
@@ -521,6 +548,7 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
     document.querySelectorAll("[data-cts-glyph]").forEach((node) => node.removeAttribute("data-cts-glyph"));
     document.querySelectorAll("[data-cts-icon]").forEach((node) => node.removeAttribute("data-cts-icon"));
     document.querySelectorAll("[data-cts-logo]").forEach((node) => node.removeAttribute("data-cts-logo"));
+    document.querySelectorAll(`[${SHELL_MAIN_COMPAT_ATTR}]`).forEach(releaseShellMainCompat);
     document.querySelectorAll(`.${WINDOWS_MENU_CLASS}`).forEach((node) => node.classList.remove(WINDOWS_MENU_CLASS));
     document.querySelectorAll(`[${WINDOWS_MENU_REGION_ATTR}]`).forEach((node) => node.removeAttribute(WINDOWS_MENU_REGION_ATTR));
     document.getElementById(STYLE_ID)?.remove();
