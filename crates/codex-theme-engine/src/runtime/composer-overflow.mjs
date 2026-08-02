@@ -27,7 +27,7 @@ export function createComposerOverflowAnnotator({
   readStyle,
   viewportSignature,
 }) {
-  const cache = new WeakMap();
+  let cache = new WeakMap();
   const annotatedNodes = new Set();
   const modeNodes = new Set();
 
@@ -113,7 +113,7 @@ export function createComposerOverflowAnnotator({
     return value;
   };
 
-  return (composers) => {
+  const annotate = (composers) => {
     const desiredRoles = new Map();
     const desiredModes = new Map();
 
@@ -164,4 +164,14 @@ export function createComposerOverflowAnnotator({
       modeNodes.add(node);
     }
   };
+
+  // Computed overflow can change without altering any node in the Composer
+  // path (for example through an ancestor class, stylesheet, or media query).
+  // Let the runtime discard structural classifications when those external
+  // style inputs change while retaining the cache for ordinary ensure passes.
+  annotate.invalidate = () => {
+    cache = new WeakMap();
+  };
+
+  return annotate;
 }

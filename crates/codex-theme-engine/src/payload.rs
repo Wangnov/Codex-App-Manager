@@ -337,6 +337,7 @@ mod tests {
         assert!(built.payload.contains("main[data-app-shell-main-surface]"));
         assert!(built.payload.contains("data-cts-main-surface-compat"));
         assert!(built.payload.contains("createComposerOverflowAnnotator"));
+        assert!(built.payload.contains("annotateComposerOverflow.invalidate()"));
         assert!(built.payload.contains("data-cts-composer-overflow=\\\"shell\\\""));
         assert!(built.payload.contains("overflow: clip !important"));
         assert_eq!(built.asset_count, 1);

@@ -604,16 +604,37 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
   // Ignore mutations we caused ourselves (chrome text/position, clock ticks,
   // root inline vars) — they must never re-trigger ensure().
   const chromeNode = () => document.getElementById(CHROME_ID);
+  const externalRootStyleSignature = () => Array.from(document.documentElement.style)
+    .filter((name) => !appliedVars.includes(name))
+    .sort()
+    .map((name) => `${name}:${document.documentElement.style.getPropertyValue(name)}!${
+      document.documentElement.style.getPropertyPriority(name)}`)
+    .join(";");
+  const styleMutationTouchesComposer = (target) => Boolean(
+    target.closest?.(".composer-surface-chrome") ||
+    target.querySelector?.(
+      '[data-codex-composer], .ProseMirror[contenteditable="true"], ' +
+      '[contenteditable="true"], textarea',
+    )
+  );
+  let rootStyleSignature = externalRootStyleSignature();
   const observer = new MutationObserver((mutations) => {
     const chrome = chromeNode();
     for (const mutation of mutations) {
       const target = mutation.target;
       if (chrome && (target === chrome || chrome.contains(target))) continue;
-      if (target === document.documentElement && mutation.type === "attributes" && mutation.attributeName === "style") continue;
+      if (target === document.documentElement && mutation.type === "attributes" && mutation.attributeName === "style") {
+        const nextRootStyleSignature = externalRootStyleSignature();
+        if (nextRootStyleSignature === rootStyleSignature) continue;
+        rootStyleSignature = nextRootStyleSignature;
+      }
+      if (mutation.type === "attributes" && mutation.attributeName === "style" &&
+        target !== document.documentElement && !styleMutationTouchesComposer(target)) continue;
       if (mutation.type === "childList") {
         repairProjectGlyphs(target);
         for (const added of mutation.addedNodes) repairProjectGlyphs(added);
       }
+      annotateComposerOverflow.invalidate();
       scheduleEnsure();
       return;
     }
@@ -622,9 +643,12 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
     childList: true,
     subtree: true,
     attributes: true,
-    attributeFilter: ["class", "data-theme", "data-appearance", "data-color-mode"],
+    attributeFilter: ["class", "style", "data-theme", "data-appearance", "data-color-mode"],
   });
-  const timer = setInterval(ensure, 4000);
+  const timer = setInterval(() => {
+    annotateComposerOverflow.invalidate();
+    ensure();
+  }, 4000);
   const resizeHandler = scheduleEnsure;
   window.addEventListener("resize", resizeHandler, { passive: true });
 
@@ -643,7 +667,10 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
   let mediaHandler = null;
   try {
     mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
-    mediaHandler = () => scheduleEnsure();
+    mediaHandler = () => {
+      annotateComposerOverflow.invalidate();
+      scheduleEnsure();
+    };
     mediaQuery.addEventListener("change", mediaHandler);
   } catch {}
 
