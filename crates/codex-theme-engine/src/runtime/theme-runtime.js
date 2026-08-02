@@ -19,6 +19,12 @@
   const LEGACY_SHELL_MAIN_CLASS = "main-surface";
   const WINDOWS_MENU_CLASS = "cts-windows-menu-bar";
   const WINDOWS_MENU_REGION_ATTR = "data-cts-menu-region";
+  const COMPOSER_OVERFLOW_ATTR = "data-cts-composer-overflow";
+  const COMPOSER_MODE_ATTR = "data-cts-composer-mode";
+  const {
+    createComposerOverflowAnnotator,
+    selectComposerSurfaces,
+  } = __CTS_COMPOSER_OVERFLOW_HELPERS__;
   const RUNTIME_CSS = `
 html.codex-theme-studio .cts-windows-menu-bar {
   position: absolute !important;
@@ -70,6 +76,10 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
   document.querySelectorAll("[data-cts-glyph]").forEach((node) => node.removeAttribute("data-cts-glyph"));
   document.querySelectorAll("[data-cts-icon]").forEach((node) => node.removeAttribute("data-cts-icon"));
   document.querySelectorAll("[data-cts-logo]").forEach((node) => node.removeAttribute("data-cts-logo"));
+  document.querySelectorAll(`[${COMPOSER_OVERFLOW_ATTR}]`)
+    .forEach((node) => node.removeAttribute(COMPOSER_OVERFLOW_ATTR));
+  document.querySelectorAll(`[${COMPOSER_MODE_ATTR}]`)
+    .forEach((node) => node.removeAttribute(COMPOSER_MODE_ATTR));
 
   // Split the chrome fragment into its layers: "overlay" floats above the UI
   // (fixed, z31), "stage" is scenery mounted inside main UNDER the content.
@@ -155,6 +165,16 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
   };
 
   const chromeRectCache = { left: NaN, top: NaN, width: NaN, height: NaN };
+
+  // Codex 26.715+ can reuse the same Composer nodes across single-line and
+  // multiline layouts. Measure the current native scroll capabilities without
+  // letting our own hardening roles contaminate the next classification.
+  const annotateComposerOverflow = createComposerOverflowAnnotator({
+    overflowAttribute: COMPOSER_OVERFLOW_ATTR,
+    modeAttribute: COMPOSER_MODE_ATTR,
+    readStyle: (node) => getComputedStyle(node),
+    viewportSignature: () => `${innerWidth}x${innerHeight}`,
+  });
 
   // Semantic icon annotation: CSS cannot match by text, so tag well-known
   // controls with data-cts-icon and let theme CSS attach bitmap icons.
@@ -453,6 +473,7 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
     if (shellMain) setClass(shellMain, "cts-home-shell", Boolean(home));
 
     annotateIcons();
+    annotateComposerOverflow(selectComposerSurfaces(document));
 
     const fillTexts = (rootNode) => {
       for (const node of rootNode.querySelectorAll("[data-cts-text]")) {
@@ -551,6 +572,10 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
     document.querySelectorAll(`[${SHELL_MAIN_COMPAT_ATTR}]`).forEach(releaseShellMainCompat);
     document.querySelectorAll(`.${WINDOWS_MENU_CLASS}`).forEach((node) => node.classList.remove(WINDOWS_MENU_CLASS));
     document.querySelectorAll(`[${WINDOWS_MENU_REGION_ATTR}]`).forEach((node) => node.removeAttribute(WINDOWS_MENU_REGION_ATTR));
+    document.querySelectorAll(`[${COMPOSER_OVERFLOW_ATTR}]`)
+      .forEach((node) => node.removeAttribute(COMPOSER_OVERFLOW_ATTR));
+    document.querySelectorAll(`[${COMPOSER_MODE_ATTR}]`)
+      .forEach((node) => node.removeAttribute(COMPOSER_MODE_ATTR));
     document.getElementById(STYLE_ID)?.remove();
     document.getElementById(CHROME_ID)?.remove();
     document.getElementById(STAGE_ID)?.remove();

@@ -14,6 +14,28 @@ use crate::{Result, ENGINE_VERSION};
 /// detection, icon annotation and cleanup contract; edit it in the studio,
 /// not here.
 const RUNTIME_TEMPLATE: &str = include_str!("runtime/theme-runtime.js");
+const COMPOSER_OVERFLOW_MODULE: &str = include_str!("runtime/composer-overflow.mjs");
+
+/// Runtime-owned Composer scroll contract. Theme art may extend beyond the
+/// shell without turning it into a scroll container; only the finite-height
+/// editor root may scroll vertically. Appended after theme CSS so old packages
+/// cannot reintroduce the shell-scroll bug.
+const RUNTIME_HARDENING_CSS: &str = r#"
+html.codex-theme-studio [data-cts-composer-overflow="shell"] {
+  overflow: clip !important;
+  overflow-clip-margin: 64px !important;
+}
+
+html.codex-theme-studio [data-cts-composer-overflow="lane"] {
+  overflow: visible !important;
+}
+
+html.codex-theme-studio [data-cts-composer-overflow="editor"] {
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain !important;
+}
+"#;
 
 #[derive(Debug, Clone)]
 pub struct BuiltPayload {
@@ -40,7 +62,7 @@ pub fn build_payload_from(theme: LoadedTheme) -> Result<BuiltPayload> {
         .collect::<Vec<_>>()
         .join("\n");
     let css_with_assets = format!(
-        ":root.codex-theme-studio {{\n{asset_variables}\n}}\n\n{}",
+        ":root.codex-theme-studio {{\n{asset_variables}\n}}\n\n{}\n\n{RUNTIME_HARDENING_CSS}",
         theme.css
     );
     let config_json = serde_json::to_string(&theme.config)
@@ -50,15 +72,19 @@ pub fn build_payload_from(theme: LoadedTheme) -> Result<BuiltPayload> {
     // Fingerprint the executable packed payload, including the renderer
     // runtime. Without the runtime template, renderer-only bug fixes share the
     // old stamp and the daemon cannot distinguish them from an installed copy.
+    let runtime_template = RUNTIME_TEMPLATE.replace(
+        "__CTS_COMPOSER_OVERFLOW_HELPERS__",
+        &composer_overflow_helpers_expression(),
+    );
     let short = fingerprint(
-        RUNTIME_TEMPLATE,
+        &runtime_template,
         &css_with_assets,
         chrome_html.as_deref().unwrap_or(""),
         &config_json,
     );
     let stamp = format!("{ENGINE_VERSION}:{}:{short}", theme.config.id);
 
-    let payload = RUNTIME_TEMPLATE
+    let payload = runtime_template
         .replace("__CTS_CSS_JSON__", &js_json(&css_with_assets)?)
         .replace("__CTS_THEME_JSON__", &config_json)
         .replace(
@@ -76,6 +102,13 @@ pub fn build_payload_from(theme: LoadedTheme) -> Result<BuiltPayload> {
         stamp,
         payload,
     })
+}
+
+fn composer_overflow_helpers_expression() -> String {
+    let module = COMPOSER_OVERFLOW_MODULE.replace("export function ", "function ");
+    format!(
+        "(() => {{\n{module}\nreturn {{ createComposerOverflowAnnotator, selectComposerSurfaces }};\n}})()"
+    )
 }
 
 fn js_json(value: &str) -> Result<String> {
@@ -111,6 +144,8 @@ pub const REMOVE_EXPRESSION: &str = r#"(() => {
   });
   document.querySelectorAll('.cts-windows-menu-bar').forEach((node) => node.classList.remove('cts-windows-menu-bar'));
   document.querySelectorAll('[data-cts-menu-region]').forEach((node) => node.removeAttribute('data-cts-menu-region'));
+  document.querySelectorAll('[data-cts-composer-overflow]').forEach((node) => node.removeAttribute('data-cts-composer-overflow'));
+  document.querySelectorAll('[data-cts-composer-mode]').forEach((node) => node.removeAttribute('data-cts-composer-mode'));
   document.documentElement?.style.removeProperty('--cts-windows-menu-height');
   document.documentElement?.style.removeProperty('--cts-windows-sidebar-padding-top');
   document.documentElement?.style.removeProperty('--cts-windows-main-padding-top');
@@ -128,6 +163,8 @@ pub const VERIFY_REMOVED_EXPRESSION: &str = r#"(() =>
   !document.documentElement.classList.contains('codex-theme-studio') &&
   !document.querySelector('.cts-windows-menu-bar') &&
   !document.querySelector('[data-cts-menu-region]') &&
+  !document.querySelector('[data-cts-composer-overflow]') &&
+  !document.querySelector('[data-cts-composer-mode]') &&
   !document.documentElement.style.getPropertyValue('--cts-windows-menu-height') &&
   !document.documentElement.style.getPropertyValue('--cts-windows-sidebar-padding-top') &&
   !document.documentElement.style.getPropertyValue('--cts-windows-main-padding-top') &&
@@ -149,6 +186,7 @@ pub const CURRENT_STAMP_EXPRESSION: &str =
 /// Structural verification of an applied theme (port of `verifyExpression`).
 pub fn verify_expression(expected_version: &str) -> Result<String> {
     let version_json = js_json(expected_version)?;
+    let composer_helpers = composer_overflow_helpers_expression();
     Ok(format!(
         r#"(() => {{
     const box = (node) => {{
@@ -166,12 +204,62 @@ pub fn verify_expression(expected_version: &str) -> Result<String> {
     const mainSurfaceNode = document.querySelector('main[data-app-shell-main-surface], main.main-surface');
     const mainSurface = box(mainSurfaceNode);
     const state = window.__CODEX_THEME_STUDIO__;
-    const composer = box(document.querySelector('.composer-surface-chrome'));
+    const hostVersion = (() => {{
+      try {{
+        const value = window.electronBridge?.getSentryInitOptions?.()?.appVersion;
+        return typeof value === 'string' && /^\d+\./.test(value) ? value : null;
+      }} catch {{
+        return null;
+      }}
+    }})();
+    const hostCompatibility = hostVersion === '26.715.31251'
+      ? {{ audited: true, profile: 'composer-three-layer', composerLanePolicy: 'required' }}
+      : hostVersion === '26.715.31925'
+        ? {{ audited: true, profile: 'composer-two-or-three-layer', composerLanePolicy: 'optional' }}
+        : hostVersion === '26.727.51351'
+          ? {{ audited: true, profile: 'composer-current-multiline', composerLanePolicy: 'required' }}
+          : {{ audited: false, profile: 'capability-adaptive', composerLanePolicy: 'optional' }};
+    const {{ selectComposerSurfaces }} = {composer_helpers};
+    const composerNodes = selectComposerSurfaces(document);
+    const composerNode = composerNodes.find((node) => {{
+      const r = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      return r.width > 0 && r.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+    }}) ?? composerNodes[0] ?? null;
+    const composer = box(composerNode);
+    const composerEditor = composerNode?.querySelector('[data-cts-composer-overflow="editor"]') ?? null;
+    const composerLanes = composerNode
+      ? [...composerNode.querySelectorAll('[data-cts-composer-overflow="lane"]')]
+      : [];
+    const composerMode = composerNode?.getAttribute('data-cts-composer-mode') ?? null;
+    const composerOverflow = composerNode ? {{
+      shellRole: composerNode.getAttribute('data-cts-composer-overflow'),
+      mode: composerMode,
+      shellOverflowY: getComputedStyle(composerNode).overflowY,
+      laneCount: composerLanes.length,
+      laneOverflowYs: composerLanes.map((node) => getComputedStyle(node).overflowY),
+      lanesValid: composerLanes.every((node) => getComputedStyle(node).overflowY === 'visible'),
+      lanePolicyValid: hostCompatibility.composerLanePolicy !== 'required' ||
+        composerMode === 'single-line' || composerLanes.length >= 1,
+      editorCount: composerNode.querySelectorAll('[data-cts-composer-overflow="editor"]').length,
+      editorOverflowY: composerEditor ? getComputedStyle(composerEditor).overflowY : null,
+    }} : null;
+    if (composerOverflow) {{
+      composerOverflow.modeValid = composerOverflow.mode === 'single-line' ||
+        composerOverflow.mode === 'scrolling';
+      composerOverflow.editorValid = composerOverflow.mode === 'single-line'
+        ? composerOverflow.editorCount === 0
+        : composerOverflow.mode === 'scrolling' &&
+          composerOverflow.editorCount === 1 &&
+          composerOverflow.editorOverflowY === 'auto';
+    }}
     const sidebar = box(document.querySelector('aside.app-shell-left-panel'));
     const result = {{
       installed: document.documentElement.classList.contains('codex-theme-studio'),
       themeId: document.documentElement.getAttribute('data-cts-theme'),
       version: state?.version ?? null,
+      hostVersion,
+      hostCompatibility,
       stylePresent: Boolean(document.getElementById('cts-style')),
       chromePresent: Boolean(chrome),
       chromePointerEvents: chrome ? getComputedStyle(chrome).pointerEvents : null,
@@ -180,6 +268,7 @@ pub fn verify_expression(expected_version: &str) -> Result<String> {
       mainSurfaceCompatible: Boolean(mainSurfaceNode?.classList.contains('main-surface')),
       stageAttachedToMainSurface: !stage || stage.parentElement === mainSurfaceNode,
       composer,
+      composerOverflow,
       sidebar,
       viewport: {{ width: innerWidth, height: innerHeight }},
       documentOverflow: {{
@@ -196,6 +285,12 @@ pub fn verify_expression(expected_version: &str) -> Result<String> {
       result.mainSurfaceCompatible &&
       result.stageAttachedToMainSurface &&
       Boolean(result.composer?.visible) &&
+      result.composerOverflow?.shellRole === 'shell' &&
+      result.composerOverflow?.shellOverflowY === 'clip' &&
+      result.composerOverflow?.lanesValid === true &&
+      result.composerOverflow?.lanePolicyValid === true &&
+      result.composerOverflow?.modeValid === true &&
+      result.composerOverflow?.editorValid === true &&
       Boolean(result.sidebar?.visible) &&
       !result.documentOverflow.x
     );
@@ -241,6 +336,9 @@ mod tests {
         assert!(built.payload.contains("data-cts-layer"));
         assert!(built.payload.contains("main[data-app-shell-main-surface]"));
         assert!(built.payload.contains("data-cts-main-surface-compat"));
+        assert!(built.payload.contains("createComposerOverflowAnnotator"));
+        assert!(built.payload.contains("data-cts-composer-overflow=\\\"shell\\\""));
+        assert!(built.payload.contains("overflow: clip !important"));
         assert_eq!(built.asset_count, 1);
         assert!(built.stamp.starts_with(&format!("{ENGINE_VERSION}:fixture:")));
     }
@@ -276,6 +374,8 @@ mod tests {
             "data-cts-main-surface-compat",
             "cts-windows-menu-bar",
             "data-cts-menu-region",
+            "data-cts-composer-overflow",
+            "data-cts-composer-mode",
             "--cts-windows-menu-height",
             "--cts-windows-sidebar-padding-top",
             "--cts-windows-main-padding-top",
@@ -315,5 +415,9 @@ mod tests {
         assert!(expr.contains("mainSurfaceMode"));
         assert!(expr.contains("mainSurfaceCompatible"));
         assert!(expr.contains("stageAttachedToMainSurface"));
+        assert!(expr.contains("composerOverflow"));
+        assert!(expr.contains("modeValid"));
+        assert!(expr.contains("editorValid"));
+        assert!(expr.contains("26.727.51351"));
     }
 }
