@@ -216,3 +216,42 @@ test("unchanged layout reuses its classification without remeasuring hardened st
   annotate([shell]);
   assert.equal(reads, initialReads);
 });
+
+test("external style invalidation remeasures an unchanged Composer path", () => {
+  const shell = new FakeNode("div", { className: "composer-surface-chrome" });
+  const editor = shell.append(new FakeNode("div", {
+    className: "editor",
+    nativeStyle: { overflowY: "visible", maxHeight: "none" },
+  }));
+  editor.append(new FakeNode("div", {
+    className: "ProseMirror",
+    attributes: { "data-codex-composer": "true" },
+  }));
+  let reads = 0;
+  const annotate = createComposerOverflowAnnotator({
+    overflowAttribute: OVERFLOW_ATTR,
+    modeAttribute: MODE_ATTR,
+    readStyle: (node) => {
+      reads += 1;
+      return node.nativeStyle;
+    },
+    viewportSignature: () => "1280x800",
+  });
+
+  annotate([shell]);
+  assert.equal(shell.getAttribute(MODE_ATTR), "single-line");
+  const initialReads = reads;
+
+  // Simulate a stylesheet or ancestor change: computed style changes while
+  // the Composer path, viewport, classes, and inline styles remain identical.
+  editor.nativeStyle = { overflowY: "auto", maxHeight: "160px" };
+  annotate([shell]);
+  assert.equal(reads, initialReads);
+  assert.equal(shell.getAttribute(MODE_ATTR), "single-line");
+
+  annotate.invalidate();
+  annotate([shell]);
+  assert.ok(reads > initialReads);
+  assert.equal(shell.getAttribute(MODE_ATTR), "scrolling");
+  assert.equal(editor.getAttribute(OVERFLOW_ATTR), "editor");
+});
