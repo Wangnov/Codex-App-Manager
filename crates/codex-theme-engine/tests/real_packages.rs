@@ -5,14 +5,25 @@
 use std::path::PathBuf;
 
 fn studio_themes() -> Option<PathBuf> {
-    let root = PathBuf::from(std::env::var("HOME").ok()?).join("codex-theme-studio/themes");
-    root.is_dir().then_some(root)
+    if let Ok(configured) = std::env::var("CODEX_THEME_STUDIO_THEMES") {
+        let root = PathBuf::from(configured);
+        if root.is_dir() {
+            return Some(root);
+        }
+    }
+    let home = PathBuf::from(std::env::var("HOME").ok()?);
+    [
+        home.join("awesome-codex-skins/skins"),
+        home.join("codex-theme-studio/themes"),
+    ]
+    .into_iter()
+    .find(|root| root.is_dir())
 }
 
 #[test]
 #[ignore = "requires ~/codex-theme-studio (developer machine only)"]
 fn studio_packages_load_and_build() {
-    let root = studio_themes().expect("~/codex-theme-studio/themes not found");
+    let root = studio_themes().expect("Studio skins directory not found");
     let listed = codex_theme_engine::theme::list_themes(&root);
     let ids: Vec<&str> = listed.iter().map(|t| t.id.as_str()).collect();
     assert!(ids.contains(&"guts-terminal"), "listed: {ids:?}");
@@ -64,7 +75,7 @@ fn studio_packages_load_and_build() {
 #[test]
 #[ignore = "requires a running Codex with --remote-debugging-port=9345"]
 fn live_inject_verify_revert_when_stock() {
-    let root = studio_themes().expect("~/codex-theme-studio/themes not found");
+    let root = studio_themes().expect("Studio skins directory not found");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

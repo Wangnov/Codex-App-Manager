@@ -6,7 +6,9 @@ use std::path::Path;
 
 use sha1::{Digest, Sha1};
 
-use crate::theme::{inline_assets, load_theme, LoadedTheme, ThemeConfig};
+use crate::theme::{
+    inline_assets, inline_motion_assets, load_theme, LoadedTheme, ThemeConfig,
+};
 use crate::{Result, ENGINE_VERSION};
 
 /// The injected renderer runtime — codex-theme-studio's file verbatim. It
@@ -47,20 +49,29 @@ pub struct BuiltPayload {
     pub asset_count: usize,
 }
 
-/// Build the `Runtime.evaluate` payload for a theme directory.
+/// Build the `Runtime.evaluate` payload for a theme directory. Still images
+/// become CSS data URLs; motion assets become a dedicated data-URL map consumed
+/// by the runtime's `<video>` element.
 pub fn build_payload(theme_dir: &Path) -> Result<BuiltPayload> {
     build_payload_from(load_theme(theme_dir)?)
 }
 
 pub fn build_payload_from(theme: LoadedTheme) -> Result<BuiltPayload> {
     let data_urls = inline_assets(&theme)?;
-    // Asset variables ride inside the stylesheet as data: URLs — immune to the
-    // blob revocation races that break late-loading images (border-image).
+    let motion_data_urls = inline_motion_assets(&theme)?;
+    // Still-image assets ride the stylesheet as --cts-asset-* data: URLs, immune
+    // to the blob revocation races that break late-loading images (border-image).
+    // Motion assets skip CSS entirely and ride their own JSON slot as data URLs;
+    // Codex already permits `media-src data:`, so playback needs no CSP bypass.
     let asset_variables = data_urls
         .iter()
         .map(|(key, url)| format!("  --cts-asset-{key}: url(\"{url}\");"))
         .collect::<Vec<_>>()
         .join("\n");
+    // A JSON object literal injected directly as the runtime's `motionAssets`
+    // argument — NOT wrapped as a string like the chrome fragment.
+    let motion_json = serde_json::to_string(&motion_data_urls)
+        .map_err(|e| crate::ThemeEngineError::Theme(format!("motion serialize: {e}")))?;
     let css_with_assets = format!(
         ":root.codex-theme-studio {{\n{asset_variables}\n}}\n\n{}\n\n{RUNTIME_HARDENING_CSS}",
         theme.css
@@ -69,9 +80,8 @@ pub fn build_payload_from(theme: LoadedTheme) -> Result<BuiltPayload> {
         .map_err(|e| crate::ThemeEngineError::Theme(format!("config serialize: {e}")))?;
     let chrome_html = theme.chrome_html.clone();
 
-    // Fingerprint the executable packed payload, including the renderer
-    // runtime. Without the runtime template, renderer-only bug fixes share the
-    // old stamp and the daemon cannot distinguish them from an installed copy.
+    // Fingerprint the executable packed payload, including the renderer runtime
+    // and motion bytes. A video-only change must re-inject and replay the intro.
     let runtime_template = RUNTIME_TEMPLATE.replace(
         "__CTS_COMPOSER_OVERFLOW_HELPERS__",
         &composer_overflow_helpers_expression(),
@@ -81,6 +91,7 @@ pub fn build_payload_from(theme: LoadedTheme) -> Result<BuiltPayload> {
         &css_with_assets,
         chrome_html.as_deref().unwrap_or(""),
         &config_json,
+        &motion_json,
     );
     let stamp = format!("{ENGINE_VERSION}:{}:{short}", theme.config.id);
 
@@ -92,12 +103,13 @@ pub fn build_payload_from(theme: LoadedTheme) -> Result<BuiltPayload> {
             &serde_json::to_string(&chrome_html)
                 .map_err(|e| crate::ThemeEngineError::Theme(format!("chrome serialize: {e}")))?,
         )
+        .replace("__CTS_MOTION_JSON__", &motion_json)
         .replace("__CTS_VERSION_JSON__", &js_json(ENGINE_VERSION)?)
         .replace("__CTS_STAMP_JSON__", &js_json(&stamp)?);
 
     Ok(BuiltPayload {
         payload_bytes: payload.len(),
-        asset_count: data_urls.len(),
+        asset_count: data_urls.len() + motion_data_urls.len(),
         theme: theme.config,
         stamp,
         payload,
@@ -120,12 +132,13 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn fingerprint(runtime: &str, css: &str, chrome: &str, config: &str) -> String {
+fn fingerprint(runtime: &str, css: &str, chrome: &str, config: &str, motion: &str) -> String {
     let mut hasher = Sha1::new();
     hasher.update(runtime.as_bytes());
     hasher.update(css.as_bytes());
     hasher.update(chrome.as_bytes());
     hasher.update(config.as_bytes());
+    hasher.update(motion.as_bytes());
     let digest = hasher.finalize();
     hex(&digest)[..12].to_string()
 }
@@ -356,10 +369,79 @@ mod tests {
     }
 
     #[test]
-    fn fingerprint_tracks_runtime_changes() {
-        let first = fingerprint("runtime-a", "css", "chrome", "config");
-        let second = fingerprint("runtime-b", "css", "chrome", "config");
-        assert_ne!(first, second, "runtime change must re-stamp");
+    fn fingerprint_tracks_runtime_and_motion_changes() {
+        let base = fingerprint("runtime-a", "css", "chrome", "config", "{}");
+        assert_ne!(
+            base,
+            fingerprint("runtime-b", "css", "chrome", "config", "{}"),
+            "runtime change must re-stamp"
+        );
+        assert_ne!(
+            base,
+            fingerprint(
+                "runtime-a",
+                "css",
+                "chrome",
+                "config",
+                r#"{"intro-video":"data:video/mp4;base64,AAAA"}"#
+            ),
+            "motion change must re-stamp"
+        );
+    }
+
+    fn motion_fixture(tmp: &Path) -> std::path::PathBuf {
+        let dir = tmp.join("ning-hongye");
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(
+            dir.join("theme.json"),
+            r##"{
+              "schemaVersion": 2,
+              "id": "ning-hongye",
+              "name": "Ning",
+              "assets": { "intro": "assets/intro.webp" },
+              "motionAssets": { "intro-video": "assets/intro-video.mp4" }
+            }"##,
+        )
+        .unwrap();
+        std::fs::write(dir.join("theme.css"), "html.codex-theme-studio {}\n").unwrap();
+        std::fs::write(dir.join("assets/intro.webp"), [0x52, 0x49, 0x46, 0x46, 1, 2]).unwrap();
+        // A "video" far larger than the 1.4 MB CSS-image cap. It is valid in
+        // the dedicated motion slot because it never becomes a CSS URL.
+        std::fs::write(dir.join("assets/intro-video.mp4"), vec![7u8; 2_000_000]).unwrap();
+        dir
+    }
+
+    #[test]
+    fn motion_uses_dedicated_data_url_without_touching_css_or_csp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = motion_fixture(tmp.path());
+        let built = build_payload(&dir).unwrap();
+        assert!(built.payload.contains("data:video/mp4;base64,"));
+        assert!(!built.payload.contains("http://127.0.0.1"));
+        assert!(!built.payload.contains("Page.setBypassCSP"));
+        assert!(built.payload.len() > 2_500_000, "video bytes must enter motion JSON");
+        // The still image still rides the stylesheet as a data: URL.
+        assert!(built.payload.contains("--cts-asset-intro: url("));
+        assert!(!built.payload.contains("--cts-asset-intro-video"));
+        assert_eq!(built.asset_count, 2);
+    }
+
+    #[test]
+    fn payload_without_motion_substitutes_an_empty_map() {
+        let tmp = tempfile::tempdir().unwrap();
+        let built = build_payload(&fixture_theme(tmp.path())).unwrap();
+        assert!(!built.payload.contains("__CTS_MOTION_JSON__"));
+        assert!(built.payload.trim_end().ends_with(", {})"));
+    }
+
+    #[test]
+    fn swapped_video_bytes_restamp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = motion_fixture(tmp.path());
+        let first = build_payload(&dir).unwrap().stamp;
+        std::fs::write(dir.join("assets/intro-video.mp4"), vec![9u8; 3_000_000]).unwrap();
+        let second = build_payload(&dir).unwrap().stamp;
+        assert_ne!(first, second, "a swapped video must re-stamp");
     }
 
     #[test]

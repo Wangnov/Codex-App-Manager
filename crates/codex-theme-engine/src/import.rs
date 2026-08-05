@@ -235,4 +235,37 @@ mod tests {
         assert!(import_codexskin(&bad, &root).is_err());
         assert!(!root.join("bad").exists());
     }
+
+    #[test]
+    fn imports_a_codexskin_with_motion() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("themes");
+        let skin = tmp.path().join("motion.codexskin");
+        // A package carrying an mp4 motion asset (plus its required static intro
+        // fallback) must import without any extra rejection path.
+        write_zip(
+            &skin,
+            &[
+                (
+                    "theme.json",
+                    br#"{"schemaVersion":2,"id":"motion-skin","name":"M","version":"1.0.0",
+                        "assets":{"intro":"assets/intro.webp"},
+                        "motionAssets":{"intro-video":"assets/intro-video.mp4"},
+                        "previews":["previews/home.webp"]}"# as &[u8],
+                ),
+                ("theme.css", b"html.codex-theme-studio {}\n"),
+                ("assets/intro.webp", b"RIFF\x01\x02"),
+                ("assets/intro-video.mp4", b"\x00\x00\x00\x18ftypisom"),
+                ("previews/home.webp", b"RIFF\x01\x02"),
+            ],
+        );
+
+        let summary = import_codexskin(&skin, &root).unwrap();
+        assert_eq!(summary.id, "motion-skin");
+        // The installed package validates and exposes the motion asset with its
+        // video mime — ready for the payload's dedicated motion data-URL map.
+        let installed = crate::theme::load_theme(&root.join("motion-skin")).unwrap();
+        assert!(installed.motion_assets.contains_key("intro-video"));
+        assert_eq!(installed.motion_assets["intro-video"].mime, "video/mp4");
+    }
 }
