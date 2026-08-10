@@ -36,6 +36,10 @@ import { ProgressScreen, type PausedDownload } from "./ProgressScreen";
 import { useDownloadProgress } from "./useDownloadProgress";
 import { useFocusRecheck, installIdentity } from "./useFocusRecheck";
 import { useOperationReattach } from "./useOperationReattach";
+import {
+  InstallOtherVersionEntry,
+  InstallOtherVersionSheet,
+} from "./InstallOtherVersion";
 
 type Kind = "loading" | "error" | "none" | "idle" | "update" | "external" | "uptodate";
 
@@ -65,6 +69,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   // would strand a now-uninstalled user on an error screen with no install CTA.
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [otherVersionOpen, setOtherVersionOpen] = useState(false);
   const [manualExistingOpen, setManualExistingOpen] = useState(false);
   const [manualExistingCandidate, setManualExistingCandidate] =
     useState<ManualExistingCandidate | null>(null);
@@ -114,7 +119,9 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   const refreshStatus = useCallback(async () => {
     try {
-      setStatus(await managerApi.macStatus());
+      const next = await managerApi.macStatus();
+      setStatus(next);
+      if (next.status === "external") setOtherVersionOpen(false);
       setStatusFailed(false);
     } catch {
       // e.g. unsupported platform — record the failure so we don't offer install.
@@ -230,6 +237,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       setStatus(st);
       setStatusLoaded(true);
       setStatusFailed(false);
+      if (st.status === "external") setOtherVersionOpen(false);
     },
     hasChecked: () => reportRef.current != null,
     checkedIdentity: () => installIdentity(reportRef.current?.installed ?? null),
@@ -237,6 +245,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     isBusy: () => busyRef.current != null,
     onIdentityChanged: () => {
       setConfirmOpen(false);
+      setOtherVersionOpen(false);
       void check();
     },
   });
@@ -651,7 +660,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       <div
         className="scroll"
         ref={scopeRef}
-        inert={confirmOpen || manualExistingOpen ? true : undefined}
+        inert={confirmOpen || manualExistingOpen || otherVersionOpen ? true : undefined}
       >
         {perform ? (
           <ResultBanner
@@ -910,6 +919,13 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           ) : null}
         </div>
 
+        {!rechecking && (kind === "none" || (installed && kind !== "external")) ? (
+          <InstallOtherVersionEntry
+            disabled={busy !== null}
+            onOpen={() => setOtherVersionOpen(true)}
+          />
+        ) : null}
+
         {/* Also offered on non-ambiguous "external" (on ambiguity the picker
             IS the primary action above, so the secondary link would repeat). */}
         {!rechecking && (kind === "none" || (kind === "external" && !ambiguousInstall)) ? (
@@ -964,6 +980,14 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           </button>
         </div>
       </Sheet>
+
+      <InstallOtherVersionSheet
+        open={otherVersionOpen}
+        platform="macos"
+        currentVersion={installedVersion}
+        architecture={installed?.arch ?? null}
+        onDismiss={() => setOtherVersionOpen(false)}
+      />
 
       <ManualExistingInstallSheet
         open={manualExistingOpen}

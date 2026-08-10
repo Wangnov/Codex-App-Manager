@@ -202,6 +202,7 @@ describe("WinHome state machine", () => {
     api.winStatus.mockResolvedValue({ installed: null, status: "none" });
     renderWinHome();
     expect(await screen.findByRole("button", { name: /安装 Codex/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /选择安装版本/ })).toBeInTheDocument();
   });
 
   it("signs the perform expectation from the SAME report snapshot it shows", async () => {
@@ -240,7 +241,9 @@ describe("WinHome state machine", () => {
     api.winAdopt.mockResolvedValue(STATUS_MANAGED);
     const user = userEvent.setup();
     renderWinHome();
-    await user.click(await screen.findByRole("button", { name: /开始管理/ }));
+    const adopt = await screen.findByRole("button", { name: /开始管理/ });
+    expect(screen.queryByRole("button", { name: /选择安装版本/ })).not.toBeInTheDocument();
+    await user.click(adopt);
     await waitFor(() => expect(api.winAdopt).toHaveBeenCalledTimes(1));
   });
 
@@ -405,6 +408,7 @@ describe("WinHome state machine", () => {
     expect(await screen.findByText(/暂时无法确认 Codex 是否已写入磁盘/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "重新检查" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /安装 Codex/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /选择安装版本/ })).not.toBeInTheDocument();
   });
 
   it("keeps reinstall blocked when invoke rejects after commit with an unknown outcome", async () => {
@@ -726,6 +730,30 @@ describe("WinHome state machine", () => {
     // 浏览 buttons could still run install against the vanished snapshot,
     // bypassing the external→adopt boundary.
     await waitFor(() => expect(screen.queryByText("选择安装位置")).not.toBeInTheDocument());
+  });
+
+  it("closes the version picker when a focus re-check finds the install drifted", async () => {
+    const user = userEvent.setup();
+    let onFocus: (() => void) | undefined;
+    vi.mocked(listen).mockImplementation((event: string, cb: unknown) => {
+      if (event === "tauri://focus") onFocus = cb as () => void;
+      return Promise.resolve(() => {});
+    });
+    renderWinHome();
+
+    await user.click(await screen.findByRole("button", { name: /选择安装版本/ }));
+    expect(await screen.findByRole("dialog", { name: "选择安装版本" })).toBeInTheDocument();
+
+    api.winStatus.mockResolvedValue({ installed: INSTALLED, status: "external" });
+    await waitFor(() => expect(onFocus).toBeDefined());
+    await act(async () => {
+      onFocus?.();
+      await Promise.resolve();
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "选择安装版本" })).not.toBeInTheDocument(),
+    );
   });
 
   it.each([

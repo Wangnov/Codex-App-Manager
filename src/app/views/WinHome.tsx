@@ -35,6 +35,10 @@ import { ProgressScreen, type PausedDownload } from "./ProgressScreen";
 import { useDownloadProgress } from "./useDownloadProgress";
 import { useFocusRecheck, installIdentity } from "./useFocusRecheck";
 import { useOperationReattach } from "./useOperationReattach";
+import {
+  InstallOtherVersionEntry,
+  InstallOtherVersionSheet,
+} from "./InstallOtherVersion";
 
 type Kind = "loading" | "error" | "none" | "idle" | "update" | "external" | "uptodate";
 type Busy = "plan" | "perform" | "adopt" | "install" | "launch" | null;
@@ -95,6 +99,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     useState<ProvenanceRecovery | null>(readStoredProvenanceRecovery);
   const provenanceRecoveryPending = provenanceRecovery !== null;
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [otherVersionOpen, setOtherVersionOpen] = useState(false);
   const [installDirOpen, setInstallDirOpen] = useState(false);
   const [installDirBusy, setInstallDirBusy] = useState(false);
   const [manualExistingOpen, setManualExistingOpen] = useState(false);
@@ -211,6 +216,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       const next = await managerApi.winStatus();
       if (canApply()) {
         setStatus(next);
+        if (next.status === "external") setOtherVersionOpen(false);
         setStatusFailed(false);
       }
       return next;
@@ -403,6 +409,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       setStatus(st);
       setStatusLoaded(true);
       setStatusFailed(false);
+      if (st.status === "external") setOtherVersionOpen(false);
     },
     hasChecked: () => reportRef.current != null,
     checkedIdentity: () => installIdentity(reportRef.current?.installed ?? null, normalizePath),
@@ -410,7 +417,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     isBusy: () => busyRef.current != null,
     onIdentityChanged: () => {
       // Drop EVERY sheet built for the OLD target before re-checking: the
-      // confirm sheet, the fresh-install location sheet, and the manual
+      // confirm sheet, version picker, fresh-install location sheet, and manual
       // existing-install picker. Any of them could otherwise let a click run
       // install/perform against a snapshot the user never saw — bypassing the
       // freshly-refreshed external→adopt boundary. The user re-confirms against
@@ -418,6 +425,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       setConfirmOpen(false);
       setInstallDirOpen(false);
       setManualExistingOpen(false);
+      setOtherVersionOpen(false);
       setManualExistingCandidate(null);
       void check();
     },
@@ -973,7 +981,11 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       <div
         className="scroll"
         ref={scopeRef}
-        inert={confirmOpen || installDirOpen || manualExistingOpen ? true : undefined}
+        inert={
+          confirmOpen || installDirOpen || manualExistingOpen || otherVersionOpen
+            ? true
+            : undefined
+        }
       >
         {perform ? (
           <>
@@ -1240,6 +1252,15 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           ) : null}
         </div>
 
+        {!rechecking &&
+        !provenanceRecoveryPending &&
+        (kind === "none" || (installed && kind !== "external")) ? (
+          <InstallOtherVersionEntry
+            disabled={busy !== null}
+            onOpen={() => setOtherVersionOpen(true)}
+          />
+        ) : null}
+
         {!rechecking && kind === "none" ? (
           <div className="manual-existing-entry">
             <button
@@ -1298,6 +1319,14 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           </button>
         </div>
       </Sheet>
+
+      <InstallOtherVersionSheet
+        open={otherVersionOpen}
+        platform="windows"
+        currentVersion={installed?.version ?? null}
+        architecture={installed?.arch ?? report?.release.architecture ?? null}
+        onDismiss={() => setOtherVersionOpen(false)}
+      />
 
       <Sheet
         open={installDirOpen}

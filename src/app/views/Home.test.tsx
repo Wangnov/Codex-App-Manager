@@ -145,6 +145,7 @@ describe("MacHome state machine", () => {
     api.macStatus.mockResolvedValue(STATUS_NONE);
     renderHome();
     expect(await screen.findByRole("button", { name: /安装 Codex/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /选择安装版本/ })).toBeInTheDocument();
     expect(screen.getByText("未检测到 Codex")).toBeInTheDocument();
   });
 
@@ -198,9 +199,34 @@ describe("MacHome state machine", () => {
     renderHome();
     const adopt = await screen.findByRole("button", { name: /开始管理/ });
     expect(screen.queryByRole("button", { name: /立即更新/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /选择安装版本/ })).not.toBeInTheDocument();
     api.macAdopt.mockResolvedValue(STATUS_MANAGED);
     await user.click(adopt);
     await waitFor(() => expect(api.macAdopt).toHaveBeenCalledTimes(1));
+  });
+
+  it("closes the version picker when a focus re-check finds the install drifted", async () => {
+    const user = userEvent.setup();
+    let onFocus: (() => void) | undefined;
+    listenMock.mockImplementation((event: string, cb: unknown) => {
+      if (event === "tauri://focus") onFocus = cb as () => void;
+      return Promise.resolve(() => {});
+    });
+    renderHome();
+
+    await user.click(await screen.findByRole("button", { name: /选择安装版本/ }));
+    expect(await screen.findByRole("dialog", { name: "选择安装版本" })).toBeInTheDocument();
+
+    api.macStatus.mockResolvedValue({ installed: INSTALLED, status: "external" });
+    await waitFor(() => expect(onFocus).toBeDefined());
+    await act(async () => {
+      onFocus?.();
+      await Promise.resolve();
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "选择安装版本" })).not.toBeInTheDocument(),
+    );
   });
 
   it("shows the error hero with a retry when the check fails and nothing is installed", async () => {
