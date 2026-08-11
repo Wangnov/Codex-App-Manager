@@ -2916,19 +2916,22 @@ mod disk_preflight_tests {
             uuid::Uuid::new_v4()
         ));
         let staged = root.join("staged.app");
-        let install = root.join("Codex.app");
+        let blocked_parent = root.join("blocked");
+        let install = blocked_parent.join("Codex.app");
         std::fs::create_dir_all(&staged).unwrap();
         std::fs::write(staged.join("payload"), b"test").unwrap();
-        // A directory cannot replace an existing file. The failed atomic call
-        // must leave policy/completion evidence in the pre-commit state.
-        std::fs::write(&install, b"occupied").unwrap();
+        // A file cannot be traversed as a parent directory on any supported
+        // platform. The failed atomic call must leave policy/completion
+        // evidence in the pre-commit state.
+        std::fs::write(&blocked_parent, b"occupied").unwrap();
         let evidence = std::sync::Mutex::new(Vec::new());
         let hook = |value| evidence.lock().unwrap().push(value);
         assert!(commit_fresh_historical_app(&staged, &install, Some(&hook), None).is_err());
         assert!(evidence.lock().unwrap().is_empty());
         assert!(staged.exists());
 
-        std::fs::remove_file(&install).unwrap();
+        std::fs::remove_file(&blocked_parent).unwrap();
+        std::fs::create_dir_all(&blocked_parent).unwrap();
         commit_fresh_historical_app(&staged, &install, Some(&hook), None).unwrap();
         assert_eq!(
             evidence.lock().unwrap().as_slice(),
