@@ -13,7 +13,11 @@ pub struct MsixIdentity {
     pub publisher: String,
     pub version: String,
     pub processor_architecture: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_id: Option<String>,
 }
+
+const OPENAI_PACKAGE_PUBLISHER_ID: &str = "2p2nqsd0c76g0";
 
 /// A single `<PackageDependency>` declared in the staged MSIX manifest. These
 /// are the framework packages (VCLibs, WindowsAppRuntime, UI.Xaml, NET.Native,
@@ -48,9 +52,9 @@ const FRAMEWORK_DEPENDENCY_PREFIXES: &[&str] = &[
 /// want to steer to portable when a *framework* the sideload cannot acquire is
 /// absent. Pure + cross-platform so it is unit-tested off Windows.
 pub fn is_framework_dependency(name: &str) -> bool {
-    FRAMEWORK_DEPENDENCY_PREFIXES
-        .iter()
-        .any(|prefix| name.len() >= prefix.len() && name[..prefix.len()].eq_ignore_ascii_case(prefix))
+    FRAMEWORK_DEPENDENCY_PREFIXES.iter().any(|prefix| {
+        name.len() >= prefix.len() && name[..prefix.len()].eq_ignore_ascii_case(prefix)
+    })
 }
 
 /// The package-root-relative path of the app's entry executable, from the
@@ -88,6 +92,11 @@ pub fn parse_appx_manifest_xml(xml: &str) -> Result<MsixIdentity, EngineError> {
         publisher: get("Publisher")?,
         version: get("Version")?,
         processor_architecture: get("ProcessorArchitecture")?,
+        resource_id: identity
+            .attribute("ResourceId")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
     })
 }
 
@@ -233,6 +242,48 @@ pub fn validate_codex_identity(
     Ok(())
 }
 
+/// Build the canonical AppX package full name used as MainPackageMoniker by
+/// deployment events. The source filename is not authoritative: browsers and
+/// users may rename a valid signed MSIX before selecting it offline.
+pub fn canonical_codex_package_moniker(identity: &MsixIdentity) -> Result<String, EngineError> {
+    if identity.name != OPENAI_PACKAGE_IDENTITY {
+        return Err(EngineError::Msix(format!(
+            "unexpected package identity {}; expected {}",
+            identity.name, OPENAI_PACKAGE_IDENTITY
+        )));
+    }
+    let valid_version = identity.version.split('.').count() == 4
+        && identity.version.split('.').all(|part| {
+            !part.is_empty()
+                && part.bytes().all(|byte| byte.is_ascii_digit())
+                && part.parse::<u16>().is_ok()
+        });
+    if !valid_version {
+        return Err(EngineError::Msix(format!(
+            "invalid package version {}",
+            identity.version
+        )));
+    }
+    let architecture = identity.processor_architecture.trim().to_ascii_lowercase();
+    if !matches!(architecture.as_str(), "x64" | "arm64" | "x86" | "neutral") {
+        return Err(EngineError::Msix(format!(
+            "invalid package architecture {}",
+            identity.processor_architecture
+        )));
+    }
+    let resource_id = identity.resource_id.as_deref().unwrap_or("");
+    if !resource_id
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+    {
+        return Err(EngineError::Msix("invalid package resource id".to_string()));
+    }
+    Ok(format!(
+        "{}_{}_{}_{}_{}",
+        identity.name, identity.version, architecture, resource_id, OPENAI_PACKAGE_PUBLISHER_ID
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,8 +333,21 @@ mod tests {
             publisher: "CN=OpenAI".to_string(),
             version: "26.602.3474.0".to_string(),
             processor_architecture: "x64".to_string(),
+            resource_id: None,
         };
         assert!(validate_codex_identity(&identity, "26.602.3474.0", Some("x64")).is_err());
+    }
+
+    #[test]
+    fn package_moniker_comes_from_signed_manifest_identity_not_filename() {
+        let identity = parse_appx_manifest_xml(
+            r#"<Package><Identity Name="OpenAI.Codex" Publisher="CN=X" Version="26.715.2305.0" ProcessorArchitecture="ARM64" /></Package>"#,
+        )
+        .unwrap();
+        assert_eq!(
+            canonical_codex_package_moniker(&identity).unwrap(),
+            "OpenAI.Codex_26.715.2305.0_arm64__2p2nqsd0c76g0"
+        );
     }
 
     #[test]
@@ -297,7 +361,10 @@ mod tests {
             // Case-insensitive: registry/manifest casing can vary.
             "microsoft.vclibs.140.00",
         ] {
-            assert!(is_framework_dependency(name), "{name} should be a framework");
+            assert!(
+                is_framework_dependency(name),
+                "{name} should be a framework"
+            );
         }
         for name in ["OpenAI.Codex", "Microsoft.WindowsTerminal", "Contoso.App"] {
             assert!(

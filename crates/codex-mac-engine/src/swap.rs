@@ -63,7 +63,10 @@ pub fn codex_running_at(install_app: &Path) -> bool {
         // No readable bundle at the path (e.g. already removed) — not running.
         return false;
     };
-    let pattern = format!("^{}( |$)", ere_escape(&format!("{app}/Contents/MacOS/{exe}")));
+    let pattern = format!(
+        "^{}( |$)",
+        ere_escape(&format!("{app}/Contents/MacOS/{exe}"))
+    );
     Command::new(PGREP)
         .args(["-f", &pattern])
         .output()
@@ -186,6 +189,8 @@ pub enum SwapBoundary {
     BeforeMoveNew,
     /// New payload is at install path.
     AfterMoveNew,
+    /// A failure chose rollback; persist that intent before consuming backup.
+    BeforeRollback,
 }
 
 /// Optional observer invoked at each rename boundary. Used by the app layer to
@@ -275,6 +280,7 @@ pub fn swap_in_place_with_observer(
     // possible so we never leave an empty install without a recovery path.
     if let Err(obs_err) = observer(SwapBoundary::AfterMoveOld) {
         if had_old {
+            let _ = observer(SwapBoundary::BeforeRollback);
             if let Err(rb) = std::fs::rename(backup_app, install_app) {
                 log::error!(
                     "observer failed after move-old and rollback also failed: obs={obs_err} rollback={rb}"
@@ -293,6 +299,7 @@ pub fn swap_in_place_with_observer(
     observer(SwapBoundary::BeforeMoveNew)?;
     if fault == Some(SwapFault::OnMoveNew) {
         if had_old {
+            let _ = observer(SwapBoundary::BeforeRollback);
             let _ = std::fs::rename(backup_app, install_app);
         }
         return Err(fault_err("on-move-new"));
@@ -312,11 +319,10 @@ pub fn swap_in_place_with_observer(
         }
         Err(e) => {
             if had_old {
+                let _ = observer(SwapBoundary::BeforeRollback);
                 let _ = std::fs::rename(backup_app, install_app);
             }
-            let err = EngineError::Io(format!(
-                "install new bundle failed (rolled back): {e}"
-            ));
+            let err = EngineError::Io(format!("install new bundle failed (rolled back): {e}"));
             let install_path = install_app.display();
             log::error!("atomic swap failed install_path={install_path} error={err}");
             Err(err)
@@ -390,10 +396,8 @@ mod tests {
 
     fn test_root(name: &str) -> std::path::PathBuf {
         let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "codex-swap-{name}-{}-{id}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("codex-swap-{name}-{}-{id}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
@@ -417,12 +421,18 @@ mod tests {
         let (install, new_app, backup) = seed_bundles(&root);
 
         swap_in_place(&install, &new_app, &backup).unwrap();
-        assert_eq!(fs::read_to_string(install.join("Contents/ver")).unwrap(), "3575");
+        assert_eq!(
+            fs::read_to_string(install.join("Contents/ver")).unwrap(),
+            "3575"
+        );
         assert!(backup.join("Contents/ver").exists(), "old bundle preserved");
         assert!(!new_app.exists(), "new bundle moved into place");
 
         rollback(&install, &backup).unwrap();
-        assert_eq!(fs::read_to_string(install.join("Contents/ver")).unwrap(), "3511");
+        assert_eq!(
+            fs::read_to_string(install.join("Contents/ver")).unwrap(),
+            "3511"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -456,7 +466,10 @@ mod tests {
         inject_swap_fault(Some(SwapFault::BeforeMoveOld));
         let err = swap_in_place(&install, &new_app, &backup).unwrap_err();
         assert!(err.to_string().contains("before-move-old"));
-        assert_eq!(fs::read_to_string(install.join("Contents/ver")).unwrap(), "3511");
+        assert_eq!(
+            fs::read_to_string(install.join("Contents/ver")).unwrap(),
+            "3511"
+        );
         assert!(new_app.exists());
         assert!(!backup.exists());
         let _ = fs::remove_dir_all(&root);
@@ -473,11 +486,20 @@ mod tests {
         assert!(!install.exists());
         assert!(backup.exists());
         assert!(new_app.exists());
-        assert_eq!(fs::read_to_string(backup.join("Contents/ver")).unwrap(), "3511");
-        assert_eq!(fs::read_to_string(new_app.join("Contents/ver")).unwrap(), "3575");
+        assert_eq!(
+            fs::read_to_string(backup.join("Contents/ver")).unwrap(),
+            "3511"
+        );
+        assert_eq!(
+            fs::read_to_string(new_app.join("Contents/ver")).unwrap(),
+            "3575"
+        );
         // Manual continue (recovery matrix: continue).
         fs::rename(&new_app, &install).unwrap();
-        assert_eq!(fs::read_to_string(install.join("Contents/ver")).unwrap(), "3575");
+        assert_eq!(
+            fs::read_to_string(install.join("Contents/ver")).unwrap(),
+            "3575"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -490,7 +512,10 @@ mod tests {
         assert!(err.to_string().contains("on-move-new"));
         // In-process fault path restores old immediately (same as real rename fail).
         assert!(install.exists());
-        assert_eq!(fs::read_to_string(install.join("Contents/ver")).unwrap(), "3511");
+        assert_eq!(
+            fs::read_to_string(install.join("Contents/ver")).unwrap(),
+            "3511"
+        );
         assert!(new_app.exists());
         let _ = fs::remove_dir_all(&root);
     }

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import {
   errorCode,
@@ -8,9 +15,12 @@ import {
 } from "../../services/managerApi";
 import type {
   AppSettings,
+  HistoricalInstallSelection,
+  HistoricalResumeExpectation,
   MacInstallStatus,
   MacPerformReport,
   MacUpdateReport,
+  OperationResumeContext,
 } from "../../shared/types";
 import { DEFAULT_SETTINGS } from "../../shared/types";
 import {
@@ -21,13 +31,23 @@ import {
 } from "../errorCopy";
 import { Icon, CodexGlyph } from "../icons";
 import { useI18n, dirOf, type TKey } from "../i18n";
-import { Ring, TopBar, ResultBanner, ErrorHero, FailureBanner, StatusBanner } from "../components";
+import {
+  Ring,
+  TopBar,
+  ResultBanner,
+  ErrorHero,
+  FailureBanner,
+  StatusBanner,
+} from "../components";
 import { currentPlatform } from "../platform";
 import { WinHome } from "./WinHome";
 import { mib, fmtDateTime } from "../format";
 import { useHomeMotion } from "../motion";
 import { Sheet } from "../Sheet";
-import { macSkippedUpdateCandidate, skippedUpdateMatches } from "../skippedUpdate";
+import {
+  macSkippedUpdateCandidate,
+  skippedUpdateMatches,
+} from "../skippedUpdate";
 import {
   ManualExistingInstallSheet,
   type ManualExistingCandidate,
@@ -41,14 +61,50 @@ import {
   InstallOtherVersionSheet,
 } from "./InstallOtherVersion";
 
-type Kind = "loading" | "error" | "none" | "idle" | "update" | "external" | "uptodate";
+type Kind =
+  "loading" | "error" | "none" | "idle" | "update" | "external" | "uptodate";
+type MacBusy = "plan" | "perform" | "adopt" | "install" | null;
+type HomeNotice = { title: string; detail?: string };
+type MacHistoricalExpectation = Extract<
+  HistoricalResumeExpectation,
+  { platform: "macos" }
+>;
+type MacOrdinaryExpectation = Extract<
+  OperationResumeContext["expectation"],
+  { platform: "macos" }
+>;
 
 /** Platform dispatcher — the backend command surface differs per OS. */
 export function Home(props: { onOpenSettings: () => void }) {
-  return currentPlatform() === "windows" ? <WinHome {...props} /> : <MacHome {...props} />;
+  const [hostArchitecture, setHostArchitecture] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    void managerApi
+      .getHostArchitecture()
+      .then((architecture) => {
+        if (active) setHostArchitecture(architecture);
+      })
+      .catch(() => {
+        // The picker can still ask explicitly when host detection is unavailable.
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+  return currentPlatform() === "windows" ? (
+    <WinHome {...props} hostArchitecture={hostArchitecture} />
+  ) : (
+    <MacHome {...props} hostArchitecture={hostArchitecture} />
+  );
 }
 
-function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
+function MacHome({
+  onOpenSettings,
+  hostArchitecture,
+}: {
+  onOpenSettings: () => void;
+  hostArchitecture: string | null;
+}) {
   const { t, lang } = useI18n();
   const [report, setReport] = useState<MacUpdateReport | null>(null);
   const [status, setStatus] = useState<MacInstallStatus | null>(null);
@@ -58,23 +114,35 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [perform, setPerform] = useState<MacPerformReport | null>(null);
   // Human-facing version pair captured at perform time, so the outcome strip can
   // read "26.602.40724 → 26.602.71036" instead of raw build numbers.
-  const [updatedVer, setUpdatedVer] = useState<{ from: string; to: string } | null>(null);
+  const [updatedVer, setUpdatedVer] = useState<{
+    from: string;
+    to: string;
+  } | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
-  const [busy, setBusy] = useState<"plan" | "perform" | "adopt" | "install" | null>(null);
+  const [busy, setBusy] = useState<MacBusy>(null);
+  // Async checks and installs can overlap while the version sheet is open.
+  // Track ownership synchronously so an older check cannot clear the progress
+  // state belonging to a newly-started historical install.
+  const busyRef = useRef<MacBusy>(null);
+  const busyOwnerRef = useRef(0);
   const [checkError, setCheckError] = useState<FailureSurface | null>(null);
   const [actionError, setActionError] = useState<FailureSurface | null>(null);
   // A non-error, transient heads-up (e.g. "we re-checked because the install
   // changed"). Kept SEPARATE from `checkError` on purpose: `checkError` drives the
   // "检查失败" hero in the `!installed` branch, so reusing it for an info note
   // would strand a now-uninstalled user on an error screen with no install CTA.
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<HomeNotice | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [otherVersionOpen, setOtherVersionOpen] = useState(false);
   const [manualExistingOpen, setManualExistingOpen] = useState(false);
   const [manualExistingCandidate, setManualExistingCandidate] =
     useState<ManualExistingCandidate | null>(null);
-  const [manualExistingBusy, setManualExistingBusy] = useState<"pick" | "adopt" | null>(null);
-  const [manualExistingError, setManualExistingError] = useState<string | null>(null);
+  const [manualExistingBusy, setManualExistingBusy] = useState<
+    "pick" | "adopt" | null
+  >(null);
+  const [manualExistingError, setManualExistingError] = useState<string | null>(
+    null,
+  );
   // Whether the status request has finished (success OR failure) — distinct from
   // the value, so a failed macStatus doesn't leave the home stuck on "loading".
   const [statusLoaded, setStatusLoaded] = useState(false);
@@ -88,6 +156,10 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [paused, setPaused] = useState<PausedDownload | null>(null);
   const [pausedDiscardBusy, setPausedDiscardBusy] = useState(false);
   const pausedDiscardBusyRef = useRef(false);
+  // Linearizes 〔继续〕with the old paused screen's 〔取消〕 handler. React state
+  // hides that screen at the end of the click, while this ref closes the smaller
+  // same-tick window before the replacement render commits.
+  const pausedResumeStartingRef = useRef(false);
   const scopeRef = useRef<HTMLDivElement>(null);
   const confirmTitleId = useId();
   const confirmBodyId = useId();
@@ -137,12 +209,18 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   // after an out-of-band install change. Returns whether the check succeeded,
   // so a caller can layer a notice on top without masking a check failure.
   const check = useCallback(async (): Promise<boolean> => {
+    const owner = busyOwnerRef.current + 1;
+    busyOwnerRef.current = owner;
+    busyRef.current = "plan";
     setBusy("plan");
     setCheckError(null);
     setActionError(null);
     setNotice(null);
     try {
-      const [r] = await Promise.all([managerApi.macPlanUpdate(), refreshStatus()]);
+      const [r] = await Promise.all([
+        managerApi.macPlanUpdate(),
+        refreshStatus(),
+      ]);
       setReport(r);
       return true;
     } catch (cause) {
@@ -152,7 +230,10 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       setCheckError(resolveFailure(cause, t));
       return false;
     } finally {
-      setBusy(null);
+      if (busyOwnerRef.current === owner) {
+        busyRef.current = null;
+        setBusy(null);
+      }
     }
   }, [refreshStatus, t]);
 
@@ -180,7 +261,8 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       setSettings((event as CustomEvent<AppSettings>).detail);
     };
     window.addEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
-    return () => window.removeEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
+    return () =>
+      window.removeEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
   }, []);
 
   // The snapshot/busy values the focus listener (a long-lived subscription)
@@ -189,7 +271,6 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   useEffect(() => {
     reportRef.current = report;
   }, [report]);
-  const busyRef = useRef(busy);
   useEffect(() => {
     busyRef.current = busy;
   }, [busy]);
@@ -204,7 +285,11 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     startDlListen,
     applySnapshotProgress,
     resetStop,
-    setBusy: (next) => setBusy(next),
+    setBusy: (next) => {
+      busyOwnerRef.current += 1;
+      busyRef.current = next;
+      setBusy(next);
+    },
     setPaused,
     onOperationEnded: () => {
       void checkRef.current();
@@ -217,7 +302,10 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   useEffect(() => {
     if (!settings.periodicCheck) return;
-    const intervalMs = Math.max(60_000, settings.periodicCheckIntervalSeconds * 1000);
+    const intervalMs = Math.max(
+      60_000,
+      settings.periodicCheckIntervalSeconds * 1000,
+    );
     const id = window.setInterval(() => {
       if (busyRef.current) return;
       void checkRef.current();
@@ -240,7 +328,8 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       if (st.status === "external") setOtherVersionOpen(false);
     },
     hasChecked: () => reportRef.current != null,
-    checkedIdentity: () => installIdentity(reportRef.current?.installed ?? null),
+    checkedIdentity: () =>
+      installIdentity(reportRef.current?.installed ?? null),
     identityOf: (st) => installIdentity(st.installed ?? null),
     isBusy: () => busyRef.current != null,
     onIdentityChanged: () => {
@@ -263,33 +352,79 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     }
   }, [t]);
 
-  const runInstall = useCallback(async () => {
+  const runInstall = useCallback(async (
+    expectationOverride?: MacOrdinaryExpectation,
+    resumeSnapshot?: PausedDownload,
+  ) => {
     setBusy("install");
     setActionError(null);
-    setPaused(null);
+    if (!resumeSnapshot) setPaused(null);
+    let expectation: MacOrdinaryExpectation | null =
+      expectationOverride ?? null;
+    if (!expectation) {
+      try {
+        const next = report ?? (await managerApi.macPlanUpdate());
+        if (!report) setReport(next);
+        const plan = next.plan;
+        if (!plan) throw new Error("macOS appcast has no install target");
+        expectation = {
+          platform: "macos",
+          currentBuild: null,
+          targetBuild: plan.latestBuild,
+          installPath: null,
+          currentVersion: null,
+          targetVersion:
+            plan.latestShortVersion || `build ${plan.latestBuild}`,
+        };
+      } catch (cause) {
+        setActionError(resolveFailure(cause, t));
+        setBusy(null);
+        return;
+      }
+    }
     const un = await startDlListen();
     try {
-      const status = await managerApi.macInstall();
+      if (resumeSnapshot) setPaused(null);
+      const status = await managerApi.macInstall({
+        targetBuild: expectation.targetBuild,
+        targetVersion: expectation.targetVersion,
+      });
       setStatus(status);
       // Primary install can succeed while provenance fails — still a completed
       // install on disk; never treat it as a hard failure (would invite reinstall).
       const outcome = status.outcome;
-      if (outcome?.primaryOk && outcome.recoveryActions.includes("record_provenance")) {
-        setNotice(t("install.partial.note", { action: t("install.partial.record") }));
-        setJustInstalled(true);
-      } else {
-        setJustInstalled(true);
-      }
+      const needsProvenance =
+        outcome?.primaryOk &&
+        outcome.recoveryActions.includes("record_provenance");
+      setJustInstalled(true);
       await check();
+      // `check()` intentionally clears stale notices at entry, so publish this
+      // operation's partial-success guidance only after that refresh settles.
+      if (needsProvenance) {
+        setNotice({
+          title: t("install.partial.note", {
+            action: t("install.partial.record"),
+          }),
+        });
+      }
     } catch (cause) {
       const stop = downloadStopRef.current;
       if (stop === "pause" && isDownloadCancelled(cause)) {
         // Keep the progress screen up in a paused state instead of routing home;
         // the cached `.part` survives, so 〔继续〕 resumes from here.
-        setPaused({ kind: "install", dl: dlRef.current });
+        setPaused({
+          kind: "install",
+          dl: dlRef.current,
+          resume: { kind: "install", installRoot: null, expectation },
+        });
       } else if (stop && isDownloadCancelled(cause)) {
-        setNotice(t("progress.cancelled"));
+        setNotice({ title: t("progress.cancelled") });
+      } else if (errorCode(cause) === "stale_expectation") {
+        if (await check()) {
+          setNotice({ title: t("home.stale.rechecked") });
+        }
       } else {
+        if (resumeSnapshot) setPaused(resumeSnapshot);
         setActionError(resolveFailure(cause, t));
       }
     } finally {
@@ -297,9 +432,12 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       setBusy(null);
       resetStop();
     }
-  }, [check, startDlListen, resetStop, dlRef, downloadStopRef, t]);
+  }, [report, check, startDlListen, resetStop, dlRef, downloadStopRef, t]);
 
-  const runPerform = useCallback(async () => {
+  const runPerform = useCallback(async (
+    expectationOverride?: MacOrdinaryExpectation,
+    resumeSnapshot?: PausedDownload,
+  ) => {
     // ONE atomic snapshot (the report carries installed + plan detected
     // together) drives both the labels and the consent expectation — never mix
     // it with the separately-fetched `status`, which can lag an out-of-band
@@ -307,21 +445,45 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     // expectation before the destructive swap.
     const installed = report?.installed;
     const plan = report?.plan;
-    if (!installed || !plan || plan.upToDate) return;
+    const expectation: MacOrdinaryExpectation | null =
+      expectationOverride ??
+      (installed && plan && !plan.upToDate
+        ? {
+            platform: "macos",
+            currentBuild: installed.build,
+            targetBuild: plan.latestBuild,
+            installPath: installed.path,
+            currentVersion:
+              installed.shortVersion || `build ${installed.build}`,
+            targetVersion:
+              plan.latestShortVersion || `build ${plan.latestBuild}`,
+          }
+        : null);
+    if (
+      !expectation ||
+      expectation.currentBuild === null ||
+      expectation.installPath === null
+    )
+      return;
     setBusy("perform");
     setActionError(null);
-    setPaused(null);
+    if (!resumeSnapshot) setPaused(null);
     // Capture the human-facing versions BEFORE the swap — afterward a re-check
     // makes installed/latest identical. Fall back to a build number only if a
     // feed omits the short version.
-    const fromVersion = installed.shortVersion || `build ${installed.build}`;
-    const toVersion = plan.latestShortVersion || `build ${plan.latestBuild}`;
+    const fromVersion =
+      expectation.currentVersion || `build ${expectation.currentBuild}`;
+    const toVersion =
+      expectation.targetVersion || `build ${expectation.targetBuild}`;
     const un = await startDlListen();
     try {
+      if (resumeSnapshot) setPaused(null);
       const result = await managerApi.macPerformUpdate({
-        fromBuild: installed.build,
-        toBuild: plan.latestBuild,
-        path: installed.path,
+        fromBuild: expectation.currentBuild,
+        toBuild: expectation.targetBuild,
+        path: expectation.installPath,
+        fromVersion,
+        toVersion,
       });
       setPerform(result);
       setUpdatedVer({ from: fromVersion, to: toVersion });
@@ -333,9 +495,13 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       if (stop === "pause" && isDownloadCancelled(cause)) {
         // Stay on the progress screen as paused; the cached `.part` lets 〔继续〕
         // resume from here instead of restarting at 0.
-        setPaused({ kind: "perform", dl: dlRef.current });
+        setPaused({
+          kind: "perform",
+          dl: dlRef.current,
+          resume: { kind: "perform", installRoot: null, expectation },
+        });
       } else if (stop && isDownloadCancelled(cause)) {
-        setNotice(t("progress.cancelled"));
+        setNotice({ title: t("progress.cancelled") });
       } else if (errorCode(cause) === "stale_expectation") {
         // Reality moved between confirm and execute (the backend's TOCTOU
         // guard). Refresh the snapshot and post a NOTICE (not an error) so the
@@ -343,9 +509,10 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         // (Codex was removed) — without the `checkError`-driven "检查失败" hero
         // hijacking the none case. A failed re-check keeps its own error.
         if (await check()) {
-          setNotice(t("home.stale.rechecked"));
+          setNotice({ title: t("home.stale.rechecked") });
         }
       } else {
+        if (resumeSnapshot) setPaused(resumeSnapshot);
         setActionError(resolveFailure(cause, t));
       }
     } finally {
@@ -355,22 +522,194 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     }
   }, [report, check, startDlListen, resetStop, dlRef, downloadStopRef, t]);
 
+  const runHistoricalInstall = useCallback(
+    async (
+      selection: HistoricalInstallSelection,
+      blockUpdates: boolean,
+      expectationOverride?: MacHistoricalExpectation,
+      resumeSnapshot?: PausedDownload,
+    ) => {
+      if (busyRef.current !== null) {
+        throw new Error(t("error.busy"));
+      }
+      const current = status?.status === "managed" ? status.installed : null;
+      const expectation: MacHistoricalExpectation = expectationOverride ?? {
+        platform: "macos",
+        currentPath: current?.path ?? null,
+        currentBuild: current?.build ?? null,
+      };
+      // Resume is authorized against the original confirmation, not whatever a
+      // status refresh happened to observe while the transfer was paused.
+      const fresh = expectation.currentPath === null;
+      const owner = busyOwnerRef.current + 1;
+      busyOwnerRef.current = owner;
+      busyRef.current = fresh ? "install" : "perform";
+      const fromVersion =
+        current?.shortVersion || (current ? `build ${current.build}` : "");
+      setOtherVersionOpen(false);
+      setBusy(fresh ? "install" : "perform");
+      setActionError(null);
+      setNotice(null);
+      if (!resumeSnapshot) setPaused(null);
+      let unlisten = () => {};
+      let operationToken: string | null = null;
+      try {
+        unlisten = await startDlListen();
+        operationToken = fresh
+          ? await managerApi.beginTrackedOperation("install")
+          : await managerApi.armDestructive("update");
+        // Keep the old paused controls visible until the backend lease has
+        // actually been acquired. If resolution then fails before commit, the
+        // catch path restores this exact snapshot from terminal evidence.
+        if (resumeSnapshot) setPaused(null);
+        const next = await managerApi.macInstallHistoricalRelease(
+          selection,
+          blockUpdates,
+          {
+            path: expectation.currentPath,
+            build: expectation.currentBuild,
+          },
+          operationToken,
+        );
+        setStatus(next);
+        setSettings(await managerApi.getSettings().catch(() => settings));
+        const partial =
+          next.outcome?.recoveryActions.includes("record_provenance");
+        const warningDetail =
+          next.outcome?.warnings.filter(Boolean).join(" · ") || undefined;
+        await check();
+        if (fresh) {
+          setJustInstalled(true);
+          if (partial || warningDetail) {
+            setNotice({
+              title: partial
+                ? t("install.partial.note", {
+                    action: t("install.partial.record"),
+                  })
+                : t("install.done.title"),
+              detail: warningDetail,
+            });
+          }
+        } else {
+          setNotice({
+            title: partial
+              ? t("install.partial.note", {
+                  action: t("install.partial.record"),
+                })
+              : t("success.flow", { from: fromVersion, to: selection.version }),
+            detail: warningDetail,
+          });
+        }
+      } catch (cause) {
+        const stop = downloadStopRef.current;
+        const completion =
+          resumeSnapshot && operationToken
+            ? await managerApi
+                .getOperationCompletion(operationToken)
+                .catch(() => null)
+            : null;
+        const safelyRetryable =
+          !operationToken ||
+          completion?.state === "failed-before-commit" ||
+          completion?.state === "rolled-back";
+        if (stop === "pause" && isDownloadCancelled(cause)) {
+          setPaused({
+            kind: fresh ? "install" : "perform",
+            dl: dlRef.current,
+            historical: { selection, blockUpdates, expectation },
+          });
+        } else if (stop && isDownloadCancelled(cause)) {
+          setNotice({ title: t("progress.cancelled") });
+        } else if (errorCode(cause) === "stale_expectation") {
+          setPaused(null);
+          if (await check()) setNotice({ title: t("home.stale.rechecked") });
+        } else {
+          if (resumeSnapshot && safelyRetryable) setPaused(resumeSnapshot);
+          setActionError(resolveFailure(cause, t));
+          await refreshStatus();
+        }
+      } finally {
+        unlisten();
+        if (busyOwnerRef.current === owner) {
+          busyRef.current = null;
+          setBusy(null);
+        }
+        resetStop();
+      }
+    },
+    [
+      status,
+      settings,
+      check,
+      refreshStatus,
+      startDlListen,
+      resetStop,
+      dlRef,
+      downloadStopRef,
+      t,
+    ],
+  );
+
   // 〔继续〕from the paused state — re-run the same operation. The backend finds
   // the cached `.part` and resumes via `curl -C -`, so the bar picks up where it
   // stopped instead of at 0.
   const resumeDownload = useCallback(() => {
-    const kind = paused?.kind;
+    const snapshot = paused;
     setActionError(null);
+    if (!snapshot || pausedResumeStartingRef.current) return;
+    if (snapshot?.historical) {
+      const expectation = snapshot.historical.expectation;
+      if (expectation.platform !== "macos") {
+        setActionError(
+          resolveFailure(new Error("invalid macOS resume context"), t),
+        );
+        return;
+      }
+      pausedResumeStartingRef.current = true;
+      setPaused(null);
+      void runHistoricalInstall(
+        snapshot.historical.selection,
+        snapshot.historical.blockUpdates,
+        expectation,
+        snapshot,
+      )
+        .catch((cause) => {
+          setPaused(snapshot);
+          setActionError(resolveFailure(cause, t));
+        })
+        .finally(() => {
+          pausedResumeStartingRef.current = false;
+        });
+      return;
+    }
+    const expectation = snapshot.resume?.expectation;
+    if (!expectation || expectation.platform !== "macos") {
+      setActionError(
+        resolveFailure(new Error("missing exact macOS resume target"), t),
+      );
+      return;
+    }
+    pausedResumeStartingRef.current = true;
     setPaused(null);
-    if (kind === "install") void runInstall();
-    else void runPerform();
-  }, [paused, runInstall, runPerform]);
+    const action =
+      snapshot.kind === "install"
+        ? runInstall(expectation, snapshot)
+        : runPerform(expectation, snapshot);
+    void action
+      .catch((cause) => {
+        setPaused(snapshot);
+        setActionError(resolveFailure(cause, t));
+      })
+      .finally(() => {
+        pausedResumeStartingRef.current = false;
+      });
+  }, [paused, runHistoricalInstall, runInstall, runPerform, t]);
 
   // 〔取消〕from the paused state — the download already stopped, so drop the
   // cached partial and route home. (An in-flight cancel is handled by
   // requestDownloadStop instead.)
   const cancelPausedDownload = useCallback(async () => {
-    if (pausedDiscardBusyRef.current) return;
+    if (pausedDiscardBusyRef.current || pausedResumeStartingRef.current) return;
     pausedDiscardBusyRef.current = true;
     setActionError(null);
     setPausedDiscardBusy(true);
@@ -380,7 +719,7 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       // resumes, contradicting the cancel.
       await managerApi.macDiscardDownload();
       setPaused(null);
-      setNotice(t("progress.cancelled"));
+      setNotice({ title: t("progress.cancelled") });
     } catch (cause) {
       setActionError(
         contextualFailure(
@@ -404,8 +743,14 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   // managed/external badge.
   const installed = (report ? report.installed : status?.installed) ?? null;
   const isManaged = status?.status === "managed";
-  const skippedCandidate = useMemo(() => macSkippedUpdateCandidate(report), [report]);
-  const updateSuppressed = skippedUpdateMatches(settings.skippedCodexUpdate, skippedCandidate);
+  const skippedCandidate = useMemo(
+    () => macSkippedUpdateCandidate(report),
+    [report],
+  );
+  const updateSuppressed = skippedUpdateMatches(
+    settings.skippedCodexUpdate,
+    skippedCandidate,
+  );
   const updateAvailable = Boolean(plan) && !plan?.upToDate && !updateSuppressed;
 
   const kind: Kind = useMemo(() => {
@@ -461,7 +806,9 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     ? fmtDateTime(report?.latestPubDate ?? null, lang)
     : null;
   const updateSize =
-    updateAvailable && plan ? t("home.update.size", { size: mib(plan.downloadSize) }) : null;
+    updateAvailable && plan
+      ? t("home.update.size", { size: mib(plan.downloadSize) })
+      : null;
 
   const openManualExisting = useCallback(() => {
     setManualExistingError(null);
@@ -521,7 +868,9 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         skippedCodexUpdate: { ...skippedCandidate, skippedAt: Date.now() },
       });
       setSettings(saved);
-      setNotice(t("home.skip.toast", { version: skippedCandidate.version }));
+      setNotice({
+        title: t("home.skip.toast", { version: skippedCandidate.version }),
+      });
     } catch (cause) {
       setActionError(resolveFailure(cause, t));
     }
@@ -530,7 +879,9 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     // Surface a failed open (stale path / backend error) via the error banner
     // like every other action, instead of an unhandled rejection with no feedback.
     setActionError(null);
-    void managerApi.macLaunch().catch((cause) => setActionError(resolveFailure(cause, t)));
+    void managerApi
+      .macLaunch()
+      .catch((cause) => setActionError(resolveFailure(cause, t)));
   };
 
   // One string identifying the visible "scene"; when it changes the hero
@@ -559,12 +910,16 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   // self-dismisses.
   const performDetail =
     (perform &&
-      [perform.relaunchFailed ? t("success.manualLaunch") : null, perform.warning]
+      [
+        perform.relaunchFailed ? t("success.manualLaunch") : null,
+        perform.warning,
+      ]
         .filter(Boolean)
         .join(" · ")) ||
     undefined;
   const performPinned = Boolean(
-    perform && (perform.rolledBack || perform.relaunchFailed || perform.warning),
+    perform &&
+    (perform.rolledBack || perform.relaunchFailed || perform.warning),
   );
   // Char-split only LTR scripts — splitting a cursive RTL script (Arabic) into
   // per-char elements breaks its contextual letter joining.
@@ -608,14 +963,20 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           {actionError ? <FailureBanner failure={actionError} /> : null}
           {notice || needsRecord ? (
             <StatusBanner tone="warn">
-              {notice ?? t("install.partial.note", { action: t("install.partial.record") })}
+              {notice
+                ? [notice.title, notice.detail].filter(Boolean).join(" · ")
+                : t("install.partial.note", {
+                    action: t("install.partial.record"),
+                  })}
             </StatusBanner>
           ) : null}
           <section className="hero" style={{ marginTop: 16 }} key={scene}>
             <Ring icon="check" variant="success" />
             <div className="headline">{t("install.done.title")}</div>
             <div className="sub">
-              {installedVersion ? t("home.uptodate.sub", { version: installedVersion }) : ""}
+              {installedVersion
+                ? t("home.uptodate.sub", { version: installedVersion })
+                : ""}
             </div>
           </section>
           <div className="actions">
@@ -635,7 +996,10 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
               <CodexGlyph />
               {t("install.done.open")}
             </button>
-            <button className="btn ghost" onClick={() => setJustInstalled(false)}>
+            <button
+              className="btn ghost"
+              onClick={() => setJustInstalled(false)}
+            >
               {t("success.done")}
             </button>
           </div>
@@ -660,7 +1024,11 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       <div
         className="scroll"
         ref={scopeRef}
-        inert={confirmOpen || manualExistingOpen || otherVersionOpen ? true : undefined}
+        inert={
+          confirmOpen || manualExistingOpen || otherVersionOpen
+            ? true
+            : undefined
+        }
       >
         {perform ? (
           <ResultBanner
@@ -669,7 +1037,10 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
               perform.rolledBack
                 ? t("success.rolledBack")
                 : updatedVer
-                  ? t("success.flow", { from: updatedVer.from, to: updatedVer.to })
+                  ? t("success.flow", {
+                      from: updatedVer.from,
+                      to: updatedVer.to,
+                    })
                   : t("success.title")
             }
             detail={perform.rolledBack ? undefined : performDetail}
@@ -683,8 +1054,9 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         {notice ? (
           <ResultBanner
             tone="ok"
-            title={notice}
-            autoDismissMs={6000}
+            title={notice.title}
+            detail={notice.detail}
+            autoDismissMs={notice.detail ? undefined : 6000}
             onClose={() => setNotice(null)}
           />
         ) : null}
@@ -697,7 +1069,11 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             <>
               <Ring icon="loader" spin className="glow" />
               <div className="headline shimmer">{t("home.checking")}</div>
-              <div className="microcue" style={{ visibility: "hidden" }} aria-hidden="true">
+              <div
+                className="microcue"
+                style={{ visibility: "hidden" }}
+                aria-hidden="true"
+              >
                 <Icon name="shield" />
                 {t("home.official")}
               </div>
@@ -740,7 +1116,9 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
               <div className="desc">{t("home.external.desc")}</div>
               {/* Paths are technical content, shown verbatim in every locale. */}
               {ambiguousInstall && status?.ambiguousPaths ? (
-                <div className="desc mono">{status.ambiguousPaths.join(" · ")}</div>
+                <div className="desc mono">
+                  {status.ambiguousPaths.join(" · ")}
+                </div>
               ) : null}
             </>
           ) : (
@@ -809,7 +1187,9 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           </div>
         ) : null}
 
-        <div className={`actions${!rechecking && kind === "update" ? " update-actions" : ""}`}>
+        <div
+          className={`actions${!rechecking && kind === "update" ? " update-actions" : ""}`}
+        >
           {/* While a check runs we keep a STABLE pair of buttons (launch +
               the spinning re-check) so nothing reflows under the hero. */}
           {rechecking ? (
@@ -826,13 +1206,19 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           ) : null}
           {!rechecking && kind === "update" ? (
             <>
-              <button className="btn ghost big" onClick={check} disabled={busy !== null}>
+              <button
+                className="btn ghost big"
+                onClick={check}
+                disabled={busy !== null}
+              >
                 <Icon name="refresh" />
                 {t("home.recheck")}
               </button>
               <button
                 className="btn primary big"
-                onClick={() => (settings.askBefore ? setConfirmOpen(true) : void runPerform())}
+                onClick={() =>
+                  settings.askBefore ? setConfirmOpen(true) : void runPerform()
+                }
                 disabled={busy !== null}
               >
                 <Icon name="download" />
@@ -842,11 +1228,19 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           ) : null}
           {!rechecking && kind === "idle" ? (
             <>
-              <button className="btn primary big" onClick={onLaunch} disabled={busy !== null}>
+              <button
+                className="btn primary big"
+                onClick={onLaunch}
+                disabled={busy !== null}
+              >
                 <CodexGlyph />
                 {t("home.launch")}
               </button>
-              <button className="btn ghost" onClick={check} disabled={busy !== null}>
+              <button
+                className="btn ghost"
+                onClick={check}
+                disabled={busy !== null}
+              >
                 <Icon name="refresh" />
                 {t("home.recheck")}
               </button>
@@ -867,30 +1261,50 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
                   {t("home.manualExisting.title")}
                 </button>
               ) : (
-                <button className="btn primary big" onClick={adopt} disabled={busy !== null}>
+                <button
+                  className="btn primary big"
+                  onClick={adopt}
+                  disabled={busy !== null}
+                >
                   <Icon name="shield" />
                   {t("home.external.cta")}
                 </button>
               )}
-              <button className="btn ghost" onClick={onLaunch} disabled={busy !== null}>
+              <button
+                className="btn ghost"
+                onClick={onLaunch}
+                disabled={busy !== null}
+              >
                 <CodexGlyph />
                 {t("home.launch")}
               </button>
             </>
           ) : null}
           {!rechecking && kind === "none" ? (
-            <button className="btn primary big" onClick={runInstall} disabled={busy !== null}>
+            <button
+              className="btn primary big"
+              onClick={() => void runInstall()}
+              disabled={busy !== null}
+            >
               <Icon name="download" />
               {t("home.none.cta")}
             </button>
           ) : null}
           {!rechecking && kind === "uptodate" ? (
             <>
-              <button className="btn primary big" onClick={onLaunch} disabled={busy !== null}>
+              <button
+                className="btn primary big"
+                onClick={onLaunch}
+                disabled={busy !== null}
+              >
                 <CodexGlyph />
                 {t("home.launch")}
               </button>
-              <button className="btn ghost" onClick={check} disabled={busy !== null}>
+              <button
+                className="btn ghost"
+                onClick={check}
+                disabled={busy !== null}
+              >
                 <Icon name="refresh" />
                 {t("home.recheck")}
               </button>
@@ -901,17 +1315,29 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           {!rechecking && kind === "error" ? (
             installed ? (
               <>
-                <button className="btn primary big" onClick={onLaunch} disabled={busy !== null}>
+                <button
+                  className="btn primary big"
+                  onClick={onLaunch}
+                  disabled={busy !== null}
+                >
                   <CodexGlyph />
                   {t("home.launch")}
                 </button>
-                <button className="btn ghost" onClick={check} disabled={busy !== null}>
+                <button
+                  className="btn ghost"
+                  onClick={check}
+                  disabled={busy !== null}
+                >
                   <Icon name="refresh" />
                   {t("home.recheck")}
                 </button>
               </>
             ) : (
-              <button className="btn primary big" onClick={check} disabled={busy !== null}>
+              <button
+                className="btn primary big"
+                onClick={check}
+                disabled={busy !== null}
+              >
                 <Icon name="refresh" />
                 {t("home.recheck")}
               </button>
@@ -919,7 +1345,11 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           ) : null}
         </div>
 
-        {!rechecking && (kind === "none" || (installed && kind !== "external")) ? (
+        {!rechecking &&
+        !statusFailed &&
+        (kind === "none" ||
+          kind === "error" ||
+          (installed && kind !== "external")) ? (
           <InstallOtherVersionEntry
             disabled={busy !== null}
             onOpen={() => setOtherVersionOpen(true)}
@@ -928,7 +1358,8 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
 
         {/* Also offered on non-ambiguous "external" (on ambiguity the picker
             IS the primary action above, so the secondary link would repeat). */}
-        {!rechecking && (kind === "none" || (kind === "external" && !ambiguousInstall)) ? (
+        {!rechecking &&
+        (kind === "none" || (kind === "external" && !ambiguousInstall)) ? (
           <div className="manual-existing-entry">
             <button
               className="linkbtn subtle"
@@ -943,10 +1374,18 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
 
         {!rechecking && kind === "update" && skippedCandidate ? (
           <div className="update-skip">
-            <button className="linkbtn subtle" onClick={skipCurrentUpdate} disabled={busy !== null}>
+            <button
+              className="linkbtn subtle"
+              onClick={skipCurrentUpdate}
+              disabled={busy !== null}
+            >
               {t("home.skipCurrent")}
             </button>
-            <span>{t("home.skipCurrent.detail", { version: skippedCandidate.version })}</span>
+            <span>
+              {t("home.skipCurrent.detail", {
+                version: skippedCandidate.version,
+              })}
+            </span>
           </div>
         ) : null}
 
@@ -969,13 +1408,15 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         initialFocus="primary"
       >
         <Ring icon="arrowUp" className="" />
-        <h3 id={confirmTitleId}>{t("confirm.title", { version: latestVersion })}</h3>
+        <h3 id={confirmTitleId}>
+          {t("confirm.title", { version: latestVersion })}
+        </h3>
         <p id={confirmBodyId}>{t("confirm.body")}</p>
         <div className="row2 sheet-actions">
           <button className="btn ghost" onClick={() => setConfirmOpen(false)}>
             {t("confirm.cancel")}
           </button>
-          <button className="btn primary" onClick={runPerform}>
+          <button className="btn primary" onClick={() => void runPerform()}>
             {t("confirm.ok")}
           </button>
         </div>
@@ -985,8 +1426,9 @@ function MacHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         open={otherVersionOpen}
         platform="macos"
         currentVersion={installedVersion}
-        architecture={installed?.arch ?? null}
+        architecture={hostArchitecture ?? installed?.arch ?? null}
         onDismiss={() => setOtherVersionOpen(false)}
+        onInstall={runHistoricalInstall}
       />
 
       <ManualExistingInstallSheet

@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use fs4::{FileExt as Fs4FileExt, TryLockError};
 
 use crate::app::op_phase::{OperationPhase, QuitPolicy};
+use crate::app::release_install::{ReleaseArchitecture, ReleasePackageFormat};
 
 static TOKEN_COUNTER: AtomicU64 = AtomicU64::new(1);
 const DEFAULT_STALE_AFTER_SECS: u64 = 5 * 60;
@@ -59,6 +60,10 @@ pub struct OperationManager {
 
 struct Inner {
     active: Option<ActiveOp>,
+    /// Last transfer that ended because the user paused it. Unlike `active`,
+    /// this survives lease release so a replacement renderer cannot miss the
+    /// short active-paused window between the abort signal and guard drop.
+    paused: Option<OperationSnapshot>,
     completed: VecDeque<OperationCompletion>,
     lock_file: Result<File, String>,
 }
@@ -73,6 +78,102 @@ pub struct OperationProgress {
     pub source: String,
 }
 
+/// Exact historical/offline selection required to safely resume after a
+/// renderer reload. It intentionally contains no URL or digest: the resumed
+/// command re-resolves GitHub metadata (or re-verifies the local package) before
+/// it trusts any bytes.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoricalResumeContext {
+    pub selection: HistoricalResumeSelection,
+    pub block_updates: bool,
+    /// Exact install snapshot the user confirmed before the original transfer.
+    /// A renderer reload may refresh status while the download is paused; resume
+    /// must still submit this frozen expectation so an out-of-band install/change
+    /// is rejected instead of silently becoming the new destructive target.
+    pub expectation: HistoricalResumeExpectation,
+    /// One-shot portable install destination selected by the user. Windows
+    /// resumes must use the same root instead of silently falling back to the
+    /// persisted default.
+    pub install_root: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "platform",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase"
+)]
+pub enum HistoricalResumeExpectation {
+    Macos {
+        current_path: Option<String>,
+        current_build: Option<u64>,
+    },
+    Windows {
+        current_path: Option<String>,
+        current_version: Option<String>,
+        current_source: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoricalResumeSelection {
+    pub release_tag: String,
+    pub version: String,
+    pub asset_name: String,
+    pub architecture: ReleaseArchitecture,
+    pub format: ReleasePackageFormat,
+    pub package_version: Option<String>,
+    pub local_path: Option<String>,
+    pub local_file_name: Option<String>,
+}
+
+/// Resume metadata for the ordinary latest-channel flow. Windows uses one
+/// backend `Update` lease for both first install and in-place update, so the
+/// lease kind alone cannot reconstruct the renderer mode or a one-shot portable
+/// destination after reload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OperationResumeKind {
+    Install,
+    Perform,
+}
+
+/// Exact ordinary latest-channel target the user started downloading. A later
+/// check may observe a newer release, but resume must keep submitting this
+/// frozen expectation so the backend either continues the confirmed target or
+/// rejects it as stale instead of silently switching releases.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "platform",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase"
+)]
+pub enum OperationResumeExpectation {
+    Macos {
+        current_build: Option<u64>,
+        target_build: u64,
+        install_path: Option<String>,
+        current_version: Option<String>,
+        target_version: String,
+    },
+    Windows {
+        current_version: Option<String>,
+        target_version: String,
+        package_moniker: String,
+        route: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationResumeContext {
+    pub kind: OperationResumeKind,
+    pub install_root: Option<String>,
+    pub expectation: OperationResumeExpectation,
+}
+
 /// Public view of the currently held same-process operation, if any.
 /// Queried on frontend mount so a renderer reload can reattach to in-flight work.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -84,6 +185,12 @@ pub struct OperationSnapshot {
     pub phase: OperationPhase,
     pub progress: Option<OperationProgress>,
     pub paused: bool,
+    /// Present only for historical/offline installs. A reattached paused screen
+    /// must use this exact target instead of falling back to the latest channel.
+    pub historical: Option<HistoricalResumeContext>,
+    /// Present for ordinary flows whose UI intent cannot be recovered from the
+    /// operation lease kind alone (notably Windows first installs).
+    pub resume: Option<OperationResumeContext>,
     /// Whether cancel is a meaningful UI action right now.
     pub cancellable: bool,
     /// Whether the phase may be interrupted (pause/cancel/quit-after-cancel).
@@ -141,6 +248,37 @@ struct ActiveOp {
     progress: Option<OperationProgress>,
     /// True after a pause was requested while the lease is still held.
     paused: bool,
+    /// Sticky pause intent for this operation. A downloader can publish one last
+    /// progress sample after the pause signal but before observing its cancel
+    /// flag; that sample must not erase the terminal resumable snapshot.
+    pause_requested: bool,
+    /// Set only after the worker returns the downloader's explicit cancellation
+    /// marker. `pause_active_download` can win a narrow race after curl has exited
+    /// but before its guard drops; request acceptance alone therefore cannot prove
+    /// the operation actually terminated because of the pause.
+    pause_confirmed: bool,
+    /// This operation reuses the exact historical or ordinary target retained
+    /// by the last confirmed pause. Progress alone cannot prove the resumed
+    /// install will finish, so keep that old context until a terminal outcome is
+    /// known.
+    resumes_retained_pause: bool,
+    historical: Option<HistoricalResumeContext>,
+    resume: Option<OperationResumeContext>,
+}
+
+fn snapshot_from_active(active: &ActiveOp) -> OperationSnapshot {
+    let interruptible = active.phase.interruptible();
+    OperationSnapshot {
+        id: active.token.clone(),
+        kind: active.kind,
+        phase: active.phase,
+        progress: active.progress.clone(),
+        paused: active.paused,
+        historical: active.historical.clone(),
+        resume: active.resume.clone(),
+        cancellable: interruptible,
+        interruptible,
+    }
 }
 
 #[must_use = "持有 guard 才代表持有操作锁；提前 drop 会立即释放锁"]
@@ -196,6 +334,7 @@ impl OperationManager {
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 active: None,
+                paused: None,
                 completed: VecDeque::new(),
                 lock_file,
             })),
@@ -412,10 +551,7 @@ impl OperationManager {
     /// Record positive evidence that every observed portable install-root
     /// mutation was restored. This does not clear `outcome_ambiguous`: a prior
     /// platform call such as Add-AppxPackage may still have changed system state.
-    pub fn mark_mutation_rolled_back(
-        &self,
-        token: &OperationToken,
-    ) -> Result<(), OperationError> {
+    pub fn mark_mutation_rolled_back(&self, token: &OperationToken) -> Result<(), OperationError> {
         let mut inner = self
             .inner
             .lock()
@@ -581,21 +717,25 @@ impl OperationManager {
         let Ok(inner) = self.inner.lock() else {
             return None;
         };
-        inner.active.as_ref().map(|active| {
-            let interruptible = active.phase.interruptible();
-            // Cancel remains useful through preparing/downloading/verifying/applying
-            // (and while paused mid-transfer). Point-of-no-return phases refuse it.
-            let cancellable = interruptible;
-            OperationSnapshot {
-                id: active.token.clone(),
-                kind: active.kind,
-                phase: active.phase,
-                progress: active.progress.clone(),
-                paused: active.paused,
-                cancellable,
-                interruptible,
-            }
-        })
+        inner.active.as_ref().map(snapshot_from_active)
+    }
+
+    /// Last completed pause, retained until bytes flow again, the user
+    /// explicitly discards/cancels it, or a later operation succeeds.
+    pub fn paused_snapshot(&self) -> Option<OperationSnapshot> {
+        let Ok(inner) = self.inner.lock() else {
+            return None;
+        };
+        if inner.active.is_some() {
+            return None;
+        }
+        inner.paused.clone()
+    }
+
+    pub fn clear_paused_snapshot(&self) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.paused = None;
+        }
     }
 
     /// Run a platform cancel signal while the active lease is locked and still
@@ -607,7 +747,7 @@ impl OperationManager {
         token: &OperationToken,
         request: impl FnOnce() -> bool,
     ) -> bool {
-        let Ok(inner) = self.inner.lock() else {
+        let Ok(mut inner) = self.inner.lock() else {
             return false;
         };
         if !inner
@@ -617,7 +757,16 @@ impl OperationManager {
         {
             return false;
         }
-        request()
+        let requested = request();
+        if requested {
+            if let Some(active) = inner.active.as_mut() {
+                active.paused = false;
+                active.pause_requested = false;
+                active.pause_confirmed = false;
+            }
+            inner.paused = None;
+        }
+        requested
     }
 
     /// Signal pause and mark the same active lease while holding the operation
@@ -636,8 +785,30 @@ impl OperationManager {
         let requested = request();
         if requested {
             active.paused = true;
+            active.pause_requested = true;
+            active.pause_confirmed = false;
         }
         requested
+    }
+
+    /// Confirm that the worker ended with the downloader's explicit
+    /// `download cancelled` result after a pause request. Only this evidence may
+    /// publish a resumable terminal snapshot.
+    pub fn confirm_pause(&self, token: &OperationToken) -> Result<(), OperationError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| OperationError::Lock("operation mutex poisoned".to_string()))?;
+        let Some(active) = inner.active.as_mut() else {
+            return Err(OperationError::InvalidToken);
+        };
+        if active.token != token.0 {
+            return Err(OperationError::InvalidToken);
+        }
+        if active.pause_requested {
+            active.pause_confirmed = true;
+        }
+        Ok(())
     }
 
     /// Record the terminal outcome before the lease is released. Keeping a
@@ -652,28 +823,44 @@ impl OperationManager {
             .inner
             .lock()
             .map_err(|_| OperationError::Lock("operation mutex poisoned".to_string()))?;
-        let Some(active) = inner.active.as_ref() else {
-            return Err(OperationError::InvalidToken);
+        let (completion, paused) = {
+            let Some(active) = inner.active.as_ref() else {
+                return Err(OperationError::InvalidToken);
+            };
+            if active.token != token.0 {
+                return Err(OperationError::InvalidToken);
+            }
+            let completion = OperationCompletion {
+                id: active.token.clone(),
+                kind: active.kind,
+                phase: active.phase,
+                state: if succeeded {
+                    OperationCompletionState::Succeeded
+                } else if active.outcome_ambiguous {
+                    OperationCompletionState::OutcomeUnknown
+                } else if active.mutation_started && active.mutation_rolled_back {
+                    OperationCompletionState::RolledBack
+                } else if active.mutation_started {
+                    OperationCompletionState::OutcomeUnknown
+                } else {
+                    OperationCompletionState::FailedBeforeCommit
+                },
+            };
+            let paused = (!succeeded && active.pause_requested && active.pause_confirmed)
+                .then(|| snapshot_from_active(active));
+            (completion, paused)
         };
-        if active.token != token.0 {
-            return Err(OperationError::InvalidToken);
+        if let Some(paused) = paused {
+            inner.paused = Some(paused);
+        } else if matches!(
+            completion.state,
+            OperationCompletionState::Succeeded | OperationCompletionState::OutcomeUnknown
+        ) {
+            // Success consumes the retained target. OutcomeUnknown may have
+            // changed the installed app, so offering the old pause again would
+            // permit a destructive retry against an unproven expectation.
+            inner.paused = None;
         }
-        let completion = OperationCompletion {
-            id: active.token.clone(),
-            kind: active.kind,
-            phase: active.phase,
-            state: if succeeded {
-                OperationCompletionState::Succeeded
-            } else if active.outcome_ambiguous {
-                OperationCompletionState::OutcomeUnknown
-            } else if active.mutation_started && active.mutation_rolled_back {
-                OperationCompletionState::RolledBack
-            } else if active.mutation_started {
-                OperationCompletionState::OutcomeUnknown
-            } else {
-                OperationCompletionState::FailedBeforeCommit
-            },
-        };
         inner.completed.push_back(completion.clone());
         while inner.completed.len() > COMPLETION_HISTORY_LIMIT {
             inner.completed.pop_front();
@@ -709,19 +896,24 @@ impl OperationManager {
         if active.token != token.0 {
             return Err(OperationError::InvalidToken);
         }
-        // Bytes flowing again means we're no longer in a paused UI state.
-        active.paused = false;
+        // For the SAME operation, curl may report one final progress sample
+        // after pause was requested; keep the sticky intent so completion still
+        // publishes a resumable snapshot. An exact historical resume also keeps
+        // the prior terminal snapshot: receiving bytes does not prove that the
+        // later checksum/signature/install steps will finish successfully.
+        if !active.pause_requested {
+            active.paused = false;
+        }
         active.progress = Some(progress);
+        if !active.pause_requested && !active.resumes_retained_pause {
+            inner.paused = None;
+        }
         Ok(())
     }
 
     /// Mark the active op as paused (or clear the flag). Used when the UI
     /// requests pause so a reloaded frontend can restore the paused screen.
-    pub fn set_paused(
-        &self,
-        token: &OperationToken,
-        paused: bool,
-    ) -> Result<(), OperationError> {
+    pub fn set_paused(&self, token: &OperationToken, paused: bool) -> Result<(), OperationError> {
         let mut inner = self
             .inner
             .lock()
@@ -733,6 +925,62 @@ impl OperationManager {
             return Err(OperationError::InvalidToken);
         }
         active.paused = paused;
+        active.pause_requested = paused;
+        active.pause_confirmed = paused;
+        Ok(())
+    }
+
+    pub fn set_historical_context(
+        &self,
+        token: &OperationToken,
+        context: HistoricalResumeContext,
+    ) -> Result<(), OperationError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| OperationError::Lock("operation mutex poisoned".to_string()))?;
+        let Some(active_kind) = inner
+            .active
+            .as_ref()
+            .filter(|active| active.token == token.0)
+            .map(|active| active.kind)
+        else {
+            return Err(OperationError::InvalidToken);
+        };
+        let resumes_retained_pause = inner.paused.as_ref().is_some_and(|paused| {
+            paused.kind == active_kind && paused.historical.as_ref() == Some(&context)
+        });
+        let active = inner.active.as_mut().ok_or(OperationError::InvalidToken)?;
+        active.resumes_retained_pause = resumes_retained_pause;
+        active.historical = Some(context);
+        active.resume = None;
+        Ok(())
+    }
+
+    pub fn set_resume_context(
+        &self,
+        token: &OperationToken,
+        context: OperationResumeContext,
+    ) -> Result<(), OperationError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| OperationError::Lock("operation mutex poisoned".to_string()))?;
+        let Some(active_kind) = inner
+            .active
+            .as_ref()
+            .filter(|active| active.token == token.0)
+            .map(|active| active.kind)
+        else {
+            return Err(OperationError::InvalidToken);
+        };
+        let resumes_retained_pause = inner.paused.as_ref().is_some_and(|paused| {
+            paused.kind == active_kind && paused.resume.as_ref() == Some(&context)
+        });
+        let active = inner.active.as_mut().ok_or(OperationError::InvalidToken)?;
+        active.resumes_retained_pause = resumes_retained_pause;
+        active.resume = Some(context);
+        active.historical = None;
         Ok(())
     }
 
@@ -786,6 +1034,11 @@ impl OperationManager {
             outcome_ambiguous: false,
             progress: None,
             paused: false,
+            pause_requested: false,
+            pause_confirmed: false,
+            resumes_retained_pause: false,
+            historical: None,
+            resume: None,
         });
         log::info!(
             "acquired operation lock kind={} token_prefix={} detached={detached} claimed={claimed}",
@@ -912,8 +1165,10 @@ fn write_lock_diagnostics(
 #[cfg(test)]
 mod tests {
     use super::{
+        HistoricalResumeContext, HistoricalResumeExpectation, HistoricalResumeSelection,
         OperationCompletionState, OperationError, OperationKind, OperationManager, OperationToken,
     };
+    use crate::app::release_install::{ReleaseArchitecture, ReleasePackageFormat};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1151,10 +1406,7 @@ mod tests {
             }
         ));
         // Force quit still wins.
-        assert_eq!(
-            manager.quit_policy(true, true),
-            QuitPolicy::Allow
-        );
+        assert_eq!(manager.quit_policy(true, true), QuitPolicy::Allow);
 
         manager.end(token).unwrap();
         assert_eq!(manager.phase(), OperationPhase::Idle);
@@ -1164,8 +1416,8 @@ mod tests {
 
     #[test]
     fn snapshot_exposes_progress_phase_and_flags() {
-        use crate::app::op_phase::OperationPhase;
         use super::OperationProgress;
+        use crate::app::op_phase::OperationPhase;
 
         let path = lock_path("snapshot");
         let manager = OperationManager::new(path.clone());
@@ -1180,6 +1432,8 @@ mod tests {
         assert_eq!(snap.phase, OperationPhase::Preparing);
         assert!(snap.progress.is_none());
         assert!(!snap.paused);
+        assert!(snap.historical.is_none());
+        assert!(snap.resume.is_none());
         assert!(snap.cancellable);
         assert!(snap.interruptible);
 
@@ -1197,15 +1451,38 @@ mod tests {
             .set_phase(&token, OperationPhase::Downloading)
             .unwrap();
         manager.set_paused(&token, true).unwrap();
+        let historical = HistoricalResumeContext {
+            selection: HistoricalResumeSelection {
+                release_tag: "codex-app-26.623.101652".into(),
+                version: "26.623.101652".into(),
+                asset_name: "Codex-mac-arm64.dmg".into(),
+                architecture: ReleaseArchitecture::Arm64,
+                format: ReleasePackageFormat::Dmg,
+                package_version: None,
+                local_path: None,
+                local_file_name: None,
+            },
+            block_updates: true,
+            expectation: HistoricalResumeExpectation::Macos {
+                current_path: Some("/Applications/Codex.app".into()),
+                current_build: Some(5813),
+            },
+            install_root: None,
+        };
+        manager
+            .set_historical_context(&token, historical.clone())
+            .unwrap();
 
         let snap = manager.snapshot().expect("progress snapshot");
         assert_eq!(snap.progress.as_ref().map(|p| p.downloaded), Some(50));
         assert_eq!(snap.phase, OperationPhase::Downloading);
         assert!(snap.paused);
+        assert_eq!(snap.historical, Some(historical));
         assert!(snap.cancellable);
         assert!(snap.interruptible);
 
-        // Progress update clears the paused flag (bytes flowing again).
+        // A final progress sample from the same downloader must not erase the
+        // already-accepted pause request.
         manager
             .set_progress(
                 &token,
@@ -1216,7 +1493,7 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(!manager.snapshot().unwrap().paused);
+        assert!(manager.snapshot().unwrap().paused);
 
         manager
             .set_phase(&token, OperationPhase::Committing)
@@ -1227,6 +1504,205 @@ mod tests {
 
         manager.end(token).unwrap();
         assert!(manager.snapshot().is_none());
+
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn ordinary_resume_context_survives_terminal_pause() {
+        use super::{
+            OperationProgress, OperationResumeContext, OperationResumeExpectation,
+            OperationResumeKind,
+        };
+        use crate::app::op_phase::OperationPhase;
+
+        let path = lock_path("ordinary-terminal-pause");
+        let manager = OperationManager::new(path.clone());
+        let token = manager.begin_detached(OperationKind::Update).unwrap();
+        manager.validate(&token).unwrap();
+        let resume = OperationResumeContext {
+            kind: OperationResumeKind::Install,
+            install_root: Some(r"D:\Selected\Codex".into()),
+            expectation: OperationResumeExpectation::Windows {
+                current_version: None,
+                target_version: "2.0.0".into(),
+                package_moniker: "Codex_2.0.0_x64".into(),
+                route: "msix-sideload".into(),
+            },
+        };
+        manager.set_resume_context(&token, resume.clone()).unwrap();
+        manager
+            .set_phase(&token, OperationPhase::Downloading)
+            .unwrap();
+        manager
+            .set_progress(
+                &token,
+                OperationProgress {
+                    downloaded: 64,
+                    total: 128,
+                    source: "github.com".into(),
+                },
+            )
+            .unwrap();
+        manager.set_paused(&token, true).unwrap();
+        manager.record_completion(&token, false).unwrap();
+        manager.end(token).unwrap();
+
+        let paused = manager.paused_snapshot().expect("terminal pause");
+        assert_eq!(paused.kind, OperationKind::Update);
+        assert_eq!(paused.resume, Some(resume));
+        assert!(paused.historical.is_none());
+
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn paused_snapshot_survives_safe_resume_failure_until_success_or_unknown() {
+        use super::OperationProgress;
+        use crate::app::op_phase::OperationPhase;
+
+        let path = lock_path("terminal-pause");
+        let manager = OperationManager::new(path.clone());
+        let pause_once = |manager: &OperationManager| {
+            let token = manager.begin_detached(OperationKind::Install).unwrap();
+            manager.validate(&token).unwrap();
+            manager
+                .set_phase(&token, OperationPhase::Downloading)
+                .unwrap();
+            manager
+                .set_progress(
+                    &token,
+                    OperationProgress {
+                        downloaded: 64,
+                        total: 128,
+                        source: "github.com".into(),
+                    },
+                )
+                .unwrap();
+            manager.set_paused(&token, true).unwrap();
+            // The downloader can race one final size sample after accepting the
+            // pause signal. Completion must still retain the resume context.
+            manager
+                .set_progress(
+                    &token,
+                    OperationProgress {
+                        downloaded: 65,
+                        total: 128,
+                        source: "github.com".into(),
+                    },
+                )
+                .unwrap();
+            let historical = HistoricalResumeContext {
+                selection: HistoricalResumeSelection {
+                    release_tag: "codex-app-0.9.0".into(),
+                    version: "0.9.0".into(),
+                    asset_name: "OpenAI.Codex_0.9.0.0_x64.msix".into(),
+                    architecture: ReleaseArchitecture::X64,
+                    format: ReleasePackageFormat::Msix,
+                    package_version: Some("0.9.0.0".into()),
+                    local_path: None,
+                    local_file_name: None,
+                },
+                block_updates: true,
+                expectation: HistoricalResumeExpectation::Windows {
+                    current_path: None,
+                    current_version: None,
+                    current_source: None,
+                },
+                install_root: Some(r"C:\Codex".into()),
+            };
+            manager
+                .set_historical_context(&token, historical.clone())
+                .unwrap();
+            manager.record_completion(&token, false).unwrap();
+            assert!(manager.paused_snapshot().is_none(), "active lease wins");
+            manager.end(token).unwrap();
+            historical
+        };
+
+        pause_once(&manager);
+        let paused = manager.paused_snapshot().expect("terminal pause");
+        assert!(paused.paused);
+        assert_eq!(
+            paused
+                .historical
+                .as_ref()
+                .and_then(|historical| historical.install_root.as_deref()),
+            Some(r"C:\Codex")
+        );
+
+        manager.clear_paused_snapshot();
+        assert!(manager.paused_snapshot().is_none());
+
+        let retained = pause_once(&manager);
+        let resume = manager.begin_detached(OperationKind::Install).unwrap();
+        manager.validate(&resume).unwrap();
+        manager
+            .set_historical_context(&resume, retained.clone())
+            .unwrap();
+        manager
+            .set_progress(
+                &resume,
+                OperationProgress {
+                    downloaded: 96,
+                    total: 128,
+                    source: "github.com".into(),
+                },
+            )
+            .unwrap();
+        let completion = manager.record_completion(&resume, false).unwrap();
+        assert_eq!(
+            completion.state,
+            OperationCompletionState::FailedBeforeCommit
+        );
+        manager.end(resume).unwrap();
+        assert_eq!(
+            manager
+                .paused_snapshot()
+                .and_then(|paused| paused.historical),
+            Some(retained.clone())
+        );
+
+        let successful_resume = manager.begin_detached(OperationKind::Install).unwrap();
+        manager.validate(&successful_resume).unwrap();
+        manager
+            .set_historical_context(&successful_resume, retained)
+            .unwrap();
+        manager
+            .set_progress(
+                &successful_resume,
+                OperationProgress {
+                    downloaded: 128,
+                    total: 128,
+                    source: "github.com".into(),
+                },
+            )
+            .unwrap();
+        manager.record_completion(&successful_resume, true).unwrap();
+        manager.end(successful_resume).unwrap();
+        assert!(manager.paused_snapshot().is_none());
+
+        let retained = pause_once(&manager);
+        let ambiguous_resume = manager.begin_detached(OperationKind::Install).unwrap();
+        manager.validate(&ambiguous_resume).unwrap();
+        manager
+            .set_historical_context(&ambiguous_resume, retained)
+            .unwrap();
+        manager
+            .set_progress(
+                &ambiguous_resume,
+                OperationProgress {
+                    downloaded: 112,
+                    total: 128,
+                    source: "github.com".into(),
+                },
+            )
+            .unwrap();
+        manager.mark_outcome_ambiguous(&ambiguous_resume).unwrap();
+        let completion = manager.record_completion(&ambiguous_resume, false).unwrap();
+        assert_eq!(completion.state, OperationCompletionState::OutcomeUnknown);
+        manager.end(ambiguous_resume).unwrap();
+        assert!(manager.paused_snapshot().is_none());
 
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
@@ -1301,6 +1777,39 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2);
 
         drop(guard);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn accepted_pause_requires_cancelled_worker_evidence_before_retention() {
+        use crate::app::op_phase::OperationPhase;
+
+        let path = lock_path("pause-confirmation");
+        let manager = OperationManager::new(path.clone());
+
+        let raced = manager.begin_detached(OperationKind::Install).unwrap();
+        manager.validate(&raced).unwrap();
+        manager
+            .set_phase(&raced, OperationPhase::Downloading)
+            .unwrap();
+        assert!(manager.request_pause(&raced, || true));
+        // The downloader completed and a later verification error ended the
+        // operation. A successful pause signal alone must not retain it.
+        manager.record_completion(&raced, false).unwrap();
+        manager.end(raced).unwrap();
+        assert!(manager.paused_snapshot().is_none());
+
+        let cancelled = manager.begin_detached(OperationKind::Install).unwrap();
+        manager.validate(&cancelled).unwrap();
+        manager
+            .set_phase(&cancelled, OperationPhase::Downloading)
+            .unwrap();
+        assert!(manager.request_pause(&cancelled, || true));
+        manager.confirm_pause(&cancelled).unwrap();
+        manager.record_completion(&cancelled, false).unwrap();
+        manager.end(cancelled).unwrap();
+        assert!(manager.paused_snapshot().is_some());
+
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -1523,9 +2032,7 @@ mod tests {
 
         let ambiguous_rollback = manager.begin_detached(OperationKind::Update).unwrap();
         manager.validate(&ambiguous_rollback).unwrap();
-        manager
-            .mark_outcome_ambiguous(&ambiguous_rollback)
-            .unwrap();
+        manager.mark_outcome_ambiguous(&ambiguous_rollback).unwrap();
         manager.mark_mutation_started(&ambiguous_rollback).unwrap();
         manager
             .mark_mutation_rolled_back(&ambiguous_rollback)
@@ -1538,11 +2045,15 @@ mod tests {
 
         let mutation_after_rollback = manager.begin_detached(OperationKind::Update).unwrap();
         manager.validate(&mutation_after_rollback).unwrap();
-        manager.mark_mutation_started(&mutation_after_rollback).unwrap();
+        manager
+            .mark_mutation_started(&mutation_after_rollback)
+            .unwrap();
         manager
             .mark_mutation_rolled_back(&mutation_after_rollback)
             .unwrap();
-        manager.mark_mutation_started(&mutation_after_rollback).unwrap();
+        manager
+            .mark_mutation_started(&mutation_after_rollback)
+            .unwrap();
         let completion = manager
             .record_completion(&mutation_after_rollback, false)
             .unwrap();
@@ -1551,9 +2062,7 @@ mod tests {
 
         let ambiguous_call = manager.begin_detached(OperationKind::Update).unwrap();
         manager.validate(&ambiguous_call).unwrap();
-        manager
-            .mark_outcome_ambiguous(&ambiguous_call)
-            .unwrap();
+        manager.mark_outcome_ambiguous(&ambiguous_call).unwrap();
         let completion = manager.record_completion(&ambiguous_call, false).unwrap();
         assert_eq!(completion.state, OperationCompletionState::OutcomeUnknown);
         manager.end(ambiguous_call.clone()).unwrap();

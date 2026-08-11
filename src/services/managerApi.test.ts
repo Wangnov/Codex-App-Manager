@@ -2,7 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_SETTINGS } from "../shared/types";
-import { isNetworkError, managerApi, SETTINGS_CHANGED_EVENT } from "./managerApi";
+import {
+  isNetworkError,
+  managerApi,
+  SETTINGS_CHANGED_EVENT,
+} from "./managerApi";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -23,15 +27,21 @@ describe("isNetworkError", () => {
         "update engine error: io error: curl failed for host=codexapp.agentsmirror.com exit=35: stderr='curl: (35) schannel: failed to receive handshake, SSL/TLS connection failed'",
       ),
     ).toBe(true);
-    expect(isNetworkError("curl: (6) Could not resolve host: codexapp.agentsmirror.com")).toBe(
-      true,
-    );
-    expect(isNetworkError("curl: (28) Operation timed out after 20000 milliseconds")).toBe(true);
+    expect(
+      isNetworkError(
+        "curl: (6) Could not resolve host: codexapp.agentsmirror.com",
+      ),
+    ).toBe(true);
+    expect(
+      isNetworkError("curl: (28) Operation timed out after 20000 milliseconds"),
+    ).toBe(true);
   });
 
   it("classifies the macOS auto-source fallback failure as connectivity", () => {
     expect(
-      isNetworkError("both the mirror and OpenAI official appcast are unreachable"),
+      isNetworkError(
+        "both the mirror and OpenAI official appcast are unreachable",
+      ),
     ).toBe(true);
   });
 
@@ -118,13 +128,18 @@ describe("settings API", () => {
 
 describe("diagnostics API", () => {
   it("returns browser fallbacks without invoking Tauri", async () => {
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
     const diagnostics = await managerApi.getDiagnostics();
 
     expect(diagnostics.os).toBe("browser");
+    await expect(managerApi.getHostArchitecture()).resolves.toBe("x86_64");
     await expect(managerApi.openLogsDir()).resolves.toBeUndefined();
     await expect(managerApi.openCodexHome()).resolves.toBeUndefined();
-    await expect(managerApi.frontendReady("en", 1, "browser-token")).resolves.toBeUndefined();
+    await expect(
+      managerApi.frontendReady("en", 1, "browser-token"),
+    ).resolves.toBeUndefined();
     await expect(
       managerApi.reportFrontendError({
         kind: "test",
@@ -145,7 +160,9 @@ describe("diagnostics API", () => {
     window.__TAURI_INTERNALS__ = {};
     invokeMock.mockResolvedValue(undefined);
 
-    await expect(managerApi.frontendReady("zh-TW", 7, "generation-token")).resolves.toBeUndefined();
+    await expect(
+      managerApi.frontendReady("zh-TW", 7, "generation-token"),
+    ).resolves.toBeUndefined();
 
     expect(invokeMock).toHaveBeenCalledWith("frontend_ready", {
       lang: "zh-TW",
@@ -180,11 +197,13 @@ describe("diagnostics API", () => {
     };
     invokeMock
       .mockResolvedValueOnce(diagnostics)
+      .mockResolvedValueOnce("aarch64")
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce(undefined);
 
     await expect(managerApi.getDiagnostics()).resolves.toEqual(diagnostics);
+    await expect(managerApi.getHostArchitecture()).resolves.toBe("aarch64");
     await expect(managerApi.openLogsDir()).resolves.toBeUndefined();
     await expect(managerApi.openCodexHome()).resolves.toBeUndefined();
     await expect(
@@ -196,15 +215,87 @@ describe("diagnostics API", () => {
       }),
     ).resolves.toBeUndefined();
     expect(invokeMock).toHaveBeenNthCalledWith(1, "get_diagnostics");
-    expect(invokeMock).toHaveBeenNthCalledWith(2, "open_logs_dir");
-    expect(invokeMock).toHaveBeenNthCalledWith(3, "open_codex_home");
-    expect(invokeMock).toHaveBeenNthCalledWith(4, "log_frontend_error", {
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "get_host_architecture");
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "open_logs_dir");
+    expect(invokeMock).toHaveBeenNthCalledWith(4, "open_codex_home");
+    expect(invokeMock).toHaveBeenNthCalledWith(5, "log_frontend_error", {
       payload: {
         kind: "test",
         message: "boom",
         stack: null,
         componentStack: null,
       },
+    });
+  });
+});
+
+describe("Windows perform API", () => {
+  it("sends the renderer resume mode and one-shot install root to the backend", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    invokeMock.mockResolvedValue({ success: true });
+
+    await managerApi.winPerformUpdate(
+      true,
+      {
+        currentVersion: null,
+        latestVersion: "2.0.0",
+        packageMoniker: "Codex_2.0.0_x64",
+        route: "msix-sideload",
+      },
+      "D:\\Selected\\Codex",
+      "resume-token",
+      "install",
+    );
+
+    expect(invokeMock).toHaveBeenCalledWith("win_perform_update", {
+      confirm: true,
+      token: "resume-token",
+      installRoot: "D:\\Selected\\Codex",
+      expected: {
+        currentVersion: null,
+        latestVersion: "2.0.0",
+        packageMoniker: "Codex_2.0.0_x64",
+        route: "msix-sideload",
+      },
+      resumeKind: "install",
+    });
+  });
+});
+
+describe("macOS resumable target API", () => {
+  it("sends exact update and fresh-install targets to the backend", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    invokeMock.mockResolvedValue({});
+
+    await managerApi.macPerformUpdate({
+      fromBuild: 100,
+      toBuild: 150,
+      path: "/Applications/Codex.app",
+      fromVersion: "1.0.0",
+      toVersion: "1.5.0",
+    });
+    await managerApi.macInstall({
+      targetBuild: 150,
+      targetVersion: "1.5.0",
+    });
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "arm_destructive", {
+      kind: "update",
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "mac_perform_update", {
+      confirm: true,
+      token: {},
+      expected: {
+        fromBuild: 100,
+        toBuild: 150,
+        path: "/Applications/Codex.app",
+        fromVersion: "1.0.0",
+        toVersion: "1.5.0",
+      },
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "mac_install", {
+      expectedTargetBuild: 150,
+      expectedTargetVersion: "1.5.0",
     });
   });
 });

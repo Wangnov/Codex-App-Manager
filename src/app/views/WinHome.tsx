@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import {
   errorCode,
@@ -8,6 +15,10 @@ import {
 } from "../../services/managerApi";
 import type {
   AppSettings,
+  HistoricalInstallSelection,
+  HistoricalResumeExpectation,
+  OperationCompletion,
+  OperationResumeContext,
   WinInstallStatus,
   WinPerformReport,
   WinUpdateReport,
@@ -21,12 +32,22 @@ import {
 } from "../errorCopy";
 import { Icon, CodexGlyph } from "../icons";
 import { useI18n, dirOf, type TKey } from "../i18n";
-import { Ring, TopBar, ResultBanner, ErrorHero, FailureBanner, StatusBanner } from "../components";
+import {
+  Ring,
+  TopBar,
+  ResultBanner,
+  ErrorHero,
+  FailureBanner,
+  StatusBanner,
+} from "../components";
 import { mib, fmtDateTime } from "../format";
 import { samePath, normalizePath } from "../paths";
 import { useHomeMotion } from "../motion";
 import { Sheet } from "../Sheet";
-import { skippedUpdateMatches, winSkippedUpdateCandidate } from "../skippedUpdate";
+import {
+  skippedUpdateMatches,
+  winSkippedUpdateCandidate,
+} from "../skippedUpdate";
 import {
   ManualExistingInstallSheet,
   type ManualExistingCandidate,
@@ -40,13 +61,27 @@ import {
   InstallOtherVersionSheet,
 } from "./InstallOtherVersion";
 
-type Kind = "loading" | "error" | "none" | "idle" | "update" | "external" | "uptodate";
+type Kind =
+  "loading" | "error" | "none" | "idle" | "update" | "external" | "uptodate";
 type Busy = "plan" | "perform" | "adopt" | "install" | "launch" | null;
 type ProvenanceRecoveryState = "present" | "unknown";
 interface ProvenanceRecovery {
   state: ProvenanceRecoveryState;
   token: string | null;
 }
+interface PendingHistoricalInstall {
+  selection: HistoricalInstallSelection;
+  blockUpdates: boolean;
+  expectation: WinHistoricalExpectation;
+}
+type WinHistoricalExpectation = Extract<
+  HistoricalResumeExpectation,
+  { platform: "windows" }
+>;
+type WinOrdinaryExpectation = Extract<
+  OperationResumeContext["expectation"],
+  { platform: "windows" }
+>;
 
 const WIN_PROVENANCE_RECOVERY_KEY = "cam.win.provenance-recovery";
 
@@ -56,7 +91,9 @@ function readStoredProvenanceRecovery(): ProvenanceRecovery | null {
     if (value === "present" || value === "unknown") {
       return { state: value, token: null };
     }
-    const parsed = value ? (JSON.parse(value) as Partial<ProvenanceRecovery>) : null;
+    const parsed = value
+      ? (JSON.parse(value) as Partial<ProvenanceRecovery>)
+      : null;
     return parsed &&
       (parsed.state === "present" || parsed.state === "unknown") &&
       (typeof parsed.token === "string" || parsed.token === null)
@@ -69,7 +106,11 @@ function readStoredProvenanceRecovery(): ProvenanceRecovery | null {
 
 function storeProvenanceRecovery(value: ProvenanceRecovery | null) {
   try {
-    if (value) window.sessionStorage.setItem(WIN_PROVENANCE_RECOVERY_KEY, JSON.stringify(value));
+    if (value)
+      window.sessionStorage.setItem(
+        WIN_PROVENANCE_RECOVERY_KEY,
+        JSON.stringify(value),
+      );
     else window.sessionStorage.removeItem(WIN_PROVENANCE_RECOVERY_KEY);
   } catch {
     // The in-memory guard still protects this renderer when storage is unavailable.
@@ -78,16 +119,27 @@ function storeProvenanceRecovery(value: ProvenanceRecovery | null) {
 
 // Windows counterpart of MacHome — same design system + state machine, driven by
 // the win_* backend (codex-win-engine): MSIX sideload or portable fallback.
-export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
+export function WinHome({
+  onOpenSettings,
+  hostArchitecture,
+}: {
+  onOpenSettings: () => void;
+  hostArchitecture?: string | null;
+}) {
   const { t, lang } = useI18n();
   const [report, setReport] = useState<WinUpdateReport | null>(null);
   const [status, setStatus] = useState<WinInstallStatus | null>(null);
   const [perform, setPerform] = useState<WinPerformReport | null>(null);
   // Version pair captured at update time (fresh installs have no "from"), so the
   // outcome strip can read "X → Y" like the mac side.
-  const [updatedVer, setUpdatedVer] = useState<{ from: string; to: string } | null>(null);
+  const [updatedVer, setUpdatedVer] = useState<{
+    from: string;
+    to: string;
+  } | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
-  const [defaultInstallRoot, setDefaultInstallRoot] = useState(DEFAULT_SETTINGS.installRoot);
+  const [defaultInstallRoot, setDefaultInstallRoot] = useState(
+    DEFAULT_SETTINGS.installRoot,
+  );
   const [busy, setBusy] = useState<Busy>(null);
   const [checkError, setCheckError] = useState<FailureSurface | null>(null);
   const [actionError, setActionError] = useState<FailureSurface | null>(null);
@@ -102,19 +154,30 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [otherVersionOpen, setOtherVersionOpen] = useState(false);
   const [installDirOpen, setInstallDirOpen] = useState(false);
   const [installDirBusy, setInstallDirBusy] = useState(false);
+  const [pendingHistoricalInstall, setPendingHistoricalInstall] =
+    useState<PendingHistoricalInstall | null>(null);
   const [manualExistingOpen, setManualExistingOpen] = useState(false);
   const [manualExistingCandidate, setManualExistingCandidate] =
     useState<ManualExistingCandidate | null>(null);
-  const [manualExistingBusy, setManualExistingBusy] = useState<"pick" | "adopt" | null>(null);
-  const [manualExistingError, setManualExistingError] = useState<string | null>(null);
+  const [manualExistingBusy, setManualExistingBusy] = useState<
+    "pick" | "adopt" | null
+  >(null);
+  const [manualExistingError, setManualExistingError] = useState<string | null>(
+    null,
+  );
   const [statusLoaded, setStatusLoaded] = useState(false);
   const [statusFailed, setStatusFailed] = useState(false);
   // A paused download: the progress screen stays up (not routed home) offering
   // 〔继续〕/〔取消〕. `installRoot` is preserved so a paused fresh install
   // resumes into the same chosen location.
-  const [paused, setPaused] = useState<(PausedDownload & { installRoot?: string }) | null>(null);
+  const [paused, setPaused] = useState<
+    (PausedDownload & { installRoot?: string }) | null
+  >(null);
   const [pausedDiscardBusy, setPausedDiscardBusy] = useState(false);
   const pausedDiscardBusyRef = useRef(false);
+  // Same-tick guard between 〔继续〕 and the paused screen's stale 〔取消〕
+  // handler; state removal alone does not close that pre-render race.
+  const pausedResumeStartingRef = useRef(false);
   const scopeRef = useRef<HTMLDivElement>(null);
   // Synchronous guard for launch double-clicks (state alone can miss a second
   // click before setBusy("launch") re-renders).
@@ -182,23 +245,26 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     onError: setActionError,
   });
 
-  const runCheck = useCallback(async (generation: number) => {
-    if (!ownsOperation(generation)) return false;
-    setCheckError(null);
-    setActionError(null);
-    setNotice(null);
-    try {
-      const next = await managerApi.winPlanUpdate();
+  const runCheck = useCallback(
+    async (generation: number) => {
       if (!ownsOperation(generation)) return false;
-      setReport(next);
-      return true;
-    } catch (cause) {
-      if (!ownsOperation(generation)) return false;
-      setReport(null);
-      setCheckError(resolveFailure(cause, t));
-      return false;
-    }
-  }, [ownsOperation, t]);
+      setCheckError(null);
+      setActionError(null);
+      setNotice(null);
+      try {
+        const next = await managerApi.winPlanUpdate();
+        if (!ownsOperation(generation)) return false;
+        setReport(next);
+        return true;
+      } catch (cause) {
+        if (!ownsOperation(generation)) return false;
+        setReport(null);
+        setCheckError(resolveFailure(cause, t));
+        return false;
+      }
+    },
+    [ownsOperation, t],
+  );
 
   const check = useCallback(async () => {
     if (busyRef.current !== null) return false;
@@ -210,48 +276,58 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     }
   }, [beginOperation, finishOperation, runCheck]);
 
-  const refreshStatus = useCallback(async (generation?: number) => {
-    const canApply = () => generation === undefined || ownsOperation(generation);
-    try {
-      const next = await managerApi.winStatus();
-      if (canApply()) {
-        setStatus(next);
-        if (next.status === "external") setOtherVersionOpen(false);
-        setStatusFailed(false);
+  const refreshStatus = useCallback(
+    async (generation?: number) => {
+      const canApply = () =>
+        generation === undefined || ownsOperation(generation);
+      try {
+        const next = await managerApi.winStatus();
+        if (canApply()) {
+          setStatus(next);
+          if (next.status === "external") setOtherVersionOpen(false);
+          setStatusFailed(false);
+        }
+        return next;
+      } catch {
+        if (canApply()) setStatusFailed(true);
+        return null;
+      } finally {
+        if (canApply()) setStatusLoaded(true);
       }
-      return next;
-    } catch {
-      if (canApply()) setStatusFailed(true);
-      return null;
-    } finally {
-      if (canApply()) setStatusLoaded(true);
-    }
-  }, [ownsOperation]);
+    },
+    [ownsOperation],
+  );
 
-  const clearProvenanceRecovery = useCallback((expectedToken: string | null) => {
-    // Storage is the cross-renderer authority. Re-read it at clear time so an
-    // old reconciliation can never remove a marker written by a newer run.
-    const stored = readStoredProvenanceRecovery();
-    const storedMatches = stored?.token === expectedToken;
-    if (storedMatches) storeProvenanceRecovery(null);
-    if (locallyStartedOperationRef.current === expectedToken) {
-      locallyStartedOperationRef.current = null;
-    }
-    setProvenanceRecovery((current) => {
-      if (current?.token !== expectedToken) return current;
-      // If another renderer/run replaced storage while this probe was pending,
-      // adopt that newer marker into memory instead of clearing the guard.
-      return stored && !storedMatches ? stored : null;
-    });
-  }, []);
+  const clearProvenanceRecovery = useCallback(
+    (expectedToken: string | null) => {
+      // Storage is the cross-renderer authority. Re-read it at clear time so an
+      // old reconciliation can never remove a marker written by a newer run.
+      const stored = readStoredProvenanceRecovery();
+      const storedMatches = stored?.token === expectedToken;
+      if (storedMatches) storeProvenanceRecovery(null);
+      if (locallyStartedOperationRef.current === expectedToken) {
+        locallyStartedOperationRef.current = null;
+      }
+      setProvenanceRecovery((current) => {
+        if (current?.token !== expectedToken) return current;
+        // If another renderer/run replaced storage while this probe was pending,
+        // adopt that newer marker into memory instead of clearing the guard.
+        return stored && !storedMatches ? stored : null;
+      });
+    },
+    [],
+  );
 
   const reconcileProvenanceRecovery = useCallback(
     async (token: string, ownerGeneration?: number) => {
       const managesBusy = ownerGeneration === undefined;
       const generation = ownerGeneration ?? beginOperation("plan");
       try {
-        const returnedCompletion = await managerApi.getOperationCompletion(token).catch(() => null);
-        const completion = returnedCompletion?.id === token ? returnedCompletion : null;
+        const returnedCompletion = await managerApi
+          .getOperationCompletion(token)
+          .catch(() => null);
+        const completion =
+          returnedCompletion?.id === token ? returnedCompletion : null;
         if (!ownsOperation(generation)) return completion;
         if (
           completion?.state === "failed-before-commit" ||
@@ -293,7 +369,10 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   const refreshStatusAndPlan = useCallback(async () => {
     const generation = beginOperation("plan");
     try {
-      return await Promise.all([refreshStatus(generation), runCheck(generation)]);
+      return await Promise.all([
+        refreshStatus(generation),
+        runCheck(generation),
+      ]);
     } finally {
       finishOperation(generation);
     }
@@ -303,7 +382,10 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     void (async () => {
       const s = await managerApi.getSettings().catch(() => DEFAULT_SETTINGS);
       setSettings(s);
-      void managerApi.winDefaultInstallRoot().then(setDefaultInstallRoot).catch(() => undefined);
+      void managerApi
+        .winDefaultInstallRoot()
+        .then(setDefaultInstallRoot)
+        .catch(() => undefined);
       void refreshStatus();
       // Skip the startup check when an install/update is already mid-flight —
       // reattach owns the screen until that lease ends.
@@ -324,7 +406,8 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       setSettings((event as CustomEvent<AppSettings>).detail);
     };
     window.addEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
-    return () => window.removeEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
+    return () =>
+      window.removeEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
   }, []);
 
   // The snapshot/busy values the focus listener (a long-lived subscription)
@@ -412,7 +495,8 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       if (st.status === "external") setOtherVersionOpen(false);
     },
     hasChecked: () => reportRef.current != null,
-    checkedIdentity: () => installIdentity(reportRef.current?.installed ?? null, normalizePath),
+    checkedIdentity: () =>
+      installIdentity(reportRef.current?.installed ?? null, normalizePath),
     identityOf: (st) => installIdentity(st.installed ?? null, normalizePath),
     isBusy: () => busyRef.current != null,
     onIdentityChanged: () => {
@@ -424,6 +508,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       // the re-checked card.
       setConfirmOpen(false);
       setInstallDirOpen(false);
+      setPendingHistoricalInstall(null);
       setManualExistingOpen(false);
       setOtherVersionOpen(false);
       setManualExistingCandidate(null);
@@ -433,7 +518,10 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   useEffect(() => {
     if (!settings.periodicCheck) return;
-    const intervalMs = Math.max(60_000, settings.periodicCheckIntervalSeconds * 1000);
+    const intervalMs = Math.max(
+      60_000,
+      settings.periodicCheckIntervalSeconds * 1000,
+    );
     const id = window.setInterval(() => {
       if (busyRef.current) return;
       void checkRef.current();
@@ -443,7 +531,10 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   const adopt = useCallback(async () => {
     const generation = beginOperation("adopt");
-    const recoveryToken = readStoredProvenanceRecovery()?.token ?? provenanceRecovery?.token ?? null;
+    const recoveryToken =
+      readStoredProvenanceRecovery()?.token ??
+      provenanceRecovery?.token ??
+      null;
     setCheckError(null);
     setActionError(null);
     setNotice(null);
@@ -487,7 +578,12 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   // Windows install + update both go through win_perform_update (the route —
   // MSIX sideload or portable fallback — is decided by the backend plan).
   const runPerform = useCallback(
-    async (mode: "perform" | "install", installRoot?: string) => {
+    async (
+      mode: "perform" | "install",
+      installRoot?: string,
+      expectationOverride?: WinOrdinaryExpectation,
+      resumeSnapshot?: PausedDownload,
+    ) => {
       // React state may not have committed between two discrete clicks yet;
       // the synchronous ref closes that double-start window.
       if (busyRef.current !== null) return;
@@ -498,14 +594,36 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       resetStop();
       setActionError(null);
       setNotice(null);
-      setPaused(null);
+      if (!resumeSnapshot) setPaused(null);
+      let expectation: WinOrdinaryExpectation | null =
+        expectationOverride ?? null;
+      if (!expectation) {
+        try {
+          const next = report ?? (await managerApi.winPlanUpdate());
+          if (!ownsOperation(generation)) return;
+          if (!report) setReport(next);
+          expectation = {
+            platform: "windows",
+            currentVersion: next.plan.currentVersion,
+            targetVersion: next.plan.latestVersion,
+            packageMoniker: next.plan.packageMoniker,
+            route: next.plan.route,
+          };
+        } catch (cause) {
+          if (ownsOperation(generation)) {
+            setActionError(resolveFailure(cause, t));
+          }
+          if (finishOperation(generation)) resetStop();
+          return;
+        }
+      }
       // For an in-place update (not a fresh install) capture the human-facing
       // versions before the swap, so the outcome strip can show "X → Y".
       // Prefer the report (one atomic snapshot of installed + plan) so the
       // strip can't pair a stale installed version with a fresh plan.
       const fromVersion =
-        mode === "perform" ? report?.installed?.version ?? status?.installed?.version ?? "" : "";
-      const toVersion = report?.plan?.latestVersion ?? "";
+        mode === "perform" ? (expectation.currentVersion ?? "") : "";
+      const toVersion = expectation.targetVersion;
       let unlisten = () => {};
       let operationToken: string | null = null;
       try {
@@ -515,17 +633,19 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           return;
         }
         unlisten = attachedUnlisten;
-        const expected = report?.plan
-          ? {
-              currentVersion: report.plan.currentVersion,
-              latestVersion: report.plan.latestVersion,
-              packageMoniker: report.plan.packageMoniker,
-              route: report.plan.route,
-            }
-          : undefined;
+        const expected = {
+          currentVersion: expectation.currentVersion,
+          latestVersion: expectation.targetVersion,
+          packageMoniker: expectation.packageMoniker,
+          route: expectation.route,
+        };
         operationToken = await managerApi.armDestructive("update");
+        if (resumeSnapshot) setPaused(null);
         locallyStartedOperationRef.current = operationToken;
-        const armedRecovery: ProvenanceRecovery = { state: "unknown", token: operationToken };
+        const armedRecovery: ProvenanceRecovery = {
+          state: "unknown",
+          token: operationToken,
+        };
         storeProvenanceRecovery(armedRecovery);
         setProvenanceRecovery(armedRecovery);
         const result = await managerApi.winPerformUpdate(
@@ -533,6 +653,7 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           expected,
           installRoot,
           operationToken,
+          mode,
         );
         // Partial success (app installed, provenance failed): keep success path
         // and surface a recovery notice — never treat as hard failure.
@@ -553,7 +674,9 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           // Guard the action area before either probe can settle; there must be
           // no render where a completed-but-unrecorded install offers reinstall.
           const recoveryState: ProvenanceRecoveryState =
-            result.outcome?.appState === "present" || result.installed ? "present" : "unknown";
+            result.outcome?.appState === "present" || result.installed
+              ? "present"
+              : "unknown";
           const recovery = { state: recoveryState, token: operationToken };
           storeProvenanceRecovery(recovery);
           setProvenanceRecovery(recovery);
@@ -564,9 +687,16 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         await runCheck(generation);
       } catch (cause) {
         const code = errorCode(cause);
-        const explicitlyPreMutation = code === "stale_expectation" || isDownloadCancelled(cause);
-        if (operationToken && explicitlyPreMutation) clearProvenanceRecovery(operationToken);
-        else if (operationToken) await reconcileProvenanceRecovery(operationToken, generation);
+        const explicitlyPreMutation =
+          code === "stale_expectation" || isDownloadCancelled(cause);
+        let completion: OperationCompletion | null = null;
+        if (operationToken && explicitlyPreMutation)
+          clearProvenanceRecovery(operationToken);
+        else if (operationToken)
+          completion = await reconcileProvenanceRecovery(
+            operationToken,
+            generation,
+          );
         if (!ownsOperation(generation)) return;
         setConfirmOpen(false);
         setInstallDirOpen(false);
@@ -574,7 +704,12 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         if (stop === "pause" && isDownloadCancelled(cause)) {
           // Stay on the progress screen as paused; the cached `.part` lets
           // 〔继续〕 resume from here (with the same install location).
-          setPaused({ kind: mode, dl: dlRef.current, installRoot });
+          setPaused({
+            kind: mode,
+            dl: dlRef.current,
+            installRoot,
+            resume: { kind: mode, installRoot, expectation },
+          });
         } else if (stop && isDownloadCancelled(cause)) {
           setNotice(t("progress.cancelled"));
         } else if (code === "stale_expectation") {
@@ -583,6 +718,14 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             setNotice(t("home.stale.rechecked"));
           }
         } else {
+          if (
+            resumeSnapshot &&
+            (!operationToken ||
+              completion?.state === "failed-before-commit" ||
+              completion?.state === "rolled-back")
+          ) {
+            setPaused(resumeSnapshot);
+          }
           setActionError(resolveFailure(cause, t));
         }
       } finally {
@@ -591,7 +734,6 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       }
     },
     [
-      status,
       report,
       refreshStatus,
       runCheck,
@@ -608,48 +750,11 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     ],
   );
 
-  // 〔继续〕from the paused state — re-run the same operation (same install
-  // location). The backend finds the cached `.part` and resumes via `curl -C -`,
-  // so the bar picks up where it stopped instead of at 0.
-  const resumeDownload = useCallback(() => {
-    const snapshot = paused;
-    setActionError(null);
-    setPaused(null);
-    if (!snapshot) return;
-    void runPerform(snapshot.kind, snapshot.installRoot);
-  }, [paused, runPerform]);
-
-  // 〔取消〕from the paused state — the download already stopped, so drop the
-  // cached partial and route home.
-  const cancelPausedDownload = useCallback(async () => {
-    if (pausedDiscardBusyRef.current) return;
-    pausedDiscardBusyRef.current = true;
-    setActionError(null);
-    setPausedDiscardBusy(true);
-    try {
-      // Only claim "已取消" once the cached partial is actually gone — otherwise
-      // a failed discard would leave a `.part` that the next update silently
-      // resumes, contradicting the cancel.
-      await managerApi.winDiscardDownload();
-      setPaused(null);
-      setNotice(t("progress.cancelled"));
-    } catch (cause) {
-      setActionError(
-        contextualFailure(
-          cause,
-          t,
-          t("progress.discardFailed"),
-          "paused_discard_failed",
-        ),
-      );
-    } finally {
-      pausedDiscardBusyRef.current = false;
-      setPausedDiscardBusy(false);
-    }
-  }, [t]);
-
   const freshInstallNeedsLocation = useCallback(async () => {
-    if (settings.windowsInstallMode === "portable" || report?.plan?.route === "portable-fallback") {
+    if (
+      settings.windowsInstallMode === "portable" ||
+      report?.plan?.route === "portable-fallback"
+    ) {
       return true;
     }
     if (report?.plan?.route === "msix-sideload") {
@@ -678,12 +783,263 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     t,
   ]);
 
+  const runHistoricalInstall = useCallback(
+    async (
+      selection: HistoricalInstallSelection,
+      blockUpdates: boolean,
+      installRoot?: string,
+      locationConfirmed = false,
+      expectationOverride?: WinHistoricalExpectation,
+      resumeSnapshot?: PausedDownload,
+    ) => {
+      if (busyRef.current !== null) {
+        throw new Error(t("error.busy"));
+      }
+      const current = status?.status === "managed" ? status.installed : null;
+      const expectation: WinHistoricalExpectation = expectationOverride ?? {
+        platform: "windows",
+        currentPath: current?.path ?? null,
+        currentVersion: current?.version ?? null,
+        currentSource: current?.source ?? null,
+      };
+      const fresh = expectation.currentPath === null;
+      if (fresh && !locationConfirmed) {
+        // Historical/offline first installs must not depend on the latest-channel
+        // manifest just to decide whether an MSIX may need its portable fallback.
+        // Always collect the fallback destination up front. A successful MSIX
+        // sideload simply ignores it; an offline or dynamically-rerouted portable
+        // install already has the user's explicit destination.
+        setOtherVersionOpen(false);
+        setPendingHistoricalInstall({ selection, blockUpdates, expectation });
+        setInstallDirOpen(true);
+        return;
+      }
+      const mode = fresh ? "install" : "perform";
+      const generation = beginOperation(mode);
+      const fromVersion = expectation.currentVersion ?? "";
+      resetStop();
+      setOtherVersionOpen(false);
+      setInstallDirOpen(false);
+      setPendingHistoricalInstall(null);
+      setActionError(null);
+      setNotice(null);
+      if (!resumeSnapshot) setPaused(null);
+      let unlisten = () => {};
+      let operationToken: string | null = null;
+      try {
+        const attachedUnlisten = await startDlListen();
+        if (!ownsOperation(generation)) {
+          attachedUnlisten();
+          return;
+        }
+        unlisten = attachedUnlisten;
+        operationToken = fresh
+          ? await managerApi.beginTrackedOperation("install")
+          : await managerApi.armDestructive("update");
+        if (resumeSnapshot) setPaused(null);
+        locallyStartedOperationRef.current = operationToken;
+        const armedRecovery: ProvenanceRecovery = {
+          state: "unknown",
+          token: operationToken,
+        };
+        storeProvenanceRecovery(armedRecovery);
+        setProvenanceRecovery(armedRecovery);
+        const result = await managerApi.winInstallHistoricalRelease(
+          selection,
+          blockUpdates,
+          {
+            currentPath: expectation.currentPath,
+            currentVersion: expectation.currentVersion,
+            currentSource: expectation.currentSource,
+          },
+          operationToken,
+          installRoot,
+        );
+        const needsProvenanceRecovery =
+          result.success &&
+          result.outcome?.recoveryActions?.includes("record_provenance");
+        if (ownsOperation(generation)) {
+          setPerform(result);
+          setUpdatedVer(
+            !fresh && fromVersion
+              ? { from: fromVersion, to: selection.version }
+              : null,
+          );
+        }
+        if (needsProvenanceRecovery && ownsOperation(generation)) {
+          const recoveryState: ProvenanceRecoveryState =
+            result.outcome?.appState === "present" || result.installed
+              ? "present"
+              : "unknown";
+          const recovery = { state: recoveryState, token: operationToken };
+          storeProvenanceRecovery(recovery);
+          setProvenanceRecovery(recovery);
+        } else if (!needsProvenanceRecovery) {
+          clearProvenanceRecovery(operationToken);
+        }
+        await refreshStatus(generation);
+        await runCheck(generation);
+        const refreshedSettings = await managerApi
+          .getSettings()
+          .catch(() => null);
+        if (refreshedSettings && ownsOperation(generation))
+          setSettings(refreshedSettings);
+      } catch (cause) {
+        const code = errorCode(cause);
+        const explicitlyPreMutation =
+          code === "stale_expectation" || isDownloadCancelled(cause);
+        let completion: OperationCompletion | null = null;
+        if (operationToken && explicitlyPreMutation) {
+          clearProvenanceRecovery(operationToken);
+        } else if (operationToken) {
+          // Reconciliation returns the backend's terminal mutation evidence;
+          // only a pre-commit failure or confirmed rollback is safe to resume.
+          completion = await reconcileProvenanceRecovery(
+            operationToken,
+            generation,
+          );
+        }
+        if (!ownsOperation(generation)) return;
+        const stop = downloadStopRef.current;
+        if (stop === "pause" && isDownloadCancelled(cause)) {
+          setPaused({
+            kind: mode,
+            dl: dlRef.current,
+            historical: { selection, blockUpdates, expectation, installRoot },
+          });
+        } else if (stop && isDownloadCancelled(cause)) {
+          setNotice(t("progress.cancelled"));
+        } else if (code === "stale_expectation") {
+          setPaused(null);
+          await refreshStatus(generation);
+          if (await runCheck(generation)) setNotice(t("home.stale.rechecked"));
+        } else {
+          if (
+            resumeSnapshot &&
+            (!operationToken ||
+              completion?.state === "failed-before-commit" ||
+              completion?.state === "rolled-back")
+          ) {
+            setPaused(resumeSnapshot);
+          }
+          setActionError(resolveFailure(cause, t));
+        }
+      } finally {
+        unlisten();
+        if (finishOperation(generation)) resetStop();
+      }
+    },
+    [
+      status,
+      beginOperation,
+      clearProvenanceRecovery,
+      dlRef,
+      downloadStopRef,
+      finishOperation,
+      ownsOperation,
+      reconcileProvenanceRecovery,
+      refreshStatus,
+      resetStop,
+      runCheck,
+      startDlListen,
+      t,
+    ],
+  );
+
+  // 〔继续〕from the paused state — re-run the same operation (same install
+  // location). The backend finds the cached `.part` and resumes via `curl -C -`,
+  // so the bar picks up where it stopped instead of at 0.
+  const resumeDownload = useCallback(() => {
+    const snapshot = paused;
+    setActionError(null);
+    if (!snapshot || pausedResumeStartingRef.current) return;
+    if (snapshot.historical) {
+      const expectation = snapshot.historical.expectation;
+      if (expectation.platform !== "windows") {
+        setActionError(
+          resolveFailure(new Error("invalid Windows resume context"), t),
+        );
+        return;
+      }
+      pausedResumeStartingRef.current = true;
+      setPaused(null);
+      void runHistoricalInstall(
+        snapshot.historical.selection,
+        snapshot.historical.blockUpdates,
+        snapshot.historical.installRoot ?? undefined,
+        true,
+        expectation,
+        snapshot,
+      )
+        .catch((cause) => {
+          setPaused(snapshot);
+          setActionError(resolveFailure(cause, t));
+        })
+        .finally(() => {
+          pausedResumeStartingRef.current = false;
+        });
+      return;
+    }
+    const expectation = snapshot.resume?.expectation;
+    if (!expectation || expectation.platform !== "windows") {
+      setActionError(
+        resolveFailure(new Error("missing exact Windows resume target"), t),
+      );
+      return;
+    }
+    pausedResumeStartingRef.current = true;
+    setPaused(null);
+    void runPerform(
+      snapshot.kind,
+      snapshot.resume?.installRoot ?? snapshot.installRoot,
+      expectation,
+      snapshot,
+    )
+      .catch((cause) => {
+        setPaused(snapshot);
+        setActionError(resolveFailure(cause, t));
+      })
+      .finally(() => {
+        pausedResumeStartingRef.current = false;
+      });
+  }, [paused, runHistoricalInstall, runPerform, t]);
+
+  // 〔取消〕from the paused state — the download already stopped, so drop the
+  // cached partial and route home.
+  const cancelPausedDownload = useCallback(async () => {
+    if (pausedDiscardBusyRef.current || pausedResumeStartingRef.current) return;
+    pausedDiscardBusyRef.current = true;
+    setActionError(null);
+    setPausedDiscardBusy(true);
+    try {
+      // Only claim "已取消" once the cached partial is actually gone — otherwise
+      // a failed discard would leave a `.part` that the next update silently
+      // resumes, contradicting the cancel.
+      await managerApi.winDiscardDownload();
+      setPaused(null);
+      setNotice(t("progress.cancelled"));
+    } catch (cause) {
+      setActionError(
+        contextualFailure(
+          cause,
+          t,
+          t("progress.discardFailed"),
+          "paused_discard_failed",
+        ),
+      );
+    } finally {
+      pausedDiscardBusyRef.current = false;
+      setPausedDiscardBusy(false);
+    }
+  }, [t]);
+
   const requestInstall = useCallback(async () => {
     const needsLocation = await freshInstallNeedsLocation();
     if (needsLocation === null) {
       return;
     }
     if (needsLocation) {
+      setPendingHistoricalInstall(null);
       setInstallDirOpen(true);
       return;
     }
@@ -701,8 +1057,26 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   ]);
 
   const installToCurrentRoot = useCallback(async () => {
+    if (pendingHistoricalInstall) {
+      const pending = pendingHistoricalInstall;
+      setPendingHistoricalInstall(null);
+      setInstallDirOpen(false);
+      await runHistoricalInstall(
+        pending.selection,
+        pending.blockUpdates,
+        settings.installRoot,
+        true,
+        pending.expectation,
+      );
+      return;
+    }
     await runPerform("install", settings.installRoot);
-  }, [runPerform, settings.installRoot]);
+  }, [
+    pendingHistoricalInstall,
+    runHistoricalInstall,
+    runPerform,
+    settings.installRoot,
+  ]);
 
   const browseInstallRoot = useCallback(async () => {
     setInstallDirBusy(true);
@@ -714,7 +1088,20 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       // only persists it as the new default after the install succeeds, so a
       // cancelled or failed attempt leaves the saved location untouched. Refresh
       // settings afterwards to reflect whatever was (or wasn't) persisted.
-      await runPerform("install", path);
+      if (pendingHistoricalInstall) {
+        const pending = pendingHistoricalInstall;
+        setPendingHistoricalInstall(null);
+        setInstallDirOpen(false);
+        await runHistoricalInstall(
+          pending.selection,
+          pending.blockUpdates,
+          path,
+          true,
+          pending.expectation,
+        );
+      } else {
+        await runPerform("install", path);
+      }
       const refreshed = await managerApi.getSettings().catch(() => null);
       if (refreshed) setSettings(refreshed);
     } catch (cause) {
@@ -723,15 +1110,15 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     } finally {
       setInstallDirBusy(false);
     }
-  }, [runPerform, t]);
+  }, [pendingHistoricalInstall, runHistoricalInstall, runPerform, t]);
 
   const plan = report?.plan ?? null;
-  const installed = report ? report.installed : status?.installed ?? null;
+  const installed = report ? report.installed : (status?.installed ?? null);
   const statusMatchesInstalled = Boolean(
     installed &&
-      status?.installed &&
-      samePath(installed.path, status.installed.path) &&
-      installed.version === status.installed.version,
+    status?.installed &&
+    samePath(installed.path, status.installed.path) &&
+    installed.version === status.installed.version,
   );
   const isManaged = statusMatchesInstalled && status?.status === "managed";
   useEffect(() => {
@@ -739,14 +1126,23 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
     // status. The currently rendered managed snapshot may predate an in-flight
     // update and is not authoritative for that token. This effect exists only
     // for legacy token-less markers written by older renderers.
-    if (!provenanceRecovery || provenanceRecovery.token !== null || !isManaged) return;
+    if (!provenanceRecovery || provenanceRecovery.token !== null || !isManaged)
+      return;
     clearProvenanceRecovery(null);
   }, [clearProvenanceRecovery, isManaged, provenanceRecovery]);
-  const skippedCandidate = useMemo(() => winSkippedUpdateCandidate(plan), [plan]);
-  const updateSuppressed = skippedUpdateMatches(settings.skippedCodexUpdate, skippedCandidate);
+  const skippedCandidate = useMemo(
+    () => winSkippedUpdateCandidate(plan),
+    [plan],
+  );
+  const updateSuppressed = skippedUpdateMatches(
+    settings.skippedCodexUpdate,
+    skippedCandidate,
+  );
   const updateAvailable = Boolean(plan) && !plan?.upToDate && !updateSuppressed;
   const routeNote =
-    plan?.route === "portable-fallback" ? t("win.route.portable") : t("win.route.msix");
+    plan?.route === "portable-fallback"
+      ? t("win.route.portable")
+      : t("win.route.msix");
   // MSIX is the planned route, yet the Desktop App Installer wasn't detected —
   // a stripped Windows where the package may install but not launch. The probe
   // only ever reports appInstaller as "available" or "unknown" (never
@@ -762,7 +1158,8 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       return "none";
     }
     if (!statusLoaded) return "loading";
-    if (statusMatchesInstalled && status?.status === "external") return "external";
+    if (statusMatchesInstalled && status?.status === "external")
+      return "external";
     if (busy === "plan" && !report) return "loading";
     if (checkError && !report) return "error";
     if (!report) return "idle";
@@ -784,7 +1181,10 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   const version = installed?.version || plan?.latestVersion || "";
   const sourceLabel = t(`source.${settings.source}` as TKey);
-  const installRootIsDefault = samePath(settings.installRoot, defaultInstallRoot);
+  const installRootIsDefault = samePath(
+    settings.installRoot,
+    defaultInstallRoot,
+  );
   const provenanceRecoveryAction = t(
     kind === "external" ? "home.external.cta" : "home.recheck",
   );
@@ -795,7 +1195,10 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
   // Windows release time is shown only when it describes the installed/current
   // version. If the manifest omits it, skip the date row rather than showing an
   // install timestamp.
-  const packageReleaseDate = fmtDateTime(report?.release.releasedAt ?? null, lang);
+  const packageReleaseDate = fmtDateTime(
+    report?.release.releasedAt ?? null,
+    lang,
+  );
   const latestReleaseDate = updateAvailable ? packageReleaseDate : null;
   const releaseDate = plan?.upToDate ? packageReleaseDate : null;
   const updateSize =
@@ -835,7 +1238,10 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   const adoptManualExisting = useCallback(async () => {
     if (!manualExistingCandidate) return;
-    const recoveryToken = readStoredProvenanceRecovery()?.token ?? provenanceRecovery?.token ?? null;
+    const recoveryToken =
+      readStoredProvenanceRecovery()?.token ??
+      provenanceRecovery?.token ??
+      null;
     setManualExistingBusy("adopt");
     setManualExistingError(null);
     try {
@@ -935,7 +1341,8 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
       : undefined;
   const winResultDiagnostics =
     perform && winPartial
-      ? [perform.message, ...perform.notes].filter(Boolean).join("\n") || undefined
+      ? [perform.message, ...perform.notes].filter(Boolean).join("\n") ||
+        undefined
       : undefined;
   // Char-split only LTR scripts — splitting cursive RTL (Arabic) breaks joining.
   const splitHeadline = !isShimmer && dirOf(lang) === "ltr";
@@ -982,7 +1389,10 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         className="scroll"
         ref={scopeRef}
         inert={
-          confirmOpen || installDirOpen || manualExistingOpen || otherVersionOpen
+          confirmOpen ||
+          installDirOpen ||
+          manualExistingOpen ||
+          otherVersionOpen
             ? true
             : undefined
         }
@@ -998,7 +1408,10 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
                   ? t("install.done.title")
                   : winClean
                     ? updatedVer
-                      ? t("success.flow", { from: updatedVer.from, to: updatedVer.to })
+                      ? t("success.flow", {
+                          from: updatedVer.from,
+                          to: updatedVer.to,
+                        })
                       : t("install.done.title")
                     : perform.message
               }
@@ -1037,7 +1450,11 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             <>
               <Ring icon="loader" spin className="glow" />
               <div className="headline shimmer">{t("home.checking")}</div>
-              <div className="microcue" style={{ visibility: "hidden" }} aria-hidden="true">
+              <div
+                className="microcue"
+                style={{ visibility: "hidden" }}
+                aria-hidden="true"
+              >
                 <Icon name="shield" />
                 {t("home.official")}
               </div>
@@ -1099,7 +1516,9 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
                 <span className="rtext">
                   <span className="rtitle">{t("home.update.title")}</span>
                 </span>
-                <span className="rval version latest">{plan.latestVersion}</span>
+                <span className="rval version latest">
+                  {plan.latestVersion}
+                </span>
               </div>
             ) : null}
             {updateAvailable && latestReleaseDate ? (
@@ -1149,7 +1568,11 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           <div className="banner warn">
             <Icon name="alert" />
             <span>{t("win.msixRisk.body")}</span>
-            <button className="linkbtn" onClick={switchToPortable} disabled={busy !== null}>
+            <button
+              className="linkbtn"
+              onClick={switchToPortable}
+              disabled={busy !== null}
+            >
               {t("win.msixRisk.switch")}
             </button>
           </div>
@@ -1185,13 +1608,21 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           ) : null}
           {!rechecking && !provenanceRecoveryPending && kind === "update" ? (
             <>
-              <button className="btn ghost big" onClick={check} disabled={busy !== null}>
+              <button
+                className="btn ghost big"
+                onClick={check}
+                disabled={busy !== null}
+              >
                 <Icon name="refresh" />
                 {t("home.recheck")}
               </button>
               <button
                 className="btn primary big"
-                onClick={() => (settings.askBefore ? setConfirmOpen(true) : void runPerform("perform"))}
+                onClick={() =>
+                  settings.askBefore
+                    ? setConfirmOpen(true)
+                    : void runPerform("perform")
+                }
                 disabled={busy !== null}
               >
                 <Icon name="download" />
@@ -1202,7 +1633,11 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           {!rechecking && !provenanceRecoveryPending && kind === "idle" ? (
             <>
               {launchButton("primary")}
-              <button className="btn ghost" onClick={check} disabled={busy !== null}>
+              <button
+                className="btn ghost"
+                onClick={check}
+                disabled={busy !== null}
+              >
                 <Icon name="refresh" />
                 {t("home.recheck")}
               </button>
@@ -1210,7 +1645,11 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           ) : null}
           {!rechecking && kind === "external" ? (
             <>
-              <button className="btn primary big" onClick={adopt} disabled={busy !== null}>
+              <button
+                className="btn primary big"
+                onClick={adopt}
+                disabled={busy !== null}
+              >
                 <Icon name="shield" />
                 {t("home.external.cta")}
               </button>
@@ -1218,7 +1657,11 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             </>
           ) : null}
           {!rechecking && !provenanceRecoveryPending && kind === "none" ? (
-            <button className="btn primary big" onClick={requestInstall} disabled={busy !== null}>
+            <button
+              className="btn primary big"
+              onClick={requestInstall}
+              disabled={busy !== null}
+            >
               <Icon name="download" />
               {t("home.none.cta")}
             </button>
@@ -1226,7 +1669,11 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
           {!rechecking && !provenanceRecoveryPending && kind === "uptodate" ? (
             <>
               {launchButton("primary")}
-              <button className="btn ghost" onClick={check} disabled={busy !== null}>
+              <button
+                className="btn ghost"
+                onClick={check}
+                disabled={busy !== null}
+              >
                 <Icon name="refresh" />
                 {t("home.recheck")}
               </button>
@@ -1238,13 +1685,21 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
             installed ? (
               <>
                 {launchButton("primary")}
-                <button className="btn ghost" onClick={check} disabled={busy !== null}>
+                <button
+                  className="btn ghost"
+                  onClick={check}
+                  disabled={busy !== null}
+                >
                   <Icon name="refresh" />
                   {t("home.recheck")}
                 </button>
               </>
             ) : (
-              <button className="btn primary big" onClick={check} disabled={busy !== null}>
+              <button
+                className="btn primary big"
+                onClick={check}
+                disabled={busy !== null}
+              >
                 <Icon name="refresh" />
                 {t("home.recheck")}
               </button>
@@ -1254,7 +1709,10 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
 
         {!rechecking &&
         !provenanceRecoveryPending &&
-        (kind === "none" || (installed && kind !== "external")) ? (
+        !statusFailed &&
+        (kind === "none" ||
+          kind === "error" ||
+          (installed && kind !== "external")) ? (
           <InstallOtherVersionEntry
             disabled={busy !== null}
             onOpen={() => setOtherVersionOpen(true)}
@@ -1276,10 +1734,18 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
 
         {!rechecking && kind === "update" && skippedCandidate ? (
           <div className="update-skip">
-            <button className="linkbtn subtle" onClick={skipCurrentUpdate} disabled={busy !== null}>
+            <button
+              className="linkbtn subtle"
+              onClick={skipCurrentUpdate}
+              disabled={busy !== null}
+            >
               {t("home.skipCurrent")}
             </button>
-            <span>{t("home.skipCurrent.detail", { version: skippedCandidate.version })}</span>
+            <span>
+              {t("home.skipCurrent.detail", {
+                version: skippedCandidate.version,
+              })}
+            </span>
           </div>
         ) : null}
 
@@ -1324,13 +1790,22 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         open={otherVersionOpen}
         platform="windows"
         currentVersion={installed?.version ?? null}
-        architecture={installed?.arch ?? report?.release.architecture ?? null}
+        architecture={
+          hostArchitecture ??
+          installed?.arch ??
+          report?.release.architecture ??
+          null
+        }
         onDismiss={() => setOtherVersionOpen(false)}
+        onInstall={runHistoricalInstall}
       />
 
       <Sheet
         open={installDirOpen}
-        onDismiss={() => setInstallDirOpen(false)}
+        onDismiss={() => {
+          setInstallDirOpen(false);
+          setPendingHistoricalInstall(null);
+        }}
         dismissable={!installDirBusy}
         labelledBy={installDirTitleId}
         describedBy={installDirBodyId}
@@ -1341,12 +1816,22 @@ export function WinHome({ onOpenSettings }: { onOpenSettings: () => void }) {
         <p id={installDirBodyId}>{t("win.installDir.body")}</p>
         <div className="sheet-path">{settings.installRoot}</div>
         <div className="row2 sheet-actions">
-          <button className="btn ghost" onClick={installToCurrentRoot} disabled={installDirBusy}>
+          <button
+            className="btn ghost"
+            onClick={installToCurrentRoot}
+            disabled={installDirBusy}
+          >
             {t(
-              installRootIsDefault ? "win.installDir.useDefault" : "win.installDir.useCurrent",
+              installRootIsDefault
+                ? "win.installDir.useDefault"
+                : "win.installDir.useCurrent",
             )}
           </button>
-          <button className="btn primary" onClick={browseInstallRoot} disabled={installDirBusy}>
+          <button
+            className="btn primary"
+            onClick={browseInstallRoot}
+            disabled={installDirBusy}
+          >
             {t("win.installDir.browse")}
           </button>
         </div>

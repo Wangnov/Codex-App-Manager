@@ -3252,7 +3252,7 @@ button.row.danger:hover {
   font-size: 11.5px !important;
 }
 
-/* ── Install another version — interactive frontend preview ──────────────── */
+/* ── Install another version — live GitHub history + local packages ─────── */
 .version-picker-sheet {
   text-align: start;
 }
@@ -3323,6 +3323,11 @@ button.row.danger:hover {
   background: var(--accent-tint);
   color: var(--accent-deep);
 }
+.version-architecture-choice button[aria-pressed="true"] {
+  border-color: color-mix(in oklch, var(--accent) 55%, var(--line));
+  background: var(--accent-tint);
+  color: var(--accent-deep);
+}
 .version-source {
   display: flex;
   align-items: center;
@@ -3354,11 +3359,56 @@ button.row.danger:hover {
 }
 .version-list {
   margin-top: 10px;
-  overflow: hidden;
+  max-height: min(390px, 46vh);
+  overflow-x: hidden;
+  overflow-y: auto;
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
   background: linear-gradient(180deg, var(--surface-top), var(--surface));
   box-shadow: var(--elev-2);
+}
+.version-picker-loading {
+  min-height: 68px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px;
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+.version-picker-loading svg {
+  width: 16px;
+  height: 16px;
+  animation: spin 0.9s linear infinite;
+}
+.version-picker-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 9px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in oklch, var(--danger) 22%, var(--line));
+  border-radius: var(--r-md);
+  background: var(--danger-tint);
+  color: var(--danger);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+.version-picker-error > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.version-picker-error button {
+  flex-shrink: 0;
+  padding: 4px 7px;
+  border: 1px solid currentColor;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 650;
 }
 .version-option,
 .version-offline {
@@ -3652,6 +3702,39 @@ button.row.danger:hover {
   border-radius: var(--r-md);
   background: var(--surface-2);
 }
+.version-package-choice {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 9px;
+}
+.version-package-choice button {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  color: var(--text-soft);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+}
+.version-package-choice button.selected {
+  border-color: color-mix(in oklch, var(--accent) 45%, var(--line));
+  background: var(--accent-tint);
+  color: var(--accent-deep);
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--accent) 14%, transparent);
+}
+.version-package-choice small {
+  color: var(--text-faint);
+  font-family: var(--sans);
+  font-size: 9.5px;
+  font-weight: 550;
+}
 .version-local-file > svg {
   width: 17px;
   height: 17px;
@@ -3744,20 +3827,6 @@ button.row.danger:hover {
 .version-picker-actions .btn svg {
   width: 16px;
   height: 16px;
-}
-.version-picker-done {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 8px 0 4px;
-  text-align: center;
-}
-.version-picker-done .ring {
-  margin-inline: auto;
-}
-.version-picker-done .btn {
-  min-width: 150px;
-  margin-top: 16px;
 }
 [dir="rtl"] .version-chevron {
   transform: scaleX(-1);

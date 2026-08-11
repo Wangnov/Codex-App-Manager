@@ -14,6 +14,10 @@ import type {
   ConfigHealth,
   ConfigWhich,
   Diagnostics,
+  HistoricalInstallSelection,
+  HistoricalReleaseArchitecture,
+  HistoricalReleaseCatalog,
+  LocalReleasePackage,
   MacInstallStatus,
   MacPerformReport,
   MacUninstallReport,
@@ -77,10 +81,14 @@ function normalizedInterval(value: unknown): number {
 }
 
 function normalizedProxyMode(value: unknown): AppSettings["proxyMode"] {
-  return value === "direct" || value === "custom" || value === "system" ? value : "system";
+  return value === "direct" || value === "custom" || value === "system"
+    ? value
+    : "system";
 }
 
-function normalizedSkippedCodexUpdate(value: unknown): SkippedCodexUpdate | null {
+function normalizedSkippedCodexUpdate(
+  value: unknown,
+): SkippedCodexUpdate | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Partial<Record<keyof SkippedCodexUpdate, unknown>>;
   const platform = raw.platform;
@@ -100,10 +108,14 @@ function normalizedSkippedCodexUpdate(value: unknown): SkippedCodexUpdate | null
 }
 
 function normalizeSettings(raw: Partial<AppSettings>): AppSettings {
-  const legacyAuto = typeof raw.autoCheck === "boolean" ? raw.autoCheck : DEFAULT_SETTINGS.autoCheck;
+  const legacyAuto =
+    typeof raw.autoCheck === "boolean"
+      ? raw.autoCheck
+      : DEFAULT_SETTINGS.autoCheck;
   const periodic =
     typeof raw.periodicCheck === "boolean" ? raw.periodicCheck : legacyAuto;
-  const customUrl = typeof raw.customUrl === "string" ? raw.customUrl.trim() : "";
+  const customUrl =
+    typeof raw.customUrl === "string" ? raw.customUrl.trim() : "";
   const customProxyUrl =
     typeof raw.customProxyUrl === "string" ? raw.customProxyUrl.trim() : "";
   // Empty custom modes are not a real runtime choice — fall back so UI, disk,
@@ -125,7 +137,9 @@ function normalizeSettings(raw: Partial<AppSettings>): AppSettings {
     checkOnStartup:
       typeof raw.checkOnStartup === "boolean" ? raw.checkOnStartup : legacyAuto,
     periodicCheck: periodic,
-    periodicCheckIntervalSeconds: normalizedInterval(raw.periodicCheckIntervalSeconds),
+    periodicCheckIntervalSeconds: normalizedInterval(
+      raw.periodicCheckIntervalSeconds,
+    ),
     signedOnly: true,
     proxyMode,
     customProxyUrl,
@@ -135,13 +149,16 @@ function normalizeSettings(raw: Partial<AppSettings>): AppSettings {
         : DEFAULT_SETTINGS.disableCodexSelfUpdates,
     skippedCodexUpdate: normalizedSkippedCodexUpdate(raw.skippedCodexUpdate),
     codexTheme:
-      typeof raw.codexTheme === "string" && raw.codexTheme.trim() ? raw.codexTheme : null,
+      typeof raw.codexTheme === "string" && raw.codexTheme.trim()
+        ? raw.codexTheme
+        : null,
     codexThemeDir:
       typeof raw.codexThemeDir === "string" && raw.codexThemeDir.trim()
         ? raw.codexThemeDir
         : null,
     codexThemeStoreDir:
-      typeof raw.codexThemeStoreDir === "string" && raw.codexThemeStoreDir.trim()
+      typeof raw.codexThemeStoreDir === "string" &&
+      raw.codexThemeStoreDir.trim()
         ? raw.codexThemeStoreDir
         : null,
   };
@@ -149,7 +166,9 @@ function normalizeSettings(raw: Partial<AppSettings>): AppSettings {
 
 function emitSettingsChanged(settings: AppSettings) {
   if (typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent<AppSettings>(SETTINGS_CHANGED_EVENT, { detail: settings }));
+  window.dispatchEvent(
+    new CustomEvent<AppSettings>(SETTINGS_CHANGED_EVENT, { detail: settings }),
+  );
 }
 
 function localSettings(): AppSettings {
@@ -208,7 +227,11 @@ export function errorMessage(cause: unknown): string {
 
 /** Stable machine code from a backend `CommandError`, or null for other throwables. */
 export function errorCode(cause: unknown): string | null {
-  if (isCommandError(cause) && typeof cause.code === "string" && cause.code.trim()) {
+  if (
+    isCommandError(cause) &&
+    typeof cause.code === "string" &&
+    cause.code.trim()
+  ) {
     return cause.code;
   }
   return null;
@@ -329,7 +352,8 @@ const WIN_FALLBACK_STAGE: WinStageReport = {
   latestVersion: "26.602.3474.0",
   packageMoniker: "OpenAI.Codex_26.602.3474.0_x64__2p2nqsd0c76g0",
   downloadSize: 566504666,
-  stagedPath: "(browser-dev mock) …/OpenAI.Codex_26.602.3474.0_x64__2p2nqsd0c76g0.msix",
+  stagedPath:
+    "(browser-dev mock) …/OpenAI.Codex_26.602.3474.0_x64__2p2nqsd0c76g0.msix",
   sha256: "6dc2e05ac2b760bbc77ce3f8a992efdb327363512c9c4744b9a146c41bc4d55a",
   hashVerified: true,
   authenticode: {
@@ -350,7 +374,9 @@ const WIN_FALLBACK_STAGE: WinStageReport = {
   identityVerified: true,
   installReady: true,
   portableFallbackReady: true,
-  notes: ["Non-destructive staging only; install execution is the next guarded step."],
+  notes: [
+    "Non-destructive staging only; install execution is the next guarded step.",
+  ],
 };
 
 const WIN_FALLBACK_PERFORM: WinPerformReport = {
@@ -372,7 +398,18 @@ const WIN_FALLBACK_PERFORM: WinPerformReport = {
     rawError: null,
   },
   portable: null,
-  msixHealth: { healthy: true, verified: true, packageRegistered: true, status: "Ok", statusOk: true, aumidResolved: true, missingDependencies: [], activationOk: true, failureKind: "", reason: "" },
+  msixHealth: {
+    healthy: true,
+    verified: true,
+    packageRegistered: true,
+    status: "Ok",
+    statusOk: true,
+    aumidResolved: true,
+    missingDependencies: [],
+    activationOk: true,
+    failureKind: "",
+    reason: "",
+  },
   installed: {
     path: "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.602.3474.0_x64__2p2nqsd0c76g0",
     version: "26.602.3474.0",
@@ -457,25 +494,89 @@ const FALLBACK_THEME_META: import("../shared/types").CodexThemeMeta = {
 // always calls the backend). Enough varied items to exercise pagination, list
 // view, selection and batch delete during layout work.
 const MOCK_PALETTES = [
-  { base: "#1a1d24", panel: "#232833", accent: "#d97e2a", ink: "#f2e9d8", line: "#3a4150" },
-  { base: "#17131a", panel: "#241c26", accent: "#ff6a00", ink: "#f5ede4", line: "#453343" },
-  { base: "#0f1420", panel: "#18203a", accent: "#3f7bd6", ink: "#e6eefb", line: "#26324f" },
-  { base: "#1c1008", panel: "#2a180d", accent: "#e8a33d", ink: "#f7e8c2", line: "#4a2f16" },
-  { base: "#120f16", panel: "#1e1826", accent: "#a86ee0", ink: "#efe7fb", line: "#332a44" },
-  { base: "#0d1712", panel: "#152720", accent: "#46c077", ink: "#e2f5ea", line: "#20402f" },
+  {
+    base: "#1a1d24",
+    panel: "#232833",
+    accent: "#d97e2a",
+    ink: "#f2e9d8",
+    line: "#3a4150",
+  },
+  {
+    base: "#17131a",
+    panel: "#241c26",
+    accent: "#ff6a00",
+    ink: "#f5ede4",
+    line: "#453343",
+  },
+  {
+    base: "#0f1420",
+    panel: "#18203a",
+    accent: "#3f7bd6",
+    ink: "#e6eefb",
+    line: "#26324f",
+  },
+  {
+    base: "#1c1008",
+    panel: "#2a180d",
+    accent: "#e8a33d",
+    ink: "#f7e8c2",
+    line: "#4a2f16",
+  },
+  {
+    base: "#120f16",
+    panel: "#1e1826",
+    accent: "#a86ee0",
+    ink: "#efe7fb",
+    line: "#332a44",
+  },
+  {
+    base: "#0d1712",
+    panel: "#152720",
+    accent: "#46c077",
+    ink: "#e2f5ea",
+    line: "#20402f",
+  },
 ];
 const MOCK_SKINS = [
-  ["asuka-eva02", "NERV EVA-02 Asuka Terminal", "碇真嗣与 EVA 初号机：以 CAGE-01 拘束机库、同步诊断和紫绿装甲构成的 NERV 素材化主题。"],
-  ["caishen-jubao", "财神聚宝阁 · Fortune Pavilion", "金框红底玉字与元宝铜钱的招财主题。"],
-  ["three-kingdoms", "赤壁风云 · Three Kingdoms", "原创三国演义主题：关羽、青龙偃月刀、赤壁火光、军阵沙盘与三方旌旗构成雄浑而富戏剧性的 Codex 皮肤。"],
-  ["shinji-eva01", "NERV EVA-01 Shinji Synchronization Terminal", "碇真嗣与 EVA 初号机：以 CAGE-01 拘束机库、同步诊断和紫绿装甲构成的 NERV 素材化主题。"],
+  [
+    "asuka-eva02",
+    "NERV EVA-02 Asuka Terminal",
+    "碇真嗣与 EVA 初号机：以 CAGE-01 拘束机库、同步诊断和紫绿装甲构成的 NERV 素材化主题。",
+  ],
+  [
+    "caishen-jubao",
+    "财神聚宝阁 · Fortune Pavilion",
+    "金框红底玉字与元宝铜钱的招财主题。",
+  ],
+  [
+    "three-kingdoms",
+    "赤壁风云 · Three Kingdoms",
+    "原创三国演义主题：关羽、青龙偃月刀、赤壁火光、军阵沙盘与三方旌旗构成雄浑而富戏剧性的 Codex 皮肤。",
+  ],
+  [
+    "shinji-eva01",
+    "NERV EVA-01 Shinji Synchronization Terminal",
+    "碇真嗣与 EVA 初号机：以 CAGE-01 拘束机库、同步诊断和紫绿装甲构成的 NERV 素材化主题。",
+  ],
   ["dilraba-starlight", "迪丽热巴 · STARLIGHT 星蝶光廊", ""],
-  ["luffy-onepiece", "Thousand Sunny — Dawn Adventure", "草帽一伙的黎明冒险配色。"],
+  [
+    "luffy-onepiece",
+    "Thousand Sunny — Dawn Adventure",
+    "草帽一伙的黎明冒险配色。",
+  ],
   ["kakashi-naruto", "Konoha ANBU — Lightning Copy Ninja", ""],
-  ["jensen-infinite-compute", "Jensen Infinite Compute", "皮革夹克与无尽算力的绿色矩阵。"],
+  [
+    "jensen-infinite-compute",
+    "Jensen Infinite Compute",
+    "皮革夹克与无尽算力的绿色矩阵。",
+  ],
   ["mai-shiranui", "Shiranui Dojo — Scarlet Flame", "不知火舞的绯红烈焰道场。"],
   ["ming-imperial", "大明宫阙 · Ming Imperial", ""],
-  ["kaworu-mark06", "SEELE Mark.06 Kaworu Terminal", "渚薰与 Mark.06 的月白终端。"],
+  [
+    "kaworu-mark06",
+    "SEELE Mark.06 Kaworu Terminal",
+    "渚薰与 Mark.06 的月白终端。",
+  ],
   ["jay-chou-inkstone", "周杰伦 · 墨键夜航", "水墨与钢琴键的夜航。"],
   ["luo-feng-domain", "银河领主 — 罗峰·陨墨星域", "吞噬星空罗峰的星域主题。"],
   ["rem-rezero", "Rem — Oni Maid Devotion", ""],
@@ -506,22 +607,24 @@ const MOCK_TAG_SETS = [
   ["light", "minimal"],
   ["dark", "vibrant"],
 ];
-const BROWSER_FALLBACK_CATALOG: CatalogSkin[] = MOCK_SKINS.map(([id, name, description], i) => ({
-  id,
-  name,
-  description,
-  version: "1.2.0",
-  author: "Wangnov",
-  appearance: "dual",
-  license: "personal-use",
-  tags: MOCK_TAG_SETS[i % MOCK_TAG_SETS.length],
-  codexVerified: "26.715.21425",
-  bytes: 3_000_000 + i * 100_000,
-  sha256: "0".repeat(64),
-  pack: `packs/${id}-1.2.0.codexskin`,
-  preview: `previews/${id}.webp`,
-  category: MOCK_CATEGORIES[i % MOCK_CATEGORIES.length],
-}));
+const BROWSER_FALLBACK_CATALOG: CatalogSkin[] = MOCK_SKINS.map(
+  ([id, name, description], i) => ({
+    id,
+    name,
+    description,
+    version: "1.2.0",
+    author: "Wangnov",
+    appearance: "dual",
+    license: "personal-use",
+    tags: MOCK_TAG_SETS[i % MOCK_TAG_SETS.length],
+    codexVerified: "26.715.21425",
+    bytes: 3_000_000 + i * 100_000,
+    sha256: "0".repeat(64),
+    pack: `packs/${id}-1.2.0.codexskin`,
+    preview: `previews/${id}.webp`,
+    category: MOCK_CATEGORIES[i % MOCK_CATEGORIES.length],
+  }),
+);
 
 const BROWSER_FALLBACK_THEME_STATUS: CodexThemeStatusReport = {
   supported: true,
@@ -560,7 +663,8 @@ function guardMacStatus(status: MacInstallStatus): MacInstallStatus {
   if (
     !isRecord(s) ||
     typeof s.status !== "string" ||
-    (s.installed !== null && !(isRecord(s.installed) && typeof s.installed.build === "number"))
+    (s.installed !== null &&
+      !(isRecord(s.installed) && typeof s.installed.build === "number"))
   ) {
     throw contractError("macOS install status");
   }
@@ -571,8 +675,10 @@ function guardMacReport(report: MacUpdateReport): MacUpdateReport {
   const r = report as unknown;
   if (
     !isRecord(r) ||
-    (r.installed !== null && !(isRecord(r.installed) && typeof r.installed.build === "number")) ||
-    (r.plan !== null && !(isRecord(r.plan) && typeof r.plan.upToDate === "boolean"))
+    (r.installed !== null &&
+      !(isRecord(r.installed) && typeof r.installed.build === "number")) ||
+    (r.plan !== null &&
+      !(isRecord(r.plan) && typeof r.plan.upToDate === "boolean"))
   ) {
     throw contractError("macOS update report");
   }
@@ -584,7 +690,8 @@ function guardWinStatus(status: WinInstallStatus): WinInstallStatus {
   if (
     !isRecord(s) ||
     typeof s.status !== "string" ||
-    (s.installed !== null && !(isRecord(s.installed) && typeof s.installed.version === "string"))
+    (s.installed !== null &&
+      !(isRecord(s.installed) && typeof s.installed.version === "string"))
   ) {
     throw contractError("Windows install status");
   }
@@ -596,7 +703,8 @@ function guardWinReport(report: WinUpdateReport): WinUpdateReport {
   if (
     !isRecord(r) ||
     !(isRecord(r.plan) && typeof r.plan.upToDate === "boolean") ||
-    (r.installed !== null && !(isRecord(r.installed) && typeof r.installed.version === "string"))
+    (r.installed !== null &&
+      !(isRecord(r.installed) && typeof r.installed.version === "string"))
   ) {
     throw contractError("Windows update report");
   }
@@ -604,6 +712,12 @@ function guardWinReport(report: WinUpdateReport): WinUpdateReport {
 }
 
 export const managerApi = {
+  beginTrackedOperation(kind: OperationKind): Promise<OperationToken> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve(`browser-dev-token-${kind}`);
+    }
+    return invoke<OperationToken>("begin_operation", { kind });
+  },
   armDestructive(kind: OperationKind): Promise<OperationToken> {
     if (!hasTauriRuntime()) {
       return Promise.resolve(`browser-dev-token-${kind}`);
@@ -617,16 +731,183 @@ export const managerApi = {
     }
     return invoke<OperationSnapshot | null>("get_operation_snapshot");
   },
-  /** Token-keyed terminal evidence retained after a renderer loses its invoke. */
-  getOperationCompletion(token: OperationToken): Promise<OperationCompletion | null> {
+  /** Resumable pause retained after its active lease has already ended. */
+  getPausedOperationSnapshot(): Promise<OperationSnapshot | null> {
     if (!hasTauriRuntime()) {
       return Promise.resolve(null);
     }
-    return invoke<OperationCompletion | null>("get_operation_completion", { token });
+    return invoke<OperationSnapshot | null>("get_paused_operation_snapshot");
+  },
+  /** Token-keyed terminal evidence retained after a renderer loses its invoke. */
+  getOperationCompletion(
+    token: OperationToken,
+  ): Promise<OperationCompletion | null> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve(null);
+    }
+    return invoke<OperationCompletion | null>("get_operation_completion", {
+      token,
+    });
+  },
+  historicalReleaseCatalog(
+    platform: "macos" | "windows",
+    architecture: HistoricalReleaseArchitecture,
+  ): Promise<HistoricalReleaseCatalog> {
+    if (!hasTauriRuntime()) {
+      const version = "26.727.51351";
+      const packageVersion = "26.727.6591.0";
+      return Promise.resolve({
+        repository: "Wangnov/codex-app-mirror",
+        platform,
+        architecture,
+        releases: [
+          {
+            tag: `codex-app-${version}`,
+            version,
+            publishedAt: "2026-08-01T00:17:13Z",
+            assets:
+              platform === "macos"
+                ? [
+                    {
+                      name: `Codex-mac-${architecture}.dmg`,
+                      size: 560_000_000,
+                      architecture,
+                      format: "dmg" as const,
+                      packageVersion: null,
+                    },
+                    {
+                      name: `Codex-darwin-${architecture}-${version}.zip`,
+                      size: 530_000_000,
+                      architecture,
+                      format: "zip" as const,
+                      packageVersion: null,
+                    },
+                  ]
+                : [
+                    {
+                      name: `OpenAI.Codex_${packageVersion}_${architecture}__2p2nqsd0c76g0.Msix`,
+                      size: 755_000_000,
+                      architecture,
+                      format: "msix" as const,
+                      packageVersion,
+                    },
+                  ],
+          },
+        ],
+      });
+    }
+    return invoke<HistoricalReleaseCatalog>("historical_release_catalog", {
+      architecture,
+    });
+  },
+  historicalPickLocalPackage(
+    platform: "macos" | "windows",
+    architecture: HistoricalReleaseArchitecture,
+  ): Promise<LocalReleasePackage | null> {
+    if (!hasTauriRuntime()) {
+      const version = "26.727.51351";
+      const packageVersion = platform === "windows" ? "26.727.6591.0" : null;
+      const assetName =
+        platform === "macos"
+          ? `Codex-mac-${architecture}.dmg`
+          : `OpenAI.Codex_${packageVersion}_${architecture}__2p2nqsd0c76g0.Msix`;
+      return Promise.resolve({
+        path: `/Users/example/Downloads/${assetName}`,
+        fileName: assetName,
+        size: platform === "macos" ? 560_000_000 : 755_000_000,
+        releaseTag: `local-signed-${version}`,
+        version,
+        assetName,
+        architecture,
+        format: platform === "macos" ? "dmg" : "msix",
+        packageVersion,
+      });
+    }
+    return invoke<LocalReleasePackage | null>("historical_pick_local_package", {
+      architecture,
+    });
+  },
+  async macInstallHistoricalRelease(
+    selection: HistoricalInstallSelection,
+    blockUpdates: boolean,
+    expected: { path: string | null; build: number | null },
+    operationToken?: OperationToken,
+  ): Promise<MacInstallStatus> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve({
+        installed: {
+          path: expected.path ?? "/Applications/Codex.app",
+          build: 5813,
+          shortVersion: selection.version,
+          arch: selection.architecture === "x64" ? "x86_64" : "arm64",
+        },
+        status: "managed",
+      });
+    }
+    const token =
+      operationToken ??
+      (expected.path
+        ? await managerApi.armDestructive("update")
+        : await managerApi.beginTrackedOperation("install"));
+    return invoke<MacInstallStatus>("mac_install_historical_release", {
+      confirm: true,
+      token,
+      releaseTag: selection.releaseTag,
+      assetName: selection.assetName,
+      localPath: selection.localPath,
+      architecture: selection.architecture,
+      blockUpdates,
+      expectedCurrentPath: expected.path,
+      expectedCurrentBuild: expected.build,
+    }).then(guardMacStatus);
+  },
+  async winInstallHistoricalRelease(
+    selection: HistoricalInstallSelection,
+    blockUpdates: boolean,
+    expected: {
+      currentPath: string | null;
+      currentVersion: string | null;
+      currentSource: string | null;
+    },
+    operationToken?: OperationToken,
+    installRoot?: string,
+  ): Promise<WinPerformReport> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve({
+        ...WIN_FALLBACK_PERFORM,
+        installed: WIN_FALLBACK_PERFORM.installed
+          ? { ...WIN_FALLBACK_PERFORM.installed, version: selection.version }
+          : null,
+        stage: {
+          ...WIN_FALLBACK_PERFORM.stage,
+          latestVersion: selection.version,
+          packageMoniker: selection.assetName.replace(/\.msix$/i, ""),
+        },
+      });
+    }
+    const token =
+      operationToken ??
+      (expected.currentPath
+        ? await managerApi.armDestructive("update")
+        : await managerApi.beginTrackedOperation("install"));
+    return invoke<WinPerformReport>("win_install_historical_release", {
+      confirm: true,
+      token,
+      releaseTag: selection.releaseTag,
+      assetName: selection.assetName,
+      localPath: selection.localPath,
+      architecture: selection.architecture,
+      blockUpdates,
+      installRoot,
+      expected,
+    });
   },
   macPlanUpdate(simulatedBuild?: number): Promise<MacUpdateReport> {
     if (!hasTauriRuntime()) {
-      return Promise.resolve({ ...FALLBACK_PLAN, simulatedBuild: simulatedBuild ?? null });
+      return Promise.resolve({
+        ...FALLBACK_PLAN,
+        simulatedBuild: simulatedBuild ?? null,
+      });
     }
     return invoke<MacUpdateReport>("mac_plan_update", {
       simulatedBuild: simulatedBuild ?? null,
@@ -641,6 +922,8 @@ export const managerApi = {
     fromBuild: number;
     toBuild: number;
     path: string;
+    fromVersion: string;
+    toVersion: string;
   }): Promise<MacPerformReport> {
     if (!hasTauriRuntime()) {
       return Promise.resolve({
@@ -661,9 +944,7 @@ export const managerApi = {
     return invoke<MacPerformReport>("mac_perform_update", {
       confirm: true,
       token,
-      expectedFromBuild: expected.fromBuild,
-      expectedToBuild: expected.toBuild,
-      expectedPath: expected.path,
+      expected,
     });
   },
   // Self-update the manager itself via the Tauri updater (minisign-signed,
@@ -674,9 +955,9 @@ export const managerApi = {
     }
     // A routine check shouldn't surface a scary error when the release feed
     // isn't published yet or is unreachable.
-    const update = await invoke<ManagerUpdateMetadata | null>("manager_check_update").catch(
-      () => undefined,
-    );
+    const update = await invoke<ManagerUpdateMetadata | null>(
+      "manager_check_update",
+    ).catch(() => undefined);
     if (update === undefined) {
       return { kind: "unavailable" };
     }
@@ -706,7 +987,9 @@ export const managerApi = {
         arch: "arm64",
       });
     }
-    return invoke<MacInstallStatus["installed"] | null>("mac_pick_existing_install");
+    return invoke<MacInstallStatus["installed"] | null>(
+      "mac_pick_existing_install",
+    );
   },
   macAdoptPath(path: string): Promise<MacInstallStatus> {
     if (!hasTauriRuntime()) {
@@ -724,7 +1007,10 @@ export const managerApi = {
   },
 
   // Fresh-install the latest Codex (full package) into /Applications.
-  macInstall(): Promise<MacInstallStatus> {
+  macInstall(expected: {
+    targetBuild: number;
+    targetVersion: string;
+  }): Promise<MacInstallStatus> {
     if (!hasTauriRuntime()) {
       return Promise.resolve({
         installed: {
@@ -736,7 +1022,10 @@ export const managerApi = {
         status: "managed",
       });
     }
-    return invoke<MacInstallStatus>("mac_install");
+    return invoke<MacInstallStatus>("mac_install", {
+      expectedTargetBuild: expected.targetBuild,
+      expectedTargetVersion: expected.targetVersion,
+    });
   },
   macPauseDownload(operationId: string): Promise<boolean> {
     if (!hasTauriRuntime()) {
@@ -783,6 +1072,13 @@ export const managerApi = {
     }
     return invoke<Diagnostics>("get_diagnostics");
   },
+  getHostArchitecture(): Promise<string> {
+    if (!hasTauriRuntime()) {
+      const platform = navigator.platform.toLowerCase();
+      return Promise.resolve(platform.includes("arm") ? "aarch64" : "x86_64");
+    }
+    return invoke<string>("get_host_architecture");
+  },
   openLogsDir(): Promise<void> {
     if (!hasTauriRuntime()) {
       return Promise.resolve();
@@ -804,7 +1100,11 @@ export const managerApi = {
       console.error("[frontend]", payload, cause);
     });
   },
-  frontendReady(lang: string, generation: number, token: string): Promise<void> {
+  frontendReady(
+    lang: string,
+    generation: number,
+    token: string,
+  ): Promise<void> {
     if (!hasTauriRuntime()) {
       return Promise.resolve();
     }
@@ -830,7 +1130,9 @@ export const managerApi = {
       emitSettingsChanged(safe);
       return safe;
     }
-    const saved = normalizeSettings(await invoke<AppSettings>("set_settings", { settings: safe }));
+    const saved = normalizeSettings(
+      await invoke<AppSettings>("set_settings", { settings: safe }),
+    );
     localStorage.setItem(SETTINGS_LS, JSON.stringify(saved));
     emitSettingsChanged(saved);
     return saved;
@@ -862,19 +1164,26 @@ export const managerApi = {
       emitSettingsChanged(saved);
       return saved;
     }
-    const saved = normalizeSettings(await invoke<AppSettings>("win_set_install_root", { path }));
+    const saved = normalizeSettings(
+      await invoke<AppSettings>("win_set_install_root", { path }),
+    );
     localStorage.setItem(SETTINGS_LS, JSON.stringify(saved));
     emitSettingsChanged(saved);
     return saved;
   },
   async winResetInstallRoot(): Promise<AppSettings> {
     if (!hasTauriRuntime()) {
-      const saved = { ...localSettings(), installRoot: DEFAULT_SETTINGS.installRoot };
+      const saved = {
+        ...localSettings(),
+        installRoot: DEFAULT_SETTINGS.installRoot,
+      };
       localStorage.setItem(SETTINGS_LS, JSON.stringify(saved));
       emitSettingsChanged(saved);
       return saved;
     }
-    const saved = normalizeSettings(await invoke<AppSettings>("win_reset_install_root"));
+    const saved = normalizeSettings(
+      await invoke<AppSettings>("win_reset_install_root"),
+    );
     localStorage.setItem(SETTINGS_LS, JSON.stringify(saved));
     emitSettingsChanged(saved);
     return saved;
@@ -904,7 +1213,10 @@ export const managerApi = {
   /** Live try-on against an already-debuggable Codex. Not persisted. */
   codexThemeTryOn(themeRef: string): Promise<CodexThemeStatusReport> {
     if (!hasTauriRuntime()) {
-      return Promise.resolve({ ...BROWSER_FALLBACK_THEME_STATUS, daemon: null });
+      return Promise.resolve({
+        ...BROWSER_FALLBACK_THEME_STATUS,
+        daemon: null,
+      });
     }
     return invoke<CodexThemeStatusReport>("codex_theme_try_on", { themeRef });
   },
@@ -913,7 +1225,9 @@ export const managerApi = {
     if (!hasTauriRuntime()) {
       return Promise.resolve({ ...BROWSER_FALLBACK_THEME_STATUS });
     }
-    return invoke<CodexThemeStatusReport>("codex_theme_try_on_restart", { themeRef });
+    return invoke<CodexThemeStatusReport>("codex_theme_try_on_restart", {
+      themeRef,
+    });
   },
   /** Persist the current try-on as the standing selection. */
   codexThemeKeep(themeRef: string): Promise<void> {
@@ -933,7 +1247,10 @@ export const managerApi = {
   /** Full apply: restart Codex debuggable + native config sections + inject. */
   codexThemeApply(themeRef: string): Promise<CodexThemeStatusReport> {
     if (!hasTauriRuntime()) {
-      return Promise.resolve({ ...BROWSER_FALLBACK_THEME_STATUS, activeTheme: themeRef });
+      return Promise.resolve({
+        ...BROWSER_FALLBACK_THEME_STATUS,
+        activeTheme: themeRef,
+      });
     }
     return invoke<CodexThemeStatusReport>("codex_theme_apply", { themeRef });
   },
@@ -942,7 +1259,10 @@ export const managerApi = {
    *  injection for this session (native palette stays enabled). */
   codexThemeOff(full: boolean): Promise<CodexThemeStatusReport> {
     if (!hasTauriRuntime()) {
-      return Promise.resolve({ ...BROWSER_FALLBACK_THEME_STATUS, activeTheme: null });
+      return Promise.resolve({
+        ...BROWSER_FALLBACK_THEME_STATUS,
+        activeTheme: null,
+      });
     }
     return invoke<CodexThemeStatusReport>("codex_theme_off", { full });
   },
@@ -1045,7 +1365,9 @@ export const managerApi = {
       return Promise.resolve({
         removed: true,
         keptCodexHome: keepCodexHome,
-        message: keepCodexHome ? "（浏览器开发态）已卸载,保留数据" : "（浏览器开发态）已卸载并清除数据",
+        message: keepCodexHome
+          ? "（浏览器开发态）已卸载,保留数据"
+          : "（浏览器开发态）已卸载并清除数据",
         outcome: emptyOperationOutcome({
           primaryOk: true,
           appState: "absent",
@@ -1058,7 +1380,11 @@ export const managerApi = {
       });
     }
     const token = await managerApi.armDestructive("uninstall");
-    return invoke<MacUninstallReport>("mac_uninstall", { confirm: true, token, keepCodexHome });
+    return invoke<MacUninstallReport>("mac_uninstall", {
+      confirm: true,
+      token,
+      keepCodexHome,
+    });
   },
   getConfigHealth(): Promise<ConfigHealth> {
     if (!hasTauriRuntime()) {
@@ -1078,7 +1404,9 @@ export const managerApi = {
     }
     return invoke<ConfigHealth>("reset_config", { which });
   },
-  async retryAncillary(request: AncillaryRetryRequest): Promise<AncillaryRetryReport> {
+  async retryAncillary(
+    request: AncillaryRetryRequest,
+  ): Promise<AncillaryRetryReport> {
     if (!hasTauriRuntime()) {
       return Promise.resolve({
         message: "browser-dev mock: ancillary retry ok",
@@ -1135,7 +1463,7 @@ export const managerApi = {
   },
   async winPerformUpdate(
     confirm: boolean,
-    expected?: {
+    expected: {
       currentVersion: string | null;
       latestVersion: string;
       packageMoniker: string;
@@ -1143,6 +1471,7 @@ export const managerApi = {
     },
     installRoot?: string,
     operationToken?: OperationToken,
+    resumeKind: "install" | "perform" = "perform",
   ): Promise<WinPerformReport> {
     if (!hasTauriRuntime()) {
       return confirm
@@ -1157,30 +1486,47 @@ export const managerApi = {
       confirm,
       token,
       installRoot: installRoot ?? null,
-      expected: expected ?? null,
+      expected,
+      resumeKind,
     });
   },
-  async winUninstall(confirm: boolean, purgeUserData: boolean): Promise<WinUninstallReport> {
+  async winUninstall(
+    confirm: boolean,
+    purgeUserData: boolean,
+  ): Promise<WinUninstallReport> {
     if (!hasTauriRuntime()) {
       return confirm
-        ? Promise.resolve({ ...WIN_FALLBACK_UNINSTALL, purgedUserData: purgeUserData })
+        ? Promise.resolve({
+            ...WIN_FALLBACK_UNINSTALL,
+            purgedUserData: purgeUserData,
+          })
         : Promise.reject(new Error("explicit confirmation is required"));
     }
     if (!confirm) {
       return Promise.reject(new Error("explicit confirmation is required"));
     }
     const token = await managerApi.armDestructive("uninstall");
-    return invoke<WinUninstallReport>("win_uninstall", { confirm, token, purgeUserData });
+    return invoke<WinUninstallReport>("win_uninstall", {
+      confirm,
+      token,
+      purgeUserData,
+    });
   },
   winStatus(): Promise<WinInstallStatus> {
     if (!hasTauriRuntime()) {
-      return Promise.resolve({ installed: WIN_FALLBACK_INSTALLED, status: "managed" });
+      return Promise.resolve({
+        installed: WIN_FALLBACK_INSTALLED,
+        status: "managed",
+      });
     }
     return invoke<WinInstallStatus>("win_status").then(guardWinStatus);
   },
   winAdopt(): Promise<WinInstallStatus> {
     if (!hasTauriRuntime()) {
-      return Promise.resolve({ installed: WIN_FALLBACK_PLAN.installed, status: "managed" });
+      return Promise.resolve({
+        installed: WIN_FALLBACK_PLAN.installed,
+        status: "managed",
+      });
     }
     return invoke<WinInstallStatus>("win_adopt");
   },
@@ -1195,7 +1541,9 @@ export const managerApi = {
         installedAt: Math.floor(Date.now() / 1000),
       });
     }
-    return invoke<WinInstallStatus["installed"] | null>("win_pick_existing_install");
+    return invoke<WinInstallStatus["installed"] | null>(
+      "win_pick_existing_install",
+    );
   },
   winAdoptPath(path: string): Promise<WinInstallStatus> {
     if (!hasTauriRuntime()) {
@@ -1222,7 +1570,9 @@ export const managerApi = {
   },
 };
 
-function managerUpdateAvailable(update: ManagerUpdateMetadata): ManagerUpdateAvailable {
+function managerUpdateAvailable(
+  update: ManagerUpdateMetadata,
+): ManagerUpdateAvailable {
   return {
     kind: "available",
     version: update.version,

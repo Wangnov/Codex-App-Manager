@@ -47,6 +47,8 @@ pub enum InstallTxStep {
     OldMoved,
     /// New payload moved into install path.
     NewInstalled,
+    /// Rollback was durably chosen before the backup is consumed.
+    RollingBack,
     /// Success path finished; log may be deleted.
     Completed,
     /// Backup restored over install path.
@@ -55,12 +57,24 @@ pub enum InstallTxStep {
     NeedsManual,
 }
 
+/// Durable companion state for a historical install's explicit self-update
+/// choice. It is written before the platform setting changes, then finalized
+/// from the same disk-recovery verdict as the app swap: rollback/intact keeps
+/// `previous_disabled`, while a landed install keeps `requested_disabled`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelfUpdatePolicyTransition {
+    pub previous_disabled: bool,
+    pub requested_disabled: bool,
+}
+
 impl InstallTxStep {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Prepared => "prepared",
             Self::OldMoved => "old-moved",
             Self::NewInstalled => "new-installed",
+            Self::RollingBack => "rolling-back",
             Self::Completed => "completed",
             Self::RolledBack => "rolled-back",
             Self::NeedsManual => "needs-manual",
@@ -68,10 +82,7 @@ impl InstallTxStep {
     }
 
     pub fn is_terminal(self) -> bool {
-        matches!(
-            self,
-            Self::Completed | Self::RolledBack | Self::NeedsManual
-        )
+        matches!(self, Self::Completed | Self::RolledBack | Self::NeedsManual)
     }
 }
 
@@ -89,6 +100,8 @@ pub struct InstallTransaction {
     pub had_previous: bool,
     #[serde(default)]
     pub was_running: Option<bool>,
+    #[serde(default)]
+    pub self_update_policy: Option<SelfUpdatePolicyTransition>,
     pub started_unix: u64,
     pub updated_unix: u64,
     #[serde(default)]
@@ -108,6 +121,8 @@ pub enum RecoveryAction {
     ContinueInstall,
     /// Rename backup → install.
     Rollback,
+    /// The rollback rename already landed; finalize the old-policy verdict.
+    FinishRollback,
     /// Install already good; drop backup if present and clear log.
     Complete,
     /// Leave paths + log (marked needs-manual) for human inspection.
@@ -137,6 +152,9 @@ pub enum RecoveryAction {
 /// | new-installed | yes     | *      | *   | complete          |
 /// | new-installed | no      | yes    | *   | rollback          |
 /// | new-installed | no      | no     | *   | keep              |
+/// | rolling-back  | *       | yes    | *   | rollback          |
+/// | rolling-back  | yes     | no     | *   | finish rollback   |
+/// | rolling-back  | no      | no     | *   | keep (or absent for fresh tx) |
 /// | terminal      | *       | *      | *   | clear / keep note |
 pub fn decide_recovery(
     step: InstallTxStep,
@@ -178,6 +196,16 @@ pub fn decide_recovery(
             (false, true) => RecoveryAction::Rollback,
             (false, false) => RecoveryAction::KeepManual {
                 reason: "new was installed but install path missing and no backup",
+            },
+        },
+        InstallTxStep::RollingBack => match (install_exists, backup_exists) {
+            // The intent is durable and the only backup still exists: finish the
+            // rollback, replacing any failed/new tree that may remain.
+            (_, true) => RecoveryAction::Rollback,
+            // backup -> install already landed before the terminal mark.
+            (true, false) => RecoveryAction::FinishRollback,
+            (false, false) => RecoveryAction::KeepManual {
+                reason: "rollback was started but install and backup are both missing",
             },
         },
     }
@@ -228,6 +256,7 @@ impl InstallTransaction {
             backup_path: backup_path.to_string_lossy().into_owned(),
             had_previous,
             was_running,
+            self_update_policy: None,
             started_unix: now,
             updated_unix: now,
             notes: Vec::new(),
@@ -275,14 +304,86 @@ impl InstallTransaction {
         self.persist()
     }
 
+    pub fn set_self_update_policy_transition(
+        &mut self,
+        transition: SelfUpdatePolicyTransition,
+    ) -> Result<(), AppError> {
+        self.self_update_policy = Some(transition);
+        self.updated_unix = now_unix();
+        self.persist()
+    }
+
+    fn finalize_self_update_policy(&self, install_landed: bool) -> Result<(), AppError> {
+        let Some(disabled) = self_update_policy_for_outcome(self, install_landed) else {
+            return Ok(());
+        };
+        crate::app::codex_self_update::sync_and_persist_setting(disabled)
+    }
+
     pub fn complete(mut self) -> Result<(), AppError> {
         self.step = InstallTxStep::Completed;
         self.updated_unix = now_unix();
-        // Persist terminal state briefly so a crash mid-delete still recovers cleanly,
-        // then remove the file.
-        let _ = self.persist();
-        self.remove_file();
+        // Persist the terminal verdict before finalizing policy. A crash between
+        // either write is replayed idempotently by startup recovery.
+        self.persist()?;
+        self.finalize_self_update_policy(true)?;
+        self.remove_file_checked()?;
         Ok(())
+    }
+
+    /// Finalize a live install without turning an already-landed, healthy app
+    /// into an installation error merely because transaction bookkeeping could
+    /// not be closed. Any failed step leaves the last durable journal in place
+    /// for idempotent startup recovery and is returned as a user-visible warning.
+    fn complete_live(mut self) -> Vec<String> {
+        self.step = InstallTxStep::Completed;
+        self.updated_unix = now_unix();
+        let mut warnings = Vec::new();
+        let terminal_persisted = match self.persist() {
+            Ok(()) => true,
+            Err(err) => {
+                let warning = format!(
+                    "应用已安装，但安装事务的完成状态暂未写入（{err}）；管理器下次启动会按磁盘状态恢复"
+                );
+                log::warn!(
+                    "live install transaction finalization warning id={} error={err}",
+                    self.id
+                );
+                warnings.push(warning);
+                false
+            }
+        };
+
+        let policy_finalized = match self.finalize_self_update_policy(true) {
+            Ok(()) => true,
+            Err(err) => {
+                let warning = format!(
+                    "应用已安装，但所选自动更新策略暂未完成（{err}）；管理器下次启动会重试"
+                );
+                log::warn!(
+                    "live install policy finalization warning id={} error={err}",
+                    self.id
+                );
+                warnings.push(warning);
+                false
+            }
+        };
+
+        // Remove the journal only after both durable terminal state and policy
+        // succeeded. Otherwise it is the recovery instruction for next launch.
+        if terminal_persisted && policy_finalized {
+            if let Err(err) = self.remove_file_checked() {
+                let warning = format!(
+                    "应用已安装，但安装事务日志暂未清理（{err}）；管理器下次启动会自动清理"
+                );
+                log::warn!(
+                    "live install transaction cleanup warning id={} error={err}",
+                    self.id
+                );
+                warnings.push(warning);
+            }
+        }
+        warnings
     }
 
     pub fn remove_file(&self) {
@@ -306,11 +407,21 @@ impl InstallTransaction {
     }
 
     pub fn load_from_path(path: &Path) -> Result<Self, AppError> {
-        let bytes = fs::read(path)
-            .map_err(|e| AppError::Internal(format!("读取事务日志失败: {e}")))?;
+        let bytes =
+            fs::read(path).map_err(|e| AppError::Internal(format!("读取事务日志失败: {e}")))?;
         serde_json::from_slice(&bytes)
             .map_err(|e| AppError::Internal(format!("解析事务日志失败: {e}")))
     }
+}
+
+fn self_update_policy_for_outcome(tx: &InstallTransaction, install_landed: bool) -> Option<bool> {
+    tx.self_update_policy.map(|transition| {
+        if install_landed {
+            transition.requested_disabled
+        } else {
+            transition.previous_disabled
+        }
+    })
 }
 
 #[derive(Debug, Clone, Default)]
@@ -347,7 +458,10 @@ pub fn protected_paths() -> Vec<PathBuf> {
         let Ok(tx) = InstallTransaction::load_from_path(&path) else {
             continue;
         };
-        if matches!(tx.step, InstallTxStep::Completed | InstallTxStep::RolledBack) {
+        if matches!(
+            tx.step,
+            InstallTxStep::Completed | InstallTxStep::RolledBack
+        ) {
             continue;
         }
         for raw in [&tx.install_path, &tx.new_path, &tx.backup_path] {
@@ -358,10 +472,7 @@ pub fn protected_paths() -> Vec<PathBuf> {
             let p = PathBuf::from(raw);
             let mut cur = p.parent();
             while let Some(parent) = cur {
-                let name = parent
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
+                let name = parent.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 let staging_ish = name.starts_with("update-")
                     || name.starts_with("portable-")
                     || name == ".codex-app-manager-staging"
@@ -382,7 +493,9 @@ pub fn protected_paths() -> Vec<PathBuf> {
 /// Whether `path` is covered by a pending install transaction and must not be
 /// reclaimed by staging cleanup.
 pub fn path_is_protected(path: &Path, protected: &[PathBuf]) -> bool {
-    protected.iter().any(|p| path == p || path.starts_with(p) || p.starts_with(path))
+    protected
+        .iter()
+        .any(|p| path == p || path.starts_with(p) || p.starts_with(path))
 }
 
 /// Scan pending transaction logs and apply the recovery matrix. Must run
@@ -398,9 +511,7 @@ pub fn recover_pending_transactions(
         match ops.begin(crate::app::oplock::OperationKind::Install) {
             Ok(guard) => Some(guard),
             Err(err) => {
-                log::warn!(
-                    "install transaction recovery deferred (operation busy) error={err}"
-                );
+                log::warn!("install transaction recovery deferred (operation busy) error={err}");
                 return summary;
             }
         }
@@ -467,16 +578,21 @@ fn path_exists(p: &str) -> bool {
 
 fn recover_one(path: &Path) -> Result<Recovered, AppError> {
     let mut tx = InstallTransaction::load_from_path(path)?;
-    if tx.step.is_terminal() && matches!(tx.step, InstallTxStep::Completed | InstallTxStep::RolledBack)
+    if tx.step.is_terminal()
+        && matches!(
+            tx.step,
+            InstallTxStep::Completed | InstallTxStep::RolledBack
+        )
     {
-        let _ = fs::remove_file(path);
+        tx.finalize_self_update_policy(matches!(tx.step, InstallTxStep::Completed))?;
+        tx.remove_file_checked()?;
         return Ok(Recovered::Cleared);
     }
 
     let install_exists = path_exists(&tx.install_path);
     let backup_exists = path_exists(&tx.backup_path);
     let new_exists = path_exists(&tx.new_path);
-    let action = decide_recovery(tx.step, install_exists, backup_exists, new_exists);
+    let action = decide_transaction_recovery(&tx, install_exists, backup_exists, new_exists);
     log::info!(
         "install transaction recover id={} step={} action={:?} install={} backup={} new={}",
         tx.id,
@@ -489,30 +605,46 @@ fn recover_one(path: &Path) -> Result<Recovered, AppError> {
 
     match action {
         RecoveryAction::ClearLog => {
-            let _ = fs::remove_file(path);
+            // Prepared + intact means the app swap never landed. Restore the
+            // pre-confirmation policy before removing the only durable evidence.
+            tx.finalize_self_update_policy(false)?;
+            tx.remove_file_checked()?;
             Ok(Recovered::Cleared)
         }
         RecoveryAction::ContinueInstall => {
-            fs::rename(&tx.new_path, &tx.install_path).map_err(|e| {
-                AppError::Internal(format!("recovery continue rename failed: {e}"))
-            })?;
+            fs::rename(&tx.new_path, &tx.install_path)
+                .map_err(|e| AppError::Internal(format!("recovery continue rename failed: {e}")))?;
             tx.advance(InstallTxStep::NewInstalled)?;
             cleanup_backup_best_effort(&tx);
             tx.complete()?;
             Ok(Recovered::Continued)
         }
         RecoveryAction::Rollback => {
+            // Persist rollback intent before consuming the only backup. If the
+            // process dies after backup -> install but before the terminal mark,
+            // `RollingBack + install present + backup absent` is unambiguously a
+            // completed rollback, never a completed installation.
+            if tx.step != InstallTxStep::RollingBack {
+                tx.advance(InstallTxStep::RollingBack)?;
+            }
+            tx.finalize_self_update_policy(false)?;
             if path_exists(&tx.install_path) {
                 let _ = fs::remove_dir_all(&tx.install_path);
                 let _ = fs::remove_file(&tx.install_path);
             }
-            fs::rename(&tx.backup_path, &tx.install_path).map_err(|e| {
-                AppError::Internal(format!("recovery rollback rename failed: {e}"))
-            })?;
-            tx.step = InstallTxStep::RolledBack;
-            tx.updated_unix = now_unix();
-            let _ = tx.persist();
-            tx.remove_file();
+            if tx.had_previous {
+                fs::rename(&tx.backup_path, &tx.install_path).map_err(|e| {
+                    AppError::Internal(format!("recovery rollback rename failed: {e}"))
+                })?;
+            }
+            tx.advance(InstallTxStep::RolledBack)?;
+            tx.remove_file_checked()?;
+            Ok(Recovered::RolledBack)
+        }
+        RecoveryAction::FinishRollback => {
+            tx.finalize_self_update_policy(false)?;
+            tx.advance(InstallTxStep::RolledBack)?;
+            tx.remove_file_checked()?;
             Ok(Recovered::RolledBack)
         }
         RecoveryAction::Complete => {
@@ -539,6 +671,37 @@ fn recover_one(path: &Path) -> Result<Recovered, AppError> {
             );
             Ok(Recovered::KeptManual)
         }
+    }
+}
+
+/// Fresh installs have no old tree to move aside. Their Prepared crash matrix
+/// therefore differs from a replacement: payload present + target absent means
+/// no mutation, while target present + payload absent proves the atomic rename
+/// landed even if the process died before persisting NewInstalled.
+fn decide_transaction_recovery(
+    tx: &InstallTransaction,
+    install_exists: bool,
+    backup_exists: bool,
+    new_exists: bool,
+) -> RecoveryAction {
+    if tx.step == InstallTxStep::RollingBack && !tx.had_previous {
+        return if install_exists {
+            RecoveryAction::Rollback
+        } else {
+            // A fresh install rolls back to absence, so no install and no backup
+            // is the expected completed state rather than an ambiguity.
+            RecoveryAction::FinishRollback
+        };
+    }
+    if tx.had_previous || tx.step != InstallTxStep::Prepared {
+        return decide_recovery(tx.step, install_exists, backup_exists, new_exists);
+    }
+    match (install_exists, backup_exists, new_exists) {
+        (false, false, true) => RecoveryAction::ClearLog,
+        (true, false, false) => RecoveryAction::Complete,
+        _ => RecoveryAction::KeepManual {
+            reason: "fresh-install prepared state is ambiguous",
+        },
     }
 }
 
@@ -589,25 +752,46 @@ impl ActiveInstallTx {
         Ok(())
     }
 
+    /// Persist the rollback verdict before deleting/replacing the new install or
+    /// consuming the only backup.
+    pub fn mark_rollback_started(&mut self) -> Result<(), AppError> {
+        if let Some(tx) = self.inner.as_mut() {
+            tx.advance(InstallTxStep::RollingBack)?;
+        }
+        Ok(())
+    }
+
+    pub fn set_self_update_policy_transition(
+        &mut self,
+        transition: SelfUpdatePolicyTransition,
+    ) -> Result<(), AppError> {
+        if let Some(tx) = self.inner.as_mut() {
+            tx.set_self_update_policy_transition(transition)?;
+        }
+        Ok(())
+    }
+
     pub fn step(&self) -> Option<InstallTxStep> {
         self.inner.as_ref().map(|tx| tx.step)
     }
 
     /// Mark success only after post-swap health / rollback has settled.
-    pub fn succeed(mut self) -> Result<(), AppError> {
+    pub fn succeed(mut self) -> Vec<String> {
         if let Some(tx) = self.inner.take() {
-            tx.complete()?;
+            return tx.complete_live();
         }
-        Ok(())
+        Vec::new()
     }
 
     /// Record a successful rollback and clear the log.
     pub fn mark_rolled_back(mut self) -> Result<(), AppError> {
-        if let Some(mut tx) = self.inner.take() {
+        if let Some(tx) = self.inner.take() {
             // Persist the terminal state before clearing the journal. If this
-            // write fails, propagate it so the operation remains outcome-unknown
-            // instead of claiming a fully recorded rollback.
+            // write or policy restore fails, startup recovery replays it instead
+            // of claiming a fully recorded rollback.
+            let mut tx = tx;
             tx.advance(InstallTxStep::RolledBack)?;
+            tx.finalize_self_update_policy(false)?;
             tx.remove_file_checked()?;
         }
         Ok(())
@@ -629,6 +813,7 @@ impl ActiveInstallTx {
     pub fn abort_clean(mut self) {
         if let Some(tx) = self.inner.take() {
             if matches!(tx.step, InstallTxStep::Prepared)
+                && tx.self_update_policy.is_none()
                 && !prepared_looks_half_swapped(
                     path_exists(&tx.install_path),
                     path_exists(&tx.backup_path),
@@ -653,7 +838,10 @@ impl Drop for ActiveInstallTx {
                 path_exists(&tx.backup_path),
                 path_exists(&tx.new_path),
             );
-            if matches!(tx.step, InstallTxStep::Prepared) && !half {
+            if matches!(tx.step, InstallTxStep::Prepared)
+                && tx.self_update_policy.is_none()
+                && !half
+            {
                 tx.remove_file();
             } else {
                 log::warn!(
@@ -719,6 +907,83 @@ mod tests {
         assert_eq!(
             decide_recovery(InstallTxStep::Completed, true, false, false),
             RecoveryAction::ClearLog
+        );
+        assert_eq!(
+            decide_recovery(InstallTxStep::RollingBack, true, false, false),
+            RecoveryAction::FinishRollback
+        );
+        assert_eq!(
+            decide_recovery(InstallTxStep::RollingBack, false, true, false),
+            RecoveryAction::Rollback
+        );
+    }
+
+    #[test]
+    fn historical_policy_follows_the_durable_install_verdict() {
+        let tx = InstallTransaction {
+            schema_version: SCHEMA_VERSION,
+            id: "policy-test".to_string(),
+            kind: InstallTxKind::MacosSwap,
+            step: InstallTxStep::Prepared,
+            install_path: "/Applications/Codex.app".to_string(),
+            new_path: "/tmp/update/Codex.app".to_string(),
+            backup_path: "/tmp/update/backup-Codex.app".to_string(),
+            had_previous: true,
+            was_running: Some(true),
+            self_update_policy: Some(SelfUpdatePolicyTransition {
+                previous_disabled: false,
+                requested_disabled: true,
+            }),
+            started_unix: 1,
+            updated_unix: 1,
+            notes: Vec::new(),
+        };
+
+        assert_eq!(self_update_policy_for_outcome(&tx, false), Some(false));
+        assert_eq!(self_update_policy_for_outcome(&tx, true), Some(true));
+        assert_eq!(
+            decide_transaction_recovery(&tx, true, false, true),
+            RecoveryAction::ClearLog,
+            "a crash after policy persistence but before swap must restore the old policy"
+        );
+    }
+
+    #[test]
+    fn fresh_prepared_transaction_distinguishes_before_and_after_atomic_rename() {
+        let tx = InstallTransaction {
+            schema_version: SCHEMA_VERSION,
+            id: "fresh-policy-test".to_string(),
+            kind: InstallTxKind::MacosSwap,
+            step: InstallTxStep::Prepared,
+            install_path: "/Applications/Codex.app".to_string(),
+            new_path: "/tmp/update/Codex.app".to_string(),
+            backup_path: "/tmp/update/backup-Codex.app".to_string(),
+            had_previous: false,
+            was_running: Some(false),
+            self_update_policy: Some(SelfUpdatePolicyTransition {
+                previous_disabled: false,
+                requested_disabled: true,
+            }),
+            started_unix: 1,
+            updated_unix: 1,
+            notes: Vec::new(),
+        };
+
+        assert_eq!(
+            decide_transaction_recovery(&tx, false, false, true),
+            RecoveryAction::ClearLog
+        );
+        assert_eq!(
+            decide_transaction_recovery(&tx, true, false, false),
+            RecoveryAction::Complete
+        );
+
+        let mut rolling_back = tx;
+        rolling_back.step = InstallTxStep::RollingBack;
+        assert_eq!(
+            decide_transaction_recovery(&rolling_back, false, false, false),
+            RecoveryAction::FinishRollback,
+            "fresh rollback resolves to the original absent state"
         );
     }
 

@@ -58,7 +58,7 @@ pub fn collect_diagnostics(app: &tauri::AppHandle, state: &ManagerState) -> Diag
     Diagnostics {
         app_version: app.package_info().version.to_string(),
         os: std::env::consts::OS.to_string(),
-        arch: std::env::consts::ARCH.to_string(),
+        arch: state.target.arch.as_str().to_string(),
         locale: None,
         update_source,
         custom_source_host,

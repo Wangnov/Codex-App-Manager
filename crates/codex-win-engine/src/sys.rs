@@ -12,8 +12,8 @@ use crate::limits::MAX_TEXT_BYTES;
 use crate::msix::parse_appx_manifest_xml;
 use crate::network::{is_schannel_revocation_offline, NetworkConfig, SchannelRevocationCheck};
 use crate::process::{
-    curl_exe, hidden_command, run_capturing, spawn_and_require_liveness, LivenessResult,
-    RunError, RunLimits, TimeoutKind, MSIX_ACTIVATION_WINDOW_SECS, MSIX_LIVENESS_WINDOW_SECS,
+    curl_exe, hidden_command, run_capturing, spawn_and_require_liveness, LivenessResult, RunError,
+    RunLimits, TimeoutKind, MSIX_ACTIVATION_WINDOW_SECS, MSIX_LIVENESS_WINDOW_SECS,
     PORTABLE_LIVENESS_WINDOW,
 };
 use crate::EngineError;
@@ -65,7 +65,10 @@ struct RegisteredMsixApp {
 fn registered_msix_aumid(json: &str, expected_family: &str) -> Result<String, EngineError> {
     let entry: RegisteredMsixApp = serde_json::from_str(json)
         .map_err(|e| EngineError::Io(format!("parse registered MSIX app entry: {e}")))?;
-    if !entry.package_family_name.eq_ignore_ascii_case(expected_family) {
+    if !entry
+        .package_family_name
+        .eq_ignore_ascii_case(expected_family)
+    {
         return Err(EngineError::Io(format!(
             "registered MSIX package family changed: expected {expected_family}, got {}",
             entry.package_family_name
@@ -228,8 +231,12 @@ fn fetch_text_output(
     ]);
     // curl's own --max-time is the primary budget; the outer deadline is a
     // backstop that also kills a hung curl that ignored max-time.
-    run_capturing(command, RunLimits::total(std::time::Duration::from_secs(75)), None)
-        .map_err(|e| EngineError::Io(format!("curl: {}", e.message())))
+    run_capturing(
+        command,
+        RunLimits::total(std::time::Duration::from_secs(75)),
+        None,
+    )
+    .map_err(|e| EngineError::Io(format!("curl: {}", e.message())))
 }
 
 pub fn fetch_text_with_network(url: &str, network: &NetworkConfig) -> Result<String, EngineError> {
@@ -340,6 +347,45 @@ fn proxy_env_summary() -> String {
 
 pub fn detect_installed_codex(portable_root: &Path) -> Option<InstalledWindowsCodex> {
     detect_msix_install().or_else(|| detect_portable_install(portable_root))
+}
+
+fn parse_registered_msix_package_full_name(output: &str) -> Result<Option<String>, EngineError> {
+    let trimmed = output.trim();
+    if trimmed.is_empty() || trimmed == "null" {
+        return Ok(None);
+    }
+    let value: String = serde_json::from_str(trimmed)
+        .map_err(|e| EngineError::Io(format!("parse registered MSIX package full name: {e}")))?;
+    let value = value.trim();
+    Ok((!value.is_empty()).then(|| value.to_string()))
+}
+
+/// Exact PackageFullName of the currently registered Codex MSIX. Historical
+/// policy recovery compares this signed-package identity with the durable target
+/// recorded immediately before Add-AppxPackage, rather than guessing from the
+/// human-facing app version inside app.asar.
+#[cfg(windows)]
+pub fn registered_msix_package_full_name() -> Result<Option<String>, EngineError> {
+    let script = format!(
+        r#"
+$p = Get-AppxPackage -Name {name} -ErrorAction SilentlyContinue |
+  Sort-Object -Property Version -Descending |
+  Select-Object -First 1
+if ($null -eq $p) {{
+  'null'
+}} else {{
+  [string]$p.PackageFullName | ConvertTo-Json -Compress
+}}
+"#,
+        name = ps_quote(crate::OPENAI_PACKAGE_IDENTITY),
+    );
+    let output = run_powershell_json(&script)?;
+    parse_registered_msix_package_full_name(&output)
+}
+
+#[cfg(not(windows))]
+pub fn registered_msix_package_full_name() -> Result<Option<String>, EngineError> {
+    Ok(None)
 }
 
 #[cfg(windows)]
@@ -474,8 +520,7 @@ fn parse_offline_appx_conflict_probe(
 fn validated_delivery_optimization_file_id(value: Option<String>) -> String {
     let value = value.unwrap_or_default();
     if value.is_empty()
-        || ((40..=128).contains(&value.len())
-            && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        || ((40..=128).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
     {
         return value;
     }
@@ -1027,8 +1072,7 @@ pub fn install_msix_sideload_with_observer(
     // Windows Update Stage transaction, narrowly release it and immediately
     // submit our local MSIX. The guard restores any paused services on every
     // return path, including Add-AppxPackage timeout/failure.
-    let _restore_guard =
-        prepare_offline_appx_install(package_moniker, recovery_outcome_ambiguous)?;
+    let _restore_guard = prepare_offline_appx_install(package_moniker, recovery_outcome_ambiguous)?;
     let script = install_msix_script(path);
     // Everything above is pre-package-mutation. An optional elevated recovery
     // may have paused services, but its own watchdog restores them. The app
@@ -1656,9 +1700,7 @@ if ($statusOk -and $aumidResolved -and $missing.Count -eq 0) {{
     let parsed = match &run_result {
         Ok(json) => serde_json::from_str::<serde_json::Value>(json).ok(),
         Err(PowerShellRunError::Timeout(kind)) => {
-            log::info!(
-                "MSIX health check result healthy=false status=timeout kind={kind:?}"
-            );
+            log::info!("MSIX health check result healthy=false status=timeout kind={kind:?}");
             // Start-Process detaches; kill any process the timed-out probe left running.
             best_effort_close_msix_after_probe();
             return MsixHealthReport {
@@ -1892,7 +1934,8 @@ pub fn detect_portable_install(portable_root: &Path) -> Option<InstalledWindowsC
             }
         },
         Err(_) => {
-            let asar_name = crate::app_version::read_asar_package_name_from_install_root(portable_root);
+            let asar_name =
+                crate::app_version::read_asar_package_name_from_install_root(portable_root);
             if asar_name.as_deref() != Some(crate::app_version::CODEX_ASAR_PACKAGE_NAME) {
                 log::debug!(
                     "portable root at {} has no manifest and its app payload name is {:?} (expected {}); not a Codex install",
@@ -1937,13 +1980,12 @@ pub fn launch_codex_with_options(
 ) -> Result<(), EngineError> {
     if installed.source == "portable" {
         let root = Path::new(&installed.path);
-        let exe = crate::portable::installed_app_exe(root)
-            .ok_or_else(|| {
-                EngineError::Io(format!(
-                    "no app entry executable (ChatGPT.exe / Codex.exe) in {}",
-                    root.display()
-                ))
-            })?;
+        let exe = crate::portable::installed_app_exe(root).ok_or_else(|| {
+            EngineError::Io(format!(
+                "no app entry executable (ChatGPT.exe / Codex.exe) in {}",
+                root.display()
+            ))
+        })?;
         // CREATE_NO_WINDOW only suppresses a console flash; the GUI still shows.
         // Require a short liveness window so an immediate crash is reported as a
         // launch failure instead of a silent no-op.
@@ -1964,10 +2006,7 @@ pub fn launch_codex_with_options(
                 code.map(|c| c.to_string())
                     .unwrap_or_else(|| "signal".to_string())
             ))),
-            Err(err) => Err(EngineError::Io(format!(
-                "launch Codex: {}",
-                err.message()
-            ))),
+            Err(err) => Err(EngineError::Io(format!("launch Codex: {}", err.message()))),
         }
     } else {
         if options.disable_codex_self_updates {
@@ -2039,12 +2078,10 @@ if ($app -is [array]) {{ $app = $app[0] }}
     }
     let uninitialize = initialized.is_ok();
     let outcome = (|| unsafe {
-        let manager: IApplicationActivationManager = CoCreateInstance(
-            &ApplicationActivationManager,
-            None,
-            CLSCTX_LOCAL_SERVER,
-        )
-        .map_err(|e| EngineError::Io(format!("create application activation manager: {e}")))?;
+        let manager: IApplicationActivationManager =
+            CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_LOCAL_SERVER).map_err(
+                |e| EngineError::Io(format!("create application activation manager: {e}")),
+            )?;
         let pid = manager
             .ActivateApplication(&aumid, &arguments, AO_NONE)
             .map_err(|e| EngineError::Io(format!("activate MSIX Codex with arguments: {e}")))?;
@@ -2342,9 +2379,11 @@ fn capabilities_from_probe_json(value: &serde_json::Value) -> WinCapabilityRepor
 
 #[cfg(test)]
 mod tests {
-    use super::{registered_msix_aumid, remote_debugging_arguments};
     #[cfg(windows)]
     use super::*;
+    use super::{
+        parse_registered_msix_package_full_name, registered_msix_aumid, remote_debugging_arguments,
+    };
 
     #[test]
     fn builds_loopback_remote_debugging_arguments() {
@@ -2370,6 +2409,23 @@ mod tests {
             "OpenAI.Codex_abc"
         )
         .is_err());
+    }
+
+    #[test]
+    fn parses_exact_registered_msix_package_full_name() {
+        assert_eq!(
+            parse_registered_msix_package_full_name(
+                r#""OpenAI.Codex_26.803.10989.0_x64__2p2nqsd0c76g0""#
+            )
+            .unwrap()
+            .as_deref(),
+            Some("OpenAI.Codex_26.803.10989.0_x64__2p2nqsd0c76g0")
+        );
+        assert_eq!(
+            parse_registered_msix_package_full_name("null").unwrap(),
+            None
+        );
+        assert!(parse_registered_msix_package_full_name("not-json").is_err());
     }
 
     #[cfg(windows)]
@@ -2595,9 +2651,7 @@ function Get-AppxPackage {
                     .find("Stop-Service -Name $name")
                     .expect("service stop must follow watchdog")
         );
-        assert!(recovery.contains(
-            "@('InstallService', 'wuauserv', 'DoSvc', 'AppXSvc', 'ClipSVC')"
-        ));
+        assert!(recovery.contains("@('InstallService', 'wuauserv', 'DoSvc', 'AppXSvc', 'ClipSVC')"));
         assert!(
             std::time::Duration::from_secs(OFFLINE_APPX_RESTORE_WATCHDOG_SECS)
                 > crate::process::APPX_RECOVERY_TIMEOUT + crate::process::INSTALL_TIMEOUT

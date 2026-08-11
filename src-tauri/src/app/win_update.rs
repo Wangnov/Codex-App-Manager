@@ -12,27 +12,32 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use serde::{Deserialize, Serialize};
 
 use codex_win_engine::{
-    cancel_active_download, cleanup_portable_metadata, close_codex_gracefully_for_root,
-    close_msix_codex_processes, codex_running_for_root, detect_installed_codex,
-    detect_portable_install,
+    cancel_active_download, canonical_codex_package_moniker, cleanup_portable_metadata,
+    close_codex_gracefully_for_root, close_msix_codex_processes, codex_running_for_root,
+    detect_installed_codex, detect_portable_install,
     download_to_with_progress_bounded_with_network, fetch_text_with_network, find_msix_sha256,
     install_msix_sideload_with_observer, install_portable_from_msix_with_observer,
     limits::MAX_PACKAGE_BYTES, parse_manifest, pause_active_download, plan_update,
-    precheck_msix_dependencies, probe_capabilities, purge_codex_user_data, read_msix_identity,
-    remove_msix_package, sha256_file, uninstall_portable, validate_codex_identity,
-    verify_msix_health_with_options, verify_openai_authenticode, version_key, AuthenticodeReport,
-    CapabilityState, EngineError, InstalledWindowsCodex, MsixHealthReport, MsixIdentity,
-    MsixRemoveReport, MsixSideloadReport, NetworkConfig, PortableBoundary, PortableInstallReport,
-    PortableUninstallReport, WinCapabilityReport, WinInstallRoute, WindowsRelease,
-    WindowsUpdatePlan,
+    precheck_msix_dependencies, probe_capabilities, purge_codex_user_data,
+    read_codex_app_version_from_msix, read_msix_identity, remove_msix_package, sha256_file,
+    uninstall_portable, validate_codex_identity, verify_msix_health_with_options,
+    verify_openai_authenticode, version_key, AuthenticodeReport, CapabilityState, EngineError,
+    InstalledWindowsCodex, MsixHealthReport, MsixIdentity, MsixRemoveReport, MsixSideloadReport,
+    NetworkConfig, PortableBoundary, PortableInstallReport, PortableUninstallReport,
+    WinCapabilityReport, WinInstallRoute, WindowsRelease, WindowsUpdatePlan,
 };
 
-use crate::app::install_tx::{ActiveInstallTx, InstallTxKind};
+use crate::app::install_tx::{ActiveInstallTx, InstallTxKind, SelfUpdatePolicyTransition};
+use crate::app::msix_policy_tx::ActiveMsixPolicyTransition;
 use crate::app::op_phase::OperationPhase;
 use crate::app::operation_outcome::{
     recovery, AncillaryRetryReport, OperationOutcome, StepOutcome,
 };
 use crate::app::provenance::ProvenanceStore;
+use crate::app::release_install::{
+    resolved_local_asset, verify_file_digest, ReleaseArchitecture, ReleasePackageFormat,
+    ResolvedReleaseAsset,
+};
 use crate::app::staging;
 use crate::domain::manifest::MirrorEndpoints;
 use crate::domain::settings::AppSettings;
@@ -53,6 +58,7 @@ pub enum OperationEvidence {
 }
 
 pub type EvidenceHook<'a> = dyn Fn(OperationEvidence) + Send + Sync + 'a;
+pub type BeforeWinCommitHook<'a> = dyn Fn() -> Result<(), AppError> + Send + Sync + 'a;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -201,8 +207,8 @@ fn record_managed_install(
     installed: &InstalledWindowsCodex,
     source: &str,
 ) -> OperationOutcome {
-    let mut outcome =
-        OperationOutcome::full_success("present", Some("managed")).with_path(installed.path.clone());
+    let mut outcome = OperationOutcome::full_success("present", Some("managed"))
+        .with_path(installed.path.clone());
     outcome.cleanup = StepOutcome::not_applicable();
     let mut store = ProvenanceStore::load();
     if let Some(previous) = previous {
@@ -279,7 +285,9 @@ fn outcome_from_portable_uninstall(
     if outcome.cleanup.is_failed() {
         // Shortcut / uninstall-entry failures.
         if portable.notes.iter().any(|n| {
-            n.contains("Start Menu") || n.contains("Apps & Features") || n.contains("uninstall entry")
+            n.contains("Start Menu")
+                || n.contains("Apps & Features")
+                || n.contains("uninstall entry")
         }) {
             outcome.push_recovery(recovery::CLEANUP_METADATA);
         }
@@ -791,6 +799,321 @@ pub fn stage_windows_update_with_install_mode_and_network(
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoricalWinExpectation {
+    pub current_path: Option<String>,
+    pub current_version: Option<String>,
+    pub current_source: Option<String>,
+}
+
+fn validate_historical_windows_expectation(
+    expected: &HistoricalWinExpectation,
+    current: Option<&InstalledWindowsCodex>,
+) -> Result<(), AppError> {
+    let actual_path = current.map(|installed| installed.path.as_str());
+    let actual_version = current.map(|installed| installed.version.as_str());
+    let actual_source = current.map(|installed| installed.source.as_str());
+    if actual_path != expected.current_path.as_deref()
+        || actual_version != expected.current_version.as_deref()
+        || actual_source != expected.current_source.as_deref()
+    {
+        return Err(AppError::StaleExpectation(format!(
+            "Windows Codex 在确认后发生变化（确认时 {:?} {:?} {:?}，现在 {:?} {:?} {:?}），请重新检查后再试",
+            expected.current_path,
+            expected.current_version,
+            expected.current_source,
+            actual_path,
+            actual_version,
+            actual_source
+        )));
+    }
+    Ok(())
+}
+
+/// Inspect a local MSIX without consulting GitHub. Authenticode is the trust
+/// anchor; package identity, publisher, architecture and internal Electron app
+/// version are read directly from the signed package.
+pub fn resolve_windows_local_package(
+    path: &Path,
+    architecture: ReleaseArchitecture,
+) -> Result<ResolvedReleaseAsset, AppError> {
+    if !path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("msix"))
+    {
+        return Err(AppError::Internal(
+            "请选择从 GitHub Release 下载的 MSIX 文件".to_string(),
+        ));
+    }
+    let authenticode = verify_openai_authenticode(path).map_err(engine_err)?;
+    if !authenticode.is_valid_openai() {
+        return Err(AppError::Engine(format!(
+            "本地 MSIX Authenticode 验证失败：status={}，subject={}",
+            authenticode.status, authenticode.subject
+        )));
+    }
+    let identity = read_msix_identity(path).map_err(engine_err)?;
+    validate_codex_identity(&identity, &identity.version, Some(architecture.as_str()))
+        .map_err(engine_err)?;
+    let version = read_codex_app_version_from_msix(path)
+        .ok_or_else(|| AppError::Engine("无法读取 MSIX 内 Codex 应用版本，拒绝安装".to_string()))?;
+    resolved_local_asset(
+        path,
+        &version,
+        architecture,
+        ReleasePackageFormat::Msix,
+        Some(identity.version),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_windows_historical_release(
+    resolved: &ResolvedReleaseAsset,
+    local_path: Option<PathBuf>,
+    settings: &AppSettings,
+    install_mode: &str,
+    progress: &dyn Fn(DownloadProgress),
+    network: &NetworkConfig,
+) -> Result<WinStageReport, AppError> {
+    if resolved.format != ReleasePackageFormat::Msix {
+        return Err(AppError::Internal(
+            "Windows 历史安装仅支持 GitHub Release 的 MSIX".to_string(),
+        ));
+    }
+    if resolved.size == 0 || resolved.size > MAX_PACKAGE_BYTES {
+        return Err(AppError::Engine(format!(
+            "MSIX 大小 {} 超出允许范围",
+            resolved.size
+        )));
+    }
+    check_win_update_abort()?;
+    let is_local = local_path.is_some();
+    let package = if let Some(path) = local_path {
+        let actual_size = std::fs::metadata(&path)
+            .map_err(|e| AppError::Engine(format!("读取本地 MSIX 信息失败: {e}")))?
+            .len();
+        if actual_size != resolved.size {
+            return Err(AppError::StaleExpectation(format!(
+                "本地 MSIX 在确认后发生变化（大小 {} → {}），请重新选择",
+                resolved.size, actual_size
+            )));
+        }
+        verify_file_digest(&path, &resolved.digest)?;
+        path
+    } else {
+        let dest = staging::download_cache_path(&resolved.url, &resolved.name)?;
+        let cached_ok = std::fs::metadata(&dest)
+            .map(|metadata| metadata.len() == resolved.size)
+            .unwrap_or(false)
+            && verify_file_digest(&dest, &resolved.digest).is_ok();
+        let source = host_of(&resolved.url);
+        if !cached_ok {
+            if dest.exists() {
+                let _ = std::fs::remove_file(&dest);
+            }
+            download_to_with_progress_bounded_with_network(
+                &resolved.url,
+                &dest,
+                MAX_PACKAGE_BYTES,
+                &|downloaded| {
+                    progress(DownloadProgress {
+                        downloaded,
+                        total: resolved.size,
+                        source: source.clone(),
+                    });
+                },
+                network,
+            )
+            .map_err(engine_err)?;
+        } else {
+            progress(DownloadProgress {
+                downloaded: resolved.size,
+                total: resolved.size,
+                source,
+            });
+        }
+        let actual_size = std::fs::metadata(&dest)
+            .map_err(|e| AppError::Engine(format!("读取下载 MSIX 信息失败: {e}")))?
+            .len();
+        if actual_size != resolved.size {
+            return Err(AppError::Engine(format!(
+                "MSIX 大小不匹配（{actual_size} != {}）",
+                resolved.size
+            )));
+        }
+        verify_file_digest(&dest, &resolved.digest)?;
+        dest
+    };
+    check_win_update_abort()?;
+
+    let authenticode = verify_openai_authenticode(&package).map_err(engine_err)?;
+    if !authenticode.is_valid_openai() {
+        return Err(AppError::Engine(format!(
+            "MSIX Authenticode 验证失败：status={}，subject={}",
+            authenticode.status, authenticode.subject
+        )));
+    }
+    let identity = read_msix_identity(&package).map_err(engine_err)?;
+    let package_version = resolved.package_version.as_deref().ok_or_else(|| {
+        AppError::Engine("GitHub Release MSIX 名称缺少 package version".to_string())
+    })?;
+    validate_codex_identity(
+        &identity,
+        package_version,
+        Some(resolved.architecture.as_str()),
+    )
+    .map_err(engine_err)?;
+    validate_historical_windows_app_version(
+        read_codex_app_version_from_msix(&package),
+        &resolved.version,
+    )?;
+
+    // Deployment events identify the package by its signed manifest identity,
+    // not by the on-disk filename (which may be `... (1).Msix` offline).
+    let package_moniker = canonical_codex_package_moniker(&identity).map_err(engine_err)?;
+    let release = WindowsRelease {
+        version: resolved.version.clone(),
+        package_version: package_version.to_string(),
+        released_at: resolved.published_at.clone(),
+        package_moniker: package_moniker.clone(),
+        architecture: Some(resolved.architecture.as_str().to_string()),
+        download_architecture: Some(resolved.architecture.as_str().to_string()),
+        content_length: Some(resolved.size),
+        etag: None,
+        store_product_id: None,
+        package_identity: Some(codex_win_engine::OPENAI_PACKAGE_IDENTITY.to_string()),
+    };
+    let capabilities = probe_capabilities();
+    let mut plan = plan_update(
+        &release,
+        &resolved.digest,
+        &resolved.url,
+        &None,
+        &capabilities,
+        true,
+    );
+    // Preserve a managed portable install in-place. Switching it to MSIX would
+    // leave the old portable tree behind after provenance moves to the package.
+    let managed = detect_managed_codex(settings, &ProvenanceStore::load());
+    if install_mode == "portable"
+        || managed
+            .as_ref()
+            .is_some_and(|installed| installed.source == "portable")
+    {
+        plan.route = WinInstallRoute::PortableFallback;
+    }
+    let route = route_label(&plan);
+    let mut notes = plan.warnings;
+    notes.push(if is_local {
+        format!(
+            "Verified local OpenAI-signed MSIX {} entirely on this PC; no GitHub or Sparkle request is required for offline installation.",
+            resolved.name
+        )
+    } else {
+        format!(
+            "Verified GitHub Release {} asset {}; Sparkle is not used for historical installation.",
+            resolved.release_tag, resolved.name
+        )
+    });
+    notes.push(
+        "MSIX Authenticode signature and package identity were verified before installation."
+            .to_string(),
+    );
+    Ok(WinStageReport {
+        up_to_date: false,
+        route,
+        latest_version: resolved.version.clone(),
+        package_moniker,
+        download_size: resolved.size,
+        staged_path: Some(package.to_string_lossy().into_owned()),
+        sha256: resolved.digest.clone(),
+        hash_verified: true,
+        authenticode: Some(authenticode),
+        identity: Some(identity),
+        identity_verified: true,
+        install_ready: true,
+        portable_fallback_ready: true,
+        notes,
+    })
+}
+
+fn validate_historical_windows_app_version(
+    actual: Option<String>,
+    expected: &str,
+) -> Result<(), AppError> {
+    let actual = actual
+        .ok_or_else(|| AppError::Engine("无法读取 MSIX 内 Codex 应用版本，拒绝安装".to_string()))?;
+    if actual != expected {
+        return Err(AppError::Engine(format!(
+            "MSIX 内 Codex 应用版本 {actual} 与所选 GitHub Release {expected} 不一致"
+        )));
+    }
+    Ok(())
+}
+
+/// Verify and install a historical/local GitHub Release MSIX. The normal
+/// Windows tail is reused verbatim, including ForceUpdateFromAnyVersion,
+/// dependency pre-check, health probe, portable fallback, durable rollback and
+/// provenance handling.
+#[allow(clippy::too_many_arguments)]
+pub fn install_windows_historical_release(
+    resolved: ResolvedReleaseAsset,
+    local_path: Option<PathBuf>,
+    settings: &AppSettings,
+    install_mode: &str,
+    expected: HistoricalWinExpectation,
+    progress: &dyn Fn(DownloadProgress),
+    network: &NetworkConfig,
+    phase: Option<&PhaseHook<'_>>,
+    evidence: Option<&EvidenceHook<'_>>,
+    policy_transition: Option<SelfUpdatePolicyTransition>,
+    before_commit: Option<&BeforeWinCommitHook<'_>>,
+) -> Result<WinPerformReport, AppError> {
+    let set_phase = |value: OperationPhase| {
+        if let Some(hook) = phase {
+            hook(value);
+        }
+    };
+    let _abort_guard = WinAbortGuard::new();
+    set_phase(OperationPhase::Preparing);
+    let initial_status = win_install_status(settings);
+    if initial_status.status == "external" {
+        return Err(AppError::StaleExpectation(
+            "当前 Windows Codex 尚未由管理器托管，请先“开始管理”再更换版本".to_string(),
+        ));
+    }
+    validate_historical_windows_expectation(&expected, initial_status.installed.as_ref())?;
+    check_win_update_abort()?;
+    set_phase(OperationPhase::Downloading);
+    let stage = stage_windows_historical_release(
+        &resolved,
+        local_path,
+        settings,
+        install_mode,
+        progress,
+        network,
+    )?;
+    set_phase(OperationPhase::Verifying);
+    let current_status = win_install_status(settings);
+    if current_status.status == "external" {
+        return Err(AppError::StaleExpectation(
+            "当前 Windows Codex 在确认后变为外部安装，请重新检查并先开始管理".to_string(),
+        ));
+    }
+    validate_historical_windows_expectation(&expected, current_status.installed.as_ref())?;
+    perform_verified_windows_stage_tail(
+        settings,
+        stage,
+        current_status.installed,
+        phase,
+        evidence,
+        policy_transition,
+        before_commit,
+    )
+}
+
 pub fn auto_stage_windows_update(
     endpoints: &MirrorEndpoints,
     settings: &AppSettings,
@@ -949,12 +1272,12 @@ pub(crate) fn clear_win_update_abort() {
 /// `win_stage_update` can't leak a set latch into the next op). Nested guards are
 /// reference-counted: an inner stage return cannot clear a quit/cancel owned by
 /// the still-running outer perform operation.
-struct WinAbortGuard;
+pub(crate) struct WinAbortGuard;
 
 static WIN_ABORT_GUARD_DEPTH: AtomicUsize = AtomicUsize::new(0);
 
 impl WinAbortGuard {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         WIN_ABORT_GUARD_DEPTH.fetch_add(1, Ordering::SeqCst);
         Self
     }
@@ -1114,6 +1437,31 @@ pub fn perform_windows_update_with_install_mode_network_and_phase(
     if let Some(expected) = &expected {
         validate_perform_expectation(expected, current_installed.as_ref(), &stage)?;
     }
+    perform_verified_windows_stage_tail(
+        settings,
+        stage,
+        current_installed,
+        phase,
+        evidence,
+        None,
+        None,
+    )
+}
+
+fn perform_verified_windows_stage_tail(
+    settings: &AppSettings,
+    stage: WinStageReport,
+    current_installed: Option<InstalledWindowsCodex>,
+    phase: Option<&PhaseHook<'_>>,
+    evidence: Option<&EvidenceHook<'_>>,
+    policy_transition: Option<SelfUpdatePolicyTransition>,
+    before_commit: Option<&BeforeWinCommitHook<'_>>,
+) -> Result<WinPerformReport, AppError> {
+    let set_phase = |p: OperationPhase| {
+        if let Some(hook) = phase {
+            hook(p);
+        }
+    };
     if stage.up_to_date {
         return Ok(WinPerformReport {
             success: true,
@@ -1164,6 +1512,8 @@ pub fn perform_windows_update_with_install_mode_network_and_phase(
             current_installed,
             phase,
             evidence,
+            policy_transition,
+            before_commit,
         );
     }
 
@@ -1202,6 +1552,8 @@ pub fn perform_windows_update_with_install_mode_network_and_phase(
             current_installed,
             phase,
             evidence,
+            policy_transition,
+            before_commit,
         )?;
         report.action = WinPerformAction::PortableFallbackMissingFramework;
         return Ok(report);
@@ -1209,6 +1561,7 @@ pub fn perform_windows_update_with_install_mode_network_and_phase(
 
     let installed_before_sideload =
         detect_installed_codex(PathBuf::from(&settings.install_root).as_path());
+    let mut msix_policy_tx: Option<ActiveMsixPolicyTransition> = None;
     let mut mark_recovery_ambiguous = || {
         set_phase(OperationPhase::Committing);
         if let Some(hook) = evidence {
@@ -1233,6 +1586,31 @@ pub fn perform_windows_update_with_install_mode_network_and_phase(
                 close_codex_gracefully_for_root(30, PathBuf::from(&previous.path).as_path())?;
             }
         }
+        // The exact signed PackageFullName and the requested/previous policy are
+        // durable before the child that can call Add-AppxPackage starts. Startup
+        // can therefore resolve a crash after deployment from registered identity.
+        if let Some(transition) = policy_transition {
+            msix_policy_tx = Some(
+                ActiveMsixPolicyTransition::begin(&stage.package_moniker, transition)
+                    .map_err(|e| EngineError::Io(e.to_string()))?,
+            );
+        }
+        if let Some(hook) = before_commit {
+            if let Err(err) = hook() {
+                let rollback_warnings = msix_policy_tx
+                    .take()
+                    .map(ActiveMsixPolicyTransition::rollback_not_landed)
+                    .unwrap_or_default();
+                let suffix = if rollback_warnings.is_empty() {
+                    String::new()
+                } else {
+                    format!("；{}", rollback_warnings.join("；"))
+                };
+                return Err(EngineError::Io(format!(
+                    "persist historical self-update policy before MSIX deployment: {err}{suffix}"
+                )));
+            }
+        }
         set_phase(OperationPhase::Committing);
         if let Some(hook) = evidence {
             hook(OperationEvidence::OutcomeAmbiguous);
@@ -1246,6 +1624,36 @@ pub fn perform_windows_update_with_install_mode_network_and_phase(
         &mut close_codex_and_mark_install_started,
     )
     .map_err(engine_err)?;
+
+    // A structured failure can still follow a partially successful deployment.
+    // Re-query exact PackageFullName before deciding whether the durable policy
+    // intent commits or rolls back. If the probe itself is unavailable, retain
+    // the safer requested policy: the package outcome is genuinely ambiguous.
+    let msix_target_landed_or_unknown = if sideload.success {
+        true
+    } else {
+        match codex_win_engine::registered_msix_package_full_name() {
+            Ok(current) => current
+                .as_deref()
+                .is_some_and(|name| name.eq_ignore_ascii_case(&stage.package_moniker)),
+            Err(err) => {
+                log::warn!(
+                    "could not resolve MSIX policy transaction after deployment error={err}; keeping requested policy"
+                );
+                true
+            }
+        }
+    };
+    let msix_policy_warnings = msix_policy_tx
+        .take()
+        .map(|active| {
+            if msix_target_landed_or_unknown {
+                active.commit_landed()
+            } else {
+                active.rollback_not_landed()
+            }
+        })
+        .unwrap_or_default();
 
     if sideload.success {
         // Add-AppxPackage returning success only means the cmdlet didn't throw.
@@ -1283,27 +1691,12 @@ pub fn perform_windows_update_with_install_mode_network_and_phase(
                 current_installed,
                 phase,
                 evidence,
+                None,
+                None,
             )?;
-            match remove_msix_package() {
-                Ok(remove) if remove.success => {
-                    report.notes.push(
-                        "Unhealthy MSIX package was removed after portable fallback succeeded."
-                            .to_string(),
-                    );
-                    report.notes.extend(remove.notes);
-                }
-                Ok(remove) => {
-                    report.notes.push(format!(
-                        "Portable fallback succeeded, but removing the unhealthy MSIX package failed: {}",
-                        remove.message
-                    ));
-                    report.notes.extend(remove.notes);
-                }
-                Err(err) => {
-                    report.notes.push(format!(
-                        "Portable fallback succeeded, but removing the unhealthy MSIX package could not run: {err}"
-                    ));
-                }
+            report.notes.extend(msix_policy_warnings.iter().cloned());
+            for warning in msix_policy_warnings {
+                report.outcome.push_warning(warning);
             }
             return Ok(report);
         }
@@ -1313,7 +1706,7 @@ pub fn perform_windows_update_with_install_mode_network_and_phase(
             .clone()
             .or_else(|| win_install_status(settings).installed);
         let mut notes = stage.notes.clone();
-        let outcome = match &installed {
+        let mut outcome = match &installed {
             Some(installed) => {
                 let outcome = record_managed_install(
                     current_installed.as_ref(),
@@ -1331,9 +1724,7 @@ pub fn perform_windows_update_with_install_mode_network_and_phase(
                     app_state: "unknown".to_string(),
                     install_class: None,
                     path: None,
-                    provenance: StepOutcome::failed(
-                        "安装完成但未检测到可记录的安装，托管状态未知",
-                    ),
+                    provenance: StepOutcome::failed("安装完成但未检测到可记录的安装，托管状态未知"),
                     cleanup: StepOutcome::not_applicable(),
                     warnings: vec![
                         "MSIX sideload reported success but no install was detected afterward."
@@ -1349,6 +1740,10 @@ pub fn perform_windows_update_with_install_mode_network_and_phase(
                 outcome
             }
         };
+        for warning in &msix_policy_warnings {
+            outcome.push_warning(warning.clone());
+        }
+        notes.extend(msix_policy_warnings);
 
         let report = WinPerformReport {
             success: true,
@@ -1381,7 +1776,7 @@ pub fn perform_windows_update_with_install_mode_network_and_phase(
         return Ok(report);
     }
 
-    install_portable_after_stage(
+    let mut report = install_portable_after_stage(
         settings,
         stage,
         Some(sideload),
@@ -1390,7 +1785,14 @@ pub fn perform_windows_update_with_install_mode_network_and_phase(
         current_installed,
         phase,
         evidence,
-    )
+        policy_transition,
+        before_commit,
+    )?;
+    report.notes.extend(msix_policy_warnings.iter().cloned());
+    for warning in msix_policy_warnings {
+        report.outcome.push_warning(warning);
+    }
+    Ok(report)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1403,7 +1805,15 @@ fn install_portable_after_stage(
     previous_installed: Option<InstalledWindowsCodex>,
     phase: Option<&PhaseHook<'_>>,
     evidence: Option<&EvidenceHook<'_>>,
+    policy_transition: Option<SelfUpdatePolicyTransition>,
+    before_commit: Option<&BeforeWinCommitHook<'_>>,
 ) -> Result<WinPerformReport, AppError> {
+    let cleanup_registered_msix = portable_fallback_needs_msix_cleanup(
+        previous_installed
+            .as_ref()
+            .map(|installed| installed.source.as_str()),
+        sideload.is_some(),
+    );
     let staged_path = stage
         .staged_path
         .as_ref()
@@ -1422,6 +1832,14 @@ fn install_portable_after_stage(
     // remains pre-write until a later boundary proves a rename succeeded.
     let mut tx: Option<ActiveInstallTx> = None;
     let mut observer = |boundary: PortableBoundary| -> Result<(), codex_win_engine::EngineError> {
+        if matches!(&boundary, PortableBoundary::BeforeRollback { .. }) {
+            if let Some(active) = tx.as_mut() {
+                active
+                    .mark_rollback_started()
+                    .map_err(|e| codex_win_engine::EngineError::Io(e.to_string()))?;
+            }
+            return Ok(());
+        }
         if matches!(&boundary, PortableBoundary::RollbackCompleted { .. }) {
             // Disk rollback is already complete. Persist and clear the durable
             // journal first; only then publish evidence that permits a retry.
@@ -1447,7 +1865,7 @@ fn install_portable_after_stage(
                 backup,
                 had_previous,
             } => {
-                let started = ActiveInstallTx::begin(
+                let mut started = ActiveInstallTx::begin(
                     InstallTxKind::WindowsPortable,
                     &install_root,
                     &payload,
@@ -1456,9 +1874,20 @@ fn install_portable_after_stage(
                     None,
                 )
                 .map_err(|e| codex_win_engine::EngineError::Io(e.to_string()))?;
+                if let Some(transition) = policy_transition {
+                    started
+                        .set_self_update_policy_transition(transition)
+                        .map_err(|e| codex_win_engine::EngineError::Io(e.to_string()))?;
+                }
                 tx = Some(started);
                 if let Some(hook) = phase {
                     hook(OperationPhase::Committing);
+                }
+                // The journal now durably owns both the filesystem swap and the
+                // policy transition. A crash before the first rename restores
+                // the old policy; a landed payload finalizes the requested one.
+                if let Some(hook) = before_commit {
+                    hook().map_err(|e| codex_win_engine::EngineError::Io(e.to_string()))?;
                 }
                 Ok(())
             }
@@ -1479,7 +1908,8 @@ fn install_portable_after_stage(
                 }
                 Ok(())
             }
-            PortableBoundary::RollbackCompleted { .. } => unreachable!("handled above"),
+            PortableBoundary::BeforeRollback { .. }
+            | PortableBoundary::RollbackCompleted { .. } => unreachable!("handled above"),
         }
     };
     let portable = install_portable_from_msix_with_observer(
@@ -1496,9 +1926,7 @@ fn install_portable_after_stage(
         );
         engine_err(err)
     })?;
-    if let Some(active) = tx.take() {
-        active.succeed()?;
-    }
+    let tx_finalize_warnings = tx.take().map(ActiveInstallTx::succeed).unwrap_or_default();
     if let Some(hook) = phase {
         hook(OperationPhase::Finishing);
     }
@@ -1508,7 +1936,7 @@ fn install_portable_after_stage(
     // (e.g. when sideload was blocked by policy), recording the wrong target so
     // the user keeps seeing the same update and the portable build goes unmanaged.
     let installed = detect_portable_install(PathBuf::from(&install_root).as_path());
-    let outcome = match &installed {
+    let mut outcome = match &installed {
         Some(installed) => record_managed_install(
             previous_installed.as_ref(),
             installed,
@@ -1523,9 +1951,7 @@ fn install_portable_after_stage(
             },
             install_class: None,
             path: Some(install_root.clone()),
-            provenance: StepOutcome::failed(
-                "便携安装完成但未检测到可记录的安装，托管状态未知",
-            ),
+            provenance: StepOutcome::failed("便携安装完成但未检测到可记录的安装，托管状态未知"),
             cleanup: StepOutcome::not_applicable(),
             warnings: vec![
                 "Portable install finished but no install was detected for provenance.".to_string(),
@@ -1533,6 +1959,9 @@ fn install_portable_after_stage(
             recovery_actions: vec![recovery::RECORD_PROVENANCE.to_string()],
         },
     };
+    for warning in &tx_finalize_warnings {
+        outcome.push_warning(warning.clone());
+    }
 
     let mut notes = stage.notes.clone();
     let msix_unhealthy = health.as_ref().is_some_and(|h| !h.healthy);
@@ -1550,6 +1979,51 @@ fn install_portable_after_stage(
         ));
     }
     notes.extend(portable.notes.clone());
+
+    // A portable fallback is not a complete downgrade while Windows still has
+    // the superseded MSIX registered: Start Menu activation would continue to
+    // launch that package, and uninstalling the portable tree would reveal it
+    // again. Wait until the portable payload has passed its real launch health
+    // check above, then remove any previous/attempted MSIX registration. Failure
+    // is ancillary (the requested portable build is runnable) but must be shown
+    // as a partial outcome instead of silently claiming a clean success.
+    if cleanup_registered_msix {
+        if let Err(err) = close_msix_codex_processes(20) {
+            notes.push(format!(
+                "Portable fallback succeeded, but closing the superseded MSIX before cleanup reported: {err}"
+            ));
+        }
+        match remove_msix_package() {
+            Ok(remove) if remove.success => {
+                outcome.cleanup = StepOutcome::ok_detail(
+                    "superseded MSIX package removed after portable health check",
+                );
+                notes.push(
+                    "Superseded MSIX package was removed after portable fallback passed its health check."
+                        .to_string(),
+                );
+                notes.extend(remove.notes);
+            }
+            Ok(remove) => {
+                let detail = format!(
+                    "便携版已可运行，但移除仍注册的 MSIX 失败：{}",
+                    remove.message
+                );
+                outcome.cleanup = StepOutcome::failed(detail.clone());
+                outcome.push_warning(format!(
+                    "{detail}；开始菜单仍可能启动旧 MSIX，请在 Windows 应用设置中移除 Codex MSIX"
+                ));
+                notes.extend(remove.notes);
+            }
+            Err(err) => {
+                let detail = format!("便携版已可运行，但无法执行 MSIX 清理：{err}");
+                outcome.cleanup = StepOutcome::failed(detail.clone());
+                outcome.push_warning(format!(
+                    "{detail}；开始菜单仍可能启动旧 MSIX，请在 Windows 应用设置中移除 Codex MSIX"
+                ));
+            }
+        }
+    }
     notes.extend(outcome.warnings.iter().cloned());
 
     let action = if msix_unhealthy {
@@ -1560,17 +2034,11 @@ fn install_portable_after_stage(
         WinPerformAction::PortableFallback
     };
 
+    let message = portable_install_result_message(&portable.message, &outcome);
     let report = WinPerformReport {
         success: true,
         action,
-        message: if outcome.is_partial() {
-            format!(
-                "{}（已安装，但托管记录未写入 — 请「开始管理」重试，勿重复安装）",
-                portable.message
-            )
-        } else {
-            portable.message.clone()
-        },
+        message,
         installed,
         sideload,
         portable: Some(portable),
@@ -1589,6 +2057,25 @@ fn install_portable_after_stage(
         .unwrap_or("none");
     log::info!("Windows perform success action={action} installed_version={installed_version}");
     Ok(report)
+}
+
+fn portable_install_result_message(base: &str, outcome: &OperationOutcome) -> String {
+    if outcome.provenance.is_failed() {
+        return format!("{base}（已安装，但托管记录未写入 — 请「开始管理」重试，勿重复安装）");
+    }
+    if outcome.cleanup.is_failed() {
+        return format!(
+            "{base}（便携版已安装，但旧 MSIX 未能移除；开始菜单仍可能启动旧版本，请在 Windows“已安装的应用”中移除 Codex MSIX）"
+        );
+    }
+    base.to_string()
+}
+
+fn portable_fallback_needs_msix_cleanup(
+    previous_source: Option<&str>,
+    sideload_attempted: bool,
+) -> bool {
+    previous_source == Some("msix") || sideload_attempted
 }
 
 /// Whether a completed portable-engine boundary proves the install root was
@@ -1809,7 +2296,10 @@ pub fn uninstall_windows_codex(
             success: msix.success,
             action: "remove-msix".to_string(),
             message: if outcome.is_partial() {
-                format!("{}（主卸载已完成，附属步骤有失败 — 可仅重试清理）", msix.message)
+                format!(
+                    "{}（主卸载已完成，附属步骤有失败 — 可仅重试清理）",
+                    msix.message
+                )
             } else {
                 msix.message.clone()
             },
@@ -1836,8 +2326,7 @@ pub fn uninstall_windows_codex(
             provenance = StepOutcome::failed(format!("托管记录清除失败（{e}）"));
         }
     }
-    let outcome =
-        outcome_from_portable_uninstall(&portable, provenance, &installed_before.path);
+    let outcome = outcome_from_portable_uninstall(&portable, provenance, &installed_before.path);
     let mut notes = portable.notes.clone();
     notes.extend(outcome.warnings.iter().cloned());
     let report = WinUninstallReport {
@@ -2003,10 +2492,12 @@ mod tests {
     use super::{
         bind_manifest_checksums, check_win_update_abort, detect_existing_windows_install_at_path,
         detect_managed_codex, outcome_from_portable_uninstall,
-        portable_boundary_mutated_install_root, retry_windows_ancillary_with_detector,
-        WinAbortGuard, WinPerformAction, WinInstallStatus, WIN_UPDATE_ABORT,
+        portable_boundary_mutated_install_root, portable_fallback_needs_msix_cleanup,
+        portable_install_result_message, retry_windows_ancillary_with_detector,
+        validate_historical_windows_app_version, WinAbortGuard, WinInstallStatus, WinPerformAction,
+        WIN_UPDATE_ABORT,
     };
-    use crate::app::operation_outcome::{recovery, StepOutcome};
+    use crate::app::operation_outcome::{recovery, OperationOutcome, StepOutcome};
     use crate::app::provenance::ProvenanceStore;
     use crate::domain::settings::AppSettings;
     use codex_win_engine::{PortableBoundary, PortableUninstallReport, WindowsRelease};
@@ -2031,6 +2522,51 @@ mod tests {
             ),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn historical_msix_app_version_must_match_selected_release() {
+        assert!(validate_historical_windows_app_version(
+            Some("26.707.31428".to_string()),
+            "26.707.31428"
+        )
+        .is_ok());
+
+        let mismatch = validate_historical_windows_app_version(
+            Some("26.707.30751".to_string()),
+            "26.707.31428",
+        )
+        .unwrap_err();
+        assert!(mismatch.to_string().contains("不一致"));
+
+        let unreadable = validate_historical_windows_app_version(None, "26.707.31428").unwrap_err();
+        assert!(unreadable.to_string().contains("无法读取"));
+    }
+
+    #[test]
+    fn portable_fallback_cleans_previous_or_attempted_msix_registration() {
+        assert!(portable_fallback_needs_msix_cleanup(Some("msix"), false));
+        assert!(portable_fallback_needs_msix_cleanup(None, true));
+        assert!(portable_fallback_needs_msix_cleanup(Some("portable"), true));
+        assert!(!portable_fallback_needs_msix_cleanup(
+            Some("portable"),
+            false
+        ));
+        assert!(!portable_fallback_needs_msix_cleanup(None, false));
+    }
+
+    #[test]
+    fn portable_result_distinguishes_provenance_from_msix_cleanup_failure() {
+        let mut outcome = OperationOutcome::full_success("present", Some("managed"));
+        outcome.cleanup = StepOutcome::failed("old MSIX remains");
+        let cleanup_message = portable_install_result_message("便携版安装完成", &outcome);
+        assert!(cleanup_message.contains("旧 MSIX 未能移除"));
+        assert!(cleanup_message.contains("已安装的应用"));
+        assert!(!cleanup_message.contains("开始管理"));
+
+        outcome.provenance = StepOutcome::failed("provenance write failed");
+        let provenance_message = portable_install_result_message("便携版安装完成", &outcome);
+        assert!(provenance_message.contains("开始管理"));
     }
 
     #[test]
@@ -2285,11 +2821,7 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  OpenAI.Codex_2
             message: "cleanup warnings".into(),
             notes: vec!["Start Menu shortcut cleanup failed: access denied".into()],
         };
-        let outcome = outcome_from_portable_uninstall(
-            &portable,
-            StepOutcome::ok(),
-            r"C:\Codex",
-        );
+        let outcome = outcome_from_portable_uninstall(&portable, StepOutcome::ok(), r"C:\Codex");
         assert!(outcome.primary_ok, "absent tree is still primary success");
         assert_eq!(outcome.app_state, "absent");
         assert_eq!(outcome.path.as_deref(), Some(r"C:\Codex"));
@@ -2315,11 +2847,7 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  OpenAI.Codex_2
             message: "cleanup warnings".into(),
             notes: vec!["User data cleanup failed: access denied".into()],
         };
-        let outcome = outcome_from_portable_uninstall(
-            &portable,
-            StepOutcome::ok(),
-            r"C:\Codex",
-        );
+        let outcome = outcome_from_portable_uninstall(&portable, StepOutcome::ok(), r"C:\Codex");
         assert!(outcome.primary_ok);
         assert!(outcome.is_partial());
         assert!(outcome
@@ -2341,8 +2869,7 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  OpenAI.Codex_2
             message: "remove failed".into(),
             notes: vec![],
         };
-        let outcome =
-            outcome_from_portable_uninstall(&portable, StepOutcome::ok(), r"C:\Codex");
+        let outcome = outcome_from_portable_uninstall(&portable, StepOutcome::ok(), r"C:\Codex");
         assert!(!outcome.primary_ok);
         assert!(!outcome.is_partial());
         assert_eq!(outcome.app_state, "present");
@@ -2367,6 +2894,5 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  OpenAI.Codex_2
             .recovery_actions
             .iter()
             .any(|action| action == recovery::RECORD_PROVENANCE));
-
     }
 }

@@ -2,10 +2,15 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+use std::io::Write;
+
 use serde::Deserialize;
 use serde_json::Value;
 
 const MAX_ASAR_HEADER_BYTES: u32 = 16 * 1024 * 1024;
+const MAX_ASAR_PACKAGE_OFFSET_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_PACKAGE_JSON_BYTES: u64 = 1024 * 1024;
 
 /// The Codex Electron app's npm package name — a package-level identity marker
 /// that survives inside `resources/app.asar` of any unpacked payload. Verified
@@ -102,8 +107,93 @@ pub fn read_codex_app_version_from_asar(path: &Path) -> Option<String> {
     (!version.is_empty()).then(|| version.to_string())
 }
 
+/// Read the Electron app version directly from a staged MSIX without unpacking
+/// its full payload. Real Codex ASARs do not place the root `package.json`
+/// immediately after the header: its declared offset has exceeded 40 MiB in
+/// released builds. Parse the header first, then stream exactly to that bounded
+/// offset inside the ZIP entry instead of assuming a fixed prefix is sufficient.
+pub fn read_codex_app_version_from_msix(path: &Path) -> Option<String> {
+    let file = File::open(path).ok()?;
+    let mut archive = zip::ZipArchive::new(file).ok()?;
+    for index in 0..archive.len() {
+        let Ok(mut entry) = archive.by_index(index) else {
+            continue;
+        };
+        let normalized = entry.name().replace('\\', "/").to_ascii_lowercase();
+        if normalized != "resources/app.asar" && !normalized.ends_with("/resources/app.asar") {
+            continue;
+        }
+        let Some(package) = read_package_json_from_asar_stream(&mut entry) else {
+            continue;
+        };
+        if package.name.as_deref().map(str::trim) != Some(CODEX_ASAR_PACKAGE_NAME) {
+            continue;
+        }
+        let version = package.version.trim();
+        if !version.is_empty() {
+            return Some(version.to_string());
+        }
+    }
+    None
+}
+
+/// Sequential ASAR reader for a compressed ZIP member. `zip::read::ZipFile`
+/// implements `Read` but cannot seek within the decompressed stream, so retain
+/// the exact current position after parsing the header and discard bytes until
+/// the header-declared package.json offset. Both the scan and allocation are
+/// bounded even though the signed MSIX itself may be hundreds of megabytes.
+fn read_package_json_from_asar_stream<R: Read>(mut reader: R) -> Option<PackageJson> {
+    let mut prefix = [0_u8; 8];
+    reader.read_exact(&mut prefix).ok()?;
+    let first = u32::from_le_bytes(prefix[0..4].try_into().ok()?);
+    let second = u32::from_le_bytes(prefix[4..8].try_into().ok()?);
+
+    let header_bytes = if first == 4 {
+        let header_size = second;
+        if header_size == 0 || header_size > MAX_ASAR_HEADER_BYTES {
+            return None;
+        }
+        let mut bytes = vec![0; header_size.try_into().ok()?];
+        reader.read_exact(&mut bytes).ok()?;
+        bytes
+    } else {
+        let header_size = first;
+        if !(4..=MAX_ASAR_HEADER_BYTES).contains(&header_size) {
+            return None;
+        }
+        let mut bytes = Vec::with_capacity(header_size.try_into().ok()?);
+        bytes.extend_from_slice(&prefix[4..8]);
+        bytes.resize(header_size.try_into().ok()?, 0);
+        reader.read_exact(&mut bytes[4..]).ok()?;
+        bytes
+    };
+
+    let header = parse_header_json(&header_bytes)?;
+    // Release the potentially large header allocation before streaming through
+    // the ASAR body.
+    drop(header_bytes);
+    let package_entry = find_asar_entry(&header, &["package.json"])?;
+    let offset = asar_entry_offset(package_entry)?;
+    let size = asar_entry_size(package_entry)?;
+    if offset > MAX_ASAR_PACKAGE_OFFSET_BYTES || size == 0 || size > MAX_PACKAGE_JSON_BYTES {
+        return None;
+    }
+
+    let skipped = std::io::copy(&mut reader.by_ref().take(offset), &mut std::io::sink()).ok()?;
+    if skipped != offset {
+        return None;
+    }
+    let mut bytes = vec![0; size.try_into().ok()?];
+    reader.read_exact(&mut bytes).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
 fn read_package_json_from_asar(path: &Path) -> Option<PackageJson> {
-    let (mut file, header, data_offset) = read_asar_header(path).ok()?;
+    read_package_json_from_asar_reader(File::open(path).ok()?)
+}
+
+fn read_package_json_from_asar_reader<R: Read + Seek>(reader: R) -> Option<PackageJson> {
+    let (mut file, header, data_offset) = read_asar_header(reader).ok()?;
     let entry = find_asar_entry(&header, &["package.json"])?;
     let offset = asar_entry_offset(entry)?;
     let size = asar_entry_size(entry)?;
@@ -114,8 +204,7 @@ fn read_package_json_from_asar(path: &Path) -> Option<PackageJson> {
     serde_json::from_slice(&bytes).ok()
 }
 
-fn read_asar_header(path: &Path) -> Result<(File, Value, u64), ()> {
-    let mut file = File::open(path).map_err(|_| ())?;
+fn read_asar_header<R: Read + Seek>(mut file: R) -> Result<(R, Value, u64), ()> {
     let mut prefix = [0_u8; 8];
     file.read_exact(&mut prefix).map_err(|_| ())?;
     let first = u32::from_le_bytes(prefix[0..4].try_into().map_err(|_| ())?);
@@ -176,6 +265,7 @@ fn asar_entry_size(entry: &Value) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zip::write::SimpleFileOptions;
 
     #[test]
     fn reads_root_package_json_version_from_asar() {
@@ -215,8 +305,7 @@ mod tests {
 
     #[test]
     fn reads_asar_package_name_from_install_root() {
-        let dir =
-            std::env::temp_dir().join(format!("codex-asar-name-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("codex-asar-name-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let resources = dir.join("resources");
         std::fs::create_dir_all(&resources).unwrap();
@@ -232,14 +321,52 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn reads_human_version_from_msix_at_realistic_asar_offset() {
+        let dir =
+            std::env::temp_dir().join(format!("codex-msix-version-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let asar = dir.join("app.asar");
+        let package_offset = 22 * 1024 * 1024;
+        write_test_asar_at_offset(
+            &asar,
+            br#"{"version":"26.727.51351","name":"openai-codex-electron"}"#,
+            package_offset,
+        );
+        let msix = dir.join("Codex.msix");
+        let file = File::create(&msix).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        archive
+            .start_file(
+                "app/resources/app.asar",
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated),
+            )
+            .unwrap();
+        std::io::copy(&mut File::open(&asar).unwrap(), &mut archive).unwrap();
+        archive.finish().unwrap();
+
+        assert_eq!(
+            read_codex_app_version_from_msix(&msix).as_deref(),
+            Some("26.727.51351")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 // Shared with sys.rs's manifest-less portable detection tests.
 #[cfg(test)]
 pub(crate) fn write_test_asar(path: &Path, package_json: &[u8]) {
+    write_test_asar_at_offset(path, package_json, 0);
+}
+
+#[cfg(test)]
+fn write_test_asar_at_offset(path: &Path, package_json: &[u8], package_offset: u64) {
     let header_json = format!(
-        r#"{{"files":{{"package.json":{{"size":{},"offset":"0"}}}}}}"#,
-        package_json.len()
+        r#"{{"files":{{"package.json":{{"size":{},"offset":"{}"}}}}}}"#,
+        package_json.len(),
+        package_offset,
     );
     let mut header = Vec::new();
     header.extend_from_slice(&0_u32.to_le_bytes());
@@ -248,10 +375,10 @@ pub(crate) fn write_test_asar(path: &Path, package_json: &[u8]) {
         header.push(0);
     }
 
-    let mut out = Vec::new();
-    out.extend_from_slice(&4_u32.to_le_bytes());
-    out.extend_from_slice(&(header.len() as u32).to_le_bytes());
-    out.extend_from_slice(&header);
-    out.extend_from_slice(package_json);
-    std::fs::write(path, out).unwrap();
+    let mut out = File::create(path).unwrap();
+    out.write_all(&4_u32.to_le_bytes()).unwrap();
+    out.write_all(&(header.len() as u32).to_le_bytes()).unwrap();
+    out.write_all(&header).unwrap();
+    std::io::copy(&mut std::io::repeat(0).take(package_offset), &mut out).unwrap();
+    out.write_all(package_json).unwrap();
 }

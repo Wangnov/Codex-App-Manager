@@ -15,7 +15,7 @@ import type {
   OperationSnapshot,
   UpdatePlan,
 } from "../../shared/types";
-import { DEFAULT_SETTINGS } from "../../shared/types";
+import { DEFAULT_SETTINGS, emptyOperationOutcome } from "../../shared/types";
 import { I18nProvider } from "../i18n";
 import { ThemeProvider } from "../theme";
 import { Home } from "./Home";
@@ -25,16 +25,33 @@ import { Home } from "./Home";
 vi.mock("../motion", () => ({ useHomeMotion: () => {} }));
 
 vi.mock("../../services/managerApi", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../services/managerApi")>();
+  const actual =
+    await importOriginal<typeof import("../../services/managerApi")>();
   return {
     ...actual,
     managerApi: {
+      beginTrackedOperation: vi.fn(),
+      armDestructive: vi.fn(),
       getSettings: vi.fn(),
+      getHostArchitecture: vi.fn(),
       setSettings: vi.fn(),
       getOperationSnapshot: vi.fn(() => Promise.resolve(null)),
+      getPausedOperationSnapshot: vi.fn(() => Promise.resolve(null)),
+      getOperationCompletion: vi.fn(() => Promise.resolve(null)),
+      historicalReleaseCatalog: vi.fn(
+        (platform: "macos" | "windows", architecture: "arm64" | "x64") =>
+          Promise.resolve({
+            repository: "Wangnov/codex-app-mirror",
+            platform,
+            architecture,
+            releases: [],
+          }),
+      ),
+      historicalPickLocalPackage: vi.fn(),
       macStatus: vi.fn(),
       macPlanUpdate: vi.fn(),
       macPerformUpdate: vi.fn(),
+      macInstallHistoricalRelease: vi.fn(),
       macInstall: vi.fn(),
       macAdopt: vi.fn(),
       macAdoptPath: vi.fn(),
@@ -79,10 +96,18 @@ const REPORT_UPDATE: MacUpdateReport = {
 
 const REPORT_UPTODATE: MacUpdateReport = {
   ...REPORT_UPDATE,
-  plan: { ...PLAN_UPDATE, upToDate: true, latestBuild: 100, latestShortVersion: "1.0.0" },
+  plan: {
+    ...PLAN_UPDATE,
+    upToDate: true,
+    latestBuild: 100,
+    latestShortVersion: "1.0.0",
+  },
 };
 
-const STATUS_MANAGED: MacInstallStatus = { installed: INSTALLED, status: "managed" };
+const STATUS_MANAGED: MacInstallStatus = {
+  installed: INSTALLED,
+  status: "managed",
+};
 const STATUS_NONE: MacInstallStatus = { installed: null, status: "none" };
 const ACTIVE_OPERATION: OperationSnapshot = {
   id: "op-active",
@@ -113,7 +138,10 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
 }
 
 function setPlatform(platform: string) {
-  Object.defineProperty(navigator, "platform", { configurable: true, value: platform });
+  Object.defineProperty(navigator, "platform", {
+    configurable: true,
+    value: platform,
+  });
 }
 
 function renderHome() {
@@ -138,20 +166,40 @@ describe("MacHome state machine", () => {
     api.macCancelDownload.mockResolvedValue(true);
     api.macDiscardDownload.mockResolvedValue(undefined);
     api.getOperationSnapshot.mockResolvedValue(null);
+    api.getPausedOperationSnapshot.mockResolvedValue(null);
+    api.getOperationCompletion.mockResolvedValue(null);
+    api.beginTrackedOperation.mockResolvedValue("test-install-operation");
+    api.armDestructive.mockResolvedValue("test-operation");
+    api.getHostArchitecture.mockResolvedValue("aarch64");
+    api.historicalReleaseCatalog.mockImplementation((platform, architecture) =>
+      Promise.resolve({
+        repository: "Wangnov/codex-app-mirror",
+        platform,
+        architecture,
+        releases: [],
+      }),
+    );
+    api.historicalPickLocalPackage.mockResolvedValue(null);
   });
 
   it("offers install when nothing is detected", async () => {
     api.getSettings.mockResolvedValue(settings({ checkOnStartup: false }));
     api.macStatus.mockResolvedValue(STATUS_NONE);
     renderHome();
-    expect(await screen.findByRole("button", { name: /安装 Codex/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /选择安装版本/ })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: /安装 Codex/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /选择安装版本/ }),
+    ).toBeInTheDocument();
     expect(screen.getByText("未检测到 Codex")).toBeInTheDocument();
   });
 
   it("classifies an available update and shows both versions in the meta list", async () => {
     renderHome();
-    expect(await screen.findByText("有新版本", { selector: ".headline" })).toBeInTheDocument();
+    expect(
+      await screen.findByText("有新版本", { selector: ".headline" }),
+    ).toBeInTheDocument();
     // The meta list pairs the update target with the local install.
     expect(screen.getByText("2.0.0")).toBeInTheDocument();
     expect(screen.getByText("1.0.0")).toBeInTheDocument();
@@ -170,7 +218,202 @@ describe("MacHome state machine", () => {
         fromBuild: 100,
         toBuild: 200,
         path: INSTALLED.path,
+        fromVersion: "1.0.0",
+        toVersion: "2.0.0",
       }),
+    );
+  });
+
+  it("routes a selected GitHub Release through the tracked historical installer", async () => {
+    api.historicalReleaseCatalog.mockResolvedValue({
+      repository: "Wangnov/codex-app-mirror",
+      platform: "macos",
+      architecture: "arm64",
+      releases: [
+        {
+          tag: "codex-app-0.9.0",
+          version: "0.9.0",
+          publishedAt: "2026-01-01T00:00:00Z",
+          assets: [
+            {
+              name: "Codex-mac-arm64.dmg",
+              size: 1024,
+              architecture: "arm64",
+              format: "dmg",
+              packageVersion: null,
+            },
+          ],
+        },
+      ],
+    });
+    api.macInstallHistoricalRelease.mockResolvedValue({
+      installed: { ...INSTALLED, build: 90, shortVersion: "0.9.0" },
+      status: "managed",
+      outcome: emptyOperationOutcome({
+        appState: "present",
+        installClass: "managed",
+        warnings: ["Codex 已安装，但自动重新打开失败；旧版本备份仍保留"],
+      }),
+    });
+    const user = userEvent.setup();
+    renderHome();
+
+    await user.click(
+      await screen.findByRole("button", { name: /选择安装版本/ }),
+    );
+    await user.click(await screen.findByRole("button", { name: /0\.9\.0/ }));
+    await user.click(screen.getByRole("button", { name: /下载并安装/ }));
+
+    await waitFor(() =>
+      expect(api.macInstallHistoricalRelease).toHaveBeenCalledWith(
+        expect.objectContaining({
+          releaseTag: "codex-app-0.9.0",
+          assetName: "Codex-mac-arm64.dmg",
+          format: "dmg",
+          localPath: null,
+        }),
+        true,
+        { path: INSTALLED.path, build: INSTALLED.build },
+        "test-operation",
+      ),
+    );
+    expect(api.armDestructive).toHaveBeenCalledWith("update");
+    expect(
+      await screen.findByText(/自动重新打开失败；旧版本备份仍保留/),
+    ).toBeInTheDocument();
+  });
+
+  it("uses an install operation token for a fresh historical install", async () => {
+    api.getSettings.mockResolvedValue(settings({ checkOnStartup: false }));
+    api.macStatus.mockResolvedValue(STATUS_NONE);
+    api.historicalReleaseCatalog.mockResolvedValue({
+      repository: "Wangnov/codex-app-mirror",
+      platform: "macos",
+      architecture: "arm64",
+      releases: [
+        {
+          tag: "codex-app-0.9.0",
+          version: "0.9.0",
+          publishedAt: "2026-01-01T00:00:00Z",
+          assets: [
+            {
+              name: "Codex-mac-arm64.dmg",
+              size: 1024,
+              architecture: "arm64",
+              format: "dmg",
+              packageVersion: null,
+            },
+          ],
+        },
+      ],
+    });
+    api.macInstallHistoricalRelease.mockResolvedValue({
+      installed: { ...INSTALLED, build: 90, shortVersion: "0.9.0" },
+      status: "managed",
+    });
+    const user = userEvent.setup();
+    renderHome();
+
+    await user.click(
+      await screen.findByRole("button", { name: /选择安装版本/ }),
+    );
+    await user.click(screen.getByRole("button", { name: "arm64" }));
+    await user.click(await screen.findByRole("button", { name: /0\.9\.0/ }));
+    await user.click(screen.getByRole("button", { name: /下载并安装/ }));
+
+    await waitFor(() =>
+      expect(api.beginTrackedOperation).toHaveBeenCalledWith("install"),
+    );
+    expect(api.armDestructive).not.toHaveBeenCalledWith("install");
+    expect(api.macInstallHistoricalRelease).toHaveBeenCalledWith(
+      expect.objectContaining({ releaseTag: "codex-app-0.9.0" }),
+      true,
+      { path: null, build: null },
+      "test-install-operation",
+    );
+  });
+
+  it("keeps a paused historical install and its original expectation when lease acquisition fails", async () => {
+    const confirmedExpectation = {
+      platform: "macos" as const,
+      currentPath: "/Applications/Confirmed Codex.app",
+      currentBuild: 77,
+    };
+    const selection = {
+      releaseTag: "codex-app-0.9.0",
+      version: "0.9.0",
+      assetName: "Codex-mac-arm64.dmg",
+      architecture: "arm64" as const,
+      format: "dmg" as const,
+      packageVersion: null,
+      localPath: null,
+      localFileName: null,
+    };
+    api.getPausedOperationSnapshot.mockResolvedValue({
+      id: "historical-mac-pause",
+      kind: "update",
+      phase: "downloading",
+      progress: {
+        downloaded: 512,
+        total: 1024,
+        source: "github.com",
+        operationId: "historical-mac-pause",
+      },
+      paused: true,
+      cancellable: true,
+      interruptible: true,
+      historical: {
+        selection,
+        blockUpdates: true,
+        expectation: confirmedExpectation,
+      },
+    });
+    // The live status has drifted since the user originally confirmed. Resume
+    // must keep the frozen expectation so the backend can reject the drift.
+    api.macStatus.mockResolvedValue(STATUS_MANAGED);
+    let rejectLease: ((cause: unknown) => void) | undefined;
+    api.armDestructive
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectLease = reject;
+          }),
+      )
+      .mockResolvedValueOnce("resumed-historical-mac");
+    api.macInstallHistoricalRelease.mockResolvedValue({
+      installed: { ...INSTALLED, build: 90, shortVersion: "0.9.0" },
+      status: "managed",
+    });
+
+    const user = userEvent.setup();
+    renderHome();
+    expect(await screen.findByText("下载已暂停")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await waitFor(() => expect(rejectLease).toBeDefined());
+    expect(
+      screen.queryByRole("button", { name: "继续" }),
+    ).not.toBeInTheDocument();
+    expect(api.macDiscardDownload).not.toHaveBeenCalled();
+    await act(async () => {
+      rejectLease?.(new Error("another operation owns the lease"));
+      await Promise.resolve();
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent("操作未完成");
+    expect(screen.getByText("下载已暂停")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "继续" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await waitFor(() =>
+      expect(api.macInstallHistoricalRelease).toHaveBeenCalledWith(
+        selection,
+        true,
+        {
+          path: confirmedExpectation.currentPath,
+          build: confirmedExpectation.currentBuild,
+        },
+        "resumed-historical-mac",
+      ),
     );
   });
 
@@ -181,6 +424,45 @@ describe("MacHome state machine", () => {
     await user.click(await screen.findByRole("button", { name: /立即更新/ }));
     await waitFor(() => expect(api.macPerformUpdate).toHaveBeenCalledTimes(1));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("resumes an ordinary update with the original target after latest refreshes", async () => {
+    api.getPausedOperationSnapshot.mockResolvedValue({
+      id: "ordinary-mac-pause",
+      kind: "update",
+      phase: "downloading",
+      progress: { downloaded: 256, total: 1024, source: "github.com" },
+      paused: true,
+      cancellable: true,
+      interruptible: true,
+      resume: {
+        kind: "perform",
+        installRoot: null,
+        expectation: {
+          platform: "macos",
+          currentBuild: 100,
+          targetBuild: 150,
+          installPath: INSTALLED.path,
+          currentVersion: "1.0.0",
+          targetVersion: "1.5.0",
+        },
+      },
+    });
+
+    const user = userEvent.setup();
+    renderHome();
+    expect(await screen.findByText("下载已暂停")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "继续" }));
+
+    await waitFor(() =>
+      expect(api.macPerformUpdate).toHaveBeenCalledWith({
+        fromBuild: 100,
+        toBuild: 150,
+        path: INSTALLED.path,
+        fromVersion: "1.0.0",
+        toVersion: "1.5.0",
+      }),
+    );
   });
 
   it("settles on up-to-date", async () => {
@@ -194,12 +476,19 @@ describe("MacHome state machine", () => {
 
   it("gates an external install behind adopt instead of offering the update", async () => {
     api.getSettings.mockResolvedValue(settings({ checkOnStartup: false }));
-    api.macStatus.mockResolvedValue({ installed: INSTALLED, status: "external" });
+    api.macStatus.mockResolvedValue({
+      installed: INSTALLED,
+      status: "external",
+    });
     const user = userEvent.setup();
     renderHome();
     const adopt = await screen.findByRole("button", { name: /开始管理/ });
-    expect(screen.queryByRole("button", { name: /立即更新/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /选择安装版本/ })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /立即更新/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /选择安装版本/ }),
+    ).not.toBeInTheDocument();
     api.macAdopt.mockResolvedValue(STATUS_MANAGED);
     await user.click(adopt);
     await waitFor(() => expect(api.macAdopt).toHaveBeenCalledTimes(1));
@@ -214,10 +503,17 @@ describe("MacHome state machine", () => {
     });
     renderHome();
 
-    await user.click(await screen.findByRole("button", { name: /选择安装版本/ }));
-    expect(await screen.findByRole("dialog", { name: "选择安装版本" })).toBeInTheDocument();
+    await user.click(
+      await screen.findByRole("button", { name: /选择安装版本/ }),
+    );
+    expect(
+      await screen.findByRole("dialog", { name: "选择安装版本" }),
+    ).toBeInTheDocument();
 
-    api.macStatus.mockResolvedValue({ installed: INSTALLED, status: "external" });
+    api.macStatus.mockResolvedValue({
+      installed: INSTALLED,
+      status: "external",
+    });
     await waitFor(() => expect(onFocus).toBeDefined());
     await act(async () => {
       onFocus?.();
@@ -225,7 +521,9 @@ describe("MacHome state machine", () => {
     });
 
     await waitFor(() =>
-      expect(screen.queryByRole("dialog", { name: "选择安装版本" })).not.toBeInTheDocument(),
+      expect(
+        screen.queryByRole("dialog", { name: "选择安装版本" }),
+      ).not.toBeInTheDocument(),
     );
   });
 
@@ -237,13 +535,35 @@ describe("MacHome state machine", () => {
     expect(screen.getByRole("button", { name: /重新检查/ })).toBeEnabled();
   });
 
+  it("keeps local package installation reachable when only the online check fails", async () => {
+    api.macStatus.mockResolvedValue(STATUS_NONE);
+    api.macPlanUpdate.mockRejectedValue(new Error("appcast unreachable"));
+    api.historicalReleaseCatalog.mockRejectedValue(
+      new Error("github unreachable"),
+    );
+    const user = userEvent.setup();
+    renderHome();
+
+    expect(await screen.findByText("检查失败")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /选择安装版本/ }));
+    await user.click(screen.getByRole("button", { name: "arm64" }));
+    expect(
+      await screen.findByRole("button", { name: /从本地安装包安装/ }),
+    ).toBeEnabled();
+  });
+
   it("treats a stale expectation as a notice and re-checks, not as an error", async () => {
     const user = userEvent.setup();
     api.getSettings.mockResolvedValue(settings({ askBefore: false }));
-    api.macPerformUpdate.mockRejectedValue({ code: "stale_expectation", message: "stale" });
+    api.macPerformUpdate.mockRejectedValue({
+      code: "stale_expectation",
+      message: "stale",
+    });
     // First plan (startup check) offers the update; the stale-recovery
     // re-check finds reality moved on and settles up-to-date.
-    api.macPlanUpdate.mockResolvedValueOnce(REPORT_UPDATE).mockResolvedValue(REPORT_UPTODATE);
+    api.macPlanUpdate
+      .mockResolvedValueOnce(REPORT_UPDATE)
+      .mockResolvedValue(REPORT_UPTODATE);
     renderHome();
     await user.click(await screen.findByRole("button", { name: /立即更新/ }));
     expect(await screen.findByText(/安装状态已变化/)).toBeInTheDocument();
@@ -258,7 +578,8 @@ describe("MacHome state machine", () => {
     api.getSettings.mockResolvedValue(settings({ askBefore: false }));
 
     // Capture the download-progress listener so the test can feed real bytes.
-    let onProgress: ((event: { payload: DownloadProgress }) => void) | undefined;
+    let onProgress:
+      ((event: { payload: DownloadProgress }) => void) | undefined;
     listenMock.mockImplementation((event: string, cb: unknown) => {
       if (event === "mac://download-progress") {
         onProgress = cb as typeof onProgress;
@@ -320,13 +641,16 @@ describe("MacHome state machine", () => {
     const user = userEvent.setup();
     api.getSettings.mockResolvedValue(settings({ askBefore: false }));
     let rejectPerform: ((cause: unknown) => void) | undefined;
-    let onProgress: ((event: { payload: DownloadProgress }) => void) | undefined;
+    let onProgress:
+      ((event: { payload: DownloadProgress }) => void) | undefined;
     listenMock.mockImplementation((event: string, cb: unknown) => {
-      if (event === "mac://download-progress") onProgress = cb as typeof onProgress;
+      if (event === "mac://download-progress")
+        onProgress = cb as typeof onProgress;
       return Promise.resolve(() => {});
     });
     api.macPerformUpdate.mockImplementationOnce(
-      () => new Promise<MacPerformReport>((_r, reject) => (rejectPerform = reject)),
+      () =>
+        new Promise<MacPerformReport>((_r, reject) => (rejectPerform = reject)),
     );
 
     renderHome();
@@ -334,7 +658,12 @@ describe("MacHome state machine", () => {
     await waitFor(() => expect(onProgress).toBeDefined());
     act(() =>
       onProgress?.({
-        payload: { downloaded: 10, total: 100, source: "s", operationId: "op-active" },
+        payload: {
+          downloaded: 10,
+          total: 100,
+          source: "s",
+          operationId: "op-active",
+        },
       }),
     );
     await user.click(await screen.findByRole("button", { name: /^暂停$/ }));
@@ -342,7 +671,9 @@ describe("MacHome state machine", () => {
     await screen.findByText("下载已暂停");
 
     await user.click(screen.getByRole("button", { name: /取消/ }));
-    await waitFor(() => expect(api.macDiscardDownload).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(api.macDiscardDownload).toHaveBeenCalledTimes(1),
+    );
     expect(await screen.findByText("下载已取消。")).toBeInTheDocument();
   });
 
@@ -356,15 +687,20 @@ describe("MacHome state machine", () => {
     async ({ intent, outcome }) => {
       const user = userEvent.setup();
       api.getSettings.mockResolvedValue(settings({ askBefore: false }));
-      api.macPerformUpdate.mockImplementationOnce(() => new Promise<MacPerformReport>(() => {}));
+      api.macPerformUpdate.mockImplementationOnce(
+        () => new Promise<MacPerformReport>(() => {}),
+      );
 
-      let onProgress: ((event: { payload: DownloadProgress }) => void) | undefined;
+      let onProgress:
+        ((event: { payload: DownloadProgress }) => void) | undefined;
       listenMock.mockImplementation((event: string, cb: unknown) => {
-        if (event === "mac://download-progress") onProgress = cb as typeof onProgress;
+        if (event === "mac://download-progress")
+          onProgress = cb as typeof onProgress;
         return Promise.resolve(() => {});
       });
 
-      const stop = intent === "pause" ? api.macPauseDownload : api.macCancelDownload;
+      const stop =
+        intent === "pause" ? api.macPauseDownload : api.macCancelDownload;
       if (outcome === "false") {
         stop.mockResolvedValue(false);
       } else {
@@ -408,13 +744,18 @@ describe("MacHome state machine", () => {
     api.macDiscardDownload.mockRejectedValueOnce(new Error("cache locked"));
 
     let rejectPerform: ((cause: unknown) => void) | undefined;
-    let onProgress: ((event: { payload: DownloadProgress }) => void) | undefined;
+    let onProgress:
+      ((event: { payload: DownloadProgress }) => void) | undefined;
     listenMock.mockImplementation((event: string, cb: unknown) => {
-      if (event === "mac://download-progress") onProgress = cb as typeof onProgress;
+      if (event === "mac://download-progress")
+        onProgress = cb as typeof onProgress;
       return Promise.resolve(() => {});
     });
     api.macPerformUpdate.mockImplementationOnce(
-      () => new Promise<MacPerformReport>((_resolve, reject) => (rejectPerform = reject)),
+      () =>
+        new Promise<MacPerformReport>(
+          (_resolve, reject) => (rejectPerform = reject),
+        ),
     );
 
     renderHome();
@@ -422,7 +763,12 @@ describe("MacHome state machine", () => {
     await waitFor(() => expect(onProgress).toBeDefined());
     act(() =>
       onProgress?.({
-        payload: { downloaded: 10, total: 100, source: "s", operationId: "op-active" },
+        payload: {
+          downloaded: 10,
+          total: 100,
+          source: "s",
+          operationId: "op-active",
+        },
       }),
     );
     await user.click(await screen.findByRole("button", { name: /^暂停$/ }));
@@ -439,7 +785,9 @@ describe("MacHome state machine", () => {
 
     // The failed discard is retryable; only the successful retry leaves pause.
     await user.click(screen.getByRole("button", { name: "取消" }));
-    await waitFor(() => expect(api.macDiscardDownload).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(api.macDiscardDownload).toHaveBeenCalledTimes(2),
+    );
     expect(await screen.findByText("下载已取消。")).toBeInTheDocument();
   });
 });
