@@ -1,6 +1,7 @@
 export type OperatingSystem = "windows" | "macos" | "linux" | "unknown";
 export type Architecture = "x64" | "arm64" | "unknown";
-export type OperationKind = "install" | "update" | "uninstall" | "set-install-root" | "adopt";
+export type OperationKind =
+  "install" | "update" | "uninstall" | "set-install-root" | "adopt";
 export type OperationToken = string;
 /** Lifecycle phase of a backend operation lease (mirrors Rust `OperationPhase`). */
 export type OperationPhase =
@@ -22,15 +23,44 @@ export interface OperationSnapshot {
   phase: OperationPhase;
   progress: DownloadProgress | null;
   paused: boolean;
+  historical?: {
+    selection: HistoricalInstallSelection;
+    blockUpdates: boolean;
+    expectation: HistoricalResumeExpectation;
+    installRoot?: string | null;
+  } | null;
+  resume?: OperationResumeContext | null;
   cancellable: boolean;
   interruptible: boolean;
 }
 
+/** Exact latest-channel target captured when the user started the transfer.
+ * Resume reuses this snapshot even if a later check observes a newer release. */
+export type OperationResumeExpectation =
+  | {
+      platform: "macos";
+      currentBuild: number | null;
+      targetBuild: number;
+      installPath: string | null;
+      currentVersion: string | null;
+      targetVersion: string;
+    }
+  | {
+      platform: "windows";
+      currentVersion: string | null;
+      targetVersion: string;
+      packageMoniker: string;
+      route: WinInstallRoute;
+    };
+
+export interface OperationResumeContext {
+  kind: "install" | "perform";
+  installRoot?: string | null;
+  expectation: OperationResumeExpectation;
+}
+
 export type OperationCompletionState =
-  | "succeeded"
-  | "failed-before-commit"
-  | "rolled-back"
-  | "outcome-unknown";
+  "succeeded" | "failed-before-commit" | "rolled-back" | "outcome-unknown";
 
 /** Terminal backend evidence retained after the active lease disappears. */
 export interface OperationCompletion {
@@ -97,6 +127,72 @@ export interface DownloadProgress {
   operationId?: string;
 }
 
+export type HistoricalReleasePlatform = "macos" | "windows";
+export type HistoricalReleaseArchitecture = "arm64" | "x64";
+export type HistoricalPackageFormat = "dmg" | "zip" | "msix";
+
+export interface HistoricalReleaseAsset {
+  name: string;
+  size: number;
+  architecture: HistoricalReleaseArchitecture;
+  format: HistoricalPackageFormat;
+  /** Four-part Appx identity version; Windows only. */
+  packageVersion: string | null;
+}
+
+export interface HistoricalRelease {
+  tag: string;
+  /** Human-facing Codex app version. */
+  version: string;
+  publishedAt: string | null;
+  assets: HistoricalReleaseAsset[];
+}
+
+export interface HistoricalReleaseCatalog {
+  repository: "Wangnov/codex-app-mirror" | string;
+  platform: HistoricalReleasePlatform;
+  architecture: HistoricalReleaseArchitecture;
+  releases: HistoricalRelease[];
+}
+
+export interface LocalReleasePackage {
+  path: string;
+  fileName: string;
+  size: number;
+  releaseTag: string;
+  version: string;
+  assetName: string;
+  architecture: HistoricalReleaseArchitecture;
+  format: HistoricalPackageFormat;
+  packageVersion: string | null;
+}
+
+export interface HistoricalInstallSelection {
+  releaseTag: string;
+  version: string;
+  assetName: string;
+  architecture: HistoricalReleaseArchitecture;
+  format: HistoricalPackageFormat;
+  packageVersion: string | null;
+  localPath: string | null;
+  localFileName: string | null;
+}
+
+/** Frozen install snapshot from the original confirmation. Resume must reuse it
+ * even if a renderer reload has since refreshed the visible installation. */
+export type HistoricalResumeExpectation =
+  | {
+      platform: "macos";
+      currentPath: string | null;
+      currentBuild: number | null;
+    }
+  | {
+      platform: "windows";
+      currentPath: string | null;
+      currentVersion: string | null;
+      currentSource: string | null;
+    };
+
 export interface MacUpdateReport {
   appcastUrl: string;
   installed: InstalledCodex | null;
@@ -133,7 +229,8 @@ export type InstallClass = "managed" | "external" | "none";
 
 /** UI-facing install probe state — distinguishes a failed status query from
  *  "external" so we never mislabel probe errors as unmanaged installs. */
-export type InstallProbeState = "loading" | "managed" | "external" | "none" | "error";
+export type InstallProbeState =
+  "loading" | "managed" | "external" | "none" | "error";
 
 /** Ancillary step result inside a structured operation outcome. */
 export interface StepOutcome {
@@ -522,10 +619,7 @@ export interface PortableUninstallReport {
  *   - "remove-portable"      — removed the portable install.
  */
 export type WinUninstallAction =
-  | "none"
-  | "external-not-managed"
-  | "remove-msix"
-  | "remove-portable";
+  "none" | "external-not-managed" | "remove-msix" | "remove-portable";
 
 export interface WinUninstallReport {
   success: boolean;
@@ -559,9 +653,13 @@ export function emptyOperationOutcome(
   };
 }
 
-export function outcomeIsPartial(outcome: OperationOutcome | null | undefined): boolean {
+export function outcomeIsPartial(
+  outcome: OperationOutcome | null | undefined,
+): boolean {
   if (!outcome?.primaryOk) return false;
-  return outcome.provenance.state === "failed" || outcome.cleanup.state === "failed";
+  return (
+    outcome.provenance.state === "failed" || outcome.cleanup.state === "failed"
+  );
 }
 
 export interface WinInstallStatus {

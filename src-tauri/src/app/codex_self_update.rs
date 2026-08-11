@@ -1,5 +1,6 @@
 use std::process::Command;
 
+use crate::app::settings_store::AppSettings as PersistedAppSettings;
 use crate::errors::AppError;
 
 pub const DISABLE_ENV_KEY: &str = "CODEX_SPARKLE_ENABLED";
@@ -17,6 +18,24 @@ pub fn apply_to_command(command: &mut Command, disabled: bool) {
 pub fn sync_setting(disabled: bool) -> Result<(), AppError> {
     sync_current_process(disabled);
     sync_platform(disabled)
+}
+
+/// Apply the platform environment and durably record the same value.
+///
+/// Historical installs use this from both the live commit path and startup
+/// transaction recovery. The platform sync is intentionally unconditional:
+/// a previous process may have crashed after changing only one side, so the
+/// settings file alone is not proof that launchctl/the Windows user environment
+/// already matches it.
+pub fn sync_and_persist_setting(disabled: bool) -> Result<(), AppError> {
+    sync_setting(disabled)?;
+    let mut settings = PersistedAppSettings::load();
+    if settings.disable_codex_self_updates != disabled {
+        settings.disable_codex_self_updates = disabled;
+        settings.normalize();
+        settings.save()?;
+    }
+    Ok(())
 }
 
 fn sync_current_process(disabled: bool) {

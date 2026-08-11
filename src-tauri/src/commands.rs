@@ -1,4 +1,6 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::Arc;
 
 use codex_win_engine::InstalledWindowsCodex;
 use serde::{Deserialize, Serialize};
@@ -11,43 +13,53 @@ use crate::app::atomic_file;
 use crate::app::config_health::ConfigHealth;
 use crate::app::diagnostics::Diagnostics;
 use crate::app::disk::available_space;
+use crate::app::install_tx::SelfUpdatePolicyTransition;
 use crate::app::logging::redact_url;
 use crate::app::mac_update::{
     cancel_macos_download, detect_existing_install_at_path as detect_macos_install_at_path,
-    discard_macos_download, install_macos_with_network_and_phase,
-    mac_adopt_path as adopt_macos_path, pause_macos_download,
-    perform_macos_update_with_network_and_phase,
-    plan_macos_update_with_network, retry_macos_ancillary, stage_macos_update_with_network,
-    uninstall_macos, InstalledCodex, MacInstallStatus, MacPerformReport, MacStageReport,
-    MacUninstallReport, MacUpdateReport, PerformExpectation,
+    discard_macos_download, install_macos_historical_release,
+    install_macos_with_network_and_phase_for_target, mac_adopt_path as adopt_macos_path,
+    pause_macos_download, perform_macos_update_with_network_and_phase,
+    plan_macos_update_with_network, resolve_macos_local_package, retry_macos_ancillary,
+    stage_macos_update_with_network, uninstall_macos, AbortGuard as MacAbortGuard,
+    HistoricalMacEvidence, HistoricalMacExpectation, InstalledCodex, MacInstallStatus,
+    MacPerformReport, MacStageReport, MacUninstallReport, MacUpdateReport, PerformExpectation,
 };
 use crate::app::op_phase::{OperationPhase, QuitPolicy};
 use crate::app::operation_outcome::{AncillaryRetryReport, AncillaryRetryRequest};
 use crate::app::oplock::{
+    HistoricalResumeContext, HistoricalResumeExpectation, HistoricalResumeSelection,
     OperationCompletion, OperationError, OperationGuard, OperationKind, OperationManager,
-    OperationProgress, OperationSnapshot, OperationToken,
+    OperationProgress, OperationResumeContext, OperationResumeExpectation, OperationResumeKind,
+    OperationSnapshot, OperationToken,
 };
 use crate::app::paths;
 use crate::app::provenance::ProvenanceStore;
+use crate::app::release_install::{
+    fetch_catalog, local_package_from_resolved, resolve_confirmed_macos_local_asset,
+    resolve_release_asset, verify_release_checksum, HistoricalReleaseCatalog, LocalReleasePackage,
+    ReleaseArchitecture, ReleasePlatform, ResolvedReleaseAsset,
+};
 use crate::app::settings_store::AppSettings as PersistedAppSettings;
 use crate::app::settings_store::{ProxyMode, UpdateSource};
 use crate::app::url_guard::{validate_custom_proxy, validate_custom_source};
-use crate::app::window_mode::{self, WindowMode, WindowModeReport};
 use crate::app::win_update::{
     auto_stage_windows_update_with_install_mode_and_network, cancel_windows_download,
     detect_existing_windows_install_at_path as detect_windows_install_at_path,
-    discard_windows_download, pause_windows_download,
+    discard_windows_download, install_windows_historical_release, pause_windows_download,
     perform_windows_update_with_install_mode_network_and_phase,
-    plan_windows_update_with_install_mode_and_network,
+    plan_windows_update_with_install_mode_and_network, resolve_windows_local_package,
     retry_windows_ancillary, stage_windows_update_with_install_mode_and_network,
     uninstall_windows_codex, win_adopt as adopt_windows_install,
     win_adopt_path as adopt_windows_path, win_install_status,
-    DownloadProgress as WinDownloadProgress, OperationEvidence, WinAutoStageReport, WinInstallStatus,
-    WinPerformExpectation, WinPerformReport, WinStageReport, WinUninstallReport, WinUpdateReport,
+    DownloadProgress as WinDownloadProgress, HistoricalWinExpectation, OperationEvidence,
+    WinAbortGuard, WinAutoStageReport, WinInstallStatus, WinPerformExpectation, WinPerformReport,
+    WinStageReport, WinUninstallReport, WinUpdateReport,
 };
+use crate::app::window_mode::{self, WindowMode, WindowModeReport};
 use crate::domain::settings::AppSettings as DomainAppSettings;
-use crate::domain::target::OperatingSystem;
-use crate::errors::{AppError, CommandError};
+use crate::domain::target::{Architecture, OperatingSystem, Target};
+use crate::errors::{classify, AppError, CommandError, ErrorKind};
 use crate::state::ManagerState;
 
 fn normalize_windows_source_base(raw: &str) -> Option<String> {
@@ -149,6 +161,249 @@ fn win_network_config_for_settings() -> Result<codex_win_engine::NetworkConfig, 
                 validated_custom_proxy_for_settings(&saved.custom_proxy_url, "Windows update")?;
             Ok(codex_win_engine::NetworkConfig::custom(proxy))
         }
+    }
+}
+
+enum HistoricalReleaseNetwork {
+    Mac(codex_mac_engine::NetworkConfig),
+    Windows(codex_win_engine::NetworkConfig),
+}
+
+impl HistoricalReleaseNetwork {
+    fn fetch_text(&self, url: &str) -> Result<String, AppError> {
+        match self {
+            Self::Mac(network) => codex_mac_engine::sys::fetch_text_with_network(url, network)
+                .map_err(|e| AppError::Engine(e.to_string())),
+            Self::Windows(network) => codex_win_engine::fetch_text_with_network(url, network)
+                .map_err(|e| AppError::Engine(e.to_string())),
+        }
+    }
+}
+
+fn historical_release_platform(state: &ManagerState) -> Result<ReleasePlatform, AppError> {
+    match state.target.os {
+        OperatingSystem::Macos => Ok(ReleasePlatform::Macos),
+        OperatingSystem::Windows => Ok(ReleasePlatform::Windows),
+        _ => Err(AppError::UnsupportedPlatform),
+    }
+}
+
+fn historical_release_network(
+    platform: ReleasePlatform,
+) -> Result<HistoricalReleaseNetwork, AppError> {
+    match platform {
+        ReleasePlatform::Macos => Ok(HistoricalReleaseNetwork::Mac(
+            mac_network_config_for_settings()?,
+        )),
+        ReleasePlatform::Windows => Ok(HistoricalReleaseNetwork::Windows(
+            win_network_config_for_settings()?,
+        )),
+    }
+}
+
+fn parse_release_architecture(raw: &str) -> Result<ReleaseArchitecture, AppError> {
+    ReleaseArchitecture::from_runtime(raw).ok_or_else(|| {
+        AppError::Internal(format!("不支持的安装包架构：{raw}（仅支持 arm64 / x64）"))
+    })
+}
+
+/// Reject a package architecture the current machine cannot execute. ARM64
+/// hosts may intentionally install an x64 build through the platform's
+/// compatibility layer, but an x64 host can never execute an ARM64 binary.
+/// This is enforced in the command layer so a forged renderer cannot bypass
+/// the picker UI and leave a signed-but-unlaunchable installation behind.
+fn validate_historical_architecture(
+    target: &Target,
+    selected: ReleaseArchitecture,
+) -> Result<(), AppError> {
+    let x64_compatible = match (&target.os, target.arch, selected) {
+        (OperatingSystem::Macos, Architecture::Arm64, ReleaseArchitecture::X64) => {
+            crate::domain::target::macos_x64_compatibility_available()
+        }
+        (OperatingSystem::Windows, Architecture::Arm64, ReleaseArchitecture::X64) => {
+            crate::domain::target::windows_x64_compatibility_available()
+        }
+        _ => true,
+    };
+    validate_historical_architecture_with_compatibility(target, selected, x64_compatible)
+}
+
+fn validate_historical_architecture_with_compatibility(
+    target: &Target,
+    selected: ReleaseArchitecture,
+    x64_compatible: bool,
+) -> Result<(), AppError> {
+    let supported = match (target.arch, selected) {
+        (Architecture::X64, ReleaseArchitecture::X64) => true,
+        (Architecture::Arm64, ReleaseArchitecture::Arm64) => true,
+        (Architecture::Arm64, ReleaseArchitecture::X64) => x64_compatible,
+        _ => false,
+    };
+    if supported {
+        Ok(())
+    } else if matches!(
+        (target.os.clone(), target.arch, selected),
+        (
+            OperatingSystem::Macos,
+            Architecture::Arm64,
+            ReleaseArchitecture::X64
+        )
+    ) {
+        Err(AppError::Engine(
+            "当前 Apple Silicon 设备未安装或无法使用 Rosetta 2，拒绝替换为无法运行的 x64 Codex；请改选 arm64，或先安装 Rosetta 2"
+                .to_string(),
+        ))
+    } else if matches!(
+        (target.os.clone(), target.arch, selected),
+        (
+            OperatingSystem::Windows,
+            Architecture::Arm64,
+            ReleaseArchitecture::X64
+        )
+    ) {
+        Err(AppError::Engine(
+            "当前 Windows ARM64 设备不支持 x64 仿真，拒绝替换为无法运行的 x64 Codex；请改选 arm64，或升级到支持 x64 仿真的 Windows 版本"
+                .to_string(),
+        ))
+    } else {
+        Err(AppError::Engine(format!(
+            "安装包架构 {} 无法在当前设备架构 {:?} 上运行",
+            selected.as_str(),
+            target.arch
+        )))
+    }
+}
+
+fn historical_package_start_dir() -> PathBuf {
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        let downloads = PathBuf::from(home).join("Downloads");
+        if downloads.is_dir() {
+            return downloads;
+        }
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Apply the explicit choice from the historical-install confirmation before
+/// the native installer can launch the selected Codex build. Mirrors the
+/// Settings command's ordering: platform state first, then durable settings.
+fn persist_historical_self_update_policy(disabled: bool) -> Result<(), AppError> {
+    crate::app::codex_self_update::sync_and_persist_setting(disabled)
+}
+
+/// Undo a historical-install policy change after the install itself fails. The
+/// platform sync is unconditional: the forward sync may have changed the current
+/// process or user environment before a later platform/save step returned an
+/// error while the settings file still contains the old value.
+fn restore_historical_self_update_policy(previous: bool) -> Result<(), AppError> {
+    crate::app::codex_self_update::sync_and_persist_setting(previous)
+}
+
+fn rollback_historical_policy_after_failure(previous: bool, primary: AppError) -> AppError {
+    match restore_historical_self_update_policy(previous) {
+        Ok(()) => primary,
+        Err(rollback) => AppError::Internal(format!(
+            "{primary}；同时恢复安装前的 Codex 自更新策略失败：{rollback}"
+        )),
+    }
+}
+
+/// A stale expectation proves that the retained resume context can no longer be
+/// authorized. Clear it in the backend as well as the renderer so a reload
+/// cannot resurrect an unrecoverable pause forever.
+fn invalidate_retained_pause_if_stale(operations: &OperationManager, error: &AppError) {
+    if matches!(error, AppError::StaleExpectation(_)) {
+        operations.clear_paused_snapshot();
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum HistoricalPolicyInstallState {
+    PreCommit = 0,
+    Mutated = 1,
+    RolledBack = 2,
+    OutcomeUnknown = 3,
+}
+
+impl HistoricalPolicyInstallState {
+    fn load(state: &AtomicU8) -> Self {
+        match state.load(Ordering::SeqCst) {
+            1 => Self::Mutated,
+            2 => Self::RolledBack,
+            3 => Self::OutcomeUnknown,
+            _ => Self::PreCommit,
+        }
+    }
+
+    fn store(self, state: &AtomicU8) {
+        state.store(self as u8, Ordering::SeqCst);
+    }
+
+    fn policy_may_be_restored(self) -> bool {
+        matches!(self, Self::PreCommit | Self::RolledBack)
+    }
+}
+
+fn record_macos_policy_install_state(state: &AtomicU8, evidence: HistoricalMacEvidence) {
+    match evidence {
+        HistoricalMacEvidence::MutationStarted => {
+            HistoricalPolicyInstallState::Mutated.store(state)
+        }
+        // macOS atomic-swap rollback is the only platform mutation in this path,
+        // so its explicit recovery evidence makes restoring the old policy safe.
+        HistoricalMacEvidence::MutationRolledBack => {
+            HistoricalPolicyInstallState::RolledBack.store(state)
+        }
+    }
+}
+
+fn record_windows_policy_install_state(state: &AtomicU8, evidence: OperationEvidence) {
+    let current = HistoricalPolicyInstallState::load(state);
+    let next = match evidence {
+        OperationEvidence::OutcomeAmbiguous => HistoricalPolicyInstallState::OutcomeUnknown,
+        // Add-AppxPackage may already be outcome-unknown before a later portable
+        // fallback starts. Portable evidence cannot erase that system ambiguity.
+        OperationEvidence::MutationStarted
+            if current != HistoricalPolicyInstallState::OutcomeUnknown =>
+        {
+            HistoricalPolicyInstallState::Mutated
+        }
+        OperationEvidence::MutationRolledBack
+            if current == HistoricalPolicyInstallState::Mutated =>
+        {
+            HistoricalPolicyInstallState::RolledBack
+        }
+        _ => current,
+    };
+    next.store(state);
+}
+
+fn historical_resume_context(
+    resolved: &ResolvedReleaseAsset,
+    local_path: Option<&Path>,
+    block_updates: bool,
+    expectation: HistoricalResumeExpectation,
+    install_root: Option<&str>,
+) -> HistoricalResumeContext {
+    HistoricalResumeContext {
+        selection: HistoricalResumeSelection {
+            release_tag: resolved.release_tag.clone(),
+            version: resolved.version.clone(),
+            asset_name: resolved.name.clone(),
+            architecture: resolved.architecture,
+            format: resolved.format,
+            package_version: resolved.package_version.clone(),
+            local_path: local_path.map(|path| path.to_string_lossy().into_owned()),
+            local_file_name: local_path.and_then(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_string)
+            }),
+        },
+        block_updates,
+        expectation,
+        install_root: install_root.map(str::to_string),
     }
 }
 
@@ -298,10 +553,6 @@ struct DetachedGuard {
 }
 
 impl DetachedGuard {
-    fn validate(state: &ManagerState, token: OperationToken) -> Result<Self, CommandError> {
-        Self::validate_inner(state, token, false)
-    }
-
     fn validate_tracked(state: &ManagerState, token: OperationToken) -> Result<Self, CommandError> {
         Self::validate_inner(state, token, true)
     }
@@ -356,6 +607,28 @@ impl DetachedGuard {
 
     fn operations(&self) -> OperationManager {
         self.operations.clone()
+    }
+
+    fn confirm_pause_if_cancelled(&self, error: &AppError) {
+        if classify(&error.to_string()) != ErrorKind::Cancelled {
+            return;
+        }
+        if let Some(token) = self.token.as_ref() {
+            if let Err(confirm_error) = self.operations.confirm_pause(token) {
+                log::error!("failed to confirm terminal paused download: {confirm_error}");
+            }
+        }
+    }
+
+    fn mark_outcome_ambiguous_if_noninterruptible(&self) {
+        if !self.operations.phase().is_point_of_no_return() {
+            return;
+        }
+        if let Some(token) = self.token.as_ref() {
+            if let Err(error) = self.operations.mark_outcome_ambiguous(token) {
+                log::error!("failed to mark terminal operation outcome ambiguous: {error}");
+            }
+        }
     }
 }
 
@@ -430,7 +703,8 @@ fn destructive_token_error(err: OperationError) -> CommandError {
 fn refresh_config_health(state: &ManagerState) -> ConfigHealth {
     let (_, settings_health) = PersistedAppSettings::load_with_health();
     let (_, provenance_health) = ProvenanceStore::load_with_health();
-    let health = ConfigHealth::from_parts(settings_health, provenance_health).with_live_backup_flags();
+    let health =
+        ConfigHealth::from_parts(settings_health, provenance_health).with_live_backup_flags();
     let mut slot = state
         .config_health
         .lock()
@@ -544,8 +818,9 @@ fn probe_install_parent_replace(path: &Path) -> Result<PathBuf, AppError> {
     let probe_dir = nearest_existing_dir(requested_parent);
     let probe_id = uuid::Uuid::new_v4();
     let source = probe_dir.join(format!("{INSTALL_LOCATION_PROBE_PREFIX}{probe_id}-source"));
-    let destination =
-        probe_dir.join(format!("{INSTALL_LOCATION_PROBE_PREFIX}{probe_id}-destination"));
+    let destination = probe_dir.join(format!(
+        "{INSTALL_LOCATION_PROBE_PREFIX}{probe_id}-destination"
+    ));
 
     let probe_result = (|| -> std::io::Result<()> {
         std::fs::create_dir(&source)?;
@@ -675,6 +950,65 @@ fn install_root_from_picked_dir(raw: &str) -> Result<String, AppError> {
     validate_install_root_path(trimmed)
 }
 
+/// Read-only historical package catalog. Only assets with a GitHub SHA-256
+/// digest and a pinned, expected repository URL are returned to the frontend.
+#[tauri::command]
+pub async fn historical_release_catalog(
+    state: State<'_, ManagerState>,
+    architecture: String,
+) -> Result<HistoricalReleaseCatalog, CommandError> {
+    let architecture = parse_release_architecture(&architecture)?;
+    validate_historical_architecture(&state.target, architecture)?;
+    let platform = historical_release_platform(&state)?;
+    let network = historical_release_network(platform)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        fetch_catalog(platform, architecture, &|url| network.fetch_text(url))
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("join: {e}")))?
+    .map_err(Into::into)
+}
+
+/// Pick a local DMG/ZIP/MSIX and verify it entirely through the native platform
+/// trust chain. This path intentionally performs no GitHub or Sparkle request.
+#[tauri::command]
+pub async fn historical_pick_local_package(
+    app: tauri::AppHandle,
+    state: State<'_, ManagerState>,
+    architecture: String,
+) -> Result<Option<LocalReleasePackage>, CommandError> {
+    let architecture = parse_release_architecture(&architecture)?;
+    validate_historical_architecture(&state.target, architecture)?;
+    let platform = historical_release_platform(&state)?;
+    let start_dir = historical_package_start_dir();
+    tauri::async_runtime::spawn_blocking(
+        move || -> Result<Option<LocalReleasePackage>, AppError> {
+            let builder = app
+                .dialog()
+                .file()
+                .set_title("选择从 GitHub Release 下载的 Codex 安装包")
+                .set_directory(start_dir);
+            let selected = match platform {
+                ReleasePlatform::Macos => builder.add_filter("Codex DMG / ZIP", &["dmg", "zip"]),
+                ReleasePlatform::Windows => builder.add_filter("Codex MSIX", &["msix"]),
+            }
+            .blocking_pick_file()
+            .and_then(|path| path.into_path().ok());
+            let Some(path) = selected else {
+                return Ok(None);
+            };
+            let resolved = match platform {
+                ReleasePlatform::Macos => resolve_macos_local_package(&path, architecture),
+                ReleasePlatform::Windows => resolve_windows_local_package(&path, architecture),
+            }?;
+            Ok(Some(local_package_from_resolved(&path, &resolved)))
+        },
+    )
+    .await
+    .map_err(|e| AppError::Internal(format!("join: {e}")))?
+    .map_err(Into::into)
+}
+
 /// macOS-only: detect the installed Codex build, read the Sparkle appcast, and
 /// return an update plan (delta vs full). Read-only — performs no install.
 #[tauri::command]
@@ -745,15 +1079,23 @@ fn resolve_binary_delta(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
 /// gate → graceful quit → atomic same-volume swap → health-check → relaunch (or
 /// rollback). Requires an explicit `confirm: true` from a UI second confirmation;
 /// runs the blocking work off the main thread.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MacPerformResumeExpectation {
+    from_build: u64,
+    to_build: u64,
+    path: String,
+    from_version: String,
+    to_version: String,
+}
+
 #[tauri::command]
 pub async fn mac_perform_update(
     app: tauri::AppHandle,
     state: State<'_, ManagerState>,
     confirm: bool,
     token: OperationToken,
-    expected_from_build: u64,
-    expected_to_build: u64,
-    expected_path: String,
+    expected: MacPerformResumeExpectation,
 ) -> Result<MacPerformReport, CommandError> {
     if !cfg!(target_os = "macos") {
         return Err(AppError::UnsupportedPlatform.into());
@@ -763,7 +1105,7 @@ pub async fn mac_perform_update(
             AppError::Internal("拒绝执行：破坏性更新必须带显式 confirm".to_string()).into(),
         );
     }
-    let op = DetachedGuard::validate(&state, token)?;
+    let mut op = DetachedGuard::validate_tracked(&state, token)?;
     op.set_phase(OperationPhase::Preparing);
     // Best-effort: a full-package update needs no delta tool, so don't reject the
     // whole operation when it's absent — only the delta branch requires it.
@@ -771,18 +1113,37 @@ pub async fn mac_perform_update(
     // The user confirmed a specific target; the backend re-verifies reality still
     // matches before the destructive swap (guards a TOCTOU vs appcast refresh /
     // Codex self-update between confirm and execute).
-    let expected = PerformExpectation {
-        from_build: expected_from_build,
-        to_build: expected_to_build,
-        install_path: expected_path,
+    let engine_expected = PerformExpectation {
+        from_build: expected.from_build,
+        to_build: expected.to_build,
+        install_path: expected.path.clone(),
     };
+    if let Some(token) = op.token_clone() {
+        state
+            .operations
+            .set_resume_context(
+                &token,
+                OperationResumeContext {
+                    kind: OperationResumeKind::Perform,
+                    install_root: None,
+                    expectation: OperationResumeExpectation::Macos {
+                        current_build: Some(expected.from_build),
+                        target_build: expected.to_build,
+                        install_path: Some(expected.path),
+                        current_version: Some(expected.from_version),
+                        target_version: expected.to_version,
+                    },
+                },
+            )
+            .map_err(AppError::from)?;
+    }
     let progress_app = app.clone();
     let network = mac_network_config_for_settings()?;
     let ops = op.operations();
     let phase_token = op.token_clone();
     let progress_token = phase_token.clone();
     let progress_ops = ops.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = match tauri::async_runtime::spawn_blocking(move || {
         let report = move |p: crate::app::mac_update::DownloadProgress| {
             if let Some(token) = progress_token.as_ref() {
                 emit_op_download_progress(
@@ -805,15 +1166,29 @@ pub async fn mac_perform_update(
         };
         perform_macos_update_with_network_and_phase(
             binary_delta,
-            expected,
+            engine_expected,
             &report,
             &network,
             Some(&phase_hook),
         )
     })
     .await
-    .map_err(|e| AppError::Internal(format!("join: {e}")))?
-    .map_err(Into::into)
+    {
+        Ok(result) => result,
+        Err(error) => Err(AppError::Internal(format!("join: {error}"))),
+    };
+    match result {
+        Ok(report) => {
+            op.mark_succeeded();
+            Ok(report)
+        }
+        Err(error) => {
+            op.confirm_pause_if_cancelled(&error);
+            op.mark_outcome_ambiguous_if_noninterruptible();
+            invalidate_retained_pause_if_stale(&state.operations, &error);
+            Err(error.into())
+        }
+    }
 }
 
 /// macOS-only: classify the installed Codex (managed / external / none).
@@ -909,6 +1284,8 @@ pub async fn mac_launch_codex(state: State<'_, ManagerState>) -> Result<(), Comm
 pub async fn mac_install(
     app: tauri::AppHandle,
     state: State<'_, ManagerState>,
+    expected_target_build: u64,
+    expected_target_version: String,
 ) -> Result<MacInstallStatus, CommandError> {
     if !cfg!(target_os = "macos") {
         return Err(AppError::UnsupportedPlatform.into());
@@ -917,12 +1294,35 @@ pub async fn mac_install(
     let token = op.token().clone();
     let ops = state.operations.clone();
     let _ = ops.set_phase(&token, OperationPhase::Preparing);
-    let network = mac_network_config_for_settings()?;
+    ops.set_resume_context(
+        &token,
+        OperationResumeContext {
+            kind: OperationResumeKind::Install,
+            install_root: None,
+            expectation: OperationResumeExpectation::Macos {
+                current_build: None,
+                target_build: expected_target_build,
+                install_path: None,
+                current_version: None,
+                target_version: expected_target_version,
+            },
+        },
+    )
+    .map_err(AppError::from)?;
+    let network = match mac_network_config_for_settings() {
+        Ok(network) => network,
+        Err(error) => {
+            if let Err(record_error) = ops.record_completion(&token, false) {
+                log::error!("failed to record terminal macOS install outcome: {record_error}");
+            }
+            return Err(error.into());
+        }
+    };
     let progress_token = token.clone();
     let progress_ops = ops.clone();
     let phase_token = token.clone();
     let phase_ops = ops.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = match tauri::async_runtime::spawn_blocking(move || {
         let report = move |p: crate::app::mac_update::DownloadProgress| {
             emit_op_download_progress(
                 &app,
@@ -937,11 +1337,242 @@ pub async fn mac_install(
         let phase_hook = |phase: OperationPhase| {
             let _ = phase_ops.set_phase(&phase_token, phase);
         };
-        install_macos_with_network_and_phase(&report, &network, Some(&phase_hook))
+        install_macos_with_network_and_phase_for_target(
+            &report,
+            &network,
+            Some(&phase_hook),
+            Some(expected_target_build),
+        )
     })
     .await
-    .map_err(|e| AppError::Internal(format!("join: {e}")))?
-    .map_err(Into::into)
+    {
+        Ok(result) => result,
+        Err(error) => Err(AppError::Internal(format!("join: {error}"))),
+    };
+    match result {
+        Ok(status) => {
+            if let Err(error) = ops.record_completion(&token, true) {
+                log::error!("failed to record terminal macOS install outcome: {error}");
+            }
+            Ok(status)
+        }
+        Err(error) => {
+            if classify(&error.to_string()) == ErrorKind::Cancelled {
+                if let Err(confirm_error) = ops.confirm_pause(&token) {
+                    log::error!("failed to confirm terminal paused download: {confirm_error}");
+                }
+            }
+            if ops.phase().is_point_of_no_return() {
+                if let Err(mark_error) = ops.mark_outcome_ambiguous(&token) {
+                    log::error!(
+                        "failed to mark terminal macOS install outcome ambiguous: {mark_error}"
+                    );
+                }
+            }
+            if let Err(record_error) = ops.record_completion(&token, false) {
+                log::error!("failed to record terminal macOS install outcome: {record_error}");
+            }
+            invalidate_retained_pause_if_stale(&ops, &error);
+            Err(error.into())
+        }
+    }
+}
+
+/// macOS-only historical/offline install. The selected tag/asset is rebound to
+/// a fresh GitHub API response, GitHub digest must agree with SHA256SUMS when
+/// that older release publishes one, and the existing atomic replacement +
+/// rollback model handles both upgrade/downgrade.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn mac_install_historical_release(
+    app: tauri::AppHandle,
+    state: State<'_, ManagerState>,
+    confirm: bool,
+    token: OperationToken,
+    release_tag: String,
+    asset_name: String,
+    local_path: Option<String>,
+    architecture: String,
+    block_updates: bool,
+    expected_current_path: Option<String>,
+    expected_current_build: Option<u64>,
+) -> Result<MacInstallStatus, CommandError> {
+    if !cfg!(target_os = "macos") {
+        return Err(AppError::UnsupportedPlatform.into());
+    }
+    if !confirm {
+        return Err(
+            AppError::Internal("拒绝执行：历史版本安装必须带显式 confirm".to_string()).into(),
+        );
+    }
+    if expected_current_path.is_some() != expected_current_build.is_some() {
+        return Err(AppError::StaleExpectation(
+            "当前 macOS 安装快照不完整，请重新检查后再确认".to_string(),
+        )
+        .into());
+    }
+    let architecture = parse_release_architecture(&architecture)?;
+    validate_historical_architecture(&state.target, architecture)?;
+    let mut op = DetachedGuard::validate_tracked(&state, token)?;
+    op.set_phase(OperationPhase::Preparing);
+    // Own the preparing-phase cancel latch before any GitHub/tag/checksum or
+    // local-package resolution can fail. The installer creates a nested guard;
+    // reference counting keeps that inner return from clearing this command's
+    // cancellation, and this outer scope always resets it on every early exit.
+    let _abort_scope = MacAbortGuard::new();
+    let local_path = local_path.map(PathBuf::from);
+    let network = if local_path.is_some() {
+        codex_mac_engine::NetworkConfig::system()
+    } else {
+        mac_network_config_for_settings()?
+    };
+    let progress_app = app.clone();
+    let ops = op.operations();
+    let phase_token = op.token_clone();
+    let progress_token = phase_token.clone();
+    let progress_ops = ops.clone();
+    let expected = HistoricalMacExpectation {
+        current_path: expected_current_path,
+        current_build: expected_current_build,
+    };
+    let previous_block_updates = PersistedAppSettings::load().disable_codex_self_updates;
+    let policy_transition =
+        (previous_block_updates != block_updates).then_some(SelfUpdatePolicyTransition {
+            previous_disabled: previous_block_updates,
+            requested_disabled: block_updates,
+        });
+    let policy_attempted = Arc::new(AtomicBool::new(false));
+    let policy_attempted_worker = Arc::clone(&policy_attempted);
+    let policy_attempted_rollback = Arc::clone(&policy_attempted);
+    let policy_restored_after_rollback = Arc::new(AtomicBool::new(false));
+    let policy_restored_worker = Arc::clone(&policy_restored_after_rollback);
+    let policy_install_state =
+        Arc::new(AtomicU8::new(HistoricalPolicyInstallState::PreCommit as u8));
+    let policy_install_state_worker = Arc::clone(&policy_install_state);
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        let fetch = |url: &str| {
+            codex_mac_engine::sys::fetch_text_with_network(url, &network)
+                .map_err(|e| AppError::Engine(e.to_string()))
+        };
+        let resolved = if let Some(path) = local_path.as_ref() {
+            resolve_confirmed_macos_local_asset(path, &release_tag, &asset_name, architecture)?
+        } else {
+            let resolved = resolve_release_asset(
+                &release_tag,
+                &asset_name,
+                ReleasePlatform::Macos,
+                architecture,
+                &fetch,
+            )?;
+            verify_release_checksum(&resolved, &fetch)?;
+            resolved
+        };
+        if let Some(token) = phase_token.as_ref() {
+            ops.set_historical_context(
+                token,
+                historical_resume_context(
+                    &resolved,
+                    local_path.as_deref(),
+                    block_updates,
+                    HistoricalResumeExpectation::Macos {
+                        current_path: expected.current_path.clone(),
+                        current_build: expected.current_build,
+                    },
+                    None,
+                ),
+            )
+            .map_err(AppError::from)?;
+        }
+        let progress = move |p: crate::app::mac_update::DownloadProgress| {
+            if let Some(token) = progress_token.as_ref() {
+                emit_op_download_progress(
+                    &progress_app,
+                    &progress_ops,
+                    token,
+                    "mac://download-progress",
+                    p.downloaded,
+                    p.total,
+                    p.source,
+                );
+            }
+        };
+        let phase_hook = |phase: OperationPhase| {
+            if let Some(token) = phase_token.as_ref() {
+                let _ = ops.set_phase(token, phase);
+            }
+        };
+        let evidence_hook = |evidence: HistoricalMacEvidence| {
+            record_macos_policy_install_state(&policy_install_state_worker, evidence);
+            if let Some(token) = phase_token.as_ref() {
+                let result = match evidence {
+                    HistoricalMacEvidence::MutationStarted => ops.mark_mutation_started(token),
+                    HistoricalMacEvidence::MutationRolledBack => {
+                        ops.mark_mutation_rolled_back(token)
+                    }
+                };
+                if let Err(error) = result {
+                    log::error!("failed to record macOS historical install evidence: {error}");
+                }
+            }
+        };
+        let before_commit = || {
+            policy_attempted_worker.store(true, Ordering::SeqCst);
+            persist_historical_self_update_policy(block_updates)
+        };
+        let after_rollback = || {
+            if previous_block_updates != block_updates
+                && policy_attempted_rollback.load(Ordering::SeqCst)
+            {
+                restore_historical_self_update_policy(previous_block_updates)?;
+            }
+            policy_restored_worker.store(true, Ordering::SeqCst);
+            Ok(())
+        };
+        install_macos_historical_release(
+            resolved,
+            local_path,
+            expected,
+            &progress,
+            &network,
+            Some(&phase_hook),
+            policy_transition,
+            Some(&before_commit),
+            Some(&evidence_hook),
+            Some(&after_rollback),
+        )
+    })
+    .await;
+    let report = match report {
+        Ok(report) => report,
+        Err(error) => {
+            // A worker panic can happen after the platform mutation crossed its
+            // commit boundary but before the evidence callback ran. Treat that
+            // as outcome-unknown and keep the policy aligned with the requested
+            // release instead of guessing that the old app survived.
+            HistoricalPolicyInstallState::OutcomeUnknown.store(&policy_install_state);
+            Err(AppError::Internal(format!("join: {error}")))
+        }
+    };
+    let report = match report {
+        Ok(report) => report,
+        Err(error) => {
+            op.confirm_pause_if_cancelled(&error);
+            invalidate_retained_pause_if_stale(&state.operations, &error);
+            let error = if previous_block_updates != block_updates
+                && policy_attempted.load(Ordering::SeqCst)
+                && !policy_restored_after_rollback.load(Ordering::SeqCst)
+                && HistoricalPolicyInstallState::load(&policy_install_state)
+                    .policy_may_be_restored()
+            {
+                rollback_historical_policy_after_failure(previous_block_updates, error)
+            } else {
+                error
+            };
+            return Err(error.into());
+        }
+    };
+    op.mark_succeeded();
+    Ok(report)
 }
 
 /// macOS-only: request pausing an active package download.
@@ -978,11 +1609,13 @@ pub fn mac_cancel_download(
 /// but its `.part` is still cached for resume; this drops it when the user
 /// cancels from the paused state instead of resuming.
 #[tauri::command]
-pub fn mac_discard_download() -> Result<(), CommandError> {
+pub fn mac_discard_download(state: State<'_, ManagerState>) -> Result<(), CommandError> {
     if !cfg!(target_os = "macos") {
         return Err(AppError::UnsupportedPlatform.into());
     }
-    discard_macos_download().map_err(Into::into)
+    discard_macos_download()?;
+    state.operations.clear_paused_snapshot();
+    Ok(())
 }
 
 /// Windows-only: detect installed Codex, read mirror manifest/checksums, probe
@@ -1130,10 +1763,9 @@ pub fn restore_config_backup(
         _ => "ok",
     };
     if status == "corrupt" {
-        return Err(AppError::Internal(format!(
-            "已从 .bak 还原 {which}，但重新读取仍判定为损坏"
-        ))
-        .into());
+        return Err(
+            AppError::Internal(format!("已从 .bak 还原 {which}，但重新读取仍判定为损坏")).into(),
+        );
     }
     Ok(health)
 }
@@ -1168,10 +1800,7 @@ pub fn reset_config(
         _ => "ok",
     };
     if status == "corrupt" {
-        return Err(AppError::Internal(format!(
-            "已重置 {which}，但重新读取仍判定为损坏"
-        ))
-        .into());
+        return Err(AppError::Internal(format!("已重置 {which}，但重新读取仍判定为损坏")).into());
     }
     Ok(health)
 }
@@ -1204,26 +1833,22 @@ pub fn retry_ancillary(
     }
     let _guard: RetryGuard = if purge {
         if confirm != Some(true) {
-            return Err(AppError::Internal(
-                "清除用户数据需要二次确认（confirm=true）".to_string(),
-            )
-            .into());
+            return Err(
+                AppError::Internal("清除用户数据需要二次确认（confirm=true）".to_string()).into(),
+            );
         }
         let token = token.ok_or_else(|| {
             AppError::Internal(
                 "清除用户数据需要破坏性令牌（先 arm_destructive uninstall）".to_string(),
             )
         })?;
-        let guard =
-            DetachedGuard::validate_with_phase(&state, token, OperationPhase::Committing)?;
+        let guard = DetachedGuard::validate_with_phase(&state, token, OperationPhase::Committing)?;
         RetryGuard::Detached(guard)
     } else {
         RetryGuard::Scoped(begin_guard(&state, OperationKind::Adopt)?)
     };
     match state.target.os {
-        OperatingSystem::Macos => {
-            retry_macos_ancillary(actions, path, purge).map_err(Into::into)
-        }
+        OperatingSystem::Macos => retry_macos_ancillary(actions, path, purge).map_err(Into::into),
         OperatingSystem::Windows => {
             let settings = windows_domain_settings_for_persisted(&state);
             retry_windows_ancillary(&settings, actions, path, purge).map_err(Into::into)
@@ -1294,6 +1919,15 @@ pub fn get_operation_snapshot(
     Ok(state.operations.snapshot())
 }
 
+/// Last transfer that reached a confirmed paused terminal state. The active
+/// lease may already be gone by the time a replacement renderer polls.
+#[tauri::command]
+pub fn get_paused_operation_snapshot(
+    state: State<'_, ManagerState>,
+) -> Result<Option<OperationSnapshot>, CommandError> {
+    Ok(state.operations.paused_snapshot())
+}
+
 /// Token-keyed terminal evidence for a renderer that lost the original invoke
 /// promise. `failed-before-commit` and `rolled-back` prove that retrying a fresh
 /// install is safe; unresolved committing/finishing failures remain outcome-unknown.
@@ -1309,7 +1943,10 @@ pub fn get_operation_completion(
 /// CloseRequested / ExitRequested guards stop intercepting and let it go.
 /// Still refuses when the backend is in a non-interruptible install phase.
 #[tauri::command]
-pub fn confirm_quit(app: tauri::AppHandle, state: State<'_, ManagerState>) -> Result<(), CommandError> {
+pub fn confirm_quit(
+    app: tauri::AppHandle,
+    state: State<'_, ManagerState>,
+) -> Result<(), CommandError> {
     let confirm_close = crate::app::settings_store::AppSettings::load().confirm_close;
     // Decide and arm exit under the SAME operation mutex used by phase changes.
     // If the worker already reached commit this returns Block. Otherwise both app
@@ -1586,7 +2223,9 @@ pub fn win_discard_download(state: State<'_, ManagerState>) -> Result<(), Comman
     if !matches!(state.target.os, OperatingSystem::Windows) {
         return Err(AppError::UnsupportedPlatform.into());
     }
-    discard_windows_download().map_err(Into::into)
+    discard_windows_download()?;
+    state.operations.clear_paused_snapshot();
+    Ok(())
 }
 
 /// Whether "launch at login" is currently enabled (off by default).
@@ -1762,14 +2401,16 @@ fn import_codexskin_at(
 #[tauri::command]
 pub fn codex_theme_preview(theme_ref: String) -> Result<Option<String>, CommandError> {
     let settings = PersistedAppSettings::load();
-    Ok(crate::app::codex_theme::preview_data_url(&settings, &theme_ref))
+    Ok(crate::app::codex_theme::preview_data_url(
+        &settings, &theme_ref,
+    ))
 }
 
 /// The online skin catalog (skins.agentsmirror.com, published by
 /// awesome-codex-skins CI).
 #[tauri::command]
-pub async fn codex_theme_catalog(
-) -> Result<Vec<crate::app::codex_theme::CatalogSkin>, CommandError> {
+pub async fn codex_theme_catalog() -> Result<Vec<crate::app::codex_theme::CatalogSkin>, CommandError>
+{
     tauri::async_runtime::spawn_blocking(crate::app::codex_theme::fetch_catalog)
         .await
         .map_err(|e| AppError::Internal(format!("join: {e}")))?
@@ -1930,6 +2571,13 @@ pub fn open_url(url: String) -> Result<(), CommandError> {
 pub fn get_diagnostics(app: tauri::AppHandle, state: State<'_, ManagerState>) -> Diagnostics {
     log::info!("collecting diagnostics");
     crate::app::diagnostics::collect_diagnostics(&app, &state)
+}
+
+/// Lightweight native host architecture for package selection. Unlike full
+/// diagnostics this performs no install, PowerShell, config, or log probes.
+#[tauri::command]
+pub fn get_host_architecture(state: State<'_, ManagerState>) -> String {
+    state.target.arch.as_str().to_string()
 }
 
 #[tauri::command]
@@ -2186,7 +2834,8 @@ pub async fn win_perform_update(
     confirm: bool,
     token: OperationToken,
     install_root: Option<String>,
-    expected: Option<WinPerformExpectation>,
+    expected: WinPerformExpectation,
+    resume_kind: OperationResumeKind,
 ) -> Result<WinPerformReport, CommandError> {
     if !matches!(state.target.os, OperatingSystem::Windows) {
         return Err(AppError::UnsupportedPlatform.into());
@@ -2214,6 +2863,24 @@ pub async fn win_perform_update(
         }
         None => None,
     };
+    if let Some(token) = op.token_clone() {
+        state
+            .operations
+            .set_resume_context(
+                &token,
+                OperationResumeContext {
+                    kind: resume_kind,
+                    install_root: pending_install_root.clone(),
+                    expectation: OperationResumeExpectation::Windows {
+                        current_version: expected.current_version.clone(),
+                        target_version: expected.latest_version.clone(),
+                        package_moniker: expected.package_moniker.clone(),
+                        route: expected.route.clone(),
+                    },
+                },
+            )
+            .map_err(AppError::from)?;
+    }
     let install_mode = windows_install_mode_for_settings();
     let network = win_network_config_for_settings()?;
     let progress_app = app.clone();
@@ -2246,9 +2913,7 @@ pub async fn win_perform_update(
             if let Some(token) = phase_token.as_ref() {
                 let result = match evidence {
                     OperationEvidence::MutationStarted => ops.mark_mutation_started(token),
-                    OperationEvidence::MutationRolledBack => {
-                        ops.mark_mutation_rolled_back(token)
-                    }
+                    OperationEvidence::MutationRolledBack => ops.mark_mutation_rolled_back(token),
                     OperationEvidence::OutcomeAmbiguous => ops.mark_outcome_ambiguous(token),
                 };
                 if let Err(error) = result {
@@ -2261,7 +2926,7 @@ pub async fn win_perform_update(
             &settings,
             confirm,
             &install_mode,
-            expected,
+            Some(expected),
             &report,
             &network,
             Some(&phase_hook),
@@ -2269,7 +2934,15 @@ pub async fn win_perform_update(
         )
     })
     .await
-    .map_err(|e| AppError::Internal(format!("join: {e}")))??;
+    .map_err(|e| AppError::Internal(format!("join: {e}")))?;
+    let report = match report {
+        Ok(report) => report,
+        Err(error) => {
+            op.confirm_pause_if_cancelled(&error);
+            invalidate_retained_pause_if_stale(&state.operations, &error);
+            return Err(error.into());
+        }
+    };
     if let Some(root) = pending_install_root {
         if report.success {
             let mut saved = PersistedAppSettings::load();
@@ -2285,6 +2958,212 @@ pub async fn win_perform_update(
         // never clear it: they're pre-downloads whose whole point is to be reused.
         // Best-effort: the stale sweep reclaims a leftover, so a cleanup failure
         // must not turn a successful install into an error.
+        let _ = crate::app::staging::clear_download_cache();
+    }
+    op.mark_succeeded();
+    Ok(report)
+}
+
+/// Windows-only historical/offline MSIX install. Reuses the verified normal
+/// perform tail, whose Add-AppxPackage path explicitly opts into
+/// ForceUpdateFromAnyVersion for real downgrade support.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn win_install_historical_release(
+    app: tauri::AppHandle,
+    state: State<'_, ManagerState>,
+    confirm: bool,
+    token: OperationToken,
+    release_tag: String,
+    asset_name: String,
+    local_path: Option<String>,
+    architecture: String,
+    block_updates: bool,
+    install_root: Option<String>,
+    expected: HistoricalWinExpectation,
+) -> Result<WinPerformReport, CommandError> {
+    if !matches!(state.target.os, OperatingSystem::Windows) {
+        return Err(AppError::UnsupportedPlatform.into());
+    }
+    if !confirm {
+        return Err(AppError::Internal(
+            "拒绝执行：Windows 历史版本安装必须带显式 confirm".to_string(),
+        )
+        .into());
+    }
+    let architecture = parse_release_architecture(&architecture)?;
+    validate_historical_architecture(&state.target, architecture)?;
+    let mut op = DetachedGuard::validate_tracked(&state, token)?;
+    op.set_phase(OperationPhase::Preparing);
+    // Cover Release resolution as well as the installer itself so an error
+    // before the inner WinAbortGuard is created cannot leak a cancel latch into
+    // the next operation.
+    let _abort_scope = WinAbortGuard::new();
+    let mut settings = windows_domain_settings_for_persisted(&state);
+    // Match the normal fresh-install flow: validate the one-shot destination
+    // before use, but remember it only after the historical install succeeds.
+    let pending_install_root = match install_root {
+        Some(raw) => {
+            let validated =
+                tauri::async_runtime::spawn_blocking(move || validate_install_root_path(&raw))
+                    .await
+                    .map_err(|e| AppError::Internal(format!("join: {e}")))??;
+            settings.install_root = validated.clone();
+            Some(validated)
+        }
+        None => None,
+    };
+    let resume_install_root = pending_install_root.clone();
+    let install_mode = windows_install_mode_for_settings();
+    let local_path = local_path.map(PathBuf::from);
+    let was_local = local_path.is_some();
+    let network = if was_local {
+        codex_win_engine::NetworkConfig::system()
+    } else {
+        win_network_config_for_settings()?
+    };
+    let progress_app = app.clone();
+    let ops = op.operations();
+    let phase_token = op.token_clone();
+    let progress_token = phase_token.clone();
+    let progress_ops = ops.clone();
+    let previous_block_updates = PersistedAppSettings::load().disable_codex_self_updates;
+    let policy_transition =
+        (previous_block_updates != block_updates).then_some(SelfUpdatePolicyTransition {
+            previous_disabled: previous_block_updates,
+            requested_disabled: block_updates,
+        });
+    let policy_attempted = Arc::new(AtomicBool::new(false));
+    let policy_attempted_worker = Arc::clone(&policy_attempted);
+    let policy_install_state =
+        Arc::new(AtomicU8::new(HistoricalPolicyInstallState::PreCommit as u8));
+    let policy_install_state_worker = Arc::clone(&policy_install_state);
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        let fetch = |url: &str| {
+            codex_win_engine::fetch_text_with_network(url, &network)
+                .map_err(|e| AppError::Engine(e.to_string()))
+        };
+        let resolved = if let Some(path) = local_path.as_ref() {
+            let resolved = resolve_windows_local_package(path, architecture)?;
+            if resolved.release_tag != release_tag || resolved.name != asset_name {
+                return Err(AppError::StaleExpectation(
+                    "本地 MSIX 在确认后发生变化，请重新选择并确认".to_string(),
+                ));
+            }
+            resolved
+        } else {
+            let resolved = resolve_release_asset(
+                &release_tag,
+                &asset_name,
+                ReleasePlatform::Windows,
+                architecture,
+                &fetch,
+            )?;
+            verify_release_checksum(&resolved, &fetch)?;
+            resolved
+        };
+        if let Some(token) = phase_token.as_ref() {
+            ops.set_historical_context(
+                token,
+                historical_resume_context(
+                    &resolved,
+                    local_path.as_deref(),
+                    block_updates,
+                    HistoricalResumeExpectation::Windows {
+                        current_path: expected.current_path.clone(),
+                        current_version: expected.current_version.clone(),
+                        current_source: expected.current_source.clone(),
+                    },
+                    resume_install_root.as_deref(),
+                ),
+            )
+            .map_err(AppError::from)?;
+        }
+        let progress = move |p: WinDownloadProgress| {
+            if let Some(token) = progress_token.as_ref() {
+                emit_op_download_progress(
+                    &progress_app,
+                    &progress_ops,
+                    token,
+                    "win://download-progress",
+                    p.downloaded,
+                    p.total,
+                    p.source,
+                );
+            }
+        };
+        let phase_hook = |phase: OperationPhase| {
+            if let Some(token) = phase_token.as_ref() {
+                let _ = ops.set_phase(token, phase);
+            }
+        };
+        let evidence_hook = |evidence: OperationEvidence| {
+            record_windows_policy_install_state(&policy_install_state_worker, evidence);
+            if let Some(token) = phase_token.as_ref() {
+                let result = match evidence {
+                    OperationEvidence::MutationStarted => ops.mark_mutation_started(token),
+                    OperationEvidence::MutationRolledBack => ops.mark_mutation_rolled_back(token),
+                    OperationEvidence::OutcomeAmbiguous => ops.mark_outcome_ambiguous(token),
+                };
+                if let Err(error) = result {
+                    log::error!("failed to record Windows historical install evidence: {error}");
+                }
+            }
+        };
+        let before_commit = || {
+            policy_attempted_worker.store(true, Ordering::SeqCst);
+            persist_historical_self_update_policy(block_updates)
+        };
+        install_windows_historical_release(
+            resolved,
+            local_path,
+            &settings,
+            &install_mode,
+            expected,
+            &progress,
+            &network,
+            Some(&phase_hook),
+            Some(&evidence_hook),
+            policy_transition,
+            Some(&before_commit),
+        )
+    })
+    .await;
+    let report = match report {
+        Ok(report) => report,
+        Err(error) => {
+            // Add-AppxPackage and the portable swap are both external mutation
+            // boundaries. A panicked worker cannot prove that neither landed.
+            HistoricalPolicyInstallState::OutcomeUnknown.store(&policy_install_state);
+            Err(AppError::Internal(format!("join: {error}")))
+        }
+    };
+    let report = match report {
+        Ok(report) => report,
+        Err(error) => {
+            op.confirm_pause_if_cancelled(&error);
+            invalidate_retained_pause_if_stale(&state.operations, &error);
+            let error = if previous_block_updates != block_updates
+                && policy_attempted.load(Ordering::SeqCst)
+                && HistoricalPolicyInstallState::load(&policy_install_state)
+                    .policy_may_be_restored()
+            {
+                rollback_historical_policy_after_failure(previous_block_updates, error)
+            } else {
+                error
+            };
+            return Err(error.into());
+        }
+    };
+    if let Some(root) = pending_install_root {
+        if report.success && report.portable.is_some() {
+            let mut saved = PersistedAppSettings::load();
+            saved.install_root = root;
+            saved.normalize();
+            saved.save()?;
+        }
+    }
+    if report.success && !was_local {
         let _ = crate::app::staging::clear_download_cache();
     }
     op.mark_succeeded();
@@ -2322,11 +3201,22 @@ pub async fn win_uninstall(
 #[cfg(test)]
 mod tests {
     use super::{
-        install_root_from_picked_dir, manager_update_matches_confirmation,
-        normalize_windows_source_base, validate_install_root_path, INSTALL_LOCATION_PROBE_PREFIX,
-        validated_custom_proxy_for_settings,
+        install_root_from_picked_dir, invalidate_retained_pause_if_stale,
+        manager_update_matches_confirmation, normalize_windows_source_base,
+        record_macos_policy_install_state, record_windows_policy_install_state,
+        validate_historical_architecture_with_compatibility, validate_install_root_path,
+        validated_custom_proxy_for_settings, HistoricalPolicyInstallState,
+        INSTALL_LOCATION_PROBE_PREFIX,
     };
+    use crate::app::mac_update::HistoricalMacEvidence;
+    use crate::app::op_phase::OperationPhase;
+    use crate::app::oplock::{OperationKind, OperationManager};
+    use crate::app::release_install::ReleaseArchitecture;
+    use crate::app::win_update::OperationEvidence;
+    use crate::domain::target::{Architecture, OperatingSystem, Target};
+    use crate::errors::AppError;
     use std::fs;
+    use std::sync::atomic::AtomicU8;
 
     fn temp_path(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("{name}-{}", std::process::id()))
@@ -2355,6 +3245,150 @@ mod tests {
             Some("https://example.test/custom")
         );
         assert!(normalize_windows_source_base("   ").is_none());
+    }
+
+    #[test]
+    fn historical_architecture_rejects_unrunnable_host_combinations() {
+        let target = |os, arch| Target {
+            os,
+            arch,
+            label: "test".to_string(),
+        };
+        assert!(validate_historical_architecture_with_compatibility(
+            &target(OperatingSystem::Macos, Architecture::X64),
+            ReleaseArchitecture::X64,
+            false,
+        )
+        .is_ok());
+        assert!(validate_historical_architecture_with_compatibility(
+            &target(OperatingSystem::Macos, Architecture::X64),
+            ReleaseArchitecture::Arm64,
+            true,
+        )
+        .is_err());
+        assert!(validate_historical_architecture_with_compatibility(
+            &target(OperatingSystem::Macos, Architecture::Arm64),
+            ReleaseArchitecture::Arm64,
+            false,
+        )
+        .is_ok());
+        assert!(validate_historical_architecture_with_compatibility(
+            &target(OperatingSystem::Macos, Architecture::Arm64),
+            ReleaseArchitecture::X64,
+            true,
+        )
+        .is_ok());
+        let missing_rosetta = validate_historical_architecture_with_compatibility(
+            &target(OperatingSystem::Macos, Architecture::Arm64),
+            ReleaseArchitecture::X64,
+            false,
+        )
+        .unwrap_err();
+        assert!(missing_rosetta.to_string().contains("Rosetta 2"));
+        assert!(validate_historical_architecture_with_compatibility(
+            &target(OperatingSystem::Windows, Architecture::Arm64),
+            ReleaseArchitecture::X64,
+            true,
+        )
+        .is_ok());
+        let missing_windows_emulation = validate_historical_architecture_with_compatibility(
+            &target(OperatingSystem::Windows, Architecture::Arm64),
+            ReleaseArchitecture::X64,
+            false,
+        )
+        .unwrap_err();
+        assert!(missing_windows_emulation
+            .to_string()
+            .contains("不支持 x64 仿真"));
+        assert!(validate_historical_architecture_with_compatibility(
+            &target(OperatingSystem::Macos, Architecture::Unknown),
+            ReleaseArchitecture::X64,
+            true,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn macos_policy_is_restorable_only_before_mutation_or_after_rollback() {
+        let state = AtomicU8::new(HistoricalPolicyInstallState::PreCommit as u8);
+        assert!(HistoricalPolicyInstallState::load(&state).policy_may_be_restored());
+
+        record_macos_policy_install_state(&state, HistoricalMacEvidence::MutationStarted);
+        assert_eq!(
+            HistoricalPolicyInstallState::load(&state),
+            HistoricalPolicyInstallState::Mutated
+        );
+        assert!(!HistoricalPolicyInstallState::load(&state).policy_may_be_restored());
+
+        record_macos_policy_install_state(&state, HistoricalMacEvidence::MutationRolledBack);
+        assert_eq!(
+            HistoricalPolicyInstallState::load(&state),
+            HistoricalPolicyInstallState::RolledBack
+        );
+        assert!(HistoricalPolicyInstallState::load(&state).policy_may_be_restored());
+    }
+
+    #[test]
+    fn windows_policy_keeps_add_appx_ambiguity_sticky_across_fallback() {
+        let state = AtomicU8::new(HistoricalPolicyInstallState::PreCommit as u8);
+        record_windows_policy_install_state(&state, OperationEvidence::OutcomeAmbiguous);
+        record_windows_policy_install_state(&state, OperationEvidence::MutationStarted);
+        record_windows_policy_install_state(&state, OperationEvidence::MutationRolledBack);
+        assert_eq!(
+            HistoricalPolicyInstallState::load(&state),
+            HistoricalPolicyInstallState::OutcomeUnknown
+        );
+        assert!(!HistoricalPolicyInstallState::load(&state).policy_may_be_restored());
+    }
+
+    #[test]
+    fn windows_policy_is_restorable_after_a_confirmed_portable_rollback() {
+        let state = AtomicU8::new(HistoricalPolicyInstallState::PreCommit as u8);
+        record_windows_policy_install_state(&state, OperationEvidence::MutationStarted);
+        record_windows_policy_install_state(&state, OperationEvidence::MutationRolledBack);
+        assert_eq!(
+            HistoricalPolicyInstallState::load(&state),
+            HistoricalPolicyInstallState::RolledBack
+        );
+        assert!(HistoricalPolicyInstallState::load(&state).policy_may_be_restored());
+    }
+
+    #[test]
+    fn stale_resume_invalidates_the_retained_backend_pause() {
+        let path = temp_path("cam-stale-historical-pause.lock");
+        let _ = fs::remove_file(&path);
+        let manager = OperationManager::new(path.clone());
+
+        let paused = manager.begin_detached(OperationKind::Install).unwrap();
+        manager.validate(&paused).unwrap();
+        manager
+            .set_phase(&paused, OperationPhase::Downloading)
+            .unwrap();
+        manager.set_paused(&paused, true).unwrap();
+        manager.record_completion(&paused, false).unwrap();
+        manager.end(paused).unwrap();
+        assert!(manager.paused_snapshot().is_some());
+
+        // Ordinary transient failures keep the resumable bytes/context.
+        invalidate_retained_pause_if_stale(
+            &manager,
+            &AppError::Engine("network unavailable".to_string()),
+        );
+        assert!(manager.paused_snapshot().is_some());
+
+        // A new resume can fail before emitting progress. Clearing while that
+        // lease is active must survive its failed completion and lease release.
+        let resume = manager.begin_detached(OperationKind::Install).unwrap();
+        manager.validate(&resume).unwrap();
+        invalidate_retained_pause_if_stale(
+            &manager,
+            &AppError::StaleExpectation("install changed".to_string()),
+        );
+        manager.record_completion(&resume, false).unwrap();
+        manager.end(resume).unwrap();
+        assert!(manager.paused_snapshot().is_none());
+
+        let _ = fs::remove_file(path);
     }
 
     #[test]

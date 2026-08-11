@@ -26,18 +26,32 @@ import { WinHome } from "./WinHome";
 vi.mock("../motion", () => ({ useHomeMotion: () => {} }));
 
 vi.mock("../../services/managerApi", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../services/managerApi")>();
+  const actual =
+    await importOriginal<typeof import("../../services/managerApi")>();
   return {
     ...actual,
     managerApi: {
+      beginTrackedOperation: vi.fn(),
       armDestructive: vi.fn(),
       getSettings: vi.fn(),
       setSettings: vi.fn(),
       getOperationSnapshot: vi.fn(() => Promise.resolve(null)),
+      getPausedOperationSnapshot: vi.fn(() => Promise.resolve(null)),
       getOperationCompletion: vi.fn(() => Promise.resolve(null)),
+      historicalReleaseCatalog: vi.fn(
+        (platform: "macos" | "windows", architecture: "arm64" | "x64") =>
+          Promise.resolve({
+            repository: "Wangnov/codex-app-mirror",
+            platform,
+            architecture,
+            releases: [],
+          }),
+      ),
+      historicalPickLocalPackage: vi.fn(),
       winStatus: vi.fn(),
       winPlanUpdate: vi.fn(),
       winPerformUpdate: vi.fn(),
+      winInstallHistoricalRelease: vi.fn(),
       winAdopt: vi.fn(),
       winAdoptPath: vi.fn(),
       winLaunch: vi.fn(),
@@ -111,7 +125,10 @@ function report(overrides: Partial<WinUpdateReport> = {}): WinUpdateReport {
   };
 }
 
-const STATUS_MANAGED: WinInstallStatus = { installed: INSTALLED, status: "managed" };
+const STATUS_MANAGED: WinInstallStatus = {
+  installed: INSTALLED,
+  status: "managed",
+};
 const ACTIVE_OPERATION: OperationSnapshot = {
   id: "op-active",
   kind: "update",
@@ -184,6 +201,7 @@ describe("WinHome state machine", () => {
   beforeEach(() => {
     localStorage.setItem("cam.lang", "zh-CN");
     sessionStorage.clear();
+    api.beginTrackedOperation.mockResolvedValue("win-install-op-1");
     api.armDestructive.mockResolvedValue("win-op-1");
     api.getOperationCompletion.mockResolvedValue(null);
     api.getSettings.mockResolvedValue(settings());
@@ -195,13 +213,28 @@ describe("WinHome state machine", () => {
     api.winCancelDownload.mockResolvedValue(true);
     api.winDiscardDownload.mockResolvedValue(undefined);
     api.getOperationSnapshot.mockResolvedValue(null);
+    api.getPausedOperationSnapshot.mockResolvedValue(null);
+    api.historicalReleaseCatalog.mockImplementation((platform, architecture) =>
+      Promise.resolve({
+        repository: "Wangnov/codex-app-mirror",
+        platform,
+        architecture,
+        releases: [],
+      }),
+    );
+    api.historicalPickLocalPackage.mockResolvedValue(null);
   });
 
   it("offers install when nothing is detected", async () => {
     api.getSettings.mockResolvedValue(settings({ checkOnStartup: false }));
     api.winStatus.mockResolvedValue({ installed: null, status: "none" });
     renderWinHome();
-    expect(await screen.findByRole("button", { name: /安装 Codex/ })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: /安装 Codex/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /选择安装版本/ }),
+    ).toBeInTheDocument();
   });
 
   it("signs the perform expectation from the SAME report snapshot it shows", async () => {
@@ -220,13 +253,376 @@ describe("WinHome state machine", () => {
         },
         undefined,
         "win-op-1",
+        "perform",
+      ),
+    );
+  });
+
+  it("resumes an ordinary first install with its confirmed one-shot root", async () => {
+    api.getPausedOperationSnapshot.mockResolvedValue({
+      id: "ordinary-win-pause",
+      kind: "update",
+      phase: "downloading",
+      progress: {
+        downloaded: 1024,
+        total: 2048,
+        source: "github.com",
+      },
+      paused: true,
+      cancellable: true,
+      interruptible: true,
+      resume: {
+        kind: "install",
+        installRoot: "D:\\Selected\\Codex",
+        expectation: {
+          platform: "windows",
+          currentVersion: null,
+          targetVersion: "1.5.0",
+          packageMoniker: "Codex_1.5.0_x64",
+          route: "portable-fallback",
+        },
+      },
+    });
+    api.armDestructive.mockResolvedValueOnce("resumed-ordinary-win");
+
+    const user = userEvent.setup();
+    renderWinHome();
+    expect(await screen.findByText("下载已暂停")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await waitFor(() =>
+      expect(api.winPerformUpdate).toHaveBeenCalledWith(
+        true,
+        {
+          currentVersion: null,
+          latestVersion: "1.5.0",
+          packageMoniker: "Codex_1.5.0_x64",
+          route: "portable-fallback",
+        },
+        "D:\\Selected\\Codex",
+        "resumed-ordinary-win",
+        "install",
+      ),
+    );
+  });
+
+  it("routes a selected GitHub MSIX through the tracked downgrade installer", async () => {
+    api.historicalReleaseCatalog.mockResolvedValue({
+      repository: "Wangnov/codex-app-mirror",
+      platform: "windows",
+      architecture: "x64",
+      releases: [
+        {
+          tag: "codex-app-0.9.0",
+          version: "0.9.0",
+          publishedAt: "2026-01-01T00:00:00Z",
+          assets: [
+            {
+              name: "OpenAI.Codex_0.9.0.0_x64__2p2nqsd0c76g0.Msix",
+              size: 2048,
+              architecture: "x64",
+              format: "msix",
+              packageVersion: "0.9.0.0",
+            },
+          ],
+        },
+      ],
+    });
+    api.winInstallHistoricalRelease.mockResolvedValue({
+      ...PERFORM_OK,
+      installed: { ...INSTALLED, version: "0.9.0" },
+      stage: {
+        ...PERFORM_OK.stage,
+        latestVersion: "0.9.0",
+        packageMoniker: "OpenAI.Codex_0.9.0.0_x64__2p2nqsd0c76g0",
+      },
+    });
+    const user = userEvent.setup();
+    renderWinHome();
+
+    await user.click(
+      await screen.findByRole("button", { name: /选择安装版本/ }),
+    );
+    await user.click(await screen.findByRole("button", { name: /0\.9\.0/ }));
+    await user.click(screen.getByRole("button", { name: /下载并安装/ }));
+
+    await waitFor(() =>
+      expect(api.winInstallHistoricalRelease).toHaveBeenCalledWith(
+        expect.objectContaining({
+          releaseTag: "codex-app-0.9.0",
+          assetName: "OpenAI.Codex_0.9.0.0_x64__2p2nqsd0c76g0.Msix",
+          format: "msix",
+          packageVersion: "0.9.0.0",
+        }),
+        true,
+        {
+          currentPath: INSTALLED.path,
+          currentVersion: INSTALLED.version,
+          currentSource: INSTALLED.source,
+        },
+        "win-op-1",
+        undefined,
+      ),
+    );
+    expect(api.armDestructive).toHaveBeenCalledWith("update");
+  });
+
+  it("collects a fallback destination and uses an install token for a fresh historical MSIX", async () => {
+    api.getSettings.mockResolvedValue(settings({ checkOnStartup: false }));
+    api.winStatus.mockResolvedValue({ installed: null, status: "none" });
+    api.historicalReleaseCatalog.mockResolvedValue({
+      repository: "Wangnov/codex-app-mirror",
+      platform: "windows",
+      architecture: "x64",
+      releases: [
+        {
+          tag: "codex-app-0.9.0",
+          version: "0.9.0",
+          publishedAt: "2026-01-01T00:00:00Z",
+          assets: [
+            {
+              name: "OpenAI.Codex_0.9.0.0_x64__2p2nqsd0c76g0.Msix",
+              size: 2048,
+              architecture: "x64",
+              format: "msix",
+              packageVersion: "0.9.0.0",
+            },
+          ],
+        },
+      ],
+    });
+    api.winInstallHistoricalRelease.mockResolvedValue({
+      ...PERFORM_OK,
+      installed: { ...INSTALLED, version: "0.9.0" },
+    });
+    const user = userEvent.setup();
+    renderWinHome();
+
+    await user.click(
+      await screen.findByRole("button", { name: /选择安装版本/ }),
+    );
+    await user.click(screen.getByRole("button", { name: "x64" }));
+    await user.click(await screen.findByRole("button", { name: /0\.9\.0/ }));
+    await user.click(screen.getByRole("button", { name: /下载并安装/ }));
+
+    expect(await screen.findByText("选择安装位置")).toBeInTheDocument();
+    expect(api.winInstallHistoricalRelease).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: /安装到默认位置/ }));
+
+    await waitFor(() =>
+      expect(api.beginTrackedOperation).toHaveBeenCalledWith("install"),
+    );
+    expect(api.armDestructive).not.toHaveBeenCalledWith("install");
+    expect(api.winInstallHistoricalRelease).toHaveBeenCalledWith(
+      expect.objectContaining({ releaseTag: "codex-app-0.9.0" }),
+      true,
+      { currentPath: null, currentVersion: null, currentSource: null },
+      "win-install-op-1",
+      DEFAULT_SETTINGS.installRoot,
+    );
+  });
+
+  it("keeps a paused historical install and its original expectation when lease acquisition fails", async () => {
+    const confirmedExpectation = {
+      platform: "windows" as const,
+      currentPath: "D:\\Confirmed\\Codex",
+      currentVersion: "0.8.0",
+      currentSource: "portable",
+    };
+    const selection = {
+      releaseTag: "codex-app-0.9.0",
+      version: "0.9.0",
+      assetName: "OpenAI.Codex_0.9.0.0_x64__2p2nqsd0c76g0.Msix",
+      architecture: "x64" as const,
+      format: "msix" as const,
+      packageVersion: "0.9.0.0",
+      localPath: null,
+      localFileName: null,
+    };
+    api.getPausedOperationSnapshot.mockResolvedValue({
+      id: "historical-win-pause",
+      kind: "update",
+      phase: "downloading",
+      progress: {
+        downloaded: 1024,
+        total: 2048,
+        source: "github.com",
+        operationId: "historical-win-pause",
+      },
+      paused: true,
+      cancellable: true,
+      interruptible: true,
+      historical: {
+        selection,
+        blockUpdates: true,
+        expectation: confirmedExpectation,
+        installRoot: "D:\\Fallback\\Codex",
+      },
+    });
+    api.winStatus.mockResolvedValue(STATUS_MANAGED);
+    let rejectLease: ((cause: unknown) => void) | undefined;
+    api.armDestructive
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectLease = reject;
+          }),
+      )
+      .mockResolvedValueOnce("resumed-historical-win");
+    api.winInstallHistoricalRelease.mockResolvedValue({
+      ...PERFORM_OK,
+      installed: { ...INSTALLED, version: "0.9.0" },
+    });
+
+    const user = userEvent.setup();
+    renderWinHome();
+    expect(await screen.findByText("下载已暂停")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await waitFor(() => expect(rejectLease).toBeDefined());
+    expect(
+      screen.queryByRole("button", { name: "继续" }),
+    ).not.toBeInTheDocument();
+    expect(api.winDiscardDownload).not.toHaveBeenCalled();
+    await act(async () => {
+      rejectLease?.(new Error("another operation owns the lease"));
+      await Promise.resolve();
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent("操作未完成");
+    expect(screen.getByText("下载已暂停")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "继续" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    await waitFor(() =>
+      expect(api.winInstallHistoricalRelease).toHaveBeenCalledWith(
+        selection,
+        true,
+        {
+          currentPath: confirmedExpectation.currentPath,
+          currentVersion: confirmedExpectation.currentVersion,
+          currentSource: confirmedExpectation.currentSource,
+        },
+        "resumed-historical-win",
+        "D:\\Fallback\\Codex",
+      ),
+    );
+  });
+
+  it("asks for a destination before a fresh portable historical install", async () => {
+    api.getSettings.mockResolvedValue(
+      settings({ checkOnStartup: false, windowsInstallMode: "portable" }),
+    );
+    api.winStatus.mockResolvedValue({ installed: null, status: "none" });
+    api.historicalReleaseCatalog.mockResolvedValue({
+      repository: "Wangnov/codex-app-mirror",
+      platform: "windows",
+      architecture: "x64",
+      releases: [
+        {
+          tag: "codex-app-0.9.0",
+          version: "0.9.0",
+          publishedAt: "2026-01-01T00:00:00Z",
+          assets: [
+            {
+              name: "OpenAI.Codex_0.9.0.0_x64__2p2nqsd0c76g0.Msix",
+              size: 2048,
+              architecture: "x64",
+              format: "msix",
+              packageVersion: "0.9.0.0",
+            },
+          ],
+        },
+      ],
+    });
+    api.winInstallHistoricalRelease.mockResolvedValue({
+      ...PERFORM_OK,
+      installed: { ...INSTALLED, version: "0.9.0" },
+    });
+    const user = userEvent.setup();
+    renderWinHome();
+
+    await user.click(
+      await screen.findByRole("button", { name: /选择安装版本/ }),
+    );
+    await user.click(screen.getByRole("button", { name: "x64" }));
+    await user.click(await screen.findByRole("button", { name: /0\.9\.0/ }));
+    await user.click(screen.getByRole("button", { name: /下载并安装/ }));
+
+    expect(await screen.findByText("选择安装位置")).toBeInTheDocument();
+    expect(api.winInstallHistoricalRelease).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: /安装到默认位置/ }));
+    await waitFor(() =>
+      expect(api.winInstallHistoricalRelease).toHaveBeenCalledWith(
+        expect.objectContaining({ releaseTag: "codex-app-0.9.0" }),
+        true,
+        { currentPath: null, currentVersion: null, currentSource: null },
+        "win-install-op-1",
+        DEFAULT_SETTINGS.installRoot,
+      ),
+    );
+  });
+
+  it("installs a local MSIX without consulting the failed online plan again", async () => {
+    api.winStatus.mockResolvedValue({ installed: null, status: "none" });
+    api.winPlanUpdate.mockRejectedValue(new Error("manifest unreachable"));
+    api.historicalReleaseCatalog.mockRejectedValue(
+      new Error("github unreachable"),
+    );
+    const assetName = "OpenAI.Codex_26.727.6591.0_x64__2p2nqsd0c76g0.Msix";
+    api.historicalPickLocalPackage.mockResolvedValue({
+      path: `C:\\Downloads\\${assetName}`,
+      fileName: assetName,
+      size: 755_000_000,
+      releaseTag: "local-signed-26.727.51351",
+      version: "26.727.51351",
+      assetName,
+      architecture: "x64",
+      format: "msix",
+      packageVersion: "26.727.6591.0",
+    });
+    api.winInstallHistoricalRelease.mockResolvedValue({
+      ...PERFORM_OK,
+      installed: { ...INSTALLED, version: "26.727.51351" },
+    });
+    const user = userEvent.setup();
+    renderWinHome();
+
+    expect(await screen.findByText("检查失败")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /选择安装版本/ }));
+    await user.click(screen.getByRole("button", { name: "x64" }));
+    expect(
+      await screen.findByRole("button", { name: /从本地安装包安装/ }),
+    ).toBeEnabled();
+    expect(api.winPlanUpdate).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: /从本地安装包安装/ }));
+    await user.click(await screen.findByRole("button", { name: /验证并安装/ }));
+
+    expect(await screen.findByText("选择安装位置")).toBeInTheDocument();
+    expect(api.winPlanUpdate).toHaveBeenCalledTimes(1);
+    expect(api.winInstallHistoricalRelease).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: /安装到默认位置/ }));
+    await waitFor(() =>
+      expect(api.winInstallHistoricalRelease).toHaveBeenCalledWith(
+        expect.objectContaining({
+          releaseTag: "local-signed-26.727.51351",
+          localPath: `C:\\Downloads\\${assetName}`,
+        }),
+        true,
+        { currentPath: null, currentVersion: null, currentSource: null },
+        "win-install-op-1",
+        DEFAULT_SETTINGS.installRoot,
       ),
     );
   });
 
   it("settles on up-to-date", async () => {
     api.winPlanUpdate.mockResolvedValue(
-      report({ plan: { ...PLAN_UPDATE, upToDate: true, latestVersion: "1.0.0" } }),
+      report({
+        plan: { ...PLAN_UPDATE, upToDate: true, latestVersion: "1.0.0" },
+      }),
     );
     renderWinHome();
     expect(
@@ -236,11 +632,18 @@ describe("WinHome state machine", () => {
 
   it("gates an external install behind adopt", async () => {
     api.getSettings.mockResolvedValue(settings({ checkOnStartup: false }));
-    api.winStatus.mockResolvedValue({ installed: INSTALLED, status: "external" });
+    api.winStatus.mockResolvedValue({
+      installed: INSTALLED,
+      status: "external",
+    });
     api.winAdopt.mockResolvedValue(STATUS_MANAGED);
     const user = userEvent.setup();
     renderWinHome();
-    await user.click(await screen.findByRole("button", { name: /开始管理/ }));
+    const adopt = await screen.findByRole("button", { name: /开始管理/ });
+    expect(
+      screen.queryByRole("button", { name: /选择安装版本/ }),
+    ).not.toBeInTheDocument();
+    await user.click(adopt);
     await waitFor(() => expect(api.winAdopt).toHaveBeenCalledTimes(1));
   });
 
@@ -252,7 +655,9 @@ describe("WinHome state machine", () => {
     api.winPlanUpdate
       .mockResolvedValueOnce(report({ installed: null }))
       .mockResolvedValue(
-        report({ plan: { ...PLAN_UPDATE, upToDate: true, latestVersion: "1.0.0" } }),
+        report({
+          plan: { ...PLAN_UPDATE, upToDate: true, latestVersion: "1.0.0" },
+        }),
       );
     api.winPerformUpdate.mockResolvedValue({
       ...PERFORM_OK,
@@ -270,14 +675,24 @@ describe("WinHome state machine", () => {
     renderWinHome();
     await user.click(await screen.findByRole("button", { name: /安装 Codex/ }));
 
-    expect(await screen.findByText(/请点「开始管理」，勿重复安装/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "开始管理" })).toBeInTheDocument();
-    expect(screen.getByText("已安装 Codex", { selector: ".rb-title" })).toBeInTheDocument();
     expect(
-      screen.queryByText("installed; managed record failed", { selector: ".rb-detail" }),
+      await screen.findByText(/请点「开始管理」，勿重复安装/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "开始管理" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("已安装 Codex", { selector: ".rb-title" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("installed; managed record failed", {
+        selector: ".rb-detail",
+      }),
     ).not.toBeInTheDocument();
     const diagnostics = screen
-      .getByText("installed; managed record failed", { selector: ".errdetails" })
+      .getByText("installed; managed record failed", {
+        selector: ".errdetails",
+      })
       .closest("details");
     expect(diagnostics).not.toHaveAttribute("open");
   });
@@ -288,11 +703,13 @@ describe("WinHome state machine", () => {
     api.winStatus
       .mockResolvedValueOnce({ installed: null, status: "none" })
       .mockResolvedValue({ installed: INSTALLED, status: "external" });
-    api.winPlanUpdate.mockResolvedValueOnce(report({ installed: null })).mockResolvedValue(
-      report({
-        plan: { ...PLAN_UPDATE, upToDate: true, latestVersion: "1.0.0" },
-      }),
-    );
+    api.winPlanUpdate
+      .mockResolvedValueOnce(report({ installed: null }))
+      .mockResolvedValue(
+        report({
+          plan: { ...PLAN_UPDATE, upToDate: true, latestVersion: "1.0.0" },
+        }),
+      );
     api.winPerformUpdate.mockResolvedValue({
       ...PERFORM_OK,
       message: "installed; managed record failed",
@@ -307,14 +724,22 @@ describe("WinHome state machine", () => {
 
     const user = userEvent.setup();
     renderWinHome();
-    await user.click(await screen.findByRole("button", { name: /Installer Codex/ }));
+    await user.click(
+      await screen.findByRole("button", { name: /Installer Codex/ }),
+    );
 
-    expect(screen.getByText("Codex installé", { selector: ".rb-title" })).toBeInTheDocument();
     expect(
-      screen.queryByText("installed; managed record failed", { selector: ".rb-detail" }),
+      screen.getByText("Codex installé", { selector: ".rb-title" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("installed; managed record failed", {
+        selector: ".rb-detail",
+      }),
     ).not.toBeInTheDocument();
     const diagnostics = screen
-      .getByText("installed; managed record failed", { selector: ".errdetails" })
+      .getByText("installed; managed record failed", {
+        selector: ".errdetails",
+      })
       .closest("details");
     expect(diagnostics).not.toHaveAttribute("open");
   });
@@ -324,11 +749,11 @@ describe("WinHome state machine", () => {
     api.winStatus
       .mockResolvedValueOnce(STATUS_MANAGED)
       .mockResolvedValue({ installed: INSTALLED, status: "external" });
-    api.winPlanUpdate
-      .mockResolvedValueOnce(report())
-      .mockResolvedValue(
-        report({ plan: { ...PLAN_UPDATE, upToDate: true, latestVersion: "2.0.0" } }),
-      );
+    api.winPlanUpdate.mockResolvedValueOnce(report()).mockResolvedValue(
+      report({
+        plan: { ...PLAN_UPDATE, upToDate: true, latestVersion: "2.0.0" },
+      }),
+    );
     api.winPerformUpdate.mockResolvedValue({
       ...PERFORM_OK,
       message: "updated; managed record failed",
@@ -345,8 +770,12 @@ describe("WinHome state machine", () => {
     renderWinHome();
     await user.click(await screen.findByRole("button", { name: /立即更新/ }));
 
-    expect(await screen.findByText(/请点「开始管理」，勿重复安装/)).toBeInTheDocument();
-    expect(sessionStorage.getItem("cam.win.provenance-recovery")).toContain("win-op-1");
+    expect(
+      await screen.findByText(/请点「开始管理」，勿重复安装/),
+    ).toBeInTheDocument();
+    expect(sessionStorage.getItem("cam.win.provenance-recovery")).toContain(
+      "win-op-1",
+    );
   });
 
   it("requires re-detection instead of offering reinstall when a partial install is not found", async () => {
@@ -359,7 +788,9 @@ describe("WinHome state machine", () => {
       .mockResolvedValueOnce(report({ installed: null }))
       .mockResolvedValueOnce(report({ installed: null }))
       .mockResolvedValue(
-        report({ plan: { ...PLAN_UPDATE, upToDate: true, latestVersion: "1.0.0" } }),
+        report({
+          plan: { ...PLAN_UPDATE, upToDate: true, latestVersion: "1.0.0" },
+        }),
       );
     api.winPerformUpdate.mockResolvedValue({
       ...PERFORM_OK,
@@ -378,21 +809,29 @@ describe("WinHome state machine", () => {
     renderWinHome();
     await user.click(await screen.findByRole("button", { name: /安装 Codex/ }));
 
-    expect(await screen.findByText(/暂时无法确认 Codex 是否已写入磁盘/)).toHaveTextContent(
-      "请点「重新检查」重新检测；确认前请勿重复安装",
-    );
-    expect(screen.queryByRole("button", { name: /安装 Codex/ })).not.toBeInTheDocument();
+    expect(
+      await screen.findByText(/暂时无法确认 Codex 是否已写入磁盘/),
+    ).toHaveTextContent("请点「重新检查」重新检测；确认前请勿重复安装");
+    expect(
+      screen.queryByRole("button", { name: /安装 Codex/ }),
+    ).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "重新检查" }));
 
-    expect(await screen.findByText(/请点「开始管理」，勿重复安装/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "开始管理" })).toBeInTheDocument();
+    expect(
+      await screen.findByText(/请点「开始管理」，勿重复安装/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "开始管理" }),
+    ).toBeInTheDocument();
   });
 
   it("keeps the partial-install recovery lock across a renderer reload", async () => {
     api.getSettings.mockResolvedValue(settings({ checkOnStartup: false }));
     api.winStatus.mockResolvedValue({ installed: null, status: "none" });
     api.winPlanUpdate.mockResolvedValue(report({ installed: null }));
-    api.winPerformUpdate.mockReturnValue(new Promise<WinPerformReport>(() => {}));
+    api.winPerformUpdate.mockReturnValue(
+      new Promise<WinPerformReport>(() => {}),
+    );
 
     const user = userEvent.setup();
     const firstRenderer = renderWinHome();
@@ -402,9 +841,18 @@ describe("WinHome state machine", () => {
     firstRenderer.unmount();
     renderWinHome();
 
-    expect(await screen.findByText(/暂时无法确认 Codex 是否已写入磁盘/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "重新检查" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /安装 Codex/ })).not.toBeInTheDocument();
+    expect(
+      await screen.findByText(/暂时无法确认 Codex 是否已写入磁盘/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "重新检查" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /安装 Codex/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /选择安装版本/ }),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps reinstall blocked when invoke rejects after commit with an unknown outcome", async () => {
@@ -426,9 +874,15 @@ describe("WinHome state machine", () => {
     renderWinHome();
     await user.click(await screen.findByRole("button", { name: /安装 Codex/ }));
 
-    expect(await screen.findByText(/暂时无法确认 Codex 是否已写入磁盘/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /安装 Codex/ })).not.toBeInTheDocument();
-    expect(sessionStorage.getItem("cam.win.provenance-recovery")).toContain("win-op-1");
+    expect(
+      await screen.findByText(/暂时无法确认 Codex 是否已写入磁盘/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /安装 Codex/ }),
+    ).not.toBeInTheDocument();
+    expect(sessionStorage.getItem("cam.win.provenance-recovery")).toContain(
+      "win-op-1",
+    );
   });
 
   it("releases the guard after a backend-proven pre-commit failure and allows retry", async () => {
@@ -442,7 +896,10 @@ describe("WinHome state machine", () => {
       state: "failed-before-commit",
     });
     api.winPerformUpdate
-      .mockRejectedValueOnce({ code: "network_error", message: "download failed" })
+      .mockRejectedValueOnce({
+        code: "network_error",
+        message: "download failed",
+      })
       .mockResolvedValueOnce(PERFORM_OK);
 
     const user = userEvent.setup();
@@ -531,7 +988,9 @@ describe("WinHome state machine", () => {
     );
 
     renderWinHome();
-    await waitFor(() => expect(api.getOperationCompletion).toHaveBeenCalledWith("old-op"));
+    await waitFor(() =>
+      expect(api.getOperationCompletion).toHaveBeenCalledWith("old-op"),
+    );
 
     sessionStorage.setItem(
       "cam.win.provenance-recovery",
@@ -550,23 +1009,33 @@ describe("WinHome state machine", () => {
     // Clearing old-op adopts the replacement marker into React state. Keep its
     // reconciliation pending while the old status probe and old finally settle:
     // neither is allowed to release the newer generation's busy state.
-    await waitFor(() => expect(api.getOperationCompletion).toHaveBeenCalledWith("new-op"));
+    await waitFor(() =>
+      expect(api.getOperationCompletion).toHaveBeenCalledWith("new-op"),
+    );
     await act(async () => {
       oldStatusProbe.resolve({ installed: null, status: "none" });
       await oldStatusProbe.promise;
     });
 
     await waitFor(() =>
-      expect(sessionStorage.getItem("cam.win.provenance-recovery")).toContain("new-op"),
+      expect(sessionStorage.getItem("cam.win.provenance-recovery")).toContain(
+        "new-op",
+      ),
     );
-    expect(screen.getByText("正在检查…", { selector: ".headline" })).toBeInTheDocument();
+    expect(
+      screen.getByText("正在检查…", { selector: ".headline" }),
+    ).toBeInTheDocument();
 
     await act(async () => {
       newCompletion.resolve(null);
       await newCompletion.promise;
     });
-    expect(await screen.findByText(/暂时无法确认 Codex 是否已写入磁盘/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /安装 Codex/ })).not.toBeInTheDocument();
+    expect(
+      await screen.findByText(/暂时无法确认 Codex 是否已写入磁盘/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /安装 Codex/ }),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps recovery busy until both status and plan probes settle", async () => {
@@ -590,18 +1059,25 @@ describe("WinHome state machine", () => {
     const user = userEvent.setup();
     renderWinHome();
     await user.click(await screen.findByRole("button", { name: /安装 Codex/ }));
-    await waitFor(() => expect(api.winPlanUpdate).toHaveBeenCalledTimes(2));
+    // Target freezing adds one plan read before the existing recovery probes.
+    await waitFor(() => expect(api.winPlanUpdate).toHaveBeenCalledTimes(3));
 
     // The plan probe has completed, but the status probe still owns this
     // recovery generation. Reinstall must remain unavailable.
-    expect(screen.queryByRole("button", { name: /安装 Codex/ })).not.toBeInTheDocument();
-    expect(sessionStorage.getItem("cam.win.provenance-recovery")).toContain("win-op-1");
+    expect(
+      screen.queryByRole("button", { name: /安装 Codex/ }),
+    ).not.toBeInTheDocument();
+    expect(sessionStorage.getItem("cam.win.provenance-recovery")).toContain(
+      "win-op-1",
+    );
 
     await act(async () => {
       statusProbe.resolve({ installed: null, status: "none" });
       await statusProbe.promise;
     });
-    expect(await screen.findByRole("button", { name: "重新检查" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "重新检查" }),
+    ).toBeInTheDocument();
   });
 
   it("does not let an old perform finally release a newer recovery generation", async () => {
@@ -614,7 +1090,10 @@ describe("WinHome state machine", () => {
       .mockReturnValueOnce(oldStatusProbe.promise)
       .mockResolvedValue({ installed: null, status: "none" });
     api.winPlanUpdate.mockResolvedValue(report({ installed: null }));
-    api.winPerformUpdate.mockRejectedValue({ code: "network_error", message: "late failure" });
+    api.winPerformUpdate.mockRejectedValue({
+      code: "network_error",
+      message: "late failure",
+    });
     api.getOperationCompletion.mockImplementation((token) =>
       token === "win-op-1" ? oldCompletion.promise : newCompletion.promise,
     );
@@ -622,7 +1101,9 @@ describe("WinHome state machine", () => {
     const user = userEvent.setup();
     renderWinHome();
     await user.click(await screen.findByRole("button", { name: /安装 Codex/ }));
-    await waitFor(() => expect(api.getOperationCompletion).toHaveBeenCalledWith("win-op-1"));
+    await waitFor(() =>
+      expect(api.getOperationCompletion).toHaveBeenCalledWith("win-op-1"),
+    );
 
     sessionStorage.setItem(
       "cam.win.provenance-recovery",
@@ -637,7 +1118,9 @@ describe("WinHome state machine", () => {
       });
       await oldCompletion.promise;
     });
-    await waitFor(() => expect(api.getOperationCompletion).toHaveBeenCalledWith("new-op"));
+    await waitFor(() =>
+      expect(api.getOperationCompletion).toHaveBeenCalledWith("new-op"),
+    );
 
     await act(async () => {
       oldStatusProbe.resolve({ installed: null, status: "none" });
@@ -645,25 +1128,34 @@ describe("WinHome state machine", () => {
     });
     // The old run has now unwound through its finally. Its generation no longer
     // owns busy/resetStop, so the newer reconciliation remains visibly active.
-    expect(screen.getByText("正在检查…", { selector: ".headline" })).toBeInTheDocument();
-    expect(sessionStorage.getItem("cam.win.provenance-recovery")).toContain("new-op");
+    expect(
+      screen.getByText("正在检查…", { selector: ".headline" }),
+    ).toBeInTheDocument();
+    expect(sessionStorage.getItem("cam.win.provenance-recovery")).toContain(
+      "new-op",
+    );
 
     await act(async () => {
       newCompletion.resolve(null);
       await newCompletion.promise;
     });
-    expect(await screen.findByRole("button", { name: "重新检查" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "重新检查" }),
+    ).toBeInTheDocument();
   });
 
   it("treats a stale expectation as a notice and re-checks", async () => {
     const user = userEvent.setup();
     api.getSettings.mockResolvedValue(settings({ askBefore: false }));
-    api.winPerformUpdate.mockRejectedValue({ code: "stale_expectation", message: "stale" });
-    api.winPlanUpdate
-      .mockResolvedValueOnce(report())
-      .mockResolvedValue(
-        report({ plan: { ...PLAN_UPDATE, upToDate: true, latestVersion: "1.0.0" } }),
-      );
+    api.winPerformUpdate.mockRejectedValue({
+      code: "stale_expectation",
+      message: "stale",
+    });
+    api.winPlanUpdate.mockResolvedValueOnce(report()).mockResolvedValue(
+      report({
+        plan: { ...PLAN_UPDATE, upToDate: true, latestVersion: "1.0.0" },
+      }),
+    );
     renderWinHome();
     await user.click(await screen.findByRole("button", { name: /立即更新/ }));
     expect(await screen.findByText(/安装状态已变化/)).toBeInTheDocument();
@@ -678,10 +1170,14 @@ describe("WinHome state machine", () => {
     api.winPlanUpdate.mockResolvedValue(
       report({ capabilities: { ...CAPS_OK, appInstaller: unknown } }),
     );
-    api.setSettings.mockImplementation((next: AppSettings) => Promise.resolve(next));
+    api.setSettings.mockImplementation((next: AppSettings) =>
+      Promise.resolve(next),
+    );
     renderWinHome();
 
-    const switchBtn = await screen.findByRole("button", { name: /改用免安装版/ });
+    const switchBtn = await screen.findByRole("button", {
+      name: /改用免安装版/,
+    });
     await user.click(switchBtn);
     await waitFor(() =>
       expect(api.setSettings).toHaveBeenCalledWith(
@@ -689,7 +1185,9 @@ describe("WinHome state machine", () => {
       ),
     );
     // Switching re-plans so the route (and the banner) can settle.
-    await waitFor(() => expect(api.winPlanUpdate.mock.calls.length).toBeGreaterThanOrEqual(2));
+    await waitFor(() =>
+      expect(api.winPlanUpdate.mock.calls.length).toBeGreaterThanOrEqual(2),
+    );
   });
 
   it("closes the install-dir sheet when a focus re-check finds the install drifted", async () => {
@@ -702,10 +1200,15 @@ describe("WinHome state machine", () => {
     });
     // Portable fresh-install: no install yet, so clicking install opens the
     // install-dir sheet instead of running straight away.
-    api.getSettings.mockResolvedValue(settings({ windowsInstallMode: "portable" }));
+    api.getSettings.mockResolvedValue(
+      settings({ windowsInstallMode: "portable" }),
+    );
     api.winStatus.mockResolvedValue({ installed: null, status: "none" });
     api.winPlanUpdate.mockResolvedValue(
-      report({ installed: null, plan: { ...PLAN_UPDATE, route: "portable-fallback" } }),
+      report({
+        installed: null,
+        plan: { ...PLAN_UPDATE, route: "portable-fallback" },
+      }),
     );
     renderWinHome();
 
@@ -725,7 +1228,42 @@ describe("WinHome state machine", () => {
     // The stale install-dir sheet must be gone — otherwise its 使用当前位置 /
     // 浏览 buttons could still run install against the vanished snapshot,
     // bypassing the external→adopt boundary.
-    await waitFor(() => expect(screen.queryByText("选择安装位置")).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByText("选择安装位置")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("closes the version picker when a focus re-check finds the install drifted", async () => {
+    const user = userEvent.setup();
+    let onFocus: (() => void) | undefined;
+    vi.mocked(listen).mockImplementation((event: string, cb: unknown) => {
+      if (event === "tauri://focus") onFocus = cb as () => void;
+      return Promise.resolve(() => {});
+    });
+    renderWinHome();
+
+    await user.click(
+      await screen.findByRole("button", { name: /选择安装版本/ }),
+    );
+    expect(
+      await screen.findByRole("dialog", { name: "选择安装版本" }),
+    ).toBeInTheDocument();
+
+    api.winStatus.mockResolvedValue({
+      installed: INSTALLED,
+      status: "external",
+    });
+    await waitFor(() => expect(onFocus).toBeDefined());
+    await act(async () => {
+      onFocus?.();
+      await Promise.resolve();
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: "选择安装版本" }),
+      ).not.toBeInTheDocument(),
+    );
   });
 
   it.each([
@@ -738,15 +1276,20 @@ describe("WinHome state machine", () => {
     async ({ intent, outcome }) => {
       const user = userEvent.setup();
       api.getSettings.mockResolvedValue(settings({ askBefore: false }));
-      api.winPerformUpdate.mockImplementationOnce(() => new Promise<WinPerformReport>(() => {}));
+      api.winPerformUpdate.mockImplementationOnce(
+        () => new Promise<WinPerformReport>(() => {}),
+      );
 
-      let onProgress: ((event: { payload: DownloadProgress }) => void) | undefined;
+      let onProgress:
+        ((event: { payload: DownloadProgress }) => void) | undefined;
       listenMock.mockImplementation((event: string, cb: unknown) => {
-        if (event === "win://download-progress") onProgress = cb as typeof onProgress;
+        if (event === "win://download-progress")
+          onProgress = cb as typeof onProgress;
         return Promise.resolve(() => {});
       });
 
-      const stop = intent === "pause" ? api.winPauseDownload : api.winCancelDownload;
+      const stop =
+        intent === "pause" ? api.winPauseDownload : api.winCancelDownload;
       if (outcome === "false") {
         stop.mockResolvedValue(false);
       } else {
@@ -789,13 +1332,18 @@ describe("WinHome state machine", () => {
     api.winDiscardDownload.mockRejectedValueOnce(new Error("cache locked"));
 
     let rejectPerform: ((cause: unknown) => void) | undefined;
-    let onProgress: ((event: { payload: DownloadProgress }) => void) | undefined;
+    let onProgress:
+      ((event: { payload: DownloadProgress }) => void) | undefined;
     listenMock.mockImplementation((event: string, cb: unknown) => {
-      if (event === "win://download-progress") onProgress = cb as typeof onProgress;
+      if (event === "win://download-progress")
+        onProgress = cb as typeof onProgress;
       return Promise.resolve(() => {});
     });
     api.winPerformUpdate.mockImplementationOnce(
-      () => new Promise<WinPerformReport>((_resolve, reject) => (rejectPerform = reject)),
+      () =>
+        new Promise<WinPerformReport>(
+          (_resolve, reject) => (rejectPerform = reject),
+        ),
     );
 
     renderWinHome();
@@ -803,7 +1351,12 @@ describe("WinHome state machine", () => {
     await waitFor(() => expect(onProgress).toBeDefined());
     act(() =>
       onProgress?.({
-        payload: { downloaded: 10, total: 100, source: "s", operationId: "op-active" },
+        payload: {
+          downloaded: 10,
+          total: 100,
+          source: "s",
+          operationId: "op-active",
+        },
       }),
     );
     await user.click(await screen.findByRole("button", { name: /^暂停$/ }));
@@ -819,7 +1372,9 @@ describe("WinHome state machine", () => {
     expect(screen.getByRole("button", { name: "取消" })).toBeEnabled();
 
     await user.click(screen.getByRole("button", { name: "取消" }));
-    await waitFor(() => expect(api.winDiscardDownload).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(api.winDiscardDownload).toHaveBeenCalledTimes(2),
+    );
     expect(await screen.findByText("下载已取消。")).toBeInTheDocument();
   });
 });

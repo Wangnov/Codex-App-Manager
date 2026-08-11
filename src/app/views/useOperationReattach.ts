@@ -1,7 +1,11 @@
 import { useEffect, useRef } from "react";
 
 import { managerApi } from "../../services/managerApi";
-import type { DownloadProgress, OperationKind, OperationSnapshot } from "../../shared/types";
+import type {
+  DownloadProgress,
+  OperationKind,
+  OperationSnapshot,
+} from "../../shared/types";
 import type { PausedDownload } from "./ProgressScreen";
 import type { StartDlListenOptions } from "./useDownloadProgress";
 
@@ -26,7 +30,9 @@ function pausedKind(kind: OperationKind): PausedDownload["kind"] | null {
  */
 export function useOperationReattach(opts: {
   startDlListen: (options?: StartDlListenOptions) => Promise<() => void>;
-  applySnapshotProgress: (progress: DownloadProgress | null | undefined) => void;
+  applySnapshotProgress: (
+    progress: DownloadProgress | null | undefined,
+  ) => void;
   resetStop: () => void;
   setBusy: (busy: ReattachBusy | null) => void;
   setPaused: (paused: PausedDownload | null) => void;
@@ -68,6 +74,7 @@ export function useOperationReattach(opts: {
     let unlisten: (() => void) | null = null;
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
     let attachedId: string | null = null;
+    let lastPaused: PausedDownload | null = null;
 
     const clearPoll = () => {
       if (pollTimer != null) {
@@ -85,24 +92,57 @@ export function useOperationReattach(opts: {
       attachedId = null;
       resetStopRef.current();
       setBusyRef.current(null);
-      setPausedRef.current(null);
+      // A pause terminates the native transfer/lease by design, but its cached
+      // partial remains resumable. Preserve the last backend snapshot after the
+      // lease disappears; clearing it here would either lose resume entirely or
+      // make a host fall back to its ordinary latest-version flow.
+      if (!lastPaused) setPausedRef.current(null);
       onOperationEndedRef.current();
     };
 
     const applySnap = (snap: OperationSnapshot) => {
-      const busy = busyFromKind(snap.kind);
+      const busy = snap.resume?.kind ?? busyFromKind(snap.kind);
       if (!busy) return false;
       setBusyRef.current(busy);
       applySnapshotProgressRef.current(snap.progress ?? null);
       if (snap.paused) {
-        const kind = pausedKind(snap.kind);
+        const kind = snap.resume?.kind ?? pausedKind(snap.kind);
         if (kind) {
-          setPausedRef.current({ kind, dl: snap.progress ?? null });
+          const paused: PausedDownload = { kind, dl: snap.progress ?? null };
+          if (snap.historical) paused.historical = snap.historical;
+          if (snap.resume) paused.resume = snap.resume;
+          if (snap.resume?.installRoot) {
+            paused.installRoot = snap.resume.installRoot;
+          }
+          lastPaused = paused;
+          setPausedRef.current(paused);
         }
       } else {
+        lastPaused = null;
         setPausedRef.current(null);
       }
       return true;
+    };
+
+    const terminalPause = async (expectedId?: string) => {
+      const snap = await Promise.resolve()
+        .then(() => managerApi.getPausedOperationSnapshot())
+        .catch(() => null);
+      if (!snap?.paused) return null;
+      if (!expectedId || snap.id === expectedId) return snap;
+
+      // A resumed historical download gets a fresh operation id while the
+      // backend deliberately retains the original pause id until a terminal
+      // outcome is known. Only reconnect that older target when the fresh
+      // attempt is proven safe to retry.
+      const completion = await Promise.resolve()
+        .then(() => managerApi.getOperationCompletion(expectedId))
+        .catch(() => null);
+      if (completion?.id !== expectedId) return null;
+      return completion.state === "failed-before-commit" ||
+        completion.state === "rolled-back"
+        ? snap
+        : null;
     };
 
     const poll = () => {
@@ -114,7 +154,17 @@ export function useOperationReattach(opts: {
             .then(() => managerApi.getOperationSnapshot())
             .catch(() => null);
           if (cancelled) return;
-          if (!next || next.id !== attachedId) {
+          if (!next) {
+            // Pause aborts the native transfer and releases its lease. The
+            // 800ms poll can therefore miss the active `paused=true` window;
+            // recover the backend-retained terminal snapshot before finishing.
+            const paused = await terminalPause(attachedId);
+            if (cancelled) return;
+            if (paused) applySnap(paused);
+            finish();
+            return;
+          }
+          if (next.id !== attachedId) {
             finish();
             return;
           }
@@ -131,7 +181,13 @@ export function useOperationReattach(opts: {
       const snap = await Promise.resolve()
         .then(() => managerApi.getOperationSnapshot())
         .catch(() => null);
-      if (cancelled || !snap) return;
+      if (cancelled) return;
+      if (!snap) {
+        const paused = await terminalPause();
+        if (cancelled || !paused || isLocallyBusyRef.current()) return;
+        if (applySnap(paused)) finish();
+        return;
+      }
       if (isLocallyBusyRef.current()) return;
 
       const busy = busyFromKind(snap.kind);

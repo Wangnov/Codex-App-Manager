@@ -161,8 +161,7 @@ pub fn remove_directory_all_with_retry(operation: &str, path: &Path) -> io::Resu
 }
 
 fn rename_portable_dir(operation: &str, from: &Path, to: &Path) -> Result<(), EngineError> {
-    rename_directory_with_retry(operation, from, to)
-        .map_err(|err| io_err(operation, err))
+    rename_directory_with_retry(operation, from, to).map_err(|err| io_err(operation, err))
 }
 
 fn copy_dir_all(from: &Path, to: &Path) -> Result<(), EngineError> {
@@ -322,9 +321,9 @@ fn prepare_portable_payload(
     let manifest_xml = extract_msix(msix_path, &extracted)?;
     let identity = parse_appx_manifest_xml(&manifest_xml)?;
     let exe = find_app_exe(&extracted, &manifest_xml)?;
-    let exe_dir = exe
-        .parent()
-        .ok_or_else(|| EngineError::Msix("app entry executable had no parent directory".to_string()))?;
+    let exe_dir = exe.parent().ok_or_else(|| {
+        EngineError::Msix("app entry executable had no parent directory".to_string())
+    })?;
 
     copy_dir_all(exe_dir, &payload)?;
     fs::write(payload.join("AppxManifest.xml"), manifest_xml)
@@ -364,10 +363,7 @@ fn run_powershell(script: &str) -> Result<String, EngineError> {
 }
 
 #[cfg(windows)]
-fn run_powershell_with_limits(
-    script: &str,
-    limits: RunLimits,
-) -> Result<String, EngineError> {
+fn run_powershell_with_limits(script: &str, limits: RunLimits) -> Result<String, EngineError> {
     let mut command = hidden_command(powershell_exe());
     command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
     let output = run_capturing(command, limits, None)
@@ -578,6 +574,15 @@ fn rollback_install_error(
     observer: &mut PortableObserver<'_>,
     err: EngineError,
 ) -> EngineError {
+    // Give the app layer a durable, pre-rename marker before the only backup is
+    // consumed. The rollback itself still proceeds if bookkeeping fails: disk
+    // safety wins, and RollbackCompleted gets a second chance to persist truth.
+    let intent_error = observer(PortableBoundary::BeforeRollback {
+        install_root: install_root.to_path_buf(),
+        backup: backup.to_path_buf(),
+        had_previous,
+    })
+    .err();
     match restore_previous_install(install_root, backup, had_previous) {
         Ok(()) => {
             let restored = if had_previous {
@@ -585,13 +590,17 @@ fn rollback_install_error(
             } else {
                 "new install was removed and the absent state was restored"
             };
-            match observer(PortableBoundary::RollbackCompleted {
+            let completion = observer(PortableBoundary::RollbackCompleted {
                 install_root: install_root.to_path_buf(),
                 backup: backup.to_path_buf(),
                 had_previous,
-            }) {
-                Ok(()) => EngineError::Install(format!("{err}; {restored}")),
-                Err(evidence_err) => EngineError::Install(format!(
+            });
+            match (intent_error, completion) {
+                (None, Ok(())) => EngineError::Install(format!("{err}; {restored}")),
+                (Some(intent_err), Ok(())) => EngineError::Install(format!(
+                    "{err}; {restored}, but recording rollback intent failed: {intent_err}"
+                )),
+                (_, Err(evidence_err)) => EngineError::Install(format!(
                     "{err}; {restored}, but recording rollback evidence failed: {evidence_err}"
                 )),
             }
@@ -714,6 +723,12 @@ pub enum PortableBoundary {
     },
     /// New payload is at install root.
     AfterMoveNew {
+        install_root: PathBuf,
+        backup: PathBuf,
+        had_previous: bool,
+    },
+    /// A failure chose rollback; persist that intent before consuming backup.
+    BeforeRollback {
         install_root: PathBuf,
         backup: PathBuf,
         had_previous: bool,
@@ -985,7 +1000,9 @@ pub fn purge_codex_user_data(notes: &mut Vec<String>) -> Result<bool, EngineErro
 /// Ancillary-only cleanup after the portable app tree is already gone (or
 /// never existed). Retries Start Menu shortcut + Apps & Features entry removal
 /// without touching an install directory. Optional user-data purge.
-pub fn cleanup_portable_metadata(purge_user_data: bool) -> Result<PortableUninstallReport, EngineError> {
+pub fn cleanup_portable_metadata(
+    purge_user_data: bool,
+) -> Result<PortableUninstallReport, EngineError> {
     let mut notes = Vec::new();
     let removed_shortcut = match remove_start_menu_shortcut() {
         Ok(removed) => removed,
@@ -1075,10 +1092,8 @@ mod tests {
 
     fn temp_test_dir(name: &str) -> PathBuf {
         let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "codex-portable-{name}-{}-{id}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("codex-portable-{name}-{}-{id}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -1298,10 +1313,8 @@ mod tests {
 
     #[test]
     fn installed_app_exe_prefers_manifest_then_known_names() {
-        let root = std::env::temp_dir().join(format!(
-            "codex-portable-exe-probe-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("codex-portable-exe-probe-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
 
@@ -1415,10 +1428,8 @@ mod tests {
     fn health_check_detects_immediate_exit_entry() {
         // whoami.exe exits instantly — models a broken payload that CreateProcess
         // accepts then immediately dies. The health check must fail closed.
-        let root = std::env::temp_dir().join(format!(
-            "codex-portable-liveness-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("codex-portable-liveness-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let windir = std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into());
@@ -1486,8 +1497,7 @@ mod tests {
         fs::write(install_root.join("old-marker.txt"), b"old").unwrap();
 
         inject_portable_fault(Some(PortableFault::AfterMoveOld));
-        let err =
-            install_portable_from_msix_inner(&msix, &install_root, false, false).unwrap_err();
+        let err = install_portable_from_msix_inner(&msix, &install_root, false, false).unwrap_err();
         assert!(err.to_string().contains("after-move-old"));
         // Crash window: install missing, rollback backup present, staging payload present.
         assert!(!install_root.exists());
@@ -1521,8 +1531,7 @@ mod tests {
         fs::write(install_root.join("old-marker.txt"), b"old").unwrap();
 
         inject_portable_fault(Some(PortableFault::BeforeMoveOld));
-        let err =
-            install_portable_from_msix_inner(&msix, &install_root, false, false).unwrap_err();
+        let err = install_portable_from_msix_inner(&msix, &install_root, false, false).unwrap_err();
         assert!(err.to_string().contains("before-move-old"));
         assert!(install_root.join("old-marker.txt").exists());
 
@@ -1531,32 +1540,25 @@ mod tests {
 
     #[test]
     fn observer_sees_rename_boundaries() {
-        let root = std::env::temp_dir().join(format!(
-            "codex-portable-observer-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("codex-portable-observer-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let msix = root.join("codex.msix");
         let install_root = root.join("Codex");
         write_fake_msix(&msix);
         let mut kinds = Vec::new();
-        install_portable_from_msix_with_observer(
-            &msix,
-            &install_root,
-            false,
-            false,
-            &mut |b| {
-                kinds.push(match b {
-                    PortableBoundary::BeforeMoveOld { .. } => "before-old",
-                    PortableBoundary::AfterMoveOld { .. } => "after-old",
-                    PortableBoundary::BeforeMoveNew { .. } => "before-new",
-                    PortableBoundary::AfterMoveNew { .. } => "after-new",
-                    PortableBoundary::RollbackCompleted { .. } => "rollback-completed",
-                });
-                Ok(())
-            },
-        )
+        install_portable_from_msix_with_observer(&msix, &install_root, false, false, &mut |b| {
+            kinds.push(match b {
+                PortableBoundary::BeforeMoveOld { .. } => "before-old",
+                PortableBoundary::AfterMoveOld { .. } => "after-old",
+                PortableBoundary::BeforeMoveNew { .. } => "before-new",
+                PortableBoundary::AfterMoveNew { .. } => "after-new",
+                PortableBoundary::BeforeRollback { .. } => "before-rollback",
+                PortableBoundary::RollbackCompleted { .. } => "rollback-completed",
+            });
+            Ok(())
+        })
         .unwrap();
         assert_eq!(
             kinds,
@@ -1590,6 +1592,7 @@ mod tests {
                     PortableBoundary::AfterMoveOld { .. } => "after-old",
                     PortableBoundary::BeforeMoveNew { .. } => "before-new",
                     PortableBoundary::AfterMoveNew { .. } => "after-new",
+                    PortableBoundary::BeforeRollback { .. } => "before-rollback",
                     PortableBoundary::RollbackCompleted { .. } => "rollback-completed",
                 });
                 Ok(())
@@ -1605,6 +1608,7 @@ mod tests {
                 "after-old",
                 "before-new",
                 "after-new",
+                "before-rollback",
                 "rollback-completed"
             ]
         );
@@ -1650,7 +1654,20 @@ mod tests {
         );
 
         assert!(err.to_string().contains("rollback backup is missing"));
-        assert!(boundaries.is_empty(), "failed rollback must emit no evidence");
+        assert_eq!(boundaries.len(), 1);
+        assert!(matches!(
+            boundaries[0],
+            PortableBoundary::BeforeRollback {
+                had_previous: true,
+                ..
+            }
+        ));
+        assert!(
+            !boundaries
+                .iter()
+                .any(|boundary| matches!(boundary, PortableBoundary::RollbackCompleted { .. })),
+            "failed rollback must not emit completion evidence"
+        );
         assert!(
             install_root.join("new-marker.txt").exists(),
             "failed rollback must preserve the current tree for recovery"
@@ -1673,6 +1690,7 @@ mod tests {
         fs::write(install_root.join("new-marker.txt"), b"new").unwrap();
         fs::create_dir_all(&backup).unwrap();
         fs::write(backup.join("old-marker.txt"), b"old").unwrap();
+        let mut boundaries = Vec::new();
         let mut saw_restored_tree = false;
 
         let err = rollback_install_error(
@@ -1680,22 +1698,34 @@ mod tests {
             &backup,
             true,
             &mut |boundary| {
-                assert!(matches!(
-                    boundary,
-                    PortableBoundary::RollbackCompleted {
-                        had_previous: true,
-                        ..
+                match boundary {
+                    PortableBoundary::BeforeRollback {
+                        had_previous: true, ..
+                    } => {
+                        boundaries.push("before-rollback");
+                        assert!(install_root.join("new-marker.txt").exists());
+                        assert!(backup.join("old-marker.txt").exists());
                     }
-                ));
-                saw_restored_tree = install_root.join("old-marker.txt").exists()
-                    && !install_root.join("new-marker.txt").exists();
+                    PortableBoundary::RollbackCompleted {
+                        had_previous: true, ..
+                    } => {
+                        boundaries.push("rollback-completed");
+                        saw_restored_tree = install_root.join("old-marker.txt").exists()
+                            && !install_root.join("new-marker.txt").exists();
+                    }
+                    other => panic!("unexpected rollback boundary: {other:?}"),
+                }
                 Ok(())
             },
             portable_fault_err("after-move-new"),
         );
 
         assert!(err.to_string().contains("previous install was restored"));
-        assert!(saw_restored_tree, "evidence must follow the completed restore");
+        assert_eq!(boundaries, ["before-rollback", "rollback-completed"]);
+        assert!(
+            saw_restored_tree,
+            "evidence must follow the completed restore"
+        );
         assert!(!backup.exists());
 
         let _ = fs::remove_dir_all(&root);

@@ -743,6 +743,9 @@ pub fn run() {
             commands::mac_pick_existing_install,
             commands::mac_adopt_path,
             commands::mac_install,
+            commands::historical_release_catalog,
+            commands::historical_pick_local_package,
+            commands::mac_install_historical_release,
             commands::mac_pause_download,
             commands::mac_cancel_download,
             commands::mac_discard_download,
@@ -760,6 +763,7 @@ pub fn run() {
             commands::arm_destructive,
             commands::end_operation,
             commands::get_operation_snapshot,
+            commands::get_paused_operation_snapshot,
             commands::get_operation_completion,
             commands::confirm_quit,
             commands::win_default_install_root,
@@ -799,7 +803,9 @@ pub fn run() {
             commands::win_adopt_path,
             commands::win_launch_codex,
             commands::win_perform_update,
+            commands::win_install_historical_release,
             commands::win_uninstall,
+            commands::get_host_architecture,
             commands::get_diagnostics,
             commands::open_logs_dir,
             commands::open_codex_home,
@@ -855,6 +861,20 @@ pub fn run() {
                 // a crash mid config.toml mutation (or an unkept try-on left
                 // hot-imported) must resolve before theme ops reopen.
                 crate::app::codex_theme::recover_native_theme_on_startup();
+                #[cfg(target_os = "windows")]
+                {
+                    let policy_recovery =
+                        crate::app::msix_policy_tx::recover_pending_msix_policy_transitions();
+                    if policy_recovery.failed > 0 {
+                        log::warn!(
+                            "MSIX policy recovery finished scanned={} committed={} rolled_back={} failed={}",
+                            policy_recovery.scanned,
+                            policy_recovery.committed,
+                            policy_recovery.rolled_back,
+                            policy_recovery.failed
+                        );
+                    }
+                }
                 let recovery =
                     crate::app::install_tx::recover_pending_transactions(Some(&operations));
                 if recovery.failed > 0 || recovery.kept_manual > 0 {

@@ -65,7 +65,7 @@ pub fn create_unique_staging(prefix: &str) -> Result<StagingDir, AppError> {
     Ok(StagingDir { root })
 }
 
-/// Root of the persistent download cache — SEPARATE from the per-run `update-*`
+/// Root of the persistent download cache — SEPARATE from per-run staging dirs
 /// staging dirs. A unique staging dir is deleted wholesale on pause/cancel
 /// (`StagingDir::discard`), which is exactly what used to eat a paused
 /// download's `.part` and make "再次更新会继续下载" a lie. Download artifacts
@@ -159,19 +159,16 @@ pub fn cleanup_stale_staging(ops: &OperationManager) -> CleanupSummary {
     if let Ok(entries) = std::fs::read_dir(&root) {
         for entry in entries.flatten() {
             let path = entry.path();
-            let is_update_dir = path
+            let is_managed_staging_dir = path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("update-"));
-            if !is_update_dir || !path.is_dir() {
+                .is_some_and(is_managed_staging_dir_name);
+            if !is_managed_staging_dir || !path.is_dir() {
                 continue;
             }
             summary.scanned += 1;
             if crate::app::install_tx::path_is_protected(&path, &protected) {
-                log::info!(
-                    "staging cleanup skipped protected path={}",
-                    path.display()
-                );
+                log::info!("staging cleanup skipped protected path={}", path.display());
                 continue;
             }
             if !is_stale(&path, now) {
@@ -233,6 +230,10 @@ pub fn cleanup_stale_staging(ops: &OperationManager) -> CleanupSummary {
     summary
 }
 
+fn is_managed_staging_dir_name(name: &str) -> bool {
+    name.starts_with("update-") || name.starts_with("inspect-")
+}
+
 fn is_stale(path: &Path, now: SystemTime) -> bool {
     let Ok(metadata) = std::fs::metadata(path) else {
         return false;
@@ -263,7 +264,7 @@ fn set_owner_only(_path: &Path) -> Result<(), AppError> {
 mod tests {
     use super::{
         cleanup_stale_staging, clear_download_cache, create_unique_staging, download_cache_path,
-        download_cache_root,
+        download_cache_root, is_managed_staging_dir_name,
     };
     use crate::app::oplock::{OperationKind, OperationManager};
     use std::fs;
@@ -274,6 +275,14 @@ mod tests {
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(1);
     static DOWNLOAD_CACHE_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn cleanup_recognizes_update_and_inspection_staging_dirs_only() {
+        assert!(is_managed_staging_dir_name("update-123"));
+        assert!(is_managed_staging_dir_name("inspect-123"));
+        assert!(!is_managed_staging_dir_name("downloads"));
+        assert!(!is_managed_staging_dir_name("other-123"));
+    }
 
     fn lock_path(name: &str) -> std::path::PathBuf {
         let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
