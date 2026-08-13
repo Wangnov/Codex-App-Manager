@@ -1,0 +1,63 @@
+name: Windows portable MSIX E2E
+
+# Exercise the portable extractor against the current official x64 and ARM64
+# packages, not only synthetic ZIP fixtures. The native bundled cua_node binary
+# must resolve the Computer Use modules from their logical @scope paths.
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/windows-portable-msix-e2e.yml"
+      - "crates/codex-win-engine/Cargo.toml"
+      - "crates/codex-win-engine/Cargo.lock"
+      - "crates/codex-win-engine/src/portable.rs"
+  workflow_dispatch:
+
+concurrency:
+  group: windows-portable-msix-e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  real-msix:
+    name: real MSIX (${{ matrix.architecture }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x64
+            runner: windows-2022
+          - architecture: arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Download current official Codex MSIX
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_ARCH: ${{ matrix.architecture }}
+        run: |
+          $destination = Join-Path $env:RUNNER_TEMP "codex-real-msix"
+          New-Item -ItemType Directory -Path $destination -Force | Out-Null
+          gh release download `
+            --repo Wangnov/codex-app-mirror `
+            --pattern "OpenAI.Codex_*_${env:PACKAGE_ARCH}__*.Msix" `
+            --dir $destination
+          $packages = @(Get-ChildItem -LiteralPath $destination -Filter "*.Msix")
+          if ($packages.Count -ne 1) {
+            throw "Expected exactly one current ${env:PACKAGE_ARCH} MSIX, found $($packages.Count)"
+          }
+          "CODEX_REAL_MSIX=$($packages[0].FullName)" | Out-File `
+            -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Testing $($packages[0].Name) ($($packages[0].Length) bytes)"
+
+      - name: Extract portable payload and resolve Computer Use modules
+        run: >-
+          cargo test
+          --manifest-path crates/codex-win-engine/Cargo.toml
+          real_msix_uses_computer_use_logical_paths
+          -- --ignored --nocapture

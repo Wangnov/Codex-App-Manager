@@ -70,7 +70,11 @@ PR-time x64 packaged smoke lives in
 [`win-installer-check.yml`](../.github/workflows/win-installer-check.yml)
 (`scripts/windows-packaged-smoke.ps1`: install → launch → upgrade → uninstall).
 Required CI (`ci.yml`) also runs standalone engine crate tests for
-`codex-mac-engine` and `codex-win-engine`.
+`codex-mac-engine` and `codex-win-engine`. Portable-extractor changes also run
+the current official x64 and ARM64 MSIX packages on native Windows runners via
+[`windows-portable-msix-e2e.yml`](../.github/workflows/windows-portable-msix-e2e.yml);
+the interactive Computer Use release gate is documented in
+[`windows-portable-computer-use-e2e.md`](./windows-portable-computer-use-e2e.md).
 
 ## Mirror promotion safety
 

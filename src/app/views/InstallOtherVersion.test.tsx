@@ -98,6 +98,7 @@ function renderPicker(
   currentVersion: string | null = "26.806.12001",
   architecture: string | null = "x64",
   onInstall = vi.fn<(selection: HistoricalInstallSelection, blockUpdates: boolean) => void>(),
+  allowCurrentVersionInstall = false,
 ) {
   const view = render(
     <I18nProvider>
@@ -105,6 +106,7 @@ function renderPicker(
         open
         platform={platform}
         currentVersion={currentVersion}
+        allowCurrentVersionInstall={allowCurrentVersionInstall}
         architecture={architecture}
         onDismiss={vi.fn()}
         onInstall={onInstall}
@@ -191,6 +193,17 @@ describe("InstallOtherVersionSheet", () => {
     );
   });
 
+  it("does not label a same-version macOS package as a Portable repair", async () => {
+    const user = userEvent.setup();
+    renderPicker("macos", "26.727.51351");
+
+    await user.click(screen.getByRole("button", { name: /Install from a local package/ }));
+
+    expect(await screen.findByRole("heading", { name: "Install 26.727.51351?" })).toBeInTheDocument();
+    expect(screen.queryByText(/repair its file layout/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Verify and install" })).toBeEnabled();
+  });
+
   it("only offers MSIX and preserves the package identity version on Windows", async () => {
     const user = userEvent.setup();
     const { onInstall } = renderPicker("windows", null, "aarch64");
@@ -236,6 +249,34 @@ describe("InstallOtherVersionSheet", () => {
     expect(current).toBeDisabled();
     expect(current).toHaveTextContent("Current");
     expect(screen.getByRole("button", { name: /26\.806\.12001/ })).toHaveFocus();
+  });
+
+  it("allows a managed portable install to repair the current version in place", async () => {
+    const user = userEvent.setup();
+    const onInstall = vi.fn();
+    renderPicker("windows", "26.727.6591.0", "x64", onInstall, true);
+
+    const current = await screen.findByRole("button", { name: /26\.727\.51351/ });
+    expect(current).toBeEnabled();
+    expect(current).toHaveTextContent("Repair by reinstalling");
+    expect(current).toHaveFocus();
+
+    await user.click(current);
+    expect(screen.getByRole("heading", { name: "Repair 26.727.51351?" })).toBeInTheDocument();
+    expect(screen.getByText(/repair its file layout/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Download and repair" }));
+
+    await waitFor(() =>
+      expect(onInstall).toHaveBeenCalledWith(
+        expect.objectContaining({
+          releaseTag: "codex-app-26.727.51351",
+          version: "26.727.51351",
+          packageVersion: "26.727.6591.0",
+          format: "msix",
+        }),
+        true,
+      ),
+    );
   });
 
   it("requires an explicit architecture before loading the live catalog", async () => {
