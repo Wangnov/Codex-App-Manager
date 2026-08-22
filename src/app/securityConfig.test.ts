@@ -29,7 +29,9 @@ describe("desktop trust-boundary config", () => {
     expect(production).toContain("object-src 'none'");
     expect(production).toContain("form-action 'none'");
     expect(production).toContain("frame-ancestors 'none'");
-    expect(production).not.toMatch(/github\.com|agentsmirror\.com|oaistatic\.com/);
+    expect(production).not.toContain("github.com");
+    expect(production).not.toContain("agentsmirror.com");
+    expect(production).not.toContain("oaistatic.com");
 
     expect(app.security.devCsp).toContain("ws://127.0.0.1:1420");
     expect(app.security.devCsp).not.toContain("ws://0.0.0.0");

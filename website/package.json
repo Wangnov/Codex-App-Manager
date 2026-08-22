@@ -6,7 +6,7 @@
   "description": "Official website for Codex App Manager & Codex App Mirror",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && node scripts/check-security-headers.mjs",
     "preview": "vite preview",
     "fonts": "node scripts/subset-fonts.mjs",
     "images": "node scripts/optimize-images.mjs",

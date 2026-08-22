@@ -1,4 +1,4 @@
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 
 use url::{Host, Url};
 
@@ -18,6 +18,20 @@ pub enum UrlRejectReason {
     Unparsable,
     #[error("自定义源不能为空")]
     Empty,
+    #[error("自定义源域名解析失败")]
+    DnsResolutionFailed,
+}
+
+/// A custom HTTPS URL whose current DNS answers have all passed the public-IP
+/// policy. Callers must pin the actual connection to one of `addresses`; merely
+/// resolving here and letting the HTTP client resolve again would leave a DNS
+/// rebinding time-of-check/time-of-use gap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedCustomUrl {
+    pub url: String,
+    pub host: String,
+    pub port: u16,
+    pub addresses: Vec<IpAddr>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -35,6 +49,10 @@ pub enum ProxyRejectReason {
 }
 
 pub fn validate_custom_source(raw: &str) -> Result<String, UrlRejectReason> {
+    custom_source_parts(raw).map(|(url, _, _)| url)
+}
+
+fn custom_source_parts(raw: &str) -> Result<(String, String, u16), UrlRejectReason> {
     let raw = raw.trim();
     if raw.is_empty() {
         return Err(UrlRejectReason::Empty);
@@ -85,7 +103,61 @@ pub fn validate_custom_source(raw: &str) -> Result<String, UrlRejectReason> {
     if url.port() == Some(443) {
         let _ = url.set_port(None);
     }
-    Ok(url.to_string())
+    let host = url
+        .host_str()
+        .ok_or(UrlRejectReason::MissingHost)?
+        .to_string();
+    let port = url
+        .port_or_known_default()
+        .ok_or(UrlRejectReason::MissingHost)?;
+    Ok((url.to_string(), host, port))
+}
+
+pub fn custom_source_host(raw: &str) -> Result<String, UrlRejectReason> {
+    custom_source_parts(raw).map(|(_, host, _)| host)
+}
+
+/// Validate a custom source and resolve it at the point of use. Every answer
+/// must be globally routable: accepting a mixed public/private answer would
+/// let address ordering decide whether an internal service is contacted.
+pub fn resolve_custom_source(raw: &str) -> Result<ResolvedCustomUrl, UrlRejectReason> {
+    let (normalized, host, port) = custom_source_parts(raw)?;
+    let socket_addresses = (host.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|_| UrlRejectReason::DnsResolutionFailed)?;
+    let mut addresses = Vec::new();
+    for socket in socket_addresses {
+        let address = socket.ip();
+        if !addresses.contains(&address) {
+            addresses.push(address);
+        }
+    }
+    resolved_custom_source(normalized, host, port, addresses)
+}
+
+/// Finish custom-source validation with addresses obtained from a trusted
+/// resolver (for example DNS-over-HTTPS reached through a custom proxy).
+pub fn resolve_custom_source_with_addresses(
+    raw: &str,
+    addresses: Vec<IpAddr>,
+) -> Result<ResolvedCustomUrl, UrlRejectReason> {
+    let (normalized, host, port) = custom_source_parts(raw)?;
+    resolved_custom_source(normalized, host, port, addresses)
+}
+
+fn resolved_custom_source(
+    normalized: String,
+    host: String,
+    port: u16,
+    addresses: Vec<IpAddr>,
+) -> Result<ResolvedCustomUrl, UrlRejectReason> {
+    validate_resolved_addresses(&addresses)?;
+    Ok(ResolvedCustomUrl {
+        url: normalized,
+        host,
+        port,
+        addresses,
+    })
 }
 
 pub fn validate_custom_proxy(raw: &str) -> Result<String, ProxyRejectReason> {
@@ -130,28 +202,62 @@ fn validate_domain(domain: &str) -> Result<(), UrlRejectReason> {
 }
 
 fn is_blocked_ipv4(ip: Ipv4Addr) -> bool {
-    let [a, b, _, _] = ip.octets();
+    let [a, b, c, _] = ip.octets();
     ip.is_loopback()
         || ip.is_private()
         || ip.is_link_local()
         || ip.is_unspecified()
+        || a == 0
         || (a == 100 && (64..=127).contains(&b))
         || (a == 198 && matches!(b, 18 | 19))
+        || (a == 192 && b == 0 && c == 0)
+        || (a == 192 && b == 0 && c == 2)
+        || (a == 192 && b == 88 && c == 99)
+        || (a == 198 && b == 51 && c == 100)
+        || (a == 203 && b == 0 && c == 113)
+        || a >= 224
 }
 
 fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
+    if let Some(v4) = ip.to_ipv4_mapped() {
+        return is_blocked_ipv4(v4);
+    }
     let segments = ip.segments();
     ip.is_loopback()
         || ip.is_unspecified()
         || (segments[0] & 0xffc0) == 0xfe80
         || (segments[0] & 0xfe00) == 0xfc00
+        || (segments[0] & 0xff00) == 0xff00
+        // Only global-unicast 2000::/3 is useful for public HTTPS sources.
+        // This conservatively rejects transition, mapped and reserved ranges.
+        || (segments[0] & 0xe000) != 0x2000
         || (segments[0] == 0x2001 && segments[1] == 0x0db8)
+        || (segments[0] == 0x2001 && segments[1] == 0x0002)
+        || (segments[0] == 0x2001 && (segments[1] & 0xfff0) == 0x0010)
+        || (segments[0] == 0x2001 && (segments[1] & 0xfff0) == 0x0020)
+        || (segments[0] == 0x3fff && (segments[1] & 0xf000) == 0)
+}
+
+fn validate_resolved_addresses(addresses: &[IpAddr]) -> Result<(), UrlRejectReason> {
+    if addresses.is_empty() {
+        return Err(UrlRejectReason::DnsResolutionFailed);
+    }
+    if addresses.iter().any(|address| match address {
+        IpAddr::V4(ip) => is_blocked_ipv4(*ip),
+        IpAddr::V6(ip) => is_blocked_ipv6(*ip),
+    }) {
+        return Err(UrlRejectReason::PrivateOrLoopback);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
     use super::{
-        validate_custom_proxy, validate_custom_source, ProxyRejectReason, UrlRejectReason,
+        validate_custom_proxy, validate_custom_source, validate_resolved_addresses,
+        ProxyRejectReason, UrlRejectReason,
     };
 
     #[test]
@@ -259,6 +365,39 @@ mod tests {
         for raw in ["https://8.8.8.8/", "https://[2001:4860:4860::8888]/"] {
             assert_eq!(validate_custom_source(raw), Err(UrlRejectReason::BareIp));
         }
+    }
+
+    #[test]
+    fn rejects_any_private_or_special_dns_answer() {
+        let public_v4 = IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34));
+        let public_v6 = IpAddr::V6("2606:4700:4700::1111".parse::<Ipv6Addr>().unwrap());
+        assert!(validate_resolved_addresses(&[public_v4, public_v6]).is_ok());
+        assert_eq!(
+            validate_resolved_addresses(&[
+                public_v4,
+                IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)),
+            ]),
+            Err(UrlRejectReason::PrivateOrLoopback)
+        );
+        for address in [
+            "192.0.2.1",
+            "198.51.100.1",
+            "203.0.113.1",
+            "224.0.0.1",
+            "2001:db8::1",
+            "64:ff9b::7f00:1",
+            "ff02::1",
+        ] {
+            assert_eq!(
+                validate_resolved_addresses(&[address.parse::<IpAddr>().unwrap()]),
+                Err(UrlRejectReason::PrivateOrLoopback),
+                "{address}"
+            );
+        }
+        assert_eq!(
+            validate_resolved_addresses(&[]),
+            Err(UrlRejectReason::DnsResolutionFailed)
+        );
     }
 
     #[test]

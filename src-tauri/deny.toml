@@ -1,9 +1,24 @@
-# Initial cargo-deny policy for report-only CI. The audit job is intentionally
-# non-blocking while this policy is tuned against the real dependency graph.
+# Blocking cargo-deny policy for the four platforms this project publishes.
+# Linux-only Tauri/GTK dependencies in the shared lockfile are intentionally
+# outside this graph because this repository does not ship Linux artifacts.
+
+[graph]
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "aarch64-pc-windows-msvc",
+  "x86_64-pc-windows-msvc",
+]
 
 [advisories]
 yanked = "warn"
-ignore = []
+ignore = [
+  { id = "RUSTSEC-2025-0075", reason = "Unmaintained rust-unic dependency is transitive via Tauri urlpattern; no safe upgrade is available." },
+  { id = "RUSTSEC-2025-0080", reason = "Unmaintained rust-unic dependency is transitive via Tauri urlpattern; no safe upgrade is available." },
+  { id = "RUSTSEC-2025-0081", reason = "Unmaintained rust-unic dependency is transitive via Tauri urlpattern; no safe upgrade is available." },
+  { id = "RUSTSEC-2025-0098", reason = "Unmaintained rust-unic dependency is transitive via Tauri urlpattern; no safe upgrade is available." },
+  { id = "RUSTSEC-2025-0100", reason = "Unmaintained rust-unic dependency is transitive via Tauri urlpattern; no safe upgrade is available." },
+]
 
 [licenses]
 confidence-threshold = 0.8
