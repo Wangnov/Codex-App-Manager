@@ -141,7 +141,11 @@ function redirect(location, backend) {
 }
 
 function objectKeyForKey(key, prefix) {
-  const cleanPrefix = prefix.replace(/^\/+|\/+$/g, "");
+  let start = 0;
+  let end = prefix.length;
+  while (start < end && prefix[start] === "/") start += 1;
+  while (end > start && prefix[end - 1] === "/") end -= 1;
+  const cleanPrefix = prefix.slice(start, end);
   return cleanPrefix ? `${cleanPrefix}/${key}` : key;
 }
 

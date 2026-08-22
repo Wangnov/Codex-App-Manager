@@ -69,7 +69,7 @@ export function inspectReleaseForReuse(release, releaseTag) {
       asset?.name?.startsWith("CodexAppManager"),
   );
   const selectedNames = new Set();
-  const digests = {};
+  const digestEntries = [];
   for (const asset of selectedAssets) {
     const name = asset.name;
     if (selectedNames.has(name)) {
@@ -83,8 +83,9 @@ export function inspectReleaseForReuse(release, releaseTag) {
     if (typeof digest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(digest)) {
       throw new Error(`immutable release asset has no canonical SHA-256 digest: ${name}`);
     }
-    digests[name] = digest;
+    digestEntries.push([name, digest]);
   }
+  const digests = Object.fromEntries(digestEntries);
   return { digests, missing: [], reason: null, reusable: true };
 }
 

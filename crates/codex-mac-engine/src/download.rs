@@ -120,7 +120,10 @@ fn url_host(url: &str) -> &str {
         .unwrap_or("")
 }
 
-fn is_cancelled_error(err: &EngineError) -> bool {
+/// Distinguish an explicit user cancellation from a transport failure. Callers
+/// that provide several pre-validated destinations must not turn a cancellation
+/// into an automatic retry against the next address.
+pub fn is_cancelled_error(err: &EngineError) -> bool {
     matches!(err, EngineError::Io(msg) if msg == "download cancelled")
 }
 

@@ -1,0 +1,7 @@
+/*
+  Content-Security-Policy: default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self'; form-action 'none'; frame-ancestors 'none'; frame-src 'none'; img-src 'self' data: https://skins.agentsmirror.com; object-src 'none'; script-src 'self' 'sha256-zL2CS3VteqiYrOH79YUHYZRbfL5Be9HKZXiWy6dXayQ='; style-src 'self' 'unsafe-inline'; upgrade-insecure-requests
+  Cross-Origin-Opener-Policy: same-origin
+  Permissions-Policy: camera=(), display-capture=(), geolocation=(), microphone=(), payment=(), usb=()
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY

@@ -8,7 +8,27 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+  - package-ecosystem: npm
+    directory: "/website"
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: "/cloudflare/manager-download-router"
+    schedule:
+      interval: weekly
   - package-ecosystem: cargo
     directory: "/src-tauri"
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: "/crates/codex-mac-engine"
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: "/crates/codex-win-engine"
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: "/crates/codex-theme-engine"
     schedule:
       interval: weekly

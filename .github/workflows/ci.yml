@@ -77,9 +77,8 @@ jobs:
         run: cargo test --manifest-path crates/codex-theme-engine/Cargo.toml --all-targets
 
   audit:
-    name: Audit (report)
+    name: Audit
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
@@ -87,18 +86,26 @@ jobs:
           node-version: 24
           cache: npm
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
-      - run: npm ci
-      - name: npm audit
-        continue-on-error: true
-        run: npm audit --audit-level=high
-      - name: Install cargo audit tools
-        continue-on-error: true
-        run: cargo install cargo-audit cargo-deny --locked
-      - name: cargo audit
-        continue-on-error: true
-        run: cargo audit --file src-tauri/Cargo.lock
-      - name: cargo deny
-        continue-on-error: true
+      - name: Audit npm lockfiles
+        run: |
+          npm audit --package-lock-only --audit-level=high
+          npm --prefix website audit --package-lock-only --audit-level=high
+          npm --prefix cloudflare/manager-download-router audit --package-lock-only --audit-level=high
+      - name: Install pinned Rust audit tools
+        run: |
+          cargo install cargo-audit --version 0.22.0 --locked
+          cargo install cargo-deny --version 0.18.9 --locked
+      - name: Audit Rust lockfiles
+        run: |
+          for lockfile in \
+            src-tauri/Cargo.lock \
+            crates/codex-mac-engine/Cargo.lock \
+            crates/codex-win-engine/Cargo.lock \
+            crates/codex-theme-engine/Cargo.lock
+          do
+            cargo audit --file "$lockfile"
+          done
+      - name: Enforce Rust dependency policy
         run: cargo deny --manifest-path src-tauri/Cargo.toml check
 
   worker-test:

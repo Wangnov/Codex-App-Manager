@@ -68,6 +68,36 @@ pub fn fetch_text_with_network(url: &str, network: &NetworkConfig) -> Result<Str
     text_from_curl(url, output)
 }
 
+/// Fetch a trusted HTTPS metadata endpoint without following redirects. This is
+/// used for proxy-assisted DNS-over-HTTPS bootstrapping: the proxy may resolve
+/// the fixed DoH host, but it cannot redirect the request to a different host.
+pub fn fetch_text_no_redirect_with_network(
+    url: &str,
+    max_secs: u64,
+    network: &NetworkConfig,
+) -> Result<String, EngineError> {
+    let max_text = MAX_TEXT_BYTES.to_string();
+    let mut command = Command::new(CURL);
+    network.apply_to_command(&mut command);
+    let output = command
+        .args([
+            "-fsS",
+            "--proto",
+            "=https",
+            "--connect-timeout",
+            "5",
+            "--max-time",
+            &max_secs.to_string(),
+            "--max-filesize",
+            &max_text,
+            url,
+        ])
+        .output()
+        .map_err(|e| EngineError::Io(format!("spawn curl: {e}")))?;
+
+    text_from_curl(url, output)
+}
+
 /// Like `fetch_text` but with a caller-set total timeout. Used to probe a
 /// possibly-unreachable source (e.g. OpenAI's official appcast for users behind
 /// a block) without stalling on the default long connect timeout.

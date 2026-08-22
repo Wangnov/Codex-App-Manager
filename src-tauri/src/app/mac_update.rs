@@ -12,10 +12,11 @@
 //! already on the latest build (the user's case during development).
 
 use std::io::Read;
+use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use codex_mac_engine::{
     apply_delta, download, gate_reconstructed, parse_appcast, plan_update, quit_codex_at, relaunch,
@@ -34,7 +35,10 @@ use crate::app::release_install::{
 };
 use crate::app::settings_store::UpdateSource;
 use crate::app::staging::{self, StagingDir};
-use crate::app::url_guard::validate_custom_source;
+use crate::app::url_guard::{
+    custom_source_host, resolve_custom_source, resolve_custom_source_with_addresses,
+    ResolvedCustomUrl, UrlRejectReason,
+};
 use crate::errors::AppError;
 
 /// Optional hook for the command layer to publish operation phases (quit policy).
@@ -140,10 +144,168 @@ fn arch_of(installed: &Option<InstalledCodex>) -> &str {
         .unwrap_or(std::env::consts::ARCH)
 }
 
-fn fetch_one(url: String, network: &NetworkConfig) -> Result<(String, String), AppError> {
+struct FetchedAppcast {
+    url: String,
+    xml: String,
+    /// Custom feeds are untrusted network input. Their enclosure destinations
+    /// must receive the same runtime DNS/IP pinning as the feed itself.
+    restrict_downloads: bool,
+}
+
+const PROXY_DOH_ENDPOINT: &str = "https://dns.google/resolve";
+const PROXY_DOH_TIMEOUT_SECS: u64 = 15;
+
+#[derive(Deserialize)]
+struct DohResponse {
+    #[serde(rename = "Status")]
+    status: u32,
+    #[serde(rename = "Answer", default)]
+    answers: Vec<DohAnswer>,
+}
+
+#[derive(Deserialize)]
+struct DohAnswer {
+    #[serde(rename = "type")]
+    record_type: u16,
+    data: String,
+}
+
+fn parse_doh_addresses(json: &str) -> Result<Vec<IpAddr>, UrlRejectReason> {
+    let response: DohResponse =
+        serde_json::from_str(json).map_err(|_| UrlRejectReason::DnsResolutionFailed)?;
+    if response.status != 0 {
+        return Err(UrlRejectReason::DnsResolutionFailed);
+    }
+    let mut addresses = Vec::new();
+    for answer in response.answers {
+        if !matches!(answer.record_type, 1 | 28) {
+            continue;
+        }
+        let address = answer
+            .data
+            .parse::<IpAddr>()
+            .map_err(|_| UrlRejectReason::DnsResolutionFailed)?;
+        if !addresses.contains(&address) {
+            addresses.push(address);
+        }
+    }
+    Ok(addresses)
+}
+
+fn resolve_host_via_proxy_doh(
+    host: &str,
+    network: &NetworkConfig,
+) -> Result<Vec<IpAddr>, UrlRejectReason> {
+    let mut addresses = Vec::new();
+    for record_type in ["A", "AAAA"] {
+        let mut endpoint = url::Url::parse(PROXY_DOH_ENDPOINT)
+            .map_err(|_| UrlRejectReason::DnsResolutionFailed)?;
+        endpoint
+            .query_pairs_mut()
+            .append_pair("name", host)
+            .append_pair("type", record_type);
+        let json = sys::fetch_text_no_redirect_with_network(
+            endpoint.as_str(),
+            PROXY_DOH_TIMEOUT_SECS,
+            network,
+        )
+        .map_err(|_| {
+            log::warn!("proxy DoH query failed record_type={record_type}");
+            UrlRejectReason::DnsResolutionFailed
+        })?;
+        for address in parse_doh_addresses(&json)? {
+            if !addresses.contains(&address) {
+                addresses.push(address);
+            }
+        }
+    }
+    if addresses.is_empty() {
+        return Err(UrlRejectReason::DnsResolutionFailed);
+    }
+    Ok(addresses)
+}
+
+fn resolve_custom_source_for_network(
+    raw: &str,
+    network: &NetworkConfig,
+) -> Result<ResolvedCustomUrl, UrlRejectReason> {
+    resolve_custom_source_for_network_with(raw, network, resolve_custom_source, |host| {
+        resolve_host_via_proxy_doh(host, network)
+    })
+}
+
+fn resolve_custom_source_for_network_with<F, G>(
+    raw: &str,
+    network: &NetworkConfig,
+    local_resolver: F,
+    proxy_resolver: G,
+) -> Result<ResolvedCustomUrl, UrlRejectReason>
+where
+    F: FnOnce(&str) -> Result<ResolvedCustomUrl, UrlRejectReason>,
+    G: FnOnce(&str) -> Result<Vec<IpAddr>, UrlRejectReason>,
+{
+    match local_resolver(raw) {
+        Err(UrlRejectReason::DnsResolutionFailed) if network.is_custom_proxy() => {
+            let host = custom_source_host(raw)?;
+            let addresses = proxy_resolver(&host)?;
+            resolve_custom_source_with_addresses(raw, addresses)
+        }
+        result => result,
+    }
+}
+
+fn fetch_one(
+    url: String,
+    network: &NetworkConfig,
+    restrict_downloads: bool,
+) -> Result<FetchedAppcast, AppError> {
     let xml =
         sys::fetch_text_with_network(&url, network).map_err(|e| AppError::Engine(e.to_string()))?;
-    Ok((url, xml))
+    Ok(FetchedAppcast {
+        url,
+        xml,
+        restrict_downloads,
+    })
+}
+
+fn pinned_network_candidates(
+    network: &NetworkConfig,
+    host: &str,
+    port: u16,
+    addresses: &[IpAddr],
+) -> Vec<NetworkConfig> {
+    addresses
+        .iter()
+        .map(|address| network.with_https_destination_pin(host, port, *address))
+        .collect()
+}
+
+fn fetch_custom_appcast(
+    url: String,
+    host: &str,
+    port: u16,
+    addresses: &[IpAddr],
+    network: &NetworkConfig,
+) -> Result<FetchedAppcast, AppError> {
+    let candidates = pinned_network_candidates(network, host, port, addresses);
+    let candidate_count = candidates.len();
+    let mut last_error = None;
+    for (index, candidate) in candidates.iter().enumerate() {
+        match fetch_one(url.clone(), candidate, true) {
+            Ok(fetched) => return Ok(fetched),
+            Err(error) => {
+                log::warn!(
+                    "custom macOS appcast address attempt failed candidate={}/{} error={error}",
+                    index + 1,
+                    candidate_count
+                );
+                last_error = Some(error);
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        AppError::Engine("自定义更新源域名解析失败：没有可用的公网地址".to_string())
+    }))
 }
 
 /// Latest build number advertised by an appcast XML, or 0 if it can't be parsed.
@@ -154,26 +316,29 @@ fn latest_build_of(xml: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// Fetch the appcast XML honoring the configured source — returns (url, xml).
+/// Fetch the appcast XML honoring the configured source.
 /// `auto` tries the CN-reachable mirror first and falls back to OpenAI official
 /// when the mirror is unreachable; `mirror` / `official` / `custom` use exactly
 /// that source (custom falls back to the mirror when its URL is blank).
-fn fetch_appcast_for_arch(
-    arch: &str,
-    network: &NetworkConfig,
-) -> Result<(String, String), AppError> {
+fn fetch_appcast_for_arch(arch: &str, network: &NetworkConfig) -> Result<FetchedAppcast, AppError> {
     let settings = crate::app::settings_store::AppSettings::load();
     match settings.source {
-        UpdateSource::Official => fetch_one(official_for_arch(arch).to_string(), network),
-        UpdateSource::Mirror => fetch_one(appcast_for_arch(arch).to_string(), network),
+        UpdateSource::Official => fetch_one(official_for_arch(arch).to_string(), network, false),
+        UpdateSource::Mirror => fetch_one(appcast_for_arch(arch).to_string(), network, false),
         UpdateSource::Custom => {
             let u = settings.custom_url.trim();
-            let url = if u.is_empty() {
-                appcast_for_arch(arch).to_string()
-            } else {
-                validate_custom_source(u).map_err(|e| AppError::Engine(e.to_string()))?
-            };
-            fetch_one(url, network)
+            if u.is_empty() {
+                return fetch_one(appcast_for_arch(arch).to_string(), network, false);
+            }
+            let resolved = resolve_custom_source_for_network(u, network)
+                .map_err(|e| AppError::Engine(format!("自定义更新源被拒绝：{e}")))?;
+            fetch_custom_appcast(
+                resolved.url,
+                &resolved.host,
+                resolved.port,
+                &resolved.addresses,
+                network,
+            )
         }
         UpdateSource::Auto => {
             // auto: pick the higher build between the CN-reachable mirror and
@@ -190,13 +355,29 @@ fn fetch_appcast_for_arch(
             match (mirror, official) {
                 (Some(m), Some(o)) => {
                     if latest_build_of(&o) > latest_build_of(&m) {
-                        Ok((official_url, o))
+                        Ok(FetchedAppcast {
+                            url: official_url,
+                            xml: o,
+                            restrict_downloads: false,
+                        })
                     } else {
-                        Ok((mirror_url, m))
+                        Ok(FetchedAppcast {
+                            url: mirror_url,
+                            xml: m,
+                            restrict_downloads: false,
+                        })
                     }
                 }
-                (Some(m), None) => Ok((mirror_url, m)),
-                (None, Some(o)) => Ok((official_url, o)),
+                (Some(m), None) => Ok(FetchedAppcast {
+                    url: mirror_url,
+                    xml: m,
+                    restrict_downloads: false,
+                }),
+                (None, Some(o)) => Ok(FetchedAppcast {
+                    url: official_url,
+                    xml: o,
+                    restrict_downloads: false,
+                }),
                 (None, None) => Err(AppError::Engine(
                     "both the mirror and OpenAI official appcast are unreachable".to_string(),
                 )),
@@ -366,8 +547,8 @@ pub fn plan_macos_update_with_network(
 ) -> Result<MacUpdateReport, AppError> {
     log::info!("macOS plan start simulated_build={simulated_build:?}");
     let installed = detect_managed_installed();
-    let (appcast_url, xml) = fetch_appcast_for_arch(arch_of(&installed), network)?;
-    let appcast = parse_appcast(&xml).map_err(|e| AppError::Engine(e.to_string()))?;
+    let fetched = fetch_appcast_for_arch(arch_of(&installed), network)?;
+    let appcast = parse_appcast(&fetched.xml).map_err(|e| AppError::Engine(e.to_string()))?;
     let plan = plan_update(&appcast, effective_build(simulated_build, &installed));
 
     let latest = appcast.latest();
@@ -388,7 +569,7 @@ pub fn plan_macos_update_with_network(
     });
 
     let report = MacUpdateReport {
-        appcast_url,
+        appcast_url: fetched.url,
         installed,
         simulated_build,
         plan,
@@ -509,6 +690,7 @@ fn download_and_verify(
     signature: &str,
     progress: &dyn Fn(DownloadProgress),
     network: &NetworkConfig,
+    restrict_destination: bool,
 ) -> Result<PathBuf, AppError> {
     let source = host_of(url);
     log::info!("macOS download and verify start source={source}");
@@ -517,6 +699,13 @@ fn download_and_verify(
             "artifact size {size} exceeds {max_size} byte limit"
         )));
     }
+    let download_networks = if restrict_destination {
+        let resolved = resolve_custom_source_for_network(url, network)
+            .map_err(|e| AppError::Engine(format!("自定义更新下载地址被拒绝：{e}")))?;
+        pinned_network_candidates(network, &resolved.host, resolved.port, &resolved.addresses)
+    } else {
+        vec![network.clone()]
+    };
     let file_name = url.rsplit('/').next().unwrap_or("payload.bin");
     // Download into the PERSISTENT cache (not a per-run staging dir): a paused
     // `.part` survives here, so the next perform/install resumes it instead of
@@ -536,20 +725,49 @@ fn download_and_verify(
             source,
         });
     } else {
-        download::download_to_with_progress_bounded_with_network(
-            url,
-            &dest,
-            max_size,
-            &|downloaded| {
-                progress(DownloadProgress {
-                    downloaded,
-                    total: size,
-                    source: source.clone(),
-                });
-            },
-            network,
-        )
-        .map_err(|e| AppError::Engine(e.to_string()))?;
+        let candidate_count = download_networks.len();
+        let mut last_error = None;
+        for (index, download_network) in download_networks.iter().enumerate() {
+            match download::download_to_with_progress_bounded_with_network(
+                url,
+                &dest,
+                max_size,
+                &|downloaded| {
+                    progress(DownloadProgress {
+                        downloaded,
+                        total: size,
+                        source: source.clone(),
+                    });
+                },
+                download_network,
+            ) {
+                Ok(_) => {
+                    last_error = None;
+                    break;
+                }
+                Err(error) if download::is_cancelled_error(&error) => {
+                    return Err(AppError::Engine(error.to_string()));
+                }
+                Err(error) => {
+                    log::warn!(
+                        "macOS download address attempt failed candidate={}/{} error={error}",
+                        index + 1,
+                        candidate_count
+                    );
+                    last_error = Some(error);
+                }
+            }
+        }
+        if let Some(error) = last_error {
+            return Err(AppError::Engine(format!(
+                "all validated download addresses failed: {error}"
+            )));
+        }
+        if candidate_count == 0 {
+            return Err(AppError::Engine(
+                "自定义更新下载地址域名解析失败：没有可用的公网地址".to_string(),
+            ));
+        }
     }
 
     let len = std::fs::metadata(&dest)
@@ -600,8 +818,8 @@ pub fn stage_macos_update_with_network(
     // make the NEXT perform/install abort itself at its first checkpoint.
     let _abort_guard = AbortGuard::new();
     let installed = detect_managed_installed();
-    let (_, xml) = fetch_appcast_for_arch(arch_of(&installed), network)?;
-    let appcast = parse_appcast(&xml).map_err(|e| AppError::Engine(e.to_string()))?;
+    let fetched = fetch_appcast_for_arch(arch_of(&installed), network)?;
+    let appcast = parse_appcast(&fetched.xml).map_err(|e| AppError::Engine(e.to_string()))?;
     let plan = plan_update(&appcast, effective_build(simulated_build, &installed))
         .ok_or_else(|| AppError::Engine("appcast had no items".to_string()))?;
 
@@ -641,6 +859,7 @@ pub fn stage_macos_update_with_network(
         &signature,
         &no_progress,
         network,
+        fetched.restrict_downloads,
     ) {
         Ok(dest) => dest,
         Err(err) => {
@@ -1212,6 +1431,7 @@ fn reconstruct_full(
     out_app: &Path,
     progress: &dyn Fn(DownloadProgress),
     network: &NetworkConfig,
+    restrict_downloads: bool,
 ) -> Result<(), AppError> {
     let latest = appcast
         .latest()
@@ -1226,6 +1446,7 @@ fn reconstruct_full(
         &sig,
         progress,
         network,
+        restrict_downloads,
     )?;
     unpack_app_zip(&staged, work, out_app)
 }
@@ -1332,8 +1553,8 @@ pub fn perform_macos_update_with_network_and_phase(
 
     let install_path = PathBuf::from(&installed.path);
 
-    let (_, xml) = fetch_appcast_for_arch(&installed.arch, network)?;
-    let appcast = parse_appcast(&xml).map_err(|e| AppError::Engine(e.to_string()))?;
+    let fetched = fetch_appcast_for_arch(&installed.arch, network)?;
+    let appcast = parse_appcast(&fetched.xml).map_err(|e| AppError::Engine(e.to_string()))?;
     let plan = plan_update(&appcast, installed.build)
         .ok_or_else(|| AppError::Engine("appcast had no items".to_string()))?;
     // The appcast fetch is the slow part of "正在准备" — honor a cancel here,
@@ -1408,23 +1629,45 @@ pub fn perform_macos_update_with_network_and_phase(
                     &sig,
                     progress,
                     network,
+                    fetched.restrict_downloads,
                 )?;
                 set_phase(OperationPhase::Applying);
                 match apply_delta(tool, &install_path, &out_app, &staged) {
                     Ok(()) => strategy_label(&plan.strategy),
                     Err(delta_err) => {
-                        reconstruct_full(&appcast, &work, &out_app, progress, network)?;
+                        reconstruct_full(
+                            &appcast,
+                            &work,
+                            &out_app,
+                            progress,
+                            network,
+                            fetched.restrict_downloads,
+                        )?;
                         format!("full (delta 应用失败回退: {delta_err})")
                     }
                 }
             } else {
                 set_phase(OperationPhase::Applying);
-                reconstruct_full(&appcast, &work, &out_app, progress, network)?;
+                reconstruct_full(
+                    &appcast,
+                    &work,
+                    &out_app,
+                    progress,
+                    network,
+                    fetched.restrict_downloads,
+                )?;
                 "full (delta 工具缺失，回退全量)".to_string()
             }
         } else {
             set_phase(OperationPhase::Applying);
-            reconstruct_full(&appcast, &work, &out_app, progress, network)?;
+            reconstruct_full(
+                &appcast,
+                &work,
+                &out_app,
+                progress,
+                network,
+                fetched.restrict_downloads,
+            )?;
             "full".to_string()
         };
 
@@ -1833,8 +2076,8 @@ pub fn install_macos_with_network_and_phase_for_target(
     } else {
         "x86_64"
     };
-    let (_, xml) = fetch_appcast_for_arch(arch, network)?;
-    let appcast = parse_appcast(&xml).map_err(|e| AppError::Engine(e.to_string()))?;
+    let fetched = fetch_appcast_for_arch(arch, network)?;
+    let appcast = parse_appcast(&fetched.xml).map_err(|e| AppError::Engine(e.to_string()))?;
     if let Some(latest) = appcast.latest() {
         require_os_supported(latest.minimum_system_version.as_deref())?;
     }
@@ -1849,11 +2092,11 @@ pub fn install_macos_with_network_and_phase_for_target(
     let staging = staging::create_unique_staging("update")?;
     let install_result = install_macos_in_staging(
         &appcast,
-        &install_dir,
         &install_path,
         &staging,
         progress,
         network,
+        fetched.restrict_downloads,
         phase_hook,
     );
     match install_result {
@@ -1888,19 +2131,29 @@ fn require_expected_latest_build(expected: Option<u64>, actual: u64) -> Result<(
 
 fn install_macos_in_staging(
     appcast: &Appcast,
-    install_dir: &Path,
     install_path: &Path,
     staging: &StagingDir,
     progress: &dyn Fn(DownloadProgress),
     network: &NetworkConfig,
+    restrict_downloads: bool,
     phase_hook: Option<&PhaseHook<'_>>,
 ) -> Result<MacInstallStatus, AppError> {
+    let install_dir = install_path
+        .parent()
+        .ok_or_else(|| AppError::Internal("macOS 安装路径缺少父目录".to_string()))?;
     let work = staging.path();
     let out_app = staging.join("Codex.app");
     let _ = std::fs::remove_dir_all(&out_app);
 
     // Full package only — no basis bundle to delta against.
-    reconstruct_full(appcast, work, &out_app, progress, network)?;
+    reconstruct_full(
+        appcast,
+        work,
+        &out_app,
+        progress,
+        network,
+        restrict_downloads,
+    )?;
     if let Some(hook) = phase_hook {
         hook(OperationPhase::Verifying);
     }
@@ -3246,6 +3499,77 @@ mod disk_preflight_tests {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proxy_only_dns_falls_back_to_validated_doh_addresses() {
+        let network = NetworkConfig::custom("socks5h://127.0.0.1:7890");
+        let resolved = resolve_custom_source_for_network_with(
+            "https://proxy-only.invalid/appcast.xml",
+            &network,
+            |_| Err(UrlRejectReason::DnsResolutionFailed),
+            |host| {
+                assert_eq!(host, "proxy-only.invalid");
+                Ok(vec!["93.184.216.34".parse().unwrap()])
+            },
+        )
+        .unwrap();
+
+        assert_eq!(resolved.host, "proxy-only.invalid");
+        assert_eq!(
+            resolved.addresses,
+            ["93.184.216.34".parse::<IpAddr>().unwrap()]
+        );
+
+        let direct_error = resolve_custom_source_for_network_with(
+            "https://proxy-only.invalid/appcast.xml",
+            &NetworkConfig::direct(),
+            |_| Err(UrlRejectReason::DnsResolutionFailed),
+            |_| panic!("direct mode must not disclose DNS names to the proxy DoH fallback"),
+        );
+        assert_eq!(direct_error, Err(UrlRejectReason::DnsResolutionFailed));
+    }
+
+    #[test]
+    fn proxy_doh_answers_are_strictly_parsed_and_deduplicated() {
+        let addresses = parse_doh_addresses(
+            r#"{
+                "Status": 0,
+                "Answer": [
+                    {"name":"example.com.","type":5,"TTL":60,"data":"edge.example.net."},
+                    {"name":"edge.example.net.","type":1,"TTL":60,"data":"93.184.216.34"},
+                    {"name":"edge.example.net.","type":1,"TTL":60,"data":"93.184.216.34"},
+                    {"name":"edge.example.net.","type":28,"TTL":60,"data":"2606:2800:220:1:248:1893:25c8:1946"}
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(addresses.len(), 2);
+        assert!(addresses.contains(&"93.184.216.34".parse().unwrap()));
+        assert!(addresses.contains(&"2606:2800:220:1:248:1893:25c8:1946".parse().unwrap()));
+        assert!(parse_doh_addresses(r#"{"Status": 2}"#).is_err());
+        assert!(
+            parse_doh_addresses(r#"{"Status":0,"Answer":[{"type":1,"data":"not-an-ip"}]}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn destination_candidates_preserve_every_validated_address() {
+        let network = NetworkConfig::system();
+        let addresses = [
+            "93.184.216.34".parse().unwrap(),
+            "2001:db8::1".parse().unwrap(),
+        ];
+
+        assert_eq!(
+            pinned_network_candidates(&network, "updates.example.com", 443, &addresses),
+            vec![
+                network.with_https_destination_pin("updates.example.com", 443, addresses[0]),
+                network.with_https_destination_pin("updates.example.com", 443, addresses[1]),
+            ]
+        );
+    }
 
     #[test]
     fn abort_guard_preserves_a_startup_race_cancel_and_resets_on_drop() {
