@@ -6,7 +6,7 @@ license = "MIT"
 description = "Asset-based UI theme engine for the Codex desktop app: loopback CDP injection, zero modification of app files. Rust port of codex-theme-studio's core."
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
