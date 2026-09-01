@@ -1267,7 +1267,7 @@ jobs:
       - name: Upload GitHub Release draft
         id: upload_release_draft
         if: ${{ steps.provenance.outputs.ready == 'true' && steps.release_source.outputs.existing != 'true' }}
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           draft: true
@@ -1301,7 +1301,7 @@ jobs:
       - name: Publish GitHub Release
         id: publish_release
         if: ${{ steps.provenance.outputs.ready == 'true' && steps.release_source.outputs.existing != 'true' }}
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
 
