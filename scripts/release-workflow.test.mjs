@@ -37,6 +37,10 @@ const signalWorkflow = await readFile(
   join(repoRoot, ".github/workflows/release-source.yml"),
   "utf8",
 );
+const wingetWorkflow = await readFile(
+  join(repoRoot, ".github/workflows/winget.yml"),
+  "utf8",
+);
 const mirrorRelease = await readFile(
   join(repoRoot, "scripts/mirror-release.mjs"),
   "utf8",
@@ -823,5 +827,33 @@ describe("release workflow recovery invariants", () => {
     expect(existingStep).toContain("--predicate-type");
     expect(existingStep).toContain("release-binding.mjs attestation");
     expect(existingStep).toContain("--deny-self-hosted-runners");
+  });
+});
+
+describe("winget workflow supply-chain invariants", () => {
+  it("uses a digest-pinned Komac binary instead of a nested mutable action", () => {
+    expect(wingetWorkflow).not.toContain("vedantmgoyal9/winget-releaser@");
+    expect(wingetWorkflow).not.toContain("cargo-bins/cargo-binstall@");
+    expect(wingetWorkflow).toContain('KOMAC_VERSION: "2.16.0"');
+    expect(wingetWorkflow).toContain(
+      'KOMAC_SHA256: "7d2707fa6210f2789a3702de49fbd150b736dbf426ee0b9bc8e098736f9fd82d"',
+    );
+    expect(wingetWorkflow).toContain("sha256sum --check --strict");
+  });
+
+  it("keeps submission bounded and documents the fork-sync token scopes", () => {
+    expect(wingetWorkflow).toContain('`public_repo` and `workflow` scopes');
+    expect(wingetWorkflow).toContain("komac sync-fork");
+    expect(wingetWorkflow).toContain(
+      'repos/microsoft/winget-pkgs/contents/$manifest_path',
+    );
+    expect(wingetWorkflow).toContain(
+      "is already present in winget-pkgs; nothing to submit.",
+    );
+    expect(wingetWorkflow).toContain(
+      'expected exactly two x64/arm64 NSIS installers',
+    );
+    expect(wingetWorkflow).toContain("KOMAC_FORK_OWNER");
+    expect(wingetWorkflow).toContain("komac cleanup --only-merged --all");
   });
 });

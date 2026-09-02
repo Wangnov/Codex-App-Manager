@@ -6,9 +6,10 @@ name: Publish to winget
 #
 # Prerequisites (one-time):
 #   1. Secret WINGET_TOKEN — a *classic* Personal Access Token with the
-#      `public_repo` scope (the action forks winget-pkgs and opens a PR under
-#      your account). Fine-grained tokens do not work.
-#   2. If the package ever needs to be recreated, winget-releaser updates an
+#      `public_repo` and `workflow` scopes (Komac syncs the winget-pkgs fork,
+#      including upstream workflow changes, and opens a PR under your account).
+#      Fine-grained tokens do not work.
+#   2. If the package ever needs to be recreated, Komac updates an
 #      existing package; the first version of a brand-new package usually has
 #      to be bootstrapped once (e.g. `wingetcreate new` on Windows, or a
 #      hand-authored winget-pkgs PR).
@@ -46,11 +47,66 @@ jobs:
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # winget-releaser v2 currently delegates to cargo-binstall@main from its
+      # composite action. That mutable nested action cannot satisfy this
+      # repository's full-SHA policy, so install a fixed Komac artifact directly
+      # and verify the digest published with that exact upstream release.
+      - name: Install pinned Komac
+        if: steps.gate.outputs.ok == 'true'
+        env:
+          KOMAC_VERSION: "2.16.0"
+          KOMAC_SHA256: "7d2707fa6210f2789a3702de49fbd150b736dbf426ee0b9bc8e098736f9fd82d"
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/komac.tar.gz"
+          bin_dir="$RUNNER_TEMP/komac-bin"
+          url="https://github.com/russellbanks/Komac/releases/download/v${KOMAC_VERSION}/komac-${KOMAC_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+
+          curl --fail --location --retry 3 --retry-all-errors "$url" --output "$archive"
+          printf '%s  %s\n' "$KOMAC_SHA256" "$archive" | sha256sum --check --strict
+          mkdir -p "$bin_dir"
+          tar -xzf "$archive" -C "$bin_dir"
+          test -x "$bin_dir/komac"
+          "$bin_dir/komac" --version
+          echo "$bin_dir" >> "$GITHUB_PATH"
+
       - name: Submit to winget-pkgs
         if: steps.gate.outputs.ok == 'true'
-        uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e  # v2
-        with:
-          identifier: Wangnov.CodexAppManager
-          installers-regex: '_(x64|arm64)-setup\.exe$'
-          release-tag: ${{ inputs.release-tag || github.event.release.tag_name }}
-          token: ${{ secrets.WINGET_TOKEN }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          KOMAC_CREATED_WITH: Codex App Manager release workflow
+          KOMAC_CREATED_WITH_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/winget.yml
+          KOMAC_FORK_OWNER: ${{ github.repository_owner }}
+          RELEASE_TAG: ${{ inputs.release-tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_TAG"
+
+          release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")"
+          published_tag="$(jq -r '.tag_name' <<< "$release_json")"
+          test "$published_tag" = "$RELEASE_TAG"
+          version="${published_tag#v}"
+
+          manifest_path="manifests/w/Wangnov/CodexAppManager/$version"
+          if gh api "repos/microsoft/winget-pkgs/contents/$manifest_path" --silent >/dev/null 2>&1; then
+            echo "Wangnov.CodexAppManager $version is already present in winget-pkgs; nothing to submit."
+            exit 0
+          fi
+
+          mapfile -t installer_urls < <(
+            jq -r '.assets[] | select(.name | test("_(x64|arm64)-setup\\.exe$")) | .browser_download_url' \
+              <<< "$release_json"
+          )
+          if [ "${#installer_urls[@]}" -ne 2 ]; then
+            echo "::error::expected exactly two x64/arm64 NSIS installers, found ${#installer_urls[@]}"
+            exit 1
+          fi
+
+          komac sync-fork
+          komac update Wangnov.CodexAppManager \
+            --version "$version" \
+            --release-notes-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$published_tag" \
+            --submit \
+            --urls "${installer_urls[@]}"
+          komac cleanup --only-merged --all
