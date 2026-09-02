@@ -1405,8 +1405,8 @@ jobs:
       # The release above is created with GITHUB_TOKEN, which by design does not
       # trigger other workflows — so winget.yml's `on: release` never fires.
       # Dispatch it explicitly (stable releases only). winget.yml no-ops cleanly
-      # without WINGET_TOKEN, and winget-releaser skips versions already present,
-      # so a re-run is harmless.
+      # without WINGET_TOKEN, and Komac checks for an existing version or PR, so
+      # a re-run is harmless.
       - name: Trigger winget submission
         id: winget
         if: ${{ success() && steps.provenance.outputs.ready == 'true' && !contains(env.RELEASE_TAG, '-') }}
