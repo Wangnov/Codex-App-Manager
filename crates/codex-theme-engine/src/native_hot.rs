@@ -12,10 +12,12 @@
 //! dedupes into the live module graph) and cache the functions on `window`.
 //!
 //! Discovery is version-adapted: 26.707 keeps the eager loaded-chunk scan,
-//! while 26.715 follows the Vite dependency manifest to its lazy
-//! `setting-storage-*` chunk. A version hint only controls probe order; every
-//! adapter still proves the module structurally before it is used, so a stale
-//! installed-version cache cannot select an incompatible implementation.
+//! 26.715 follows the Vite dependency manifest to its lazy
+//! `setting-storage-*` chunk, and 26.831.21537+ accepts the full ASCII
+//! JavaScript identifier shape after Rolldown first minified the write wrapper
+//! to `$D`. A version hint only controls probe order; every adapter still proves
+//! the module structurally before it is used, so a stale installed-version
+//! cache cannot select an incompatible implementation.
 
 use serde_json::Value;
 
@@ -42,6 +44,7 @@ pub const SETTING_KEYS: [&str; 5] = [
 enum SettingsAdapter {
     V26_707,
     V26_715,
+    V26_831_21537,
 }
 
 impl SettingsAdapter {
@@ -49,17 +52,30 @@ impl SettingsAdapter {
         match self {
             Self::V26_707 => "26.707",
             Self::V26_715 => "26.715",
+            Self::V26_831_21537 => "26.831.21537+",
         }
     }
 }
 
+// Mirror package comparison pins the boundary: 26.831.20005 still emitted
+// `nO`/`tO`, while the next published build, 26.831.21537, emitted `$D`/`QD`.
+const FULL_JS_IDENTIFIER_MIN_VERSION: [u32; 3] = [26, 831, 21537];
+
+fn version_triplet(version: &str) -> Option<[u32; 3]> {
+    let mut parts = version.trim().split('.');
+    Some([
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+    ])
+}
+
 fn preferred_adapter(version_hint: Option<&str>) -> Option<SettingsAdapter> {
-    let train = version_hint?
-        .trim()
-        .split('.')
-        .nth(1)?
-        .parse::<u32>()
-        .ok()?;
+    let version = version_triplet(version_hint?)?;
+    if version >= FULL_JS_IDENTIFIER_MIN_VERSION {
+        return Some(SettingsAdapter::V26_831_21537);
+    }
+    let train = version[1];
     match train {
         707..=714 => Some(SettingsAdapter::V26_707),
         715.. => Some(SettingsAdapter::V26_715),
@@ -67,12 +83,23 @@ fn preferred_adapter(version_hint: Option<&str>) -> Option<SettingsAdapter> {
     }
 }
 
-fn adapter_order(version_hint: Option<&str>) -> [SettingsAdapter; 2] {
+fn adapter_order(version_hint: Option<&str>) -> [SettingsAdapter; 3] {
     match preferred_adapter(version_hint) {
-        Some(SettingsAdapter::V26_707) => [SettingsAdapter::V26_707, SettingsAdapter::V26_715],
-        Some(SettingsAdapter::V26_715) | None => {
-            [SettingsAdapter::V26_715, SettingsAdapter::V26_707]
-        }
+        Some(SettingsAdapter::V26_707) => [
+            SettingsAdapter::V26_707,
+            SettingsAdapter::V26_715,
+            SettingsAdapter::V26_831_21537,
+        ],
+        Some(SettingsAdapter::V26_715) => [
+            SettingsAdapter::V26_715,
+            SettingsAdapter::V26_707,
+            SettingsAdapter::V26_831_21537,
+        ],
+        Some(SettingsAdapter::V26_831_21537) | None => [
+            SettingsAdapter::V26_831_21537,
+            SettingsAdapter::V26_715,
+            SettingsAdapter::V26_707,
+        ],
     }
 }
 
@@ -92,15 +119,20 @@ const ENSURE_API_JS_TEMPLATE: &str = r#"(async () => {
   }
   const preferred = "__CAM_PREFERRED_ADAPTER__";
   const adapters = preferred === "26.707"
-    ? ["26.707", "26.715"]
-    : ["26.715", "26.707"];
+    ? ["26.707", "26.715", "26.831.21537+"]
+    : preferred === "26.715"
+      ? ["26.715", "26.707", "26.831.21537+"]
+      : ["26.831.21537+", "26.715", "26.707"];
   const loadedUrls = [...new Set([
     ...performance.getEntriesByType("resource").map((r) => r.name),
     ...[...document.querySelectorAll("script[src]")].map((el) => el.src),
     ...[...document.querySelectorAll('link[rel="modulepreload"]')].map((el) => el.href),
   ])].filter((u) => u.includes(".js"));
-  const writeRe = /async function (\w+)\(e,t\)\{await (\w+)\([`'"]set-setting[`'"],\{params:\{key:e\.key,value:t\}\}\)\}/;
-  const readRe = /async function (\w+)\(e\)\{return\(await (\w+)\([`'"]get-setting[`'"],\{params:\{key:e\.key\}\}\)\)\.value\?\?e\.default\}/;
+  const legacyWriteRe = /async function (\w+)\(e,t\)\{await (\w+)\([`'"]set-setting[`'"],\{params:\{key:e\.key,value:t\}\}\)\}/;
+  const legacyReadRe = /async function (\w+)\(e\)\{return\(await (\w+)\([`'"]get-setting[`'"],\{params:\{key:e\.key\}\}\)\)\.value\?\?e\.default\}/;
+  const modernWriteRe = /async function ([$A-Za-z_][$A-Za-z0-9_]*)\(e,t\)\{await ([$A-Za-z_][$A-Za-z0-9_]*)\([`'"]set-setting[`'"],\{params:\{key:e\.key,value:t\}\}\)\}/;
+  const modernReadRe = /async function ([$A-Za-z_][$A-Za-z0-9_]*)\(e\)\{return\(await ([$A-Za-z_][$A-Za-z0-9_]*)\([`'"]get-setting[`'"],\{params:\{key:e\.key\}\}\)\)\.value\?\?e\.default\}/;
+  const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const fetched = new Map();
   const checked = new Set();
   const fetchText = async (url) => {
@@ -132,6 +164,10 @@ const ENSURE_API_JS_TEMPLATE: &str = r#"(async () => {
     return [...candidates];
   };
   const resolveModule = async (adapter, candidates) => {
+    const modern = adapter === "26.831.21537+";
+    const writeRe = modern ? modernWriteRe : legacyWriteRe;
+    const readRe = modern ? modernReadRe : legacyReadRe;
+    const exportIdentifier = modern ? "[$A-Za-z_][$A-Za-z0-9_]*" : "\\w+";
     for (const url of candidates) {
       const text = await fetchText(url);
       if (text == null || !text.includes("set-setting")) continue;
@@ -139,7 +175,10 @@ const ENSURE_API_JS_TEMPLATE: &str = r#"(async () => {
       const readMatch = text.match(readRe);
       if (!writeMatch || !readMatch) continue;
       const aliasOf = (name) => {
-        const match = text.match(new RegExp("\\b" + name + " as (\\w+)"));
+        const match = text.match(new RegExp(
+          "(?:^|[^$A-Za-z0-9_])" + escapeRegExp(name) +
+            " as (" + exportIdentifier + ")"
+        ));
         return match ? match[1] : null;
       };
       const writeAlias = aliasOf(writeMatch[1]);
@@ -403,15 +442,19 @@ mod tests {
 
     #[test]
     fn discovery_script_carries_the_known_minified_shapes() {
-        // The wrapper shapes measured in Codex 26.707.91948. The regexes live
-        // in page-side JS; here we pin the load-bearing fragments so an
-        // accidental edit of ENSURE_API_JS fails loudly.
+        // The legacy wrapper shape was measured in Codex 26.707.91948. The
+        // modern identifier shape was first observed in 26.831.21537, whose
+        // write wrapper is `$D` and export alias is `ezt`. The regexes live in
+        // page-side JS; pin the load-bearing fragments so an accidental edit
+        // of ENSURE_API_JS fails loudly.
         for fragment in [
             r"async function (\w+)\(e,t\)\{await (\w+)\(",
+            r"async function ([$A-Za-z_][$A-Za-z0-9_]*)\(e,t\)",
             "set-setting",
             "get-setting",
             "__camThemeSettingsV1",
             "modulepreload",
+            "escapeRegExp(name)",
             "await import(url)",
         ] {
             assert!(
@@ -425,27 +468,65 @@ mod tests {
     fn adapter_order_tracks_supported_codex_trains() {
         assert_eq!(
             adapter_order(Some("26.707.9981.0")),
-            [SettingsAdapter::V26_707, SettingsAdapter::V26_715]
+            [
+                SettingsAdapter::V26_707,
+                SettingsAdapter::V26_715,
+                SettingsAdapter::V26_831_21537,
+            ]
         );
         assert_eq!(
             adapter_order(Some("26.715.2305.0")),
-            [SettingsAdapter::V26_715, SettingsAdapter::V26_707]
+            [
+                SettingsAdapter::V26_715,
+                SettingsAdapter::V26_707,
+                SettingsAdapter::V26_831_21537,
+            ]
         );
+    }
+
+    #[test]
+    fn full_identifier_adapter_starts_at_first_observed_codex_build() {
+        for previous in ["26.831.11858", "26.831.20005"] {
+            assert_eq!(
+                preferred_adapter(Some(previous)),
+                Some(SettingsAdapter::V26_715),
+                "{previous} must stay on the pre-boundary adapter"
+            );
+        }
+        for current_or_newer in ["26.831.21537", "26.831.21537.0", "26.832.1"] {
+            assert_eq!(
+                preferred_adapter(Some(current_or_newer)),
+                Some(SettingsAdapter::V26_831_21537),
+                "{current_or_newer} must accept full JS identifiers"
+            );
+        }
     }
 
     #[test]
     fn unknown_or_new_version_probes_latest_adapter_first() {
         assert_eq!(
             adapter_order(Some("unexpected")),
-            [SettingsAdapter::V26_715, SettingsAdapter::V26_707]
+            [
+                SettingsAdapter::V26_831_21537,
+                SettingsAdapter::V26_715,
+                SettingsAdapter::V26_707,
+            ]
         );
         assert_eq!(
             adapter_order(Some("26.706.1")),
-            [SettingsAdapter::V26_715, SettingsAdapter::V26_707]
+            [
+                SettingsAdapter::V26_831_21537,
+                SettingsAdapter::V26_715,
+                SettingsAdapter::V26_707,
+            ]
         );
         assert_eq!(
             adapter_order(None),
-            [SettingsAdapter::V26_715, SettingsAdapter::V26_707]
+            [
+                SettingsAdapter::V26_831_21537,
+                SettingsAdapter::V26_715,
+                SettingsAdapter::V26_707,
+            ]
         );
     }
 
@@ -453,10 +534,13 @@ mod tests {
     fn discovery_script_embeds_versioned_probe_order_and_lazy_715_chunk() {
         let legacy = ensure_api_expression(Some("26.707.9981.0"));
         let current = ensure_api_expression(Some("26.715.2305.0"));
+        let modern = ensure_api_expression(Some("26.831.21537"));
         assert!(legacy.contains(r#"const preferred = "26.707""#));
         assert!(current.contains(r#"const preferred = "26.715""#));
+        assert!(modern.contains(r#"const preferred = "26.831.21537+""#));
         assert!(current.contains("setting-storage-"));
-        assert!(current.contains(r#"["26.715", "26.707"]"#));
+        assert!(current.contains(r#"["26.715", "26.707", "26.831.21537+"]"#));
+        assert!(modern.contains(r#"["26.831.21537+", "26.715", "26.707"]"#));
         assert!(!current.contains("response.ok"));
     }
 }

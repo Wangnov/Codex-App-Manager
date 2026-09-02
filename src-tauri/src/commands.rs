@@ -10,7 +10,7 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_updater::UpdaterExt;
 
 use crate::app::atomic_file;
-use crate::app::config_health::ConfigHealth;
+use crate::app::config_health::{ConfigHealth, ConfigStatus, StoreLoadHealth};
 use crate::app::diagnostics::Diagnostics;
 use crate::app::disk::available_space;
 use crate::app::install_tx::SelfUpdatePolicyTransition;
@@ -445,6 +445,12 @@ fn manager_update_matches_confirmation(
     latest_version == expected_version.trim() && current_version == expected_current_version.trim()
 }
 
+fn manager_update_or_stale<T>(update: Option<T>) -> Result<T, AppError> {
+    update.ok_or_else(|| {
+        AppError::StaleExpectation("管理器更新已不可用，请重新检查后再确认。".to_string())
+    })
+}
+
 #[tauri::command]
 pub async fn manager_check_update(
     app: AppHandle,
@@ -472,11 +478,12 @@ pub async fn manager_install_update(
     let updater = manager_updater_builder(&app)?
         .build()
         .map_err(|e| AppError::Engine(format!("build manager updater: {e}")))?;
-    let update = updater
-        .check()
-        .await
-        .map_err(|e| AppError::Engine(format!("check manager update before install: {e}")))?
-        .ok_or_else(|| AppError::Engine("No manager update is available.".to_string()))?;
+    let update = manager_update_or_stale(
+        updater
+            .check()
+            .await
+            .map_err(|e| AppError::Engine(format!("check manager update before install: {e}")))?,
+    )?;
     if !manager_update_matches_confirmation(
         &update.version,
         &update.current_version,
@@ -1676,6 +1683,37 @@ pub async fn win_stage_update(
 #[tauri::command]
 pub fn get_settings(state: State<'_, ManagerState>) -> Result<PersistedAppSettings, CommandError> {
     let mut settings = PersistedAppSettings::load();
+    normalize_settings_for_target(&mut settings, &state.target);
+    Ok(settings)
+}
+
+fn settings_or_strict_error(
+    settings: PersistedAppSettings,
+    health: StoreLoadHealth,
+) -> Result<PersistedAppSettings, AppError> {
+    // `detail` also carries forward-schema warnings. In that case fields which
+    // controlled automatic networking may have defaulted during downgrade, so
+    // a syntactically readable file is still not authoritative.
+    if health.status != ConfigStatus::Ok
+        || health.detail.is_some()
+        || health.unknown_source.is_some()
+    {
+        return Err(AppError::Internal(format!(
+            "无法可靠读取自动更新设置：{}",
+            health.detail.as_deref().unwrap_or("设置存储状态异常")
+        )));
+    }
+    Ok(settings)
+}
+
+/// Read settings for an automatic network check. Unlike `get_settings`, this
+/// refuses recovered/default values when the on-disk preference is uncertain.
+#[tauri::command]
+pub fn get_settings_strict(
+    state: State<'_, ManagerState>,
+) -> Result<PersistedAppSettings, CommandError> {
+    let (settings, health) = PersistedAppSettings::load_with_health();
+    let mut settings = settings_or_strict_error(settings, health)?;
     normalize_settings_for_target(&mut settings, &state.target);
     Ok(settings)
 }
@@ -3202,12 +3240,14 @@ pub async fn win_uninstall(
 mod tests {
     use super::{
         install_root_from_picked_dir, invalidate_retained_pause_if_stale,
-        manager_update_matches_confirmation, normalize_windows_source_base,
-        record_macos_policy_install_state, record_windows_policy_install_state,
+        manager_update_matches_confirmation, manager_update_or_stale,
+        normalize_windows_source_base, record_macos_policy_install_state,
+        record_windows_policy_install_state, settings_or_strict_error,
         validate_historical_architecture_with_compatibility, validate_install_root_path,
         validated_custom_proxy_for_settings, HistoricalPolicyInstallState,
         INSTALL_LOCATION_PROBE_PREFIX,
     };
+    use crate::app::config_health::StoreLoadHealth;
     use crate::app::mac_update::HistoricalMacEvidence;
     use crate::app::op_phase::OperationPhase;
     use crate::app::oplock::{OperationKind, OperationManager};
@@ -3412,6 +3452,29 @@ mod tests {
         assert!(!manager_update_matches_confirmation(
             "0.2.1", "0.2.1", "0.2.1", "0.2.0"
         ));
+        assert!(matches!(
+            manager_update_or_stale::<()>(None),
+            Err(AppError::StaleExpectation(_))
+        ));
+    }
+
+    #[test]
+    fn automatic_manager_check_rejects_uncertain_settings() {
+        let settings = crate::app::settings_store::AppSettings::default();
+        assert!(settings_or_strict_error(settings.clone(), StoreLoadHealth::ok()).is_ok());
+        assert!(settings_or_strict_error(
+            settings.clone(),
+            StoreLoadHealth::corrupt("settings.json unavailable".to_string())
+        )
+        .is_err());
+
+        let mut newer_schema = StoreLoadHealth::ok();
+        newer_schema.detail = Some("settings schema is newer than supported".to_string());
+        assert!(settings_or_strict_error(settings.clone(), newer_schema).is_err());
+
+        let mut unknown_source = StoreLoadHealth::ok();
+        unknown_source.unknown_source = Some("future-source".to_string());
+        assert!(settings_or_strict_error(settings, unknown_source).is_err());
     }
 
     #[test]

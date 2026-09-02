@@ -43,6 +43,11 @@ import { currentPlatform } from "../platform";
 import { WinHome } from "./WinHome";
 import { mib, fmtDateTime } from "../format";
 import { useHomeMotion } from "../motion";
+import {
+  ManagerUpdatePrompt,
+  useManagerUpdatePrompt,
+  type ManagerUpdatePromptController,
+} from "../ManagerUpdatePrompt";
 import { Sheet } from "../Sheet";
 import {
   macSkippedUpdateCandidate,
@@ -77,6 +82,7 @@ type MacOrdinaryExpectation = Extract<
 /** Platform dispatcher — the backend command surface differs per OS. */
 export function Home(props: { onOpenSettings: () => void }) {
   const [hostArchitecture, setHostArchitecture] = useState<string | null>(null);
+  const managerUpdatePrompt = useManagerUpdatePrompt();
   useEffect(() => {
     let active = true;
     void managerApi
@@ -92,18 +98,28 @@ export function Home(props: { onOpenSettings: () => void }) {
     };
   }, []);
   return currentPlatform() === "windows" ? (
-    <WinHome {...props} hostArchitecture={hostArchitecture} />
+    <WinHome
+      {...props}
+      hostArchitecture={hostArchitecture}
+      managerUpdatePrompt={managerUpdatePrompt}
+    />
   ) : (
-    <MacHome {...props} hostArchitecture={hostArchitecture} />
+    <MacHome
+      {...props}
+      hostArchitecture={hostArchitecture}
+      managerUpdatePrompt={managerUpdatePrompt}
+    />
   );
 }
 
 function MacHome({
   onOpenSettings,
   hostArchitecture,
+  managerUpdatePrompt,
 }: {
   onOpenSettings: () => void;
   hostArchitecture: string | null;
+  managerUpdatePrompt: ManagerUpdatePromptController;
 }) {
   const { t, lang } = useI18n();
   const [report, setReport] = useState<MacUpdateReport | null>(null);
@@ -1020,6 +1036,7 @@ function MacHome({
           <Icon name="gear" />
         </button>
       </TopBar>
+      <ManagerUpdatePrompt {...managerUpdatePrompt} />
 
       <div
         className="scroll"

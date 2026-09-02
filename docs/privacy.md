@@ -1,6 +1,6 @@
 # Privacy policy · 隐私政策
 
-Effective date / 生效日期：2026-07-14
+Effective date / 生效日期：2026-09-02
 
 This policy applies to Codex App Manager, its public website, and the download
 router maintained by this repository. Third-party services selected or contacted
@@ -31,9 +31,11 @@ by the user remain subject to their own privacy policies.
 Network requests provide update, download, and verification features; they are
 not used for telemetry:
 
-- **Manager self-update:** the current version checks only when the user selects
-  “Check for manager updates” on the About screen. Download, installation, and
-  restart require a separate user confirmation.
+- **Manager self-update:** when “Check for updates on startup” is enabled (the
+  default), the Manager checks its signed updater feed once after Home loads and
+  shows an in-app banner only when a newer Manager release is available. Users
+  can disable this startup request in Settings or check manually from About.
+  Download, installation, and restart require a separate user confirmation.
 - **Codex update checks:** by default, the Manager checks Codex on the Home
   screen at startup and periodically while the Manager remains open. Users can
   independently disable startup and periodic checks and adjust the interval.
@@ -48,8 +50,9 @@ not used for telemetry:
 
 网络请求只用于更新、下载与校验，不用于遥测：
 
-- **Manager 自身更新：**当前版本只有在用户进入“关于”并点击“检查管理器更新”时才会检查；
-  下载、安装与重启还需要用户再次确认。
+- **Manager 自身更新：**启用“启动时自动检查更新”（默认开启）时，Manager 会在主界面加载后
+  检查一次签名更新源，并且只在存在新版 Manager 时显示应用内横幅。用户可在设置中关闭这次
+  启动请求，也可从“关于”手动检查；下载、安装与重启仍需要用户再次确认。
 - **Codex 更新检查：**默认在主界面启动时检查，并在 Manager 保持打开时按设置周期检查。
   用户可以分别关闭启动检查和定时检查，也可调整间隔。
 - **安装、更新与校验：**用户主动发起操作后，应用会访问所选镜像、OpenAI 官方源、GitHub
@@ -127,13 +130,13 @@ scope.
 
 ## Contact and user choices · 联系方式与用户选择
 
-Users can disable Codex startup/periodic checks, choose an update source and
-proxy, and decide whether to install a Manager update. Report privacy or
+Users can disable startup and periodic update checks, choose an update source
+and proxy, and decide whether to install a Manager update. Report privacy or
 security concerns through [GitHub Issues](https://github.com/Wangnov/Codex-App-Manager/issues).
 Never post tokens, passwords, private keys, complete presigned URLs, or other
 secrets publicly.
 
-用户可以关闭 Codex 启动/定时检查、选择更新源与代理，并决定是否安装 Manager 更新。
+用户可以关闭启动/定时更新检查、选择更新源与代理，并决定是否安装 Manager 更新。
 隐私或安全问题请通过 [GitHub Issues](https://github.com/Wangnov/Codex-App-Manager/issues)
 报告；请勿公开粘贴 token、密码、私钥、完整预签名 URL 或其他秘密。
 
