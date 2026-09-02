@@ -1123,6 +1123,17 @@ export const managerApi = {
       return localSettings();
     }
   },
+  /**
+   * Read settings without converting a native storage failure into defaults.
+   * Automatic network callers use this so an unknown preference fails closed;
+   * ordinary UI callers can keep using getSettings's local fallback.
+   */
+  async getSettingsStrict(): Promise<AppSettings> {
+    if (!hasTauriRuntime()) {
+      return localSettings();
+    }
+    return normalizeSettings(await invoke<AppSettings>("get_settings_strict"));
+  },
   async setSettings(next: AppSettings): Promise<AppSettings> {
     const safe = normalizeSettings(next);
     if (!hasTauriRuntime()) {

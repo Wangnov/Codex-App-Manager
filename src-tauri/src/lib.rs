@@ -754,6 +754,7 @@ pub fn run() {
             commands::manager_check_update,
             commands::manager_install_update,
             commands::get_settings,
+            commands::get_settings_strict,
             commands::set_settings,
             commands::get_config_health,
             commands::restore_config_backup,

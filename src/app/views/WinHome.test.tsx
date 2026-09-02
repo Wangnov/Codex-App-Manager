@@ -33,7 +33,9 @@ vi.mock("../../services/managerApi", async (importOriginal) => {
     managerApi: {
       beginTrackedOperation: vi.fn(),
       armDestructive: vi.fn(),
+      checkManagerUpdate: vi.fn(),
       getSettings: vi.fn(),
+      getSettingsStrict: vi.fn(),
       setSettings: vi.fn(),
       getOperationSnapshot: vi.fn(() => Promise.resolve(null)),
       getPausedOperationSnapshot: vi.fn(() => Promise.resolve(null)),
@@ -203,6 +205,7 @@ describe("WinHome state machine", () => {
     sessionStorage.clear();
     api.beginTrackedOperation.mockResolvedValue("win-install-op-1");
     api.armDestructive.mockResolvedValue("win-op-1");
+    api.checkManagerUpdate.mockResolvedValue({ kind: "none" });
     api.getOperationCompletion.mockResolvedValue(null);
     api.getSettings.mockResolvedValue(settings());
     api.winDefaultInstallRoot.mockResolvedValue(DEFAULT_SETTINGS.installRoot);

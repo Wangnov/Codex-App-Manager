@@ -43,6 +43,10 @@ import {
 import { mib, fmtDateTime } from "../format";
 import { samePath, normalizePath } from "../paths";
 import { useHomeMotion } from "../motion";
+import {
+  ManagerUpdatePrompt,
+  type ManagerUpdatePromptController,
+} from "../ManagerUpdatePrompt";
 import { Sheet } from "../Sheet";
 import {
   skippedUpdateMatches,
@@ -122,9 +126,11 @@ function storeProvenanceRecovery(value: ProvenanceRecovery | null) {
 export function WinHome({
   onOpenSettings,
   hostArchitecture,
+  managerUpdatePrompt,
 }: {
   onOpenSettings: () => void;
   hostArchitecture?: string | null;
+  managerUpdatePrompt?: ManagerUpdatePromptController;
 }) {
   const { t, lang } = useI18n();
   const [report, setReport] = useState<WinUpdateReport | null>(null);
@@ -1384,6 +1390,9 @@ export function WinHome({
           <Icon name="gear" />
         </button>
       </TopBar>
+      {managerUpdatePrompt ? (
+        <ManagerUpdatePrompt {...managerUpdatePrompt} />
+      ) : null}
 
       <div
         className="scroll"

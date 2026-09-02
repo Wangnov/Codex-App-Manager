@@ -2675,6 +2675,27 @@ button.row.danger:hover {
   font-variant-numeric: tabular-nums;
 }
 
+/* Signed Manager update notice: stable Home owns the quiet startup check, and
+   this slot keeps the reusable banner above the scrolling content so the
+   update action is immediately discoverable. */
+.manager-update-prompt {
+  flex: 0 0 auto;
+  padding: var(--space-xs) var(--space-md) 0;
+}
+.manager-update-prompt .banner {
+  width: 100%;
+  max-width: 640px;
+  margin-inline: auto;
+  animation: risein 0.28s var(--ease-out) both;
+}
+.manager-update-prompt .banner > span {
+  flex: 1;
+  min-width: 0;
+}
+.manager-update-prompt .banner .btn {
+  flex-shrink: 0;
+}
+
 /* ── Banner / note ───────────────────────────────────────────────────────── */
 .banner {
   display: flex;
@@ -4035,6 +4056,7 @@ button.row.danger:hover {
   .ring.spin svg,
   .spinicon,
   .cam-icon *,
+  .manager-update-prompt .banner,
   .view > * {
     animation: none !important;
   }

@@ -103,6 +103,19 @@ describe("settings API", () => {
     );
   });
 
+  it("lets automatic network callers fail closed on native settings errors", async () => {
+    vi.stubGlobal("window", {
+      open: vi.fn(),
+      __TAURI_INTERNALS__: {},
+    });
+    invokeMock.mockRejectedValue(new Error("settings unavailable"));
+
+    await expect(managerApi.getSettingsStrict()).rejects.toThrow(
+      "settings unavailable",
+    );
+    expect(invokeMock).toHaveBeenCalledWith("get_settings_strict");
+  });
+
   it("coerces empty custom source and proxy modes to real defaults", async () => {
     const dispatchEvent = vi.fn();
     vi.stubGlobal("window", {

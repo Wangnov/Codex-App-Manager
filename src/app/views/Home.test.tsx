@@ -32,7 +32,9 @@ vi.mock("../../services/managerApi", async (importOriginal) => {
     managerApi: {
       beginTrackedOperation: vi.fn(),
       armDestructive: vi.fn(),
+      checkManagerUpdate: vi.fn(),
       getSettings: vi.fn(),
+      getSettingsStrict: vi.fn(),
       getHostArchitecture: vi.fn(),
       setSettings: vi.fn(),
       getOperationSnapshot: vi.fn(() => Promise.resolve(null)),
@@ -159,6 +161,7 @@ describe("MacHome state machine", () => {
     localStorage.setItem("cam.lang", "zh-CN");
     setPlatform("MacIntel");
     api.getSettings.mockResolvedValue(settings());
+    api.getSettingsStrict.mockResolvedValue(settings());
     api.macStatus.mockResolvedValue(STATUS_MANAGED);
     api.macPlanUpdate.mockResolvedValue(REPORT_UPDATE);
     api.macPerformUpdate.mockResolvedValue(PERFORM_OK);
@@ -170,6 +173,7 @@ describe("MacHome state machine", () => {
     api.getOperationCompletion.mockResolvedValue(null);
     api.beginTrackedOperation.mockResolvedValue("test-install-operation");
     api.armDestructive.mockResolvedValue("test-operation");
+    api.checkManagerUpdate.mockResolvedValue({ kind: "none" });
     api.getHostArchitecture.mockResolvedValue("aarch64");
     api.historicalReleaseCatalog.mockImplementation((platform, architecture) =>
       Promise.resolve({

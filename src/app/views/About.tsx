@@ -1,6 +1,10 @@
 import { useCallback, useId, useState } from "react";
 
-import { managerApi, type ManagerUpdateAvailable } from "../../services/managerApi";
+import {
+  errorCode,
+  managerApi,
+  type ManagerUpdateAvailable,
+} from "../../services/managerApi";
 import { userErrorMessage } from "../errorCopy";
 import { Icon, CodexMark } from "../icons";
 import { useI18n } from "../i18n";
@@ -58,12 +62,19 @@ export function About({ onBack }: { onBack: () => void }) {
     try {
       await pendingUpdate.installAndRelaunch();
     } catch (cause) {
-      setMgrMsg(userErrorMessage(cause, t));
-      setPendingUpdate(null);
+      if (errorCode(cause) === "stale_expectation") {
+        // The feed changed after confirmation. Re-read it now so the localized
+        // "rechecked" contract is true and any replacement version requires a
+        // fresh confirmation.
+        await checkManager();
+      } else {
+        setMgrMsg(userErrorMessage(cause, t));
+        setPendingUpdate(null);
+      }
     } finally {
       setMgrBusy(false);
     }
-  }, [pendingUpdate, t]);
+  }, [checkManager, pendingUpdate, t]);
 
   const openLogsDir = useCallback(async () => {
     setMgrMsg(null);
