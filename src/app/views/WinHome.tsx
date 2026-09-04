@@ -282,6 +282,9 @@ export function WinHome({
     }
   }, [beginOperation, finishOperation, runCheck]);
 
+  const checkAllUpdates = () =>
+    Promise.all([check(), managerUpdatePrompt?.check()]);
+
   const refreshStatus = useCallback(
     async (generation?: number) => {
       const canApply = () =>
@@ -1608,7 +1611,12 @@ export function WinHome({
           {!rechecking && provenanceRecoveryPending && kind !== "external" ? (
             <button
               className="btn primary big"
-              onClick={() => void recheckProvenanceRecovery()}
+              onClick={() =>
+                void Promise.all([
+                  recheckProvenanceRecovery(),
+                  managerUpdatePrompt?.check(),
+                ])
+              }
               disabled={busy !== null}
             >
               <Icon name="refresh" />
@@ -1619,7 +1627,7 @@ export function WinHome({
             <>
               <button
                 className="btn ghost big"
-                onClick={check}
+                onClick={checkAllUpdates}
                 disabled={busy !== null}
               >
                 <Icon name="refresh" />
@@ -1644,7 +1652,7 @@ export function WinHome({
               {launchButton("primary")}
               <button
                 className="btn ghost"
-                onClick={check}
+                onClick={checkAllUpdates}
                 disabled={busy !== null}
               >
                 <Icon name="refresh" />
@@ -1680,7 +1688,7 @@ export function WinHome({
               {launchButton("primary")}
               <button
                 className="btn ghost"
-                onClick={check}
+                onClick={checkAllUpdates}
                 disabled={busy !== null}
               >
                 <Icon name="refresh" />
@@ -1696,7 +1704,7 @@ export function WinHome({
                 {launchButton("primary")}
                 <button
                   className="btn ghost"
-                  onClick={check}
+                  onClick={checkAllUpdates}
                   disabled={busy !== null}
                 >
                   <Icon name="refresh" />
@@ -1706,7 +1714,7 @@ export function WinHome({
             ) : (
               <button
                 className="btn primary big"
-                onClick={check}
+                onClick={checkAllUpdates}
                 disabled={busy !== null}
               >
                 <Icon name="refresh" />

@@ -210,6 +210,53 @@ describe("MacHome state machine", () => {
     expect(screen.getByRole("button", { name: /立即更新/ })).toBeEnabled();
   });
 
+  it("manually checks Codex and Manager with automatic checks disabled", async () => {
+    const user = userEvent.setup();
+    const manualOnly = settings({ checkOnStartup: false, periodicCheck: false });
+    api.getSettings.mockResolvedValue(manualOnly);
+    api.getSettingsStrict.mockResolvedValue(manualOnly);
+    api.macPlanUpdate.mockResolvedValue(REPORT_UPTODATE);
+    api.checkManagerUpdate.mockResolvedValue({
+      kind: "available", version: "0.5.5", currentVersion: "0.5.4",
+      installAndRelaunch: vi.fn(), discard: vi.fn(),
+    });
+    renderHome();
+    const recheck = await screen.findByRole("button", { name: "重新检查" });
+    expect(api.macPlanUpdate).not.toHaveBeenCalled();
+    expect(api.checkManagerUpdate).not.toHaveBeenCalled();
+    await user.click(recheck);
+    expect(await screen.findByText("发现管理器新版本 0.5.5")).toBeInTheDocument();
+    expect(await screen.findByText("已是最新", { selector: ".headline" })).toBeInTheDocument();
+    expect(api.macPlanUpdate).toHaveBeenCalledTimes(1);
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("finds a Manager update even when the parallel Codex check fails", async () => {
+    const user = userEvent.setup();
+    renderHome();
+    await screen.findByRole("button", { name: "重新检查" });
+    api.macPlanUpdate.mockRejectedValue(new Error("Codex feed offline"));
+    api.checkManagerUpdate.mockResolvedValue({
+      kind: "available", version: "0.5.5", currentVersion: "0.5.4",
+      installAndRelaunch: vi.fn(), discard: vi.fn(),
+    });
+    await user.click(screen.getByRole("button", { name: "重新检查" }));
+    expect(await screen.findByText("发现管理器新版本 0.5.5")).toBeInTheDocument();
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(2);
+    expect(api.macPlanUpdate).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let a failed Manager check hide a successful Codex check", async () => {
+    const user = userEvent.setup();
+    renderHome();
+    await screen.findByRole("button", { name: "重新检查" });
+    api.macPlanUpdate.mockResolvedValue(REPORT_UPTODATE);
+    api.checkManagerUpdate.mockResolvedValue({ kind: "unavailable" });
+    await user.click(screen.getByRole("button", { name: "重新检查" }));
+    expect(await screen.findByText("已是最新", { selector: ".headline" })).toBeInTheDocument();
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(2);
+  });
+
   it("routes the update CTA through the confirm sheet when askBefore is on", async () => {
     const user = userEvent.setup();
     renderHome();
