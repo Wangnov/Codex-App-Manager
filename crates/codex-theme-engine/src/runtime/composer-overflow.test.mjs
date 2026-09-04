@@ -274,7 +274,7 @@ test("attribute-only Composer layout changes invalidate the cached scroll roles"
   annotate([shell]);
   assert.equal(shell.getAttribute(MODE_ATTR), "scrolling");
   // Codex reuses the CSS-module classes and changes only its data attributes.
-  shell.setAttribute("data-composer-layout", "singleline");
+  shell.setAttribute("data-composer-layout", "single-line");
   shell.setAttribute("data-composer-surface-overflow", "visible");
   editor.nativeStyle = { overflowY: "hidden", maxHeight: "none" };
   annotate([shell]);
