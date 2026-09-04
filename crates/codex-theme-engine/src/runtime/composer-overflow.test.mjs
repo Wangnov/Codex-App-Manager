@@ -255,3 +255,29 @@ test("external style invalidation remeasures an unchanged Composer path", () => 
   assert.equal(shell.getAttribute(MODE_ATTR), "scrolling");
   assert.equal(editor.getAttribute(OVERFLOW_ATTR), "editor");
 });
+
+test("attribute-only Composer layout changes invalidate the cached scroll roles", () => {
+  const shell = new FakeNode("div", {
+    className: "_ComposerLayoutRoot_build_2 composer-surface-chrome",
+    attributes: { "data-composer-layout": "multiline", "data-composer-surface-overflow": "auto" },
+  });
+  const editor = shell.append(new FakeNode("div", {
+    nativeStyle: { overflowY: "auto", maxHeight: "160px" },
+  }));
+  editor.append(new FakeNode("div", { attributes: { "data-codex-composer": "true" } }));
+  const annotate = createComposerOverflowAnnotator({
+    overflowAttribute: OVERFLOW_ATTR,
+    modeAttribute: MODE_ATTR,
+    readStyle: (node) => node.nativeStyle,
+    viewportSignature: () => "1280x800",
+  });
+  annotate([shell]);
+  assert.equal(shell.getAttribute(MODE_ATTR), "scrolling");
+  // Codex reuses the CSS-module classes and changes only its data attributes.
+  shell.setAttribute("data-composer-layout", "single-line");
+  shell.setAttribute("data-composer-surface-overflow", "visible");
+  editor.nativeStyle = { overflowY: "hidden", maxHeight: "none" };
+  annotate([shell]);
+  assert.equal(shell.getAttribute(MODE_ATTR), "single-line");
+  assert.equal(editor.getAttribute(OVERFLOW_ATTR), null);
+});
