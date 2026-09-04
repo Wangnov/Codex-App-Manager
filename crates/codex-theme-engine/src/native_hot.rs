@@ -7,9 +7,9 @@
 //! backdrops and the settings query invalidates across views) and persists
 //! through Codex's own store. This module locates those wrappers at runtime —
 //! the chunk file names and minified export aliases change per Codex build,
-//! so discovery is structural: scan the loaded chunks for the wrappers' exact
-//! minified shape, resolve their export aliases, `import()` the chunk (which
-//! dedupes into the live module graph) and cache the functions on `window`.
+//! so discovery is structural: scan candidate chunks, resolve the exported
+//! wrappers, `import()` the chunk (which dedupes into the live module graph)
+//! and cache the functions on `window`.
 //!
 //! Discovery is version-adapted: 26.707 keeps the eager loaded-chunk scan,
 //! 26.715 follows the Vite dependency manifest to its lazy
@@ -18,6 +18,9 @@
 //! to `$D`. A version hint only controls probe order; every adapter still proves
 //! the module structurally before it is used, so a stale installed-version
 //! cache cannot select an incompatible implementation.
+//! 26.901.20858 added native app-host settings branches. Its adapter inspects
+//! exported wrappers' parameter/payload contracts instead of matching their
+//! entire bodies, retaining Codex's own native/legacy dispatch and defaults.
 
 use serde_json::Value;
 
@@ -45,6 +48,7 @@ enum SettingsAdapter {
     V26_707,
     V26_715,
     V26_831_21537,
+    V26_901_20858,
 }
 
 impl SettingsAdapter {
@@ -53,6 +57,7 @@ impl SettingsAdapter {
             Self::V26_707 => "26.707",
             Self::V26_715 => "26.715",
             Self::V26_831_21537 => "26.831.21537+",
+            Self::V26_901_20858 => "26.901.20858+",
         }
     }
 }
@@ -60,6 +65,9 @@ impl SettingsAdapter {
 // Mirror package comparison pins the boundary: 26.831.20005 still emitted
 // `nO`/`tO`, while the next published build, 26.831.21537, emitted `$D`/`QD`.
 const FULL_JS_IDENTIFIER_MIN_VERSION: [u32; 3] = [26, 831, 21537];
+// Mirror's adjacent macOS packages: 26.831.21537 has direct RPC wrappers;
+// 26.901.20858 (build 7658) first adds app-host settings.read/write branches.
+const NATIVE_SETTINGS_BRIDGE_MIN_VERSION: [u32; 3] = [26, 901, 20858];
 
 fn version_triplet(version: &str) -> Option<[u32; 3]> {
     let mut parts = version.trim().split('.');
@@ -72,6 +80,9 @@ fn version_triplet(version: &str) -> Option<[u32; 3]> {
 
 fn preferred_adapter(version_hint: Option<&str>) -> Option<SettingsAdapter> {
     let version = version_triplet(version_hint?)?;
+    if version >= NATIVE_SETTINGS_BRIDGE_MIN_VERSION {
+        return Some(SettingsAdapter::V26_901_20858);
+    }
     if version >= FULL_JS_IDENTIFIER_MIN_VERSION {
         return Some(SettingsAdapter::V26_831_21537);
     }
@@ -83,19 +94,28 @@ fn preferred_adapter(version_hint: Option<&str>) -> Option<SettingsAdapter> {
     }
 }
 
-fn adapter_order(version_hint: Option<&str>) -> [SettingsAdapter; 3] {
+fn adapter_order(version_hint: Option<&str>) -> [SettingsAdapter; 4] {
     match preferred_adapter(version_hint) {
         Some(SettingsAdapter::V26_707) => [
             SettingsAdapter::V26_707,
             SettingsAdapter::V26_715,
             SettingsAdapter::V26_831_21537,
+            SettingsAdapter::V26_901_20858,
         ],
         Some(SettingsAdapter::V26_715) => [
             SettingsAdapter::V26_715,
             SettingsAdapter::V26_707,
             SettingsAdapter::V26_831_21537,
+            SettingsAdapter::V26_901_20858,
         ],
-        Some(SettingsAdapter::V26_831_21537) | None => [
+        Some(SettingsAdapter::V26_831_21537) => [
+            SettingsAdapter::V26_831_21537,
+            SettingsAdapter::V26_715,
+            SettingsAdapter::V26_707,
+            SettingsAdapter::V26_901_20858,
+        ],
+        Some(SettingsAdapter::V26_901_20858) | None => [
+            SettingsAdapter::V26_901_20858,
             SettingsAdapter::V26_831_21537,
             SettingsAdapter::V26_715,
             SettingsAdapter::V26_707,
@@ -105,7 +125,7 @@ fn adapter_order(version_hint: Option<&str>) -> [SettingsAdapter; 3] {
 
 /// Locate + cache the renderer's settings API (idempotent). The cache lives on
 /// `window.__camThemeSettingsV1`, so repeated ops skip the chunk scan.
-const PREFERRED_ADAPTER_TOKEN: &str = "__CAM_PREFERRED_ADAPTER__";
+const ADAPTERS_TOKEN: &str = "__CAM_ADAPTERS__";
 
 const ENSURE_API_JS_TEMPLATE: &str = r#"(async () => {
   const w = window;
@@ -117,12 +137,7 @@ const ENSURE_API_JS_TEMPLATE: &str = r#"(async () => {
       url: w.__camThemeSettingsV1.url,
     };
   }
-  const preferred = "__CAM_PREFERRED_ADAPTER__";
-  const adapters = preferred === "26.707"
-    ? ["26.707", "26.715", "26.831.21537+"]
-    : preferred === "26.715"
-      ? ["26.715", "26.707", "26.831.21537+"]
-      : ["26.831.21537+", "26.715", "26.707"];
+  const adapters = __CAM_ADAPTERS__;
   const loadedUrls = [...new Set([
     ...performance.getEntriesByType("resource").map((r) => r.name),
     ...[...document.querySelectorAll("script[src]")].map((el) => el.src),
@@ -133,6 +148,49 @@ const ENSURE_API_JS_TEMPLATE: &str = r#"(async () => {
   const modernWriteRe = /async function ([$A-Za-z_][$A-Za-z0-9_]*)\(e,t\)\{await ([$A-Za-z_][$A-Za-z0-9_]*)\([`'"]set-setting[`'"],\{params:\{key:e\.key,value:t\}\}\)\}/;
   const modernReadRe = /async function ([$A-Za-z_][$A-Za-z0-9_]*)\(e\)\{return\(await ([$A-Za-z_][$A-Za-z0-9_]*)\([`'"]get-setting[`'"],\{params:\{key:e\.key\}\}\)\)\.value\?\?e\.default\}/;
   const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Resolve the real exported functions, not hard-coded/minified export names.
+  // Inspect but never invoke candidates during discovery. The two wrappers
+  // must use their own key/value parameters and the same RPC fallback. Native
+  // bridge branches, guards and whitespace around that contract may vary.
+  const exportedSettingsWrappers = (mod) => {
+    const id = "[$A-Za-z_][$A-Za-z0-9_]*";
+    const paramsRe = new RegExp(
+      "^async\\s+function(?:\\s+" + id + ")?\\s*\\(\\s*(" + id +
+      ")(?:\\s*,\\s*(" + id + "))?\\s*\\)\\s*\\{"
+    );
+    const reads = [];
+    const writes = [];
+    for (const fn of new Set(Object.values(mod))) {
+      if (typeof fn !== "function") continue;
+      let source;
+      // Codex's instrumentation wraps Function#toString; some unrelated
+      // exports cannot be inspected through it. Skip those, not the module.
+      try { source = Function.prototype.toString.call(fn); } catch { continue; }
+      const params = source.match(paramsRe);
+      if (!params) continue;
+      const key = escapeRegExp(params[1]) + "\\s*\\.\\s*key";
+      if (params[2] == null) {
+        const readRe = new RegExp(
+          "\\(\\s*await\\s+(" + id + ")\\s*\\(\\s*[`'\"]get-setting[`'\"]\\s*,\\s*" +
+          "\\{\\s*params\\s*:\\s*\\{\\s*key\\s*:\\s*" + key + "\\s*\\}\\s*\\}\\s*\\)\\s*\\)" +
+          "\\s*\\.\\s*value\\s*\\?\\?\\s*" + escapeRegExp(params[1]) + "\\s*\\.\\s*default"
+        );
+        const match = source.match(readRe);
+        if (match) reads.push({ fn, rpc: match[1] });
+      } else {
+        const writeRe = new RegExp(
+          "\\bawait\\s+(" + id + ")\\s*\\(\\s*[`'\"]set-setting[`'\"]\\s*,\\s*" +
+          "\\{\\s*params\\s*:\\s*\\{\\s*key\\s*:\\s*" + key + "\\s*,\\s*value\\s*:\\s*" +
+          escapeRegExp(params[2]) + "\\s*\\}\\s*\\}\\s*\\)"
+        );
+        const match = source.match(writeRe);
+        if (match) writes.push({ fn, rpc: match[1] });
+      }
+    }
+    // Do not guess when a module exposes several different settings APIs.
+    if (reads.length !== 1 || writes.length !== 1 || reads[0].rpc !== writes[0].rpc) return null;
+    return { read: reads[0].fn, write: writes[0].fn };
+  };
   const fetched = new Map();
   const checked = new Set();
   const fetchText = async (url) => {
@@ -171,6 +229,16 @@ const ENSURE_API_JS_TEMPLATE: &str = r#"(async () => {
     for (const url of candidates) {
       const text = await fetchText(url);
       if (text == null || !text.includes("set-setting")) continue;
+      if (adapter === "26.901.20858+") {
+        // Only import an app settings candidate, never every loaded chunk.
+        if (!text.includes("get-setting") || !text.includes("async function")) continue;
+        let mod;
+        try { mod = await import(url); } catch { continue; }
+        const api = exportedSettingsWrappers(mod);
+        if (!api) continue;
+        w.__camThemeSettingsV1 = { ...api, url, adapter };
+        return { ok: true, cached: false, adapter, url, checked: checked.size };
+      }
       const writeMatch = text.match(writeRe);
       const readMatch = text.match(readRe);
       if (!writeMatch || !readMatch) continue;
@@ -198,6 +266,10 @@ const ENSURE_API_JS_TEMPLATE: &str = r#"(async () => {
     const candidates = adapter === "26.715" ? await lazy715Candidates() : loadedUrls;
     const outcome = await resolveModule(adapter, candidates);
     if (outcome != null) return outcome;
+    if (adapter === "26.901.20858+") {
+      const lazyOutcome = await resolveModule(adapter, await lazy715Candidates());
+      if (lazyOutcome != null) return lazyOutcome;
+    }
   }
   return {
     ok: false,
@@ -207,8 +279,11 @@ const ENSURE_API_JS_TEMPLATE: &str = r#"(async () => {
 })()"#;
 
 fn ensure_api_expression(version_hint: Option<&str>) -> String {
-    let preferred = adapter_order(version_hint)[0].id();
-    ENSURE_API_JS_TEMPLATE.replace(PREFERRED_ADAPTER_TOKEN, preferred)
+    let adapters = adapter_order(version_hint).map(SettingsAdapter::id);
+    ENSURE_API_JS_TEMPLATE.replace(
+        ADAPTERS_TOKEN,
+        &serde_json::to_string(&adapters).expect("static adapter IDs"),
+    )
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -226,8 +301,8 @@ struct JsOutcome {
 
 async fn run_js(session: &CdpSession, expression: &str, what: &str) -> Result<JsOutcome> {
     let value = session.evaluate(expression).await?;
-    let outcome: JsOutcome = serde_json::from_value(value)
-        .map_err(|e| err(format!("{what}: 结果解析失败: {e}")))?;
+    let outcome: JsOutcome =
+        serde_json::from_value(value).map_err(|e| err(format!("{what}: 结果解析失败: {e}")))?;
     if !outcome.ok {
         return Err(err(format!(
             "hot-import-unsupported: {what}: {}",
@@ -300,8 +375,8 @@ pub async fn write_values(
         .iter()
         .map(|(key, value)| serde_json::json!([key, value]))
         .collect();
-    let payload_json = serde_json::to_string(&payload)
-        .map_err(|e| err(format!("写入负载序列化失败: {e}")))?;
+    let payload_json =
+        serde_json::to_string(&payload).map_err(|e| err(format!("写入负载序列化失败: {e}")))?;
     let expression = format!(
         r#"(async () => {{
   const api = window.__camThemeSettingsV1;
@@ -317,7 +392,9 @@ pub async fn write_values(
   return {{ ok: true }};
 }})()"#
     );
-    run_js(session, &expression, "写入外观设置").await.map(|_| ())
+    run_js(session, &expression, "写入外观设置")
+        .await
+        .map(|_| ())
 }
 
 /// The write set for a typed theme: both ChromeThemes, both code theme ids
@@ -456,6 +533,8 @@ mod tests {
             "modulepreload",
             "escapeRegExp(name)",
             "await import(url)",
+            "Function.prototype.toString.call(fn)",
+            "reads[0].rpc !== writes[0].rpc",
         ] {
             assert!(
                 ENSURE_API_JS_TEMPLATE.contains(fragment),
@@ -472,6 +551,7 @@ mod tests {
                 SettingsAdapter::V26_707,
                 SettingsAdapter::V26_715,
                 SettingsAdapter::V26_831_21537,
+                SettingsAdapter::V26_901_20858,
             ]
         );
         assert_eq!(
@@ -480,6 +560,7 @@ mod tests {
                 SettingsAdapter::V26_715,
                 SettingsAdapter::V26_707,
                 SettingsAdapter::V26_831_21537,
+                SettingsAdapter::V26_901_20858,
             ]
         );
     }
@@ -507,6 +588,7 @@ mod tests {
         assert_eq!(
             adapter_order(Some("unexpected")),
             [
+                SettingsAdapter::V26_901_20858,
                 SettingsAdapter::V26_831_21537,
                 SettingsAdapter::V26_715,
                 SettingsAdapter::V26_707,
@@ -515,6 +597,7 @@ mod tests {
         assert_eq!(
             adapter_order(Some("26.706.1")),
             [
+                SettingsAdapter::V26_901_20858,
                 SettingsAdapter::V26_831_21537,
                 SettingsAdapter::V26_715,
                 SettingsAdapter::V26_707,
@@ -523,6 +606,7 @@ mod tests {
         assert_eq!(
             adapter_order(None),
             [
+                SettingsAdapter::V26_901_20858,
                 SettingsAdapter::V26_831_21537,
                 SettingsAdapter::V26_715,
                 SettingsAdapter::V26_707,
@@ -531,16 +615,41 @@ mod tests {
     }
 
     #[test]
+    fn native_bridge_adapter_starts_at_first_observed_codex_build() {
+        for previous in ["26.831.21537", "26.901.20857"] {
+            assert_eq!(
+                preferred_adapter(Some(previous)),
+                Some(SettingsAdapter::V26_831_21537),
+                "{previous} must stay on the pre-bridge adapter"
+            );
+        }
+        for current_or_newer in ["26.901.20858", "26.901.20858.0", "26.901.22334", "27.1.1"] {
+            assert_eq!(
+                preferred_adapter(Some(current_or_newer)),
+                Some(SettingsAdapter::V26_901_20858),
+                "{current_or_newer} must accept native bridge branches"
+            );
+        }
+    }
+
+    #[test]
     fn discovery_script_embeds_versioned_probe_order_and_lazy_715_chunk() {
         let legacy = ensure_api_expression(Some("26.707.9981.0"));
         let current = ensure_api_expression(Some("26.715.2305.0"));
         let modern = ensure_api_expression(Some("26.831.21537"));
-        assert!(legacy.contains(r#"const preferred = "26.707""#));
-        assert!(current.contains(r#"const preferred = "26.715""#));
-        assert!(modern.contains(r#"const preferred = "26.831.21537+""#));
+        let native = ensure_api_expression(Some("26.901.20858"));
+        assert!(legacy
+            .contains(r#"const adapters = ["26.707","26.715","26.831.21537+","26.901.20858+"]"#));
+        assert!(current
+            .contains(r#"const adapters = ["26.715","26.707","26.831.21537+","26.901.20858+"]"#));
+        assert!(modern
+            .contains(r#"const adapters = ["26.831.21537+","26.715","26.707","26.901.20858+"]"#));
+        assert!(native
+            .contains(r#"const adapters = ["26.901.20858+","26.831.21537+","26.715","26.707"]"#));
         assert!(current.contains("setting-storage-"));
-        assert!(current.contains(r#"["26.715", "26.707", "26.831.21537+"]"#));
-        assert!(modern.contains(r#"["26.831.21537+", "26.715", "26.707"]"#));
         assert!(!current.contains("response.ok"));
+        for script in [legacy, current, modern, native] {
+            assert!(!script.contains(ADAPTERS_TOKEN));
+        }
     }
 }
