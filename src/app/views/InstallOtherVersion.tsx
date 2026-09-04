@@ -86,6 +86,7 @@ export function InstallOtherVersionSheet({
   open,
   platform,
   currentVersion,
+  allowCurrentVersionInstall = false,
   architecture,
   onDismiss,
   onInstall,
@@ -93,6 +94,7 @@ export function InstallOtherVersionSheet({
   open: boolean;
   platform: Platform;
   currentVersion?: string | null;
+  allowCurrentVersionInstall?: boolean;
   architecture?: string | null;
   onDismiss: () => void;
   onInstall: (selection: HistoricalInstallSelection, blockUpdates: boolean) => void | Promise<void>;
@@ -125,6 +127,7 @@ export function InstallOtherVersionSheet({
   const architectureLabel = resolvedArchitecture ?? t("versionPicker.chooseArchitecture");
   const deviceLabel = `${platform === "macos" ? "macOS" : "Windows"} · ${architectureLabel}`;
   const offlineFormats = platform === "macos" ? [".dmg", ".zip"] : [".msix"];
+  const canRepairCurrent = platform === "windows" && allowCurrentVersionInstall;
 
   const releases = useMemo(() => {
     const source = catalog?.releases ?? [];
@@ -138,7 +141,8 @@ export function InstallOtherVersionSheet({
   )?.tag;
   const firstSelectableIndex = releases.findIndex(
     (release) =>
-      !isCurrentRelease(release, currentVersion, platform) && release.assets.length > 0,
+      (!isCurrentRelease(release, currentVersion, platform) || canRepairCurrent) &&
+      release.assets.length > 0,
   );
 
   const loadCatalog = useCallback(
@@ -171,7 +175,7 @@ export function InstallOtherVersionSheet({
     setCatalogError(null);
     setPickBusy(false);
     setSubmitBusy(false);
-  }, [architecture, currentVersion, open, platform]);
+  }, [allowCurrentVersionInstall, architecture, currentVersion, open, platform]);
 
   useEffect(() => {
     if (!open || !resolvedArchitecture) return;
@@ -194,7 +198,7 @@ export function InstallOtherVersionSheet({
   }, [catalogBusy, open, resolvedArchitecture, view]);
 
   const chooseRelease = (release: HistoricalRelease) => {
-    if (isCurrentRelease(release, currentVersion, platform)) return;
+    if (isCurrentRelease(release, currentVersion, platform) && !canRepairCurrent) return;
     const asset = sortedAssets(release.assets)[0];
     if (!asset) return;
     setSelected({
@@ -278,6 +282,11 @@ export function InstallOtherVersionSheet({
         selected.asset.packageVersion ? ` · ${selected.asset.packageVersion}` : ""
       }`
     : "";
+  const repairingCurrent = Boolean(
+    canRepairCurrent &&
+      selected &&
+      isCurrentRelease(selected.release, currentVersion, platform),
+  );
 
   return (
     <Sheet
@@ -362,6 +371,7 @@ export function InstallOtherVersionSheet({
               {!catalogBusy
                 ? releases.map((release, index) => {
                     const current = isCurrentRelease(release, currentVersion, platform);
+                    const repairableCurrent = current && canRepairCurrent;
                     const recommended = release.tag === recommendedTag;
                     const assets = sortedAssets(release.assets);
                     const size = assets[0]?.size ?? 0;
@@ -373,7 +383,7 @@ export function InstallOtherVersionSheet({
                           current ? " current" : ""
                         }`}
                         onClick={() => chooseRelease(release)}
-                        disabled={current || !resolvedArchitecture}
+                        disabled={(current && !repairableCurrent) || !resolvedArchitecture}
                       >
                         <span className="version-rail" aria-hidden="true">
                           <span />
@@ -391,20 +401,31 @@ export function InstallOtherVersionSheet({
                                 {t("versionPicker.current")}
                               </span>
                             ) : null}
+                            {repairableCurrent ? (
+                              <span className="version-badge recommended">
+                                {t("versionPicker.repair")}
+                              </span>
+                            ) : null}
                           </span>
                           <span className="version-option-meta">
                             GitHub Releases <span aria-hidden="true">·</span>{" "}
                             {releaseDate(release.publishedAt)} <span aria-hidden="true">·</span>{" "}
                             {humanSize(size)}
                           </span>
-                          {!current ? (
+                          {!current || repairableCurrent ? (
                             <span className="version-compatible">
                               <Icon name="check" />
-                              {t("versionPicker.compatible")}
+                              {t(
+                                repairableCurrent
+                                  ? "versionPicker.repair"
+                                  : "versionPicker.compatible",
+                              )}
                             </span>
                           ) : null}
                         </span>
-                        {!current ? <Icon name="chevron" className="version-chevron" /> : null}
+                        {!current || repairableCurrent ? (
+                          <Icon name="chevron" className="version-chevron" />
+                        ) : null}
                       </button>
                     );
                   })
@@ -457,10 +478,17 @@ export function InstallOtherVersionSheet({
             <div className="version-picker-heading confirm-heading">
               <span className="version-picker-kicker">GitHub Releases</span>
               <h3 id={titleId}>
-                {t("versionPicker.confirmTitle", { version: selected.release.version })}
+                {t(
+                  repairingCurrent
+                    ? "versionPicker.confirmRepairTitle"
+                    : "versionPicker.confirmTitle",
+                  { version: selected.release.version },
+                )}
               </h3>
               <p id={bodyId}>
-                {currentVersion
+                {repairingCurrent
+                  ? t("versionPicker.confirmRepairBody")
+                  : currentVersion
                   ? t("versionPicker.confirmBody", {
                       current: currentVersion,
                       target: selected.release.version,
@@ -473,8 +501,12 @@ export function InstallOtherVersionSheet({
               </p>
             </div>
 
-            <div className={`version-transition${currentVersion ? "" : " single"}`}>
-              {currentVersion ? (
+            <div
+              className={`version-transition${
+                currentVersion && !repairingCurrent ? "" : " single"
+              }`}
+            >
+              {currentVersion && !repairingCurrent ? (
                 <>
                   <span>
                     <small>{t("versionPicker.current")}</small>
@@ -566,6 +598,8 @@ export function InstallOtherVersionSheet({
                 <Icon name={submitBusy ? "loader" : "download"} />
                 {submitBusy
                   ? t("progress.preparing")
+                  : repairingCurrent && selected.source === "github"
+                    ? t("versionPicker.repairInstall")
                   : selected.source === "local"
                     ? t("versionPicker.verifyInstall")
                     : t("versionPicker.downloadInstall")}
