@@ -11,10 +11,10 @@ use crate::theme::{
 };
 use crate::{Result, ENGINE_VERSION};
 
-/// The injected renderer runtime — codex-theme-studio's file verbatim. It
+/// The injected renderer runtime — maintained from codex-theme-studio. It
 /// encodes the flicker discipline (compare-before-write), sticky route
-/// detection, icon annotation and cleanup contract; edit it in the studio,
-/// not here.
+/// detection, icon annotation and cleanup contract, plus Manager's host
+/// compatibility shims for existing skin packages.
 const RUNTIME_TEMPLATE: &str = include_str!("runtime/theme-runtime.js");
 const COMPOSER_OVERFLOW_MODULE: &str = include_str!("runtime/composer-overflow.mjs");
 
@@ -119,7 +119,7 @@ pub fn build_payload_from(theme: LoadedTheme) -> Result<BuiltPayload> {
 fn composer_overflow_helpers_expression() -> String {
     let module = COMPOSER_OVERFLOW_MODULE.replace("export function ", "function ");
     format!(
-        "(() => {{\n{module}\nreturn {{ createComposerOverflowAnnotator, selectComposerSurfaces }};\n}})()"
+        "(() => {{\n{module}\nreturn {{ clearComposerSurfaceCompat, createComposerOverflowAnnotator, reconcileComposerSurfaces, selectComposerSurfaces }};\n}})()"
     )
 }
 
@@ -159,6 +159,10 @@ pub const REMOVE_EXPRESSION: &str = r#"(() => {
   document.querySelectorAll('[data-cts-menu-region]').forEach((node) => node.removeAttribute('data-cts-menu-region'));
   document.querySelectorAll('[data-cts-composer-overflow]').forEach((node) => node.removeAttribute('data-cts-composer-overflow'));
   document.querySelectorAll('[data-cts-composer-mode]').forEach((node) => node.removeAttribute('data-cts-composer-mode'));
+  document.querySelectorAll('[data-cts-composer-surface-compat]').forEach((node) => {
+    node.classList.remove('composer-surface-chrome');
+    node.removeAttribute('data-cts-composer-surface-compat');
+  });
   document.documentElement?.style.removeProperty('--cts-windows-menu-height');
   document.documentElement?.style.removeProperty('--cts-windows-sidebar-padding-top');
   document.documentElement?.style.removeProperty('--cts-windows-main-padding-top');
@@ -178,6 +182,7 @@ pub const VERIFY_REMOVED_EXPRESSION: &str = r#"(() =>
   !document.querySelector('[data-cts-menu-region]') &&
   !document.querySelector('[data-cts-composer-overflow]') &&
   !document.querySelector('[data-cts-composer-mode]') &&
+  !document.querySelector('[data-cts-composer-surface-compat]') &&
   !document.documentElement.style.getPropertyValue('--cts-windows-menu-height') &&
   !document.documentElement.style.getPropertyValue('--cts-windows-sidebar-padding-top') &&
   !document.documentElement.style.getPropertyValue('--cts-windows-main-padding-top') &&
@@ -281,6 +286,8 @@ pub fn verify_expression(expected_version: &str) -> Result<String> {
       mainSurfaceCompatible: Boolean(mainSurfaceNode?.classList.contains('main-surface')),
       stageAttachedToMainSurface: !stage || stage.parentElement === mainSurfaceNode,
       composer,
+      composerSurfaceMode: composerNode?.hasAttribute('data-composer-surface-variant') ? 'current' : (composerNode ? 'legacy' : null),
+      composerSurfaceCompatible: Boolean(composerNode?.classList.contains('composer-surface-chrome')),
       composerOverflow,
       sidebar,
       viewport: {{ width: innerWidth, height: innerHeight }},
@@ -298,6 +305,7 @@ pub fn verify_expression(expected_version: &str) -> Result<String> {
       result.mainSurfaceCompatible &&
       result.stageAttachedToMainSurface &&
       Boolean(result.composer?.visible) &&
+      result.composerSurfaceCompatible &&
       result.composerOverflow?.shellRole === 'shell' &&
       result.composerOverflow?.shellOverflowY === 'clip' &&
       result.composerOverflow?.lanesValid === true &&
@@ -459,6 +467,7 @@ mod tests {
             "data-cts-menu-region",
             "data-cts-composer-overflow",
             "data-cts-composer-mode",
+            "data-cts-composer-surface-compat",
             "--cts-windows-menu-height",
             "--cts-windows-sidebar-padding-top",
             "--cts-windows-main-padding-top",
@@ -491,6 +500,18 @@ mod tests {
     }
 
     #[test]
+    fn payload_supports_current_and_legacy_composer_surfaces() {
+        let tmp = tempfile::tempdir().unwrap();
+        let built = build_payload(&fixture_theme(tmp.path())).unwrap();
+        assert!(built.payload.contains("[data-composer-surface-variant][data-composer-layout]"));
+        assert!(built.payload.contains("data-cts-composer-surface-compat"));
+        assert!(built.payload.contains("reconcileComposerSurfaces(document)"));
+        assert!(built.payload.contains("clearComposerSurfaceCompat(document)"));
+        assert!(built.payload.contains(".composer-surface-chrome"));
+        assert!(!built.payload.contains("_ComposerLayoutRoot_"));
+    }
+
+    #[test]
     fn verify_expression_embeds_version() {
         let expr = verify_expression("9.9.9").unwrap();
         assert!(expr.contains("\"9.9.9\""));
@@ -499,6 +520,8 @@ mod tests {
         assert!(expr.contains("mainSurfaceCompatible"));
         assert!(expr.contains("stageAttachedToMainSurface"));
         assert!(expr.contains("composerOverflow"));
+        assert!(expr.contains("composerSurfaceMode"));
+        assert!(expr.contains("composerSurfaceCompatible"));
         assert!(expr.contains("modeValid"));
         assert!(expr.contains("editorValid"));
         assert!(expr.contains("26.727.51351"));

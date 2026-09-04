@@ -10,12 +10,14 @@ const TEMPLATE_PATH = path.join(
   "crates/codex-theme-engine/src/runtime/theme-runtime.js",
 );
 const HELPERS = `({
+  clearComposerSurfaceCompat: () => {},
   createComposerOverflowAnnotator: () => {
     const annotate = () => {};
     annotate.invalidate = () => {};
     return annotate;
   },
   selectComposerSurfaces: () => [],
+  reconcileComposerSurfaces: () => [],
 })`;
 const CSS = `
 html.codex-theme-studio {

@@ -381,7 +381,7 @@ pub const PROBE_EXPRESSION: &str = r#"(() => {
     const markers = {
       shell: Boolean(document.querySelector('main[data-app-shell-main-surface], main.main-surface')),
       sidebar: Boolean(document.querySelector('.app-shell-left-panel')),
-      composer: Boolean(document.querySelector('.composer-surface-chrome')),
+      composer: Boolean(document.querySelector('.composer-surface-chrome, [data-codex-composer-root] [data-composer-surface-variant][data-composer-layout]')),
       main: Boolean(document.querySelector('[role="main"]')),
     };
     const shellMatch = markers.shell && markers.sidebar && (markers.composer || markers.main);

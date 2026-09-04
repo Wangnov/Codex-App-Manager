@@ -22,7 +22,9 @@
   const COMPOSER_OVERFLOW_ATTR = "data-cts-composer-overflow";
   const COMPOSER_MODE_ATTR = "data-cts-composer-mode";
   const {
+    clearComposerSurfaceCompat,
     createComposerOverflowAnnotator,
+    reconcileComposerSurfaces,
     selectComposerSurfaces,
   } = __CTS_COMPOSER_OVERFLOW_HELPERS__;
   const RUNTIME_CSS = `
@@ -86,6 +88,7 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
     .forEach((node) => node.removeAttribute(COMPOSER_OVERFLOW_ATTR));
   document.querySelectorAll(`[${COMPOSER_MODE_ATTR}]`)
     .forEach((node) => node.removeAttribute(COMPOSER_MODE_ATTR));
+  clearComposerSurfaceCompat(document);
 
   // Split the chrome fragment into its layers: "overlay" floats above the UI
   // (fixed, z31), "stage" is scenery mounted inside main UNDER the content.
@@ -379,8 +382,7 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
         if (button.dataset.ctsLogo !== want) button.dataset.ctsLogo = want;
       }
     }
-    const composer = document.querySelector(".composer-surface-chrome");
-    if (composer) {
+    for (const composer of selectComposerSurfaces(document)) {
       for (const button of composer.querySelectorAll("button:not([data-cts-icon])")) {
         const aria = button.getAttribute("aria-label") || "";
         const text = button.textContent || "";
@@ -478,8 +480,9 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
     if (home) setClass(home, "cts-home", true);
     if (shellMain) setClass(shellMain, "cts-home-shell", Boolean(home));
 
+    const composers = reconcileComposerSurfaces(document);
     annotateIcons();
-    annotateComposerOverflow(selectComposerSurfaces(document));
+    annotateComposerOverflow(composers);
 
     const fillTexts = (rootNode) => {
       for (const node of rootNode.querySelectorAll("[data-cts-text]")) {
@@ -582,6 +585,7 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
       .forEach((node) => node.removeAttribute(COMPOSER_OVERFLOW_ATTR));
     document.querySelectorAll(`[${COMPOSER_MODE_ATTR}]`)
       .forEach((node) => node.removeAttribute(COMPOSER_MODE_ATTR));
+    clearComposerSurfaceCompat(document);
     document.getElementById(STYLE_ID)?.remove();
     document.getElementById(CHROME_ID)?.remove();
     document.getElementById(STAGE_ID)?.remove();
@@ -617,7 +621,7 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
       document.documentElement.style.getPropertyPriority(name)}`)
     .join(";");
   const styleMutationTouchesComposer = (target) => Boolean(
-    target.closest?.(".composer-surface-chrome") ||
+    target.closest?.(".composer-surface-chrome, [data-composer-surface-variant][data-composer-layout]") ||
     target.querySelector?.(
       '[data-codex-composer], .ProseMirror[contenteditable="true"], ' +
       '[contenteditable="true"], textarea',
@@ -649,7 +653,12 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
     childList: true,
     subtree: true,
     attributes: true,
-    attributeFilter: ["class", "style", "data-theme", "data-appearance", "data-color-mode"],
+    attributeFilter: [
+      "class", "style", "data-theme", "data-appearance", "data-color-mode",
+      "data-composer-layout", "data-composer-surface-overflow",
+      "data-composer-surface-variant", "data-composer-radius-variant",
+      "data-composer-utility-bar-variant",
+    ],
   });
   const timer = setInterval(() => {
     annotateComposerOverflow.invalidate();
