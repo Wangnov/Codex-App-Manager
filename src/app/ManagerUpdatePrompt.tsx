@@ -10,8 +10,10 @@ import {
 import {
   errorCode,
   managerApi,
+  SETTINGS_CHANGED_EVENT,
   type ManagerUpdateAvailable,
 } from "../services/managerApi";
+import type { AppSettings } from "../shared/types";
 import { StatusBanner, Ring } from "./components";
 import { userErrorMessage } from "./errorCopy";
 import { useI18n } from "./i18n";
@@ -19,19 +21,28 @@ import { Sheet } from "./Sheet";
 
 export interface ManagerUpdatePromptController {
   update: ManagerUpdateAvailable | null;
+  check: () => Promise<void>;
   refresh: () => Promise<void>;
+  setChecksPaused: (paused: boolean) => void;
 }
 
 /**
- * Owns the one-per-session startup check. Home calls this hook at its stable
+ * Owns startup and periodic checks. Home calls this hook at its stable
  * platform-dispatch layer, so Codex progress/finished screens can hide the
- * prompt without remounting the checker and contacting the feed again.
+ * prompt without restarting the schedule. Manual home checks share the same
+ * in-flight request; returning from settings does not remount the checker.
  */
 export function useManagerUpdatePrompt(): ManagerUpdatePromptController {
   const [update, setUpdate] = useState<ManagerUpdateAvailable | null>(null);
   const updateRef = useRef<ManagerUpdateAvailable | null>(null);
   const mountedRef = useRef(false);
   const checkingRef = useRef<Promise<void> | null>(null);
+  const checksPausedRef = useRef(false);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+
+  const setChecksPaused = useCallback((paused: boolean) => {
+    checksPausedRef.current = paused;
+  }, []);
 
   const replaceUpdate = useCallback((next: ManagerUpdateAvailable | null) => {
     const previous = updateRef.current;
@@ -41,17 +52,24 @@ export function useManagerUpdatePrompt(): ManagerUpdatePromptController {
   }, []);
 
   const check = useCallback((): Promise<void> => {
+    if (checksPausedRef.current) return Promise.resolve();
     if (checkingRef.current) return checkingRef.current;
 
     const pending = managerApi
       .checkManagerUpdate()
       .then((result) => {
-        if (result.kind === "available") {
-          if (mountedRef.current) replaceUpdate(result);
-          else void result.discard();
+        // A background result must not replace/discard the version the user
+        // is confirming or installing, even if its request started earlier.
+        if (!mountedRef.current || checksPausedRef.current) {
+          if (result.kind === "available") void result.discard();
           return;
         }
-        if (mountedRef.current) replaceUpdate(null);
+        if (result.kind === "available") {
+          replaceUpdate(result);
+          return;
+        }
+        // An offline/feed failure is not evidence that a known update vanished.
+        if (result.kind === "none") replaceUpdate(null);
       })
       .catch(() => {
         // Startup checks are deliberately quiet. About keeps the explicit
@@ -67,24 +85,45 @@ export function useManagerUpdatePrompt(): ManagerUpdatePromptController {
   useEffect(() => {
     mountedRef.current = true;
     let active = true;
+    let settingsChanged = false;
+    const onSettingsChanged = (event: Event) => {
+      settingsChanged = true;
+      setSettings((event as CustomEvent<AppSettings>).detail);
+    };
+    window.addEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
 
     // Fail closed when local settings cannot be read: an uncertain preference
     // must not become an unsolicited network request.
     void managerApi
       .getSettingsStrict()
       .then((settings) => {
-        if (active && settings.checkOnStartup) void check();
+        // A slow startup read must not overwrite a newer saved preference.
+        if (!active || settingsChanged) return;
+        setSettings(settings);
+        if (settings.checkOnStartup) void check();
       })
       .catch(() => undefined);
 
     return () => {
       active = false;
       mountedRef.current = false;
+      window.removeEventListener(SETTINGS_CHANGED_EVENT, onSettingsChanged);
       const retained = updateRef.current;
       updateRef.current = null;
       void retained?.discard();
     };
   }, [check]);
+
+  const periodicCheck = settings?.periodicCheck ?? false;
+  const intervalSeconds = settings?.periodicCheckIntervalSeconds ?? 900;
+  useEffect(() => {
+    if (!periodicCheck) return;
+    const id = window.setInterval(
+      () => void check(),
+      Math.max(60_000, intervalSeconds * 1000),
+    );
+    return () => window.clearInterval(id);
+  }, [check, periodicCheck, intervalSeconds]);
 
   const refresh = useCallback(async () => {
     // A stale expectation can never succeed on retry. Remove it before asking
@@ -93,7 +132,10 @@ export function useManagerUpdatePrompt(): ManagerUpdatePromptController {
     await check();
   }, [check, replaceUpdate]);
 
-  return useMemo(() => ({ update, refresh }), [refresh, update]);
+  return useMemo(
+    () => ({ update, check, refresh, setChecksPaused }),
+    [check, refresh, setChecksPaused, update],
+  );
 }
 
 /**
@@ -104,6 +146,7 @@ export function useManagerUpdatePrompt(): ManagerUpdatePromptController {
 export function ManagerUpdatePrompt({
   update,
   refresh,
+  setChecksPaused,
 }: ManagerUpdatePromptController) {
   const { t } = useI18n();
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -112,11 +155,14 @@ export function ManagerUpdatePrompt({
   const titleId = useId();
   const bodyId = useId();
 
+  useEffect(() => () => setChecksPaused(false), [setChecksPaused]);
+
   const closeConfirm = useCallback(() => {
     if (installing) return;
+    setChecksPaused(false);
     setConfirmOpen(false);
     setFailure(null);
-  }, [installing]);
+  }, [installing, setChecksPaused]);
 
   const installUpdate = useCallback(async () => {
     if (!update || installing) return;
@@ -126,6 +172,7 @@ export function ManagerUpdatePrompt({
       await update.installAndRelaunch();
     } catch (cause) {
       if (errorCode(cause) === "stale_expectation") {
+        setChecksPaused(false);
         setConfirmOpen(false);
         await refresh();
       } else {
@@ -134,7 +181,7 @@ export function ManagerUpdatePrompt({
     } finally {
       setInstalling(false);
     }
-  }, [installing, refresh, t, update]);
+  }, [installing, refresh, setChecksPaused, t, update]);
 
   if (!update) return null;
 
@@ -149,6 +196,7 @@ export function ManagerUpdatePrompt({
               type="button"
               className="btn primary sm"
               onClick={() => {
+                setChecksPaused(true);
                 setFailure(null);
                 setConfirmOpen(true);
               }}

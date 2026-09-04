@@ -21,6 +21,7 @@ import type {
 import { DEFAULT_SETTINGS, emptyOperationOutcome } from "../../shared/types";
 import { I18nProvider } from "../i18n";
 import { ThemeProvider } from "../theme";
+import { useManagerUpdatePrompt } from "../ManagerUpdatePrompt";
 import { WinHome } from "./WinHome";
 
 vi.mock("../motion", () => ({ useHomeMotion: () => {} }));
@@ -179,11 +180,16 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
   return { ...DEFAULT_SETTINGS, ...overrides };
 }
 
-function renderWinHome() {
+function WinHomeWithManagerPrompt() {
+  const managerUpdatePrompt = useManagerUpdatePrompt();
+  return <WinHome onOpenSettings={vi.fn()} managerUpdatePrompt={managerUpdatePrompt} />;
+}
+
+function renderWinHome(withManagerPrompt = false) {
   return render(
     <ThemeProvider>
       <I18nProvider>
-        <WinHome onOpenSettings={vi.fn()} />
+        {withManagerPrompt ? <WinHomeWithManagerPrompt /> : <WinHome onOpenSettings={vi.fn()} />}
       </I18nProvider>
     </ThemeProvider>,
   );
@@ -208,6 +214,7 @@ describe("WinHome state machine", () => {
     api.checkManagerUpdate.mockResolvedValue({ kind: "none" });
     api.getOperationCompletion.mockResolvedValue(null);
     api.getSettings.mockResolvedValue(settings());
+    api.getSettingsStrict.mockResolvedValue(settings());
     api.winDefaultInstallRoot.mockResolvedValue(DEFAULT_SETTINGS.installRoot);
     api.winStatus.mockResolvedValue(STATUS_MANAGED);
     api.winPlanUpdate.mockResolvedValue(report());
@@ -238,6 +245,52 @@ describe("WinHome state machine", () => {
     expect(
       screen.getByRole("button", { name: /选择安装版本/ }),
     ).toBeInTheDocument();
+  });
+
+  it("manually checks Codex and Manager with automatic checks disabled", async () => {
+    const user = userEvent.setup();
+    const manualOnly = settings({ checkOnStartup: false, periodicCheck: false });
+    api.getSettings.mockResolvedValue(manualOnly);
+    api.getSettingsStrict.mockResolvedValue(manualOnly);
+    api.checkManagerUpdate.mockResolvedValue({
+      kind: "available", version: "0.5.5", currentVersion: "0.5.4",
+      installAndRelaunch: vi.fn(), discard: vi.fn(),
+    });
+    renderWinHome(true);
+    const recheck = await screen.findByRole("button", { name: "重新检查" });
+    expect(api.winPlanUpdate).not.toHaveBeenCalled();
+    expect(api.checkManagerUpdate).not.toHaveBeenCalled();
+    await user.click(recheck);
+    expect(await screen.findByText("发现管理器新版本 0.5.5")).toBeInTheDocument();
+    expect(await screen.findByText("有新版本", { selector: ".headline" })).toBeInTheDocument();
+    expect(api.winPlanUpdate).toHaveBeenCalledTimes(1);
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("finds a Manager update even when the parallel Codex check fails", async () => {
+    const user = userEvent.setup();
+    renderWinHome(true);
+    await screen.findByRole("button", { name: "重新检查" });
+    api.winPlanUpdate.mockRejectedValue(new Error("Codex feed offline"));
+    api.checkManagerUpdate.mockResolvedValue({
+      kind: "available", version: "0.5.5", currentVersion: "0.5.4",
+      installAndRelaunch: vi.fn(), discard: vi.fn(),
+    });
+    await user.click(screen.getByRole("button", { name: "重新检查" }));
+    expect(await screen.findByText("发现管理器新版本 0.5.5")).toBeInTheDocument();
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(2);
+    expect(api.winPlanUpdate).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let a failed Manager check hide a successful Codex check", async () => {
+    const user = userEvent.setup();
+    renderWinHome(true);
+    await screen.findByRole("button", { name: "重新检查" });
+    api.checkManagerUpdate.mockResolvedValue({ kind: "unavailable" });
+    await user.click(screen.getByRole("button", { name: "重新检查" }));
+    expect(await screen.findByText("有新版本", { selector: ".headline" })).toBeInTheDocument();
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(2);
+    expect(api.winPlanUpdate).toHaveBeenCalledTimes(2);
   });
 
   it("signs the perform expectation from the SAME report snapshot it shows", async () => {

@@ -253,6 +253,9 @@ function MacHome({
     }
   }, [refreshStatus, t]);
 
+  const checkAllUpdates = () =>
+    Promise.all([check(), managerUpdatePrompt.check()]);
+
   useEffect(() => {
     void (async () => {
       const s = await managerApi.getSettings().catch(() => DEFAULT_SETTINGS);
@@ -1225,7 +1228,7 @@ function MacHome({
             <>
               <button
                 className="btn ghost big"
-                onClick={check}
+                onClick={checkAllUpdates}
                 disabled={busy !== null}
               >
                 <Icon name="refresh" />
@@ -1255,7 +1258,7 @@ function MacHome({
               </button>
               <button
                 className="btn ghost"
-                onClick={check}
+                onClick={checkAllUpdates}
                 disabled={busy !== null}
               >
                 <Icon name="refresh" />
@@ -1319,7 +1322,7 @@ function MacHome({
               </button>
               <button
                 className="btn ghost"
-                onClick={check}
+                onClick={checkAllUpdates}
                 disabled={busy !== null}
               >
                 <Icon name="refresh" />
@@ -1342,7 +1345,7 @@ function MacHome({
                 </button>
                 <button
                   className="btn ghost"
-                  onClick={check}
+                  onClick={checkAllUpdates}
                   disabled={busy !== null}
                 >
                   <Icon name="refresh" />
@@ -1352,7 +1355,7 @@ function MacHome({
             ) : (
               <button
                 className="btn primary big"
-                onClick={check}
+                onClick={checkAllUpdates}
                 disabled={busy !== null}
               >
                 <Icon name="refresh" />

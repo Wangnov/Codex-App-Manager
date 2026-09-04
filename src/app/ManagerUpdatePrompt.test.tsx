@@ -1,9 +1,10 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   managerApi,
+  SETTINGS_CHANGED_EVENT,
   type ManagerUpdateAvailable,
   type ManagerUpdateCheck,
 } from "../services/managerApi";
@@ -41,24 +42,31 @@ function available(
   };
 }
 
-function PromptHost({ visible = true }: { visible?: boolean }) {
+function PromptHost({ visible = true, manual = false }: { visible?: boolean; manual?: boolean }) {
   const controller = useManagerUpdatePrompt();
-  return visible ? <ManagerUpdatePrompt {...controller} /> : null;
+  return (
+    <>
+      {manual ? <button onClick={controller.check}>手动刷新</button> : null}
+      {visible ? <ManagerUpdatePrompt {...controller} /> : null}
+    </>
+  );
 }
 
-function promptTree(visible = true) {
+function promptTree(visible = true, manual = false) {
   return (
     <I18nProvider>
-      <PromptHost visible={visible} />
+      <PromptHost visible={visible} manual={manual} />
     </I18nProvider>
   );
 }
 
-function renderPrompt() {
-  return render(promptTree());
+function renderPrompt(manual = false) {
+  return render(promptTree(true, manual));
 }
 
 describe("ManagerUpdatePrompt", () => {
+  afterEach(() => vi.useRealTimers());
+
   beforeEach(() => {
     localStorage.setItem("cam.lang", "zh-CN");
     api.getSettingsStrict.mockReset();
@@ -264,5 +272,211 @@ describe("ManagerUpdatePrompt", () => {
 
     await screen.findByRole("alert");
     expect(within(dialog).getByRole("button", { name: "更新" })).toBeEnabled();
+  });
+
+  it("finds a release published after startup at the configured interval", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    api.getSettingsStrict.mockResolvedValue({
+      ...DEFAULT_SETTINGS,
+      periodicCheckIntervalSeconds: 120,
+    });
+    api.checkManagerUpdate.mockResolvedValueOnce({ kind: "none" }).mockResolvedValue(available());
+    renderPrompt();
+    await act(async () => {});
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(1);
+
+    await act(() => vi.advanceTimersByTimeAsync(119_999));
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(1);
+    await act(() => vi.advanceTimersByTimeAsync(1));
+    expect(await screen.findByText("发现管理器新版本 0.5.3")).toBeInTheDocument();
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(2);
+  });
+
+  it("runs periodic checks independently of startup checks and clamps the interval", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    api.getSettingsStrict.mockResolvedValue({
+      ...DEFAULT_SETTINGS,
+      checkOnStartup: false,
+      periodicCheckIntervalSeconds: 1,
+    });
+    api.checkManagerUpdate.mockResolvedValue(available());
+    renderPrompt();
+    await act(async () => {});
+
+    await act(() => vi.advanceTimersByTimeAsync(59_999));
+    expect(api.checkManagerUpdate).not.toHaveBeenCalled();
+    await act(() => vi.advanceTimersByTimeAsync(1));
+    expect(await screen.findByText("发现管理器新版本 0.5.3")).toBeInTheDocument();
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows an explicit manual check when both automatic settings are disabled", async () => {
+    const user = userEvent.setup();
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    api.getSettingsStrict.mockResolvedValue({
+      ...DEFAULT_SETTINGS,
+      checkOnStartup: false,
+      periodicCheck: false,
+    });
+    api.checkManagerUpdate.mockResolvedValue(available());
+    renderPrompt(true);
+    await act(async () => {});
+    await act(() => vi.advanceTimersByTimeAsync(3_600_000));
+    expect(api.checkManagerUpdate).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "手动刷新" }));
+    expect(await screen.findByText("发现管理器新版本 0.5.3")).toBeInTheDocument();
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies saved interval and toggle changes without restarting", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const initial = { ...DEFAULT_SETTINGS, checkOnStartup: false, periodicCheck: false };
+    api.getSettingsStrict.mockResolvedValue(initial);
+    api.checkManagerUpdate.mockResolvedValue({ kind: "none" });
+    renderPrompt();
+    await act(async () => {});
+
+    const save = (periodicCheck: boolean, periodicCheckIntervalSeconds: number) =>
+      act(() => {
+        window.dispatchEvent(new CustomEvent(SETTINGS_CHANGED_EVENT, {
+          detail: { ...initial, periodicCheck, periodicCheckIntervalSeconds },
+        }));
+      });
+    save(true, 120);
+    await act(() => vi.advanceTimersByTimeAsync(120_000));
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(1);
+    save(true, 180);
+    await act(() => vi.advanceTimersByTimeAsync(120_000));
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(1);
+    await act(() => vi.advanceTimersByTimeAsync(60_000));
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(2);
+    save(false, 180);
+    await act(() => vi.advanceTimersByTimeAsync(3_600_000));
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let a late settings read re-enable checks after they were disabled", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    let resolveSettings!: (value: typeof DEFAULT_SETTINGS) => void;
+    api.getSettingsStrict.mockReturnValue(new Promise((resolve) => { resolveSettings = resolve; }));
+    api.checkManagerUpdate.mockResolvedValue({ kind: "none" });
+    renderPrompt();
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(SETTINGS_CHANGED_EVENT, {
+        detail: { ...DEFAULT_SETTINGS, checkOnStartup: false, periodicCheck: false },
+      }));
+      resolveSettings(DEFAULT_SETTINGS);
+    });
+    await act(() => vi.advanceTimersByTimeAsync(3_600_000));
+    expect(api.checkManagerUpdate).not.toHaveBeenCalled();
+  });
+
+  it("never schedules automatic checks after a settings failure but permits manual checks", async () => {
+    const user = userEvent.setup();
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    api.getSettingsStrict.mockRejectedValue(new Error("settings unavailable"));
+    api.checkManagerUpdate.mockResolvedValue(available());
+    renderPrompt(true);
+    await act(async () => {});
+    await act(() => vi.advanceTimersByTimeAsync(3_600_000));
+    expect(api.checkManagerUpdate).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "手动刷新" }));
+    expect(await screen.findByText("发现管理器新版本 0.5.3")).toBeInTheDocument();
+  });
+
+  it("coalesces startup, periodic and manual requests while the feed is pending", async () => {
+    const user = userEvent.setup();
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    let resolveCheck!: (value: ManagerUpdateCheck) => void;
+    api.checkManagerUpdate.mockReturnValue(new Promise((resolve) => { resolveCheck = resolve; }));
+    renderPrompt(true);
+    await act(async () => {});
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(1);
+    await act(() => vi.advanceTimersByTimeAsync(3_600_000));
+    await user.click(screen.getByRole("button", { name: "手动刷新" }));
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(1);
+    await act(async () => resolveCheck(available()));
+    expect(await screen.findByText("发现管理器新版本 0.5.3")).toBeInTheDocument();
+  });
+
+  it("keeps a known update during transient feed failures but clears it after a successful empty result", async () => {
+    const user = userEvent.setup();
+    api.checkManagerUpdate.mockResolvedValueOnce(available())
+      .mockResolvedValueOnce({ kind: "unavailable" })
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce({ kind: "none" });
+    renderPrompt(true);
+    await screen.findByText("发现管理器新版本 0.5.3");
+    const manual = screen.getByRole("button", { name: "手动刷新" });
+    await user.click(manual);
+    expect(screen.getByText("发现管理器新版本 0.5.3")).toBeInTheDocument();
+    await user.click(manual);
+    expect(screen.getByText("发现管理器新版本 0.5.3")).toBeInTheDocument();
+    await user.click(manual);
+    expect(screen.queryByText("发现管理器新版本 0.5.3")).not.toBeInTheDocument();
+  });
+
+  it("does not replace the confirmed version with an earlier in-flight result and resumes after cancel", async () => {
+    const user = userEvent.setup();
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const old = available();
+    const next = available({ version: "0.5.4" });
+    let resolveCheck!: (value: ManagerUpdateCheck) => void;
+    api.checkManagerUpdate.mockResolvedValueOnce(old)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveCheck = resolve; }))
+      .mockResolvedValue(next);
+    renderPrompt(true);
+    await screen.findByText("发现管理器新版本 0.5.3");
+    await user.click(screen.getByRole("button", { name: "手动刷新" }));
+    await user.click(screen.getByRole("button", { name: "更新" }));
+    await act(async () => resolveCheck(next));
+    expect(screen.getByRole("dialog", { name: "更新到 0.5.3?" })).toBeInTheDocument();
+    expect(old.discard).not.toHaveBeenCalled();
+    expect(next.discard).toHaveBeenCalledTimes(1);
+    await act(() => vi.advanceTimersByTimeAsync(3_600_000));
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(2);
+    await user.click(screen.getByRole("button", { name: "取消" }));
+    await act(() => vi.advanceTimersByTimeAsync(900_000));
+    expect(await screen.findByText("发现管理器新版本 0.5.4")).toBeInTheDocument();
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps checks paused until a failed installation is dismissed", async () => {
+    const user = userEvent.setup();
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    let rejectInstall!: (reason: Error) => void;
+    const update = available({ installAndRelaunch: vi.fn(() => new Promise<void>((_, reject) => { rejectInstall = reject; })) });
+    api.checkManagerUpdate.mockResolvedValue(update);
+    renderPrompt();
+    await user.click(await screen.findByRole("button", { name: "更新" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "更新" }));
+    await act(() => vi.advanceTimersByTimeAsync(900_000));
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(1);
+    await act(async () => rejectInstall(new Error("offline")));
+    await act(() => vi.advanceTimersByTimeAsync(900_000));
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole("button", { name: "取消" }));
+    await act(() => vi.advanceTimersByTimeAsync(900_000));
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(2);
+  });
+
+  it("cleans up the timer and settings listener and discards late results on unmount", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    let resolveCheck!: (value: ManagerUpdateCheck) => void;
+    api.checkManagerUpdate.mockReturnValue(new Promise((resolve) => { resolveCheck = resolve; }));
+    const { unmount } = renderPrompt();
+    await act(async () => {});
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(1);
+    unmount();
+    const update = available();
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(SETTINGS_CHANGED_EVENT, { detail: DEFAULT_SETTINGS }));
+      resolveCheck(update);
+    });
+    await act(() => vi.advanceTimersByTimeAsync(3_600_000));
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(1);
+    expect(update.discard).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
