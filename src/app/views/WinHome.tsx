@@ -1807,6 +1807,7 @@ export function WinHome({
         open={otherVersionOpen}
         platform="windows"
         currentVersion={installed?.version ?? null}
+        allowCurrentVersionInstall={isManaged && installed?.source === "portable"}
         architecture={
           hostArchitecture ??
           installed?.arch ??

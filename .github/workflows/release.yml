@@ -489,7 +489,7 @@ jobs:
             & .\scripts\windows-pe-arch.ps1 -Path @($setup | ForEach-Object { $_.FullName })
           }
           if ($target -like "aarch64-*") {
-            Write-Host "::notice::ARM64 main PE asserted machine=0xAA64 (cross-build on x64). Full install/launch smoke remains x64-only until ARM64 runners or trusted virtualization is available."
+            Write-Host "::notice::ARM64 main PE asserted machine=0xAA64 (cross-build on x64). Full Manager installer smoke remains x64-only; native ARM64 portable MSIX extraction and cua_node module resolution run in windows-portable-msix-e2e.yml."
           }
 
       # ── Windows: optional Authenticode (OV/EV) on final NSIS installer ────

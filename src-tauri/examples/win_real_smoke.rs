@@ -3,6 +3,7 @@ use std::process::{Command, ExitCode};
 
 use codex_app_manager_lib::adapters::host;
 use codex_app_manager_lib::app::provenance::ProvenanceStore;
+use codex_app_manager_lib::app::settings_store::AppSettings as PersistedAppSettings;
 use codex_app_manager_lib::app::win_update::{
     perform_windows_update, plan_windows_update, uninstall_windows_codex, win_adopt,
     win_install_status, WinInstallStatus, WinPerformAction,
@@ -19,7 +20,7 @@ use serde::Serialize;
 
 const OLD_MSIX_VERSION: &str = "26.601.2237.0";
 const OLD_MSIX_MONIKER: &str = "OpenAI.Codex_26.601.2237.0_x64__2p2nqsd0c76g0";
-const OLD_MSIX_URL: &str = "https://github.com/Wangnov/codex-app-mirror/releases/download/codex-app-win-26.601.2237.0-mac-26.601.21317-b3511/OpenAI.Codex_26.601.2237.0_x64__2p2nqsd0c76g0.Msix";
+const OLD_MSIX_URL: &str = "https://github.com/Wangnov/codex-app-mirror/releases/download/codex-app-26.601.21317/OpenAI.Codex_26.601.2237.0_x64__2p2nqsd0c76g0.Msix";
 const OLD_MSIX_SHA256: &str = "432d5e75ee973bf8172db58435a86823ccd51272ea0a82395c70a6d485015caa";
 const OLD_MSIX_SIZE: u64 = 564_451_929;
 
@@ -57,6 +58,16 @@ struct SmokeReport {
     final_status: WinInstallStatus,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ComputerUseRuntimeReport {
+    install_root: String,
+    node_executable: String,
+    sky_entry: String,
+    statsig_global: String,
+    module_resolution: serde_json::Value,
+}
+
 fn settings_and_endpoints() -> (AppSettings, MirrorEndpoints) {
     let target = Target::current();
     let mirror_base_url = "https://codexapp.agentsmirror.com".to_string();
@@ -78,6 +89,94 @@ fn staged_msix_path(release: &WindowsRelease) -> PathBuf {
         .join("codex-app-manager")
         .join("windows-staging")
         .join(format!("{}.msix", release.package_moniker))
+}
+
+fn validate_computer_use_runtime(install_root: &Path) -> Result<ComputerUseRuntimeReport, String> {
+    let node_bin = install_root.join("resources").join("cua_node").join("bin");
+    let node = node_bin.join("node.exe");
+    let modules = node_bin.join("node_modules");
+    let sky_entry = modules
+        .join("@oai")
+        .join("sky")
+        .join("dist")
+        .join("project")
+        .join("cua")
+        .join("sky_js")
+        .join("src")
+        .join("targets")
+        .join("windows")
+        .join("internal")
+        .join("computer_use_client_base.js");
+    let statsig_global = modules
+        .join("@statsig")
+        .join("client-core")
+        .join("src")
+        .join("$_StatsigGlobal.js");
+    for required in [&node, &sky_entry, &statsig_global] {
+        if !required.is_file() {
+            return Err(format!(
+                "Computer Use runtime file missing after portable install: {}",
+                required.display()
+            ));
+        }
+    }
+    for encoded in [
+        modules.join("%40oai"),
+        modules.join("%40statsig"),
+        modules
+            .join("@statsig")
+            .join("client-core")
+            .join("src")
+            .join("%24_StatsigGlobal.js"),
+    ] {
+        if encoded.exists() {
+            return Err(format!(
+                "percent-encoded Computer Use path leaked into portable install: {}",
+                encoded.display()
+            ));
+        }
+    }
+
+    let script = r#"
+const fs = require("fs");
+const searchRoot = process.argv[1];
+const skyEntry = process.argv[2];
+const statsigGlobal = process.argv[3];
+fs.accessSync(skyEntry, fs.constants.R_OK);
+fs.accessSync(statsigGlobal, fs.constants.R_OK);
+const sky = require.resolve("@oai/sky", { paths: [searchRoot] });
+const statsig = require.resolve("@statsig/client-core", { paths: [searchRoot] });
+process.stdout.write(JSON.stringify({ sky, statsig }));
+"#;
+    let output = Command::new(&node)
+        .arg("-e")
+        .arg(script)
+        .arg(&node_bin)
+        .arg(&sky_entry)
+        .arg(&statsig_global)
+        .output()
+        .map_err(|err| format!("launch bundled cua_node runtime: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "bundled cua_node could not resolve Computer Use modules (exit={:?}): {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let module_resolution = serde_json::from_slice(&output.stdout).map_err(|err| {
+        format!(
+            "decode bundled cua_node resolution output ({err}): {}",
+            String::from_utf8_lossy(&output.stdout).trim()
+        )
+    })?;
+
+    Ok(ComputerUseRuntimeReport {
+        install_root: install_root.to_string_lossy().into_owned(),
+        node_executable: node.to_string_lossy().into_owned(),
+        sky_entry: sky_entry.to_string_lossy().into_owned(),
+        statsig_global: statsig_global.to_string_lossy().into_owned(),
+        module_resolution,
+    })
 }
 
 fn old_release() -> WindowsRelease {
@@ -835,6 +934,12 @@ fn run_force_portable_cycle() -> Result<SmokeReport, String> {
         "smoke-forced-portable",
     )?;
     step(&mut steps, "force-portable-install", &portable_install)?;
+    let computer_use = validate_computer_use_runtime(Path::new(&settings.install_root))?;
+    step(
+        &mut steps,
+        "force-portable-computer-use-runtime",
+        &computer_use,
+    )?;
     let after_install = win_install_status(&settings);
     step(&mut steps, "status-after-portable-install", &after_install)?;
     if after_install.status != "managed"
@@ -858,6 +963,12 @@ fn run_force_portable_cycle() -> Result<SmokeReport, String> {
         &mut steps,
         "force-portable-same-version-update",
         &portable_update,
+    )?;
+    let repaired_computer_use = validate_computer_use_runtime(Path::new(&settings.install_root))?;
+    step(
+        &mut steps,
+        "force-portable-same-version-computer-use-runtime",
+        &repaired_computer_use,
     )?;
     let after_update = win_install_status(&settings);
     step(&mut steps, "status-after-portable-update", &after_update)?;
@@ -1290,6 +1401,14 @@ fn run() -> Result<serde_json::Value, String> {
         "force-portable-cycle" => {
             serde_json::to_value(run_force_portable_cycle()?).map_err(|e| e.to_string())
         }
+        "validate-portable-runtime" => {
+            let install_root = args
+                .get(1)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(PersistedAppSettings::load().install_root));
+            serde_json::to_value(validate_computer_use_runtime(&install_root)?)
+                .map_err(|e| e.to_string())
+        }
         "fake-old-portable-update" => {
             serde_json::to_value(run_fake_old_portable_update()?).map_err(|e| e.to_string())
         }
@@ -1312,7 +1431,7 @@ fn run() -> Result<serde_json::Value, String> {
                 .map_err(|e| e.to_string())
         }
         other => Err(format!(
-            "unknown command {other}; use status | prefetch | install | uninstall | install-uninstall-install | force-portable-cycle | fake-old-portable-update | msix-uninstall-purge-user-data | portable-apps-features-uninstall-entry | managed-portable-shadow-msix | old-msix-to-latest-msix | old-portable-to-latest-portable"
+            "unknown command {other}; use status | prefetch | install | uninstall | install-uninstall-install | force-portable-cycle | validate-portable-runtime | fake-old-portable-update | msix-uninstall-purge-user-data | portable-apps-features-uninstall-entry | managed-portable-shadow-msix | old-msix-to-latest-msix | old-portable-to-latest-portable"
         )),
     }
 }
