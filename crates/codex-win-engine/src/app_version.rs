@@ -26,6 +26,15 @@ struct PackageJson {
     version: String,
     #[serde(default)]
     name: Option<String>,
+    #[serde(default, rename = "codexWindowsAppContainedCore")]
+    windows_app_contained_core: Option<String>,
+}
+
+pub(crate) fn requires_portable_cli(root: &Path) -> bool {
+    app_asar_candidates(root)
+        .iter()
+        .filter_map(|p| read_package_json_from_asar(p))
+        .any(|p| p.windows_app_contained_core.as_deref() == Some("1"))
 }
 
 pub fn read_codex_app_version_from_install_root(root: &Path) -> Option<String> {
@@ -263,6 +272,7 @@ fn asar_entry_size(entry: &Value) -> Option<u64> {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)] // Shared ASAR fixture writers below are also used by sibling modules.
 mod tests {
     use super::*;
     use zip::write::SimpleFileOptions;

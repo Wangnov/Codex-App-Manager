@@ -10,8 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::app_version::read_codex_app_version_from_install_root;
 use crate::msix::{parse_appx_manifest_xml, MsixIdentity};
 use crate::process::{
-    hidden_command, run_capturing, spawn_and_require_liveness, LivenessResult, RunLimits,
-    PORTABLE_LIVENESS_WINDOW,
+    hidden_command, run_capturing, LivenessResult, RunLimits, PORTABLE_LIVENESS_WINDOW,
 };
 use crate::EngineError;
 
@@ -633,11 +632,66 @@ fn prepare_portable_payload(
     copy_dir_all(exe_dir, &payload)?;
     fs::write(payload.join("AppxManifest.xml"), manifest_xml)
         .map_err(|e| io_err("write portable AppxManifest.xml", e))?;
+    ensure_portable_launcher(&payload)?;
 
     Ok(PreparedPortable {
         payload_dir: payload,
         identity,
     })
+}
+
+/// Materialize the Manager-owned native launcher without touching upstream files.
+/// Called inside staging for atomic update/rollback, and on launch to repair old installs.
+pub fn ensure_portable_launcher(root: &Path) -> Result<PathBuf, EngineError> {
+    let exe = installed_app_exe(root).ok_or_else(|| {
+        EngineError::Install(format!("no portable app executable in {}", root.display()))
+    })?;
+    // Validate a required CLI before committing a broken payload, even when no
+    // post-install launch was requested. Older fixture/legacy packages may omit it.
+    portable_launch_command(&exe)?;
+    #[cfg(windows)]
+    {
+        use crate::portable_command::{LAUNCHER_NAME, LAUNCH_TARGET_NAME};
+        const BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/LaunchCodex.exe"));
+        let target = exe
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| EngineError::Install("invalid portable executable name".into()))?;
+        let config_path = root.join(LAUNCH_TARGET_NAME);
+        if fs::read(&config_path).ok().as_deref() != Some(target.as_bytes()) {
+            fs::write(&config_path, target)
+                .map_err(|e| io_err("write portable launch target", e))?;
+        }
+        let launcher = root.join(LAUNCHER_NAME);
+        if fs::read(&launcher).ok().as_deref() != Some(BYTES) {
+            fs::write(&launcher, BYTES).map_err(|e| io_err("write portable launcher", e))?;
+        }
+        Ok(launcher)
+    }
+    #[cfg(not(windows))]
+    Ok(exe)
+}
+
+pub(crate) fn portable_launch_command(exe: &Path) -> Result<std::process::Command, EngineError> {
+    let root = exe
+        .parent()
+        .ok_or_else(|| EngineError::Install("missing portable directory".into()))?;
+    let mut command = hidden_command(exe);
+    crate::portable_command::configure(
+        &mut command,
+        exe,
+        crate::app_version::requires_portable_cli(root),
+    )
+    .map_err(|e| io_err("configure portable launch", e))?;
+    Ok(command)
+}
+
+pub(crate) fn repair_portable_launch_entry(root: &Path) -> Result<(), EngineError> {
+    ensure_portable_launcher(root)?;
+    if let Err(error) = create_start_menu_shortcut(root) {
+        log::warn!("portable shortcut repair failed: {error}");
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -716,7 +770,11 @@ $shortcut.IconLocation = {icon}
 $shortcut.Save()
 "#,
         shortcut = ps_quote(&shortcut.to_string_lossy()),
-        target = ps_quote(&exe.to_string_lossy()),
+        target = ps_quote(
+            &install_root
+                .join(crate::portable_command::LAUNCHER_NAME)
+                .to_string_lossy()
+        ),
         workdir = ps_quote(&install_root.to_string_lossy()),
         icon = ps_quote(&format!("{},0", exe.to_string_lossy()))
     );
@@ -933,7 +991,10 @@ fn health_check_portable_install(
     // Spawn alone is not enough: a broken payload can exit immediately after
     // CreateProcess succeeds. Require a short liveness window, then leave the
     // process running (this path is the post-install relaunch).
-    match spawn_and_require_liveness(hidden_command(&exe), PORTABLE_LIVENESS_WINDOW) {
+    match crate::process::spawn_and_check_startup(
+        portable_launch_command(&exe)?, PORTABLE_LIVENESS_WINDOW,
+        crate::app_version::requires_portable_cli(install_root),
+    ) {
         Ok(LivenessResult::Survived { child }) => {
             if keep_running {
                 // Intentionally leak the Child handle so the relaunched app
@@ -1394,6 +1455,166 @@ mod tests {
     use zip::write::SimpleFileOptions;
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+    #[test]
+    fn packaged_core_requires_cli_before_install_is_committed() {
+        let root = temp_test_dir("required-cli");
+        fs::create_dir_all(root.join("resources")).unwrap();
+        fs::write(root.join("ChatGPT.exe"), b"app").unwrap();
+        crate::app_version::write_test_asar(&root.join("resources/app.asar"),
+            br#"{"version":"26.915.31029","name":"openai-codex-electron","codexWindowsAppContainedCore":"1"}"#);
+        assert!(crate::app_version::requires_portable_cli(&root));
+        // Explicit user overrides intentionally need no bundled executable.
+        if std::env::var_os("CODEX_CLI_PATH").is_none_or(|v| v.to_string_lossy().trim().is_empty())
+        {
+            assert!(ensure_portable_launcher(&root)
+                .unwrap_err()
+                .to_string()
+                .contains("missing its bundled CLI"));
+        }
+        fs::write(root.join("resources/codex.exe"), b"cli").unwrap();
+        assert!(ensure_portable_launcher(&root).unwrap().is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires an isolated payload copy via CODEX_REAL_PORTABLE"]
+    fn real_portable_bootstrap_uses_bundled_cli() {
+        let root =
+            PathBuf::from(std::env::var_os("CODEX_REAL_PORTABLE").expect("CODEX_REAL_PORTABLE"));
+        assert!(
+            root.join(".codex-manager-smoke").is_file(),
+            "use a marked, disposable copy"
+        );
+        let profile = temp_test_dir("isolated-bootstrap");
+        let exe = installed_app_exe(&root).unwrap();
+        ensure_portable_launcher(&root).unwrap();
+        let mut command = portable_launch_command(&exe).unwrap();
+        command
+            .env("CODEX_HOME", profile.join("home"))
+            .env("CODEX_ELECTRON_USER_DATA_PATH", profile.join("profile"))
+            .env("CODEX_SPARKLE_ENABLED", "false")
+            .arg(format!(
+                "--user-data-dir={}",
+                profile.join("profile").display()
+            ));
+        let result =
+            crate::process::spawn_and_check_startup(command, PORTABLE_LIVENESS_WINDOW, true);
+        let cleanup = close_codex_gracefully_for_root(30, &root);
+        cleanup.unwrap();
+        assert!(
+            matches!(result, Ok(LivenessResult::Survived { .. })),
+            "{result:?}"
+        );
+        let _ = fs::remove_dir_all(profile);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires an isolated affected 26.915.31029 payload via CODEX_REAL_PORTABLE"]
+    fn real_portable_bootstrap_dialog_is_rejected() {
+        let root =
+            PathBuf::from(std::env::var_os("CODEX_REAL_PORTABLE").expect("CODEX_REAL_PORTABLE"));
+        assert!(
+            root.join(".codex-manager-smoke").is_file(),
+            "use a marked, disposable copy"
+        );
+        let profile = temp_test_dir("isolated-baseline");
+        let mut command = hidden_command(installed_app_exe(&root).unwrap());
+        command
+            .env_remove("CODEX_CLI_PATH")
+            .env_remove("CODEX_WINDOWS_REGISTERED_CORE")
+            .env("CODEX_HOME", profile.join("home"))
+            .env("CODEX_ELECTRON_USER_DATA_PATH", profile.join("profile"))
+            .env("CODEX_SPARKLE_ENABLED", "false")
+            .arg(format!(
+                "--user-data-dir={}",
+                profile.join("profile").display()
+            ));
+        let result =
+            crate::process::spawn_and_check_startup(command, PORTABLE_LIVENESS_WINDOW, true);
+        let cleanup = close_codex_gracefully_for_root(30, &root);
+        cleanup.unwrap();
+        assert!(
+            matches!(result, Err(ref e) if e.message().contains("startup dialog") || e.message().contains("did not open its main window")),
+            "{result:?}"
+        );
+        let _ = fs::remove_dir_all(profile);
+    }
+
+    // Invoked only by the compiled launcher roundtrip below; no test harness flags
+    // are interpreted by our launcher, and all child environment state is isolated.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "child process fixture for portable_launcher_survives_directory_move"]
+    fn portable_launcher_child() {
+        let Some(output) = std::env::var_os("CODEX_TEST_LAUNCH_REPORT") else {
+            return;
+        };
+        let report = serde_json::json!({
+            "cli": std::env::var("CODEX_CLI_PATH").ok(),
+            "registered": std::env::var("CODEX_WINDOWS_REGISTERED_CORE").ok(),
+            "cwd": std::env::current_dir().unwrap(),
+            "args": std::env::args().collect::<Vec<_>>(),
+        });
+        fs::write(output, serde_json::to_vec(&report).unwrap()).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn portable_launcher_survives_directory_move() {
+        let parent = temp_test_dir("launcher-roundtrip");
+        let original = parent.join("before");
+        fs::create_dir_all(original.join("resources")).unwrap();
+        fs::copy(
+            std::env::current_exe().unwrap(),
+            original.join("ChatGPT.exe"),
+        )
+        .unwrap();
+        fs::write(original.join("resources/codex.exe"), b"cli fixture").unwrap();
+        let launcher = ensure_portable_launcher(&original).unwrap();
+        assert!(launcher.is_file());
+        assert_eq!(
+            fs::read_to_string(original.join(crate::portable_command::LAUNCH_TARGET_NAME)).unwrap(),
+            "ChatGPT.exe"
+        );
+        let moved = parent.join("便携 测试's & folder");
+        fs::rename(&original, &moved).unwrap();
+        let output = parent.join("result.json");
+        let marker = "参数 with spaces & \"quotes\"";
+        let mut command = hidden_command(moved.join(crate::portable_command::LAUNCHER_NAME));
+        command
+            .env_remove("CODEX_CLI_PATH")
+            .env("CODEX_WINDOWS_REGISTERED_CORE", "1")
+            .env("CODEX_TEST_LAUNCH_REPORT", &output)
+            .args([
+                "--exact",
+                "portable::tests::portable_launcher_child",
+                "--ignored",
+                "--skip",
+                marker,
+            ]);
+        assert!(command.status().unwrap().success());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !output.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(50));
+        }
+        let report: serde_json::Value =
+            serde_json::from_slice(&fs::read(output).expect("launcher child report")).unwrap();
+        assert_eq!(
+            report["cli"],
+            moved.join("resources/codex.exe").to_string_lossy().as_ref()
+        );
+        assert!(report["registered"].is_null());
+        assert_eq!(report["cwd"], moved.to_string_lossy().as_ref());
+        assert!(report["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == marker));
+        remove_directory_all_with_retry("remove launcher test", &parent).unwrap();
+    }
 
     fn temp_test_dir(name: &str) -> PathBuf {
         let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);

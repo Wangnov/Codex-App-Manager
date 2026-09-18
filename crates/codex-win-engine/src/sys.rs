@@ -12,9 +12,8 @@ use crate::limits::MAX_TEXT_BYTES;
 use crate::msix::parse_appx_manifest_xml;
 use crate::network::{is_schannel_revocation_offline, NetworkConfig, SchannelRevocationCheck};
 use crate::process::{
-    curl_exe, hidden_command, run_capturing, spawn_and_require_liveness, LivenessResult, RunError,
-    RunLimits, TimeoutKind, MSIX_ACTIVATION_WINDOW_SECS, MSIX_LIVENESS_WINDOW_SECS,
-    PORTABLE_LIVENESS_WINDOW,
+    curl_exe, hidden_command, run_capturing, LivenessResult, RunError, RunLimits, TimeoutKind,
+    MSIX_ACTIVATION_WINDOW_SECS, MSIX_LIVENESS_WINDOW_SECS, PORTABLE_LIVENESS_WINDOW,
 };
 use crate::EngineError;
 
@@ -643,7 +642,7 @@ if ($null -eq $activeDeployment) {{
 #[cfg(windows)]
 fn base64_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut encoded = String::with_capacity(((bytes.len() + 2) / 3) * 4);
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let first = chunk[0];
         let second = chunk.get(1).copied().unwrap_or(0);
@@ -677,6 +676,7 @@ fn encode_powershell_command(script: &str) -> String {
 /// executable script is written to a user-writable directory; temporary paths
 /// are one-way state markers shared with the elevated watchdogs.
 #[cfg(windows)]
+#[allow(clippy::too_many_arguments)] // Explicit fields are interpolated into a fixed recovery script.
 fn offline_appx_recovery_script(
     package_moniker: &str,
     activity_id: &str,
@@ -1989,14 +1989,19 @@ pub fn launch_codex_with_options(
         // CREATE_NO_WINDOW only suppresses a console flash; the GUI still shows.
         // Require a short liveness window so an immediate crash is reported as a
         // launch failure instead of a silent no-op.
-        let mut command = hidden_command(exe);
+        crate::portable::repair_portable_launch_entry(root)?;
+        let mut command = crate::portable::portable_launch_command(&exe)?;
         if options.disable_codex_self_updates {
             command.env(CODEX_SELF_UPDATE_ENV_KEY, CODEX_SELF_UPDATE_ENV_DISABLED);
         }
         if let Some(port) = options.remote_debugging_port {
             command.args(remote_debugging_arguments(port));
         }
-        match spawn_and_require_liveness(command, PORTABLE_LIVENESS_WINDOW) {
+        match crate::process::spawn_and_check_startup(
+            command,
+            PORTABLE_LIVENESS_WINDOW,
+            crate::app_version::requires_portable_cli(root),
+        ) {
             Ok(LivenessResult::Survived { child }) => {
                 std::mem::forget(child);
                 Ok(())
@@ -2593,7 +2598,7 @@ function Get-AppxPackage {
             crate::process::MSIX_LIVENESS_WINDOW_SECS,
             crate::process::PORTABLE_LIVENESS_WINDOW.as_secs()
         );
-        assert!(crate::process::MSIX_ACTIVATION_WINDOW_SECS >= 20);
+        const { assert!(crate::process::MSIX_ACTIVATION_WINDOW_SECS >= 20) };
     }
 
     #[cfg(windows)]

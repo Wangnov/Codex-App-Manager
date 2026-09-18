@@ -179,11 +179,7 @@ pub fn run_capturing(
         .spawn()
         .map_err(|e| RunError::Spawn(e.to_string()))?;
     wait_child(
-        &mut child,
-        limits,
-        cancel,
-        /*progress*/ None,
-        /*on_progress*/ None,
+        &mut child, limits, cancel, /*progress*/ None, /*on_progress*/ None,
     )?;
     child
         .wait_with_output()
@@ -288,9 +284,18 @@ pub enum LivenessResult {
 ///
 /// Used by portable post-install health checks: spawn success alone does not
 /// mean the binary is launchable — an immediate crash must fail the install.
+#[cfg(test)]
 pub fn spawn_and_require_liveness(
+    command: Command,
+    window: Duration,
+) -> Result<LivenessResult, RunError> {
+    spawn_and_check_startup(command, window, false)
+}
+
+pub(crate) fn spawn_and_check_startup(
     mut command: Command,
     window: Duration,
+    require_window: bool,
 ) -> Result<LivenessResult, RunError> {
     // Detach stdio so a chatty broken payload cannot fill pipes and block, and
     // so unit tests that use console tools (e.g. whoami) do not pollute output.
@@ -300,6 +305,7 @@ pub fn spawn_and_require_liveness(
         .spawn()
         .map_err(|e| RunError::Spawn(e.to_string()))?;
     let deadline = Instant::now() + window;
+    let startup_deadline = Instant::now() + Duration::from_secs(30);
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -308,8 +314,19 @@ pub fn spawn_and_require_liveness(
                 });
             }
             Ok(None) => {
-                if Instant::now() >= deadline {
+                let state = crate::startup_window::inspect(child.id());
+                if let Some(failure) = state.failure {
+                    terminate_tree(&mut child);
+                    return Err(RunError::Wait(format!("Codex startup dialog: {failure}")));
+                }
+                if Instant::now() >= deadline && (!require_window || state.ready) {
                     return Ok(LivenessResult::Survived { child });
+                }
+                if require_window && Instant::now() >= startup_deadline {
+                    terminate_tree(&mut child);
+                    return Err(RunError::Wait(
+                        "Codex did not open its main window within 30 seconds".into(),
+                    ));
                 }
                 thread::sleep(POLL_INTERVAL);
             }
@@ -483,11 +500,8 @@ mod tests {
 
     #[test]
     fn immediate_exit_liveness_detected() {
-        let result = spawn_and_require_liveness(
-            immediate_exit_command(7),
-            Duration::from_secs(2),
-        )
-        .expect("spawn");
+        let result = spawn_and_require_liveness(immediate_exit_command(7), Duration::from_secs(2))
+            .expect("spawn");
         match result {
             LivenessResult::ExitedEarly { code } => {
                 assert_eq!(code, Some(7));
@@ -501,8 +515,8 @@ mod tests {
 
     #[test]
     fn surviving_child_reported_alive() {
-        let result =
-            spawn_and_require_liveness(sleep_command(30), Duration::from_millis(400)).expect("spawn");
+        let result = spawn_and_require_liveness(sleep_command(30), Duration::from_millis(400))
+            .expect("spawn");
         match result {
             LivenessResult::Survived { mut child } => {
                 terminate_tree(&mut child);

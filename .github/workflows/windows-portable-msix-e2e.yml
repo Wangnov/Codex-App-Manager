@@ -10,6 +10,10 @@ on:
       - "crates/codex-win-engine/Cargo.toml"
       - "crates/codex-win-engine/Cargo.lock"
       - "crates/codex-win-engine/src/portable.rs"
+      - "crates/codex-win-engine/src/portable_command.rs"
+      - "crates/codex-win-engine/src/portable_launcher.rs"
+      - "crates/codex-win-engine/src/startup_window.rs"
+      - "crates/codex-win-engine/build.rs"
   workflow_dispatch:
 
 concurrency:
@@ -34,6 +38,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Run native launcher after relocating its directory
+        run: >-
+          cargo test
+          --manifest-path crates/codex-win-engine/Cargo.toml
+          portable_launcher_survives_directory_move
+          -- --nocapture
 
       - name: Download current official Codex MSIX
         shell: pwsh
