@@ -20,6 +20,10 @@ fn main() {
             "opt-level=s",
             "-C",
             "panic=abort",
+            // A portable entry point must not require a separately installed
+            // Visual C++ runtime. This rustc invocation does not inherit Tauri's flags.
+            "-C",
+            "target-feature=+crt-static",
             "src/portable_launcher.rs",
             "-o",
         ])

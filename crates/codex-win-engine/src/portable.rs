@@ -1575,6 +1575,7 @@ mod tests {
         fs::write(original.join("resources/codex.exe"), b"cli fixture").unwrap();
         let launcher = ensure_portable_launcher(&original).unwrap();
         assert!(launcher.is_file());
+        assert_launcher_has_no_vc_runtime_import(&fs::read(&launcher).unwrap());
         assert_eq!(
             fs::read_to_string(original.join(crate::portable_command::LAUNCH_TARGET_NAME)).unwrap(),
             "ChatGPT.exe"
@@ -1614,6 +1615,47 @@ mod tests {
             .iter()
             .any(|v| v == marker));
         remove_directory_all_with_retry("remove launcher test", &parent).unwrap();
+    }
+
+    // Inspect the PE import table, not arbitrary strings in the binary: a native
+    // runner already has VC++ installed and would otherwise hide this regression.
+    #[cfg(windows)]
+    fn assert_launcher_has_no_vc_runtime_import(bytes: &[u8]) {
+        let u16_at = |p| u16::from_le_bytes(bytes[p..p + 2].try_into().unwrap()) as usize;
+        let u32_at = |p| u32::from_le_bytes(bytes[p..p + 4].try_into().unwrap()) as usize;
+        let coff = u32_at(0x3c) + 4;
+        let optional = coff + 20;
+        let section_table = optional + u16_at(coff + 16);
+        let offset = |rva: usize| {
+            (0..u16_at(coff + 2))
+                .find_map(|i| {
+                    let section = section_table + i * 40;
+                    let start = u32_at(section + 12);
+                    let size = u32_at(section + 8).max(u32_at(section + 16));
+                    (rva >= start && rva < start + size).then(|| u32_at(section + 20) + rva - start)
+                })
+                .expect("PE RVA must map to a section")
+        };
+        let directories = optional + if u16_at(optional) == 0x20b { 112 } else { 96 };
+        let mut import = offset(u32_at(directories + 8));
+        let mut count = 0;
+        while u32_at(import + 12) != 0 {
+            let name = offset(u32_at(import + 12));
+            let len = bytes[name..].iter().position(|b| *b == 0).unwrap();
+            let dll = std::str::from_utf8(&bytes[name..name + len])
+                .unwrap()
+                .to_ascii_lowercase();
+            assert!(
+                !dll.starts_with("vcruntime") && !dll.starts_with("msvcp"),
+                "portable launcher must not require the VC++ redistributable: {dll}"
+            );
+            count += 1;
+            import += 20;
+        }
+        assert!(
+            count > 0,
+            "launcher import table must actually be inspected"
+        );
     }
 
     fn temp_test_dir(name: &str) -> PathBuf {
