@@ -124,8 +124,8 @@ pub struct MsixRemoveReport {
 /// yet fail to launch, which is exactly the failure users hit. We verify the
 /// package is registered, its Status is Ok, the app entry (AUMID) resolves,
 /// every declared framework dependency is present, **and** a real shell
-/// activation leaves a process under the install location. When any of these
-/// fail the caller removes the package and falls back to the portable build.
+/// activation opens a stable main window without a startup error dialog. When
+/// these fail the caller verifies a portable fallback before removing the MSIX.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MsixHealthReport {
@@ -143,14 +143,15 @@ pub struct MsixHealthReport {
     /// Declared framework dependencies that are NOT installed on this machine —
     /// the usual reason an MSIX installs but won't launch on a stripped Windows.
     pub missing_dependencies: Vec<String>,
-    /// Shell activation succeeded and a process under the package install
-    /// location stayed alive for the liveness window.
+    /// Shell activation succeeded and the main window under the package install
+    /// location stayed ready without a startup dialog for the settling window.
     #[serde(default)]
     pub activation_ok: bool,
     /// Machine-stable failure class for UI / fallback routing. Empty when healthy.
     /// Values: `not-registered` | `status-bad` | `aumid-unresolved` |
     /// `missing-dependencies` | `activation-failed` | `immediate-exit` |
-    /// `timeout` | `probe-failed` | `policy` | `cleanup-failed`.
+    /// `timeout` | `probe-failed` | `policy` | `cleanup-failed` |
+    /// `startup-dialog` | `main-window-timeout`.
     #[serde(default)]
     pub failure_kind: String,
     /// Human-facing reason when unhealthy; empty when healthy.
@@ -169,6 +170,8 @@ pub mod msix_failure {
     pub const PROBE_FAILED: &str = "probe-failed";
     pub const POLICY: &str = "policy";
     pub const CLEANUP_FAILED: &str = "cleanup-failed";
+    pub const STARTUP_DIALOG: &str = "startup-dialog";
+    pub const MAIN_WINDOW_TIMEOUT: &str = "main-window-timeout";
 }
 
 /// Result of the framework-dependency PRE-check run BEFORE attempting an MSIX
@@ -1442,19 +1445,96 @@ pub fn verify_msix_health() -> MsixHealthReport {
     verify_msix_health_with_options(false)
 }
 
+#[cfg(any(windows, test))]
+#[derive(Debug)]
+struct MsixStartupFailure {
+    kind: &'static str,
+    detail: String,
+}
+
+#[cfg(any(windows, test))]
+fn finish_msix_startup_probe(
+    startup: Result<(), MsixStartupFailure>,
+    keep_running: bool,
+    cleanup: impl FnOnce() -> Result<(), String>,
+) -> Result<(), MsixStartupFailure> {
+    if keep_running && startup.is_ok() {
+        return startup;
+    }
+    match (startup, cleanup()) {
+        (Ok(()), Err(detail)) => Err(MsixStartupFailure {
+            kind: msix_failure::CLEANUP_FAILED,
+            detail,
+        }),
+        (Err(mut failure), Err(cleanup)) => {
+            failure
+                .detail
+                .push_str(&format!("; cleanup also failed: {cleanup}"));
+            Err(failure)
+        }
+        (result, Ok(())) => result,
+    }
+}
+
 #[cfg(windows)]
-pub fn verify_msix_health_with_options(keep_running: bool) -> MsixHealthReport {
-    log::info!("MSIX health check start");
-    // Activation is the expensive step — budget deps probe + cold-start window +
-    // continuous liveness + cleanup + slack.
-    let limits = RunLimits::total(std::time::Duration::from_secs(
-        60 + MSIX_ACTIVATION_WINDOW_SECS + MSIX_LIVENESS_WINDOW_SECS + 30,
-    ));
-    let script = format!(
+fn wait_for_msix_startup(root: &Path) -> Result<(), MsixStartupFailure> {
+    use std::time::{Duration, Instant};
+    let started = Instant::now();
+    let mut progress = crate::startup_window::StartupProgress::default();
+    let mut saw_process = false;
+    loop {
+        let (running, window) =
+            crate::windows_process::startup_window_for_root(root).map_err(|err| {
+                MsixStartupFailure {
+                    kind: msix_failure::PROBE_FAILED,
+                    detail: err.to_string(),
+                }
+            })?;
+        saw_process |= running;
+        if progress
+            .observe(
+                started.elapsed(),
+                &window,
+                Duration::from_secs(MSIX_LIVENESS_WINDOW_SECS),
+            )
+            .map_err(|detail| MsixStartupFailure {
+                kind: msix_failure::STARTUP_DIALOG,
+                detail,
+            })?
+        {
+            return Ok(());
+        }
+        if started.elapsed() >= Duration::from_secs(MSIX_ACTIVATION_WINDOW_SECS) {
+            let (kind, detail) = if running {
+                (
+                    msix_failure::MAIN_WINDOW_TIMEOUT,
+                    "Codex did not open a stable main window within 30 seconds",
+                )
+            } else if saw_process {
+                (
+                    msix_failure::IMMEDIATE_EXIT,
+                    "package process started then exited before its main window was ready",
+                )
+            } else {
+                (
+                    msix_failure::ACTIVATION_FAILED,
+                    "no process under install location after activation",
+                )
+            };
+            return Err(MsixStartupFailure {
+                kind,
+                detail: detail.into(),
+            });
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+#[cfg(windows)]
+fn msix_health_script() -> String {
+    format!(
         r#"
 $ErrorActionPreference = 'SilentlyContinue'
-$activationWindowSecs = {activation_window}
-$livenessWindowSecs = {liveness_window}
 $pkg = Get-AppxPackage -Name {name} |
   Sort-Object -Property Version -Descending |
   Select-Object -First 1
@@ -1480,9 +1560,6 @@ $failureKind = ''
 $activationDetail = ''
 $appId = ''
 $installLoc = ''
-$targetIds = @()
-$activationAttempted = $false
-$keepRunning = {keep_running}
 function Convert-ToVersion($value) {{
   try {{
     $text = [string]$value
@@ -1500,63 +1577,6 @@ function Same-Architecture($package, [string]$required) {{
   if ([string]::IsNullOrWhiteSpace($required) -or $required -eq 'neutral') {{ return $true }}
   $arch = [string]$package.Architecture
   return [string]::IsNullOrWhiteSpace($arch) -or $arch -eq 'Neutral' -or $arch -eq $required
-}}
-# AppX / protected processes often leave Get-Process.Path empty. Fall through
-# MainModule and CIM so a live Codex is not treated as activation-failed.
-function Get-ProcessExePath($p) {{
-  try {{
-    $path = [string]$p.Path
-    if (-not [string]::IsNullOrWhiteSpace($path)) {{ return $path }}
-  }} catch {{}}
-  try {{
-    $path = [string]$p.MainModule.FileName
-    if (-not [string]::IsNullOrWhiteSpace($path)) {{ return $path }}
-  }} catch {{}}
-  try {{
-    $cim = Get-CimInstance -ClassName Win32_Process -Filter ("ProcessId=" + $p.Id) -ErrorAction SilentlyContinue
-    if ($null -ne $cim -and -not [string]::IsNullOrWhiteSpace([string]$cim.ExecutablePath)) {{
-      return [string]$cim.ExecutablePath
-    }}
-  }} catch {{}}
-  return $null
-}}
-function Test-UnderInstall($p, [string]$root) {{
-  if ([string]::IsNullOrWhiteSpace($root)) {{ return $false }}
-  $path = Get-ProcessExePath $p
-  if ([string]::IsNullOrWhiteSpace($path)) {{ return $false }}
-  $full = [string]$path
-  try {{
-    $resolved = [string](Convert-Path -LiteralPath $path -ErrorAction Stop)
-    if (-not [string]::IsNullOrWhiteSpace($resolved)) {{ $full = $resolved }}
-  }} catch {{}}
-  return ($full.Equals($root, [System.StringComparison]::OrdinalIgnoreCase) -or
-          $full.StartsWith($root + '\', [System.StringComparison]::OrdinalIgnoreCase))
-}}
-function Get-PackageProcesses([string]$root) {{
-  $found = @()
-  foreach ($p in @(Get-Process -Name Codex,ChatGPT -ErrorAction SilentlyContinue)) {{
-    if (Test-UnderInstall $p $root) {{ $found += $p }}
-  }}
-  return $found
-}}
-function Stop-PackageProcesses([string]$root, $ids) {{
-  $pendingIds = @($ids)
-  $deadline = (Get-Date).AddSeconds(5)
-  do {{
-    foreach ($id in $pendingIds) {{
-      try {{ Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }} catch {{}}
-    }}
-    foreach ($p in @(Get-PackageProcesses $root)) {{
-      try {{ Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }} catch {{}}
-    }}
-    Start-Sleep -Milliseconds 200
-    $remaining = @(Get-PackageProcesses $root)
-    if ($remaining.Count -eq 0) {{ return $true }}
-    # Electron may replace a process while shutting down. Follow the replacement
-    # PIDs and retry until the bounded cleanup deadline.
-    $pendingIds = @($remaining | ForEach-Object {{ $_.Id }} | Select-Object -Unique)
-  }} while ((Get-Date) -lt $deadline)
-  return (@(Get-PackageProcesses $root).Count -eq 0)
 }}
 try {{
   $manifest = Get-AppxPackageManifest $pkg -ErrorAction Stop
@@ -1598,71 +1618,14 @@ try {{
   }}
 }} catch {{}}
 
-# Real activation: shell-start the AUMID and require a process under InstallLocation
-# for a continuous liveness window aligned with portable. Registration alone is
-# not enough on stripped Windows.
+# Shell activation only submits the launch. Rust observes the actual package
+# windows and performs bounded cleanup after this script returns.
 if ($statusOk -and $aumidResolved -and $missing.Count -eq 0) {{
-  if ([string]::IsNullOrEmpty($appId)) {{ $appId = 'App' }}
   $aumid = [string]$pkg.PackageFamilyName + '!' + $appId
   $installLoc = [string]$pkg.InstallLocation
-  try {{ $installLoc = ([string](Convert-Path -LiteralPath $installLoc -ErrorAction Stop)).TrimEnd('\') }} catch {{}}
-  $activationAttempted = $true
   try {{
     Start-Process ("shell:AppsFolder\" + $aumid) -ErrorAction Stop | Out-Null
-    $deadline = (Get-Date).AddSeconds($activationWindowSecs)
-    $sawProcess = $false
-    $stillAlive = $false
-    while ((Get-Date) -lt $deadline) {{
-      Start-Sleep -Milliseconds 300
-      $found = @(Get-PackageProcesses $installLoc)
-      if ($found.Count -eq 0) {{ continue }}
-      $sawProcess = $true
-      $targetIds = @($found | ForEach-Object {{ $_.Id }} | Select-Object -Unique)
-      # Continuous survival for $livenessWindowSecs (same bar as portable).
-      $liveDeadline = (Get-Date).AddSeconds($livenessWindowSecs)
-      $continuous = $true
-      while ((Get-Date) -lt $liveDeadline) {{
-        Start-Sleep -Milliseconds 250
-        $alive = @()
-        foreach ($id in $targetIds) {{
-          $p = Get-Process -Id $id -ErrorAction SilentlyContinue
-          if ($null -ne $p) {{ $alive += $p }}
-        }}
-        # Also accept replacements under install root (Electron restarts).
-        if ($alive.Count -eq 0) {{
-          $alive = @(Get-PackageProcesses $installLoc)
-          $targetIds = @($alive | ForEach-Object {{ $_.Id }} | Select-Object -Unique)
-        }}
-        if ($alive.Count -eq 0) {{
-          $continuous = $false
-          break
-        }}
-      }}
-      if ($continuous) {{
-        $stillAlive = $true
-        break
-      }}
-    }}
-    if ($stillAlive) {{
-      $activationOk = $true
-      if (-not $keepRunning) {{
-        if (Stop-PackageProcesses $installLoc $targetIds) {{
-          $targetIds = @()
-        }} else {{
-          # A health check is not successful if it changes a previously-closed
-          # app into a running one. Fail closed so the caller can report/fallback.
-          $activationOk = $false
-          $failureKind = 'cleanup-failed'
-          $activationDetail = 'package process remained running after health-check cleanup'
-        }}
-      }}
-    }} elseif ($sawProcess) {{
-      $failureKind = 'immediate-exit'
-      $activationDetail = 'package process started then exited during the liveness window'
-    }} else {{
-      $failureKind = 'activation-failed'
-      $activationDetail = 'no process under install location after shell activation'
-    }}
+    $activationOk = $true
   }} catch {{
     $msg = [string]$_.Exception.Message
     $activationDetail = $msg
@@ -1671,11 +1634,6 @@ if ($statusOk -and $aumidResolved -and $missing.Count -eq 0) {{
     }} else {{
       $failureKind = 'activation-failed'
     }}
-  }}
-  # Unhealthy activation must not leave Codex holding package files open for
-  # the subsequent portable fallback / Remove-AppxPackage.
-  if (-not $activationOk -and $activationAttempted) {{
-    $null = Stop-PackageProcesses $installLoc $targetIds
   }}
 }}
 
@@ -1688,13 +1646,20 @@ if ($statusOk -and $aumidResolved -and $missing.Count -eq 0) {{
   activationOk = $activationOk
   failureKind = $failureKind
   activationDetail = $activationDetail
+  installLocation = $installLoc
 }} | ConvertTo-Json -Compress
 "#,
-        name = ps_quote(crate::OPENAI_PACKAGE_IDENTITY),
-        activation_window = MSIX_ACTIVATION_WINDOW_SECS,
-        liveness_window = MSIX_LIVENESS_WINDOW_SECS,
-        keep_running = if keep_running { "$true" } else { "$false" }
-    );
+        name = ps_quote(crate::OPENAI_PACKAGE_IDENTITY)
+    )
+}
+
+#[cfg(windows)]
+pub fn verify_msix_health_with_options(keep_running: bool) -> MsixHealthReport {
+    log::info!("MSIX health check start");
+    // Package queries and shell activation are bounded separately from native
+    // window observation. A live error dialog must never count as readiness.
+    let limits = RunLimits::probe();
+    let script = msix_health_script();
 
     let run_result = run_powershell_json_with_limits(&script, limits);
     let parsed = match &run_result {
@@ -1719,7 +1684,7 @@ if ($statusOk -and $aumidResolved -and $missing.Count -eq 0) {{
         Err(_) => None,
     };
 
-    let Some(value) = parsed else {
+    let Some(mut value) = parsed else {
         // The health probe itself could not run. On managed/stripped Windows this
         // is exactly the situation where an MSIX can register but fail to launch,
         // so treat the verdict as degraded and let the caller fall back to the
@@ -1740,6 +1705,48 @@ if ($statusOk -and $aumidResolved -and $missing.Count -eq 0) {{
         };
     };
 
+    if value.get("activationOk").and_then(|v| v.as_bool()) == Some(true) {
+        let root = value
+            .get("installLocation")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if root.trim().is_empty() {
+            value["activationOk"] = false.into();
+            value["failureKind"] = msix_failure::PROBE_FAILED.into();
+            value["activationDetail"] = "registered package has no install location".into();
+            best_effort_close_msix_after_probe();
+        } else {
+            let root = PathBuf::from(root);
+            let startup = wait_for_msix_startup(&root);
+            let result = finish_msix_startup_probe(startup, keep_running, || {
+                crate::windows_process::close_startup_gui_for_root(&root).map_err(|e| e.to_string())
+            });
+            if let Err(failure) = result {
+                log::warn!(
+                    "MSIX startup failed kind={} detail={}",
+                    failure.kind,
+                    failure.detail
+                );
+                value["activationOk"] = false.into();
+                value["failureKind"] = failure.kind.into();
+                value["activationDetail"] = failure.detail.into();
+            }
+        }
+    } else if let Some(root) = value
+        .get("installLocation")
+        .and_then(|v| v.as_str())
+        .filter(|root| !root.trim().is_empty())
+    {
+        // Start-Process can fail after partially activating an application.
+        if let Err(err) = crate::windows_process::close_startup_gui_for_root(Path::new(root)) {
+            log::warn!("MSIX failed activation cleanup: {err}");
+        }
+    }
+    msix_health_from_probe(&value)
+}
+
+#[cfg(any(windows, test))]
+fn msix_health_from_probe(value: &serde_json::Value) -> MsixHealthReport {
     let package_registered = value
         .get("packageRegistered")
         .and_then(|v| v.as_bool())
@@ -2023,7 +2030,7 @@ pub fn launch_codex_with_options(
             let arguments = remote_debugging_arguments(port).join(" ");
             launch_msix_app_with_arguments(installed, &arguments)
         } else {
-            launch_msix_app()
+            launch_msix_app_with_arguments(installed, "")
         }
     }
 }
@@ -2062,6 +2069,7 @@ if ($app -is [array]) {{ $app = $app[0] }}
 @{{
   packageFamilyName = [string]$pkg.PackageFamilyName
   appId = [string]$app.Id
+  installLocation = [string]$pkg.InstallLocation
 }} | ConvertTo-Json -Compress
 "#,
         name = ps_quote(crate::OPENAI_PACKAGE_IDENTITY),
@@ -2070,6 +2078,20 @@ if ($app -is [array]) {{ $app = $app[0] }}
     let registered = run_powershell_json_with_limits(&script, RunLimits::probe())
         .map_err(|e| e.into_install())?;
     let aumid = HSTRING::from(registered_msix_aumid(&registered, family)?);
+    // Follow registration if an external updater changed the version/path
+    // since detection. Never accept a window from the stale install root.
+    let value: serde_json::Value = serde_json::from_str(&registered)
+        .map_err(|e| EngineError::Io(format!("parse registered MSIX install location: {e}")))?;
+    let root = value
+        .get("installLocation")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if root.trim().is_empty() {
+        return Err(EngineError::Io(
+            "registered MSIX package has no install location".into(),
+        ));
+    }
+    let root = PathBuf::from(root);
     let arguments = HSTRING::from(arguments);
 
     // Blocking launch calls run on a pool thread whose COM apartment is
@@ -2090,13 +2112,20 @@ if ($app -is [array]) {{ $app = $app[0] }}
         let pid = manager
             .ActivateApplication(&aumid, &arguments, AO_NONE)
             .map_err(|e| EngineError::Io(format!("activate MSIX Codex with arguments: {e}")))?;
-        log::debug!("activated MSIX Codex with arguments pid={pid}");
+        log::debug!("activated MSIX Codex pid={pid}");
         Ok(())
     })();
     if uninitialize {
         unsafe { CoUninitialize() };
     }
-    outcome
+    outcome?;
+    wait_for_msix_startup(&root).map_err(|failure| {
+        log::warn!("MSIX launch failed kind={} detail={}", failure.kind, failure.detail);
+        EngineError::Io(format!(
+            "MSIX Codex failed to start ({}): {}. Reinstall this version in Codex App Manager to verify startup and automatically try the portable fallback. If that also fails, copy diagnostics for further investigation.",
+            failure.kind, failure.detail
+        ))
+    })
 }
 
 #[cfg(not(windows))]
@@ -2106,36 +2135,6 @@ fn launch_msix_app_with_arguments(
 ) -> Result<(), EngineError> {
     Err(EngineError::Io(
         "MSIX launch with arguments is only available on Windows".to_string(),
-    ))
-}
-
-#[cfg(windows)]
-fn launch_msix_app() -> Result<(), EngineError> {
-    // Resolve the real AUMID (PackageFamilyName!AppId) from the manifest so the
-    // shell can activate the package; fall back to the conventional "App" id.
-    let script = format!(
-        r#"
-$ErrorActionPreference = 'Stop'
-$pkg = Get-AppxPackage -Name {name} | Sort-Object -Property Version -Descending | Select-Object -First 1
-if ($null -eq $pkg) {{ throw 'Codex is not installed' }}
-$app = (Get-AppxPackageManifest $pkg).Package.Applications.Application
-if ($app -is [array]) {{ $app = $app[0] }}
-$id = $app.Id
-if (-not $id) {{ $id = 'App' }}
-Start-Process ("shell:AppsFolder\" + $pkg.PackageFamilyName + "!" + $id)
-"#,
-        name = ps_quote(crate::OPENAI_PACKAGE_IDENTITY)
-    );
-    // Activation is fire-and-forget from the shell; bound the AUMID resolve + Start-Process.
-    run_powershell_json_with_limits(&script, RunLimits::probe())
-        .map(|_| ())
-        .map_err(|e| e.into_install())
-}
-
-#[cfg(not(windows))]
-fn launch_msix_app() -> Result<(), EngineError> {
-    Err(EngineError::Io(
-        "MSIX launch is only available on Windows".to_string(),
     ))
 }
 
@@ -2581,6 +2580,32 @@ function Get-AppxPackage {
         assert_eq!(installed.source, "msix");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn constrained_language_health_probe_returns_root_for_native_observation() {
+        let mocks = r#"
+$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'
+function Get-AppxPackage {
+  @{ Status = 'Ok'; Version = '26.917.6896.0'; Architecture = 'X64';
+     PackageFamilyName = 'OpenAI.Codex_2p2nqsd0c76g0'; InstallLocation = 'C:\fixture\Codex' }
+}
+function Get-AppxPackageManifest {
+  @{ Package = @{ Applications = @{ Application = @{ Id = 'App' } }; Dependencies = @{} } }
+}
+function Start-Process {
+  param([string]$FilePath)
+  if ($FilePath -ne 'shell:AppsFolder\OpenAI.Codex_2p2nqsd0c76g0!App') { throw 'wrong activation target' }
+}
+"#;
+        let script = format!("{mocks}\n{}", super::msix_health_script());
+        let json = run_powershell_json(&script).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["packageRegistered"], true);
+        assert_eq!(value["activationOk"], true);
+        assert_eq!(value["installLocation"], r"C:\fixture\Codex");
+        assert_eq!(value["failureKind"], "");
+    }
+
     #[test]
     fn msix_health_failure_kinds_are_stable_strings() {
         // Keep these stable: frontend / notes may switch on them.
@@ -2590,6 +2615,125 @@ function Get-AppxPackage {
         assert_eq!(super::msix_failure::TIMEOUT, "timeout");
         assert_eq!(super::msix_failure::POLICY, "policy");
         assert_eq!(super::msix_failure::CLEANUP_FAILED, "cleanup-failed");
+        assert_eq!(super::msix_failure::STARTUP_DIALOG, "startup-dialog");
+        assert_eq!(
+            super::msix_failure::MAIN_WINDOW_TIMEOUT,
+            "main-window-timeout"
+        );
+    }
+
+    #[test]
+    fn healthy_registration_with_a_runtime_dialog_routes_to_fallback() {
+        let value = serde_json::json!({
+            "packageRegistered": true, "statusOk": true, "status": "Ok",
+            "aumidResolved": true, "missingDependencies": "",
+            "activationOk": false, "failureKind": "startup-dialog",
+            "activationDetail": "Unable to locate the Codex CLI binary or required runtime components."
+        });
+        let report = super::msix_health_from_probe(&value);
+        assert!(!report.healthy);
+        assert!(report.verified);
+        assert!(report.status_ok);
+        assert_eq!(report.failure_kind, "startup-dialog");
+        assert!(report.reason.contains("required runtime components"));
+        let mut ready = value;
+        ready["activationOk"] = true.into();
+        ready["failureKind"] = "".into();
+        ready["activationDetail"] = "".into();
+        assert!(super::msix_health_from_probe(&ready).healthy);
+    }
+
+    #[test]
+    fn startup_probe_preserves_keep_running_and_never_hides_cleanup_failure() {
+        use super::{finish_msix_startup_probe, msix_failure, MsixStartupFailure};
+        assert!(finish_msix_startup_probe(Ok(()), true, || panic!("must keep running")).is_ok());
+        let mut cleaned = false;
+        assert!(finish_msix_startup_probe(Ok(()), false, || {
+            cleaned = true;
+            Ok(())
+        })
+        .is_ok());
+        assert!(cleaned);
+        let failed_cleanup =
+            finish_msix_startup_probe(Ok(()), false, || Err("access denied".into())).unwrap_err();
+        assert_eq!(failed_cleanup.kind, msix_failure::CLEANUP_FAILED);
+        let dialog = || {
+            Err(MsixStartupFailure {
+                kind: msix_failure::STARTUP_DIALOG,
+                detail: "runtime missing".into(),
+            })
+        };
+        cleaned = false;
+        let failure = finish_msix_startup_probe(dialog(), true, || {
+            cleaned = true;
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(cleaned);
+        assert_eq!(failure.kind, msix_failure::STARTUP_DIALOG);
+        let failure =
+            finish_msix_startup_probe(dialog(), false, || Err("access denied".into())).unwrap_err();
+        assert_eq!(failure.kind, msix_failure::STARTUP_DIALOG);
+        assert!(failure.detail.contains("runtime missing"));
+        assert!(failure.detail.contains("access denied"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_startup_windows_are_scoped_and_reject_errors() {
+        use std::process::Stdio;
+        let root =
+            std::env::temp_dir().join(format!("codex-startup-window-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let exe = root.join("fixture.exe");
+        std::fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
+        for mode in ["ready", "title", "body", "late-error"] {
+            let mut child = crate::process::hidden_command(&exe)
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "startup_window::tests::native_window_fixture",
+                ])
+                .env("CODEX_STARTUP_WINDOW_FIXTURE", mode)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let result = super::wait_for_msix_startup(&root);
+            // Always reap the isolated fixture before checking assertions.
+            let _ = child.kill();
+            let _ = child.wait();
+            if mode == "ready" {
+                assert!(result.is_ok(), "{result:?}");
+            } else {
+                let failure = result.unwrap_err();
+                assert_eq!(
+                    failure.kind,
+                    super::msix_failure::STARTUP_DIALOG,
+                    "{mode}: {failure:?}"
+                );
+            }
+        }
+        // Another installation's window must never satisfy this root's probe.
+        let mut child = crate::process::hidden_command(&exe)
+            .args([
+                "--ignored",
+                "--exact",
+                "startup_window::tests::native_window_fixture",
+            ])
+            .env("CODEX_STARTUP_WINDOW_FIXTURE", "ready")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let ready = super::wait_for_msix_startup(&root);
+        let other = crate::windows_process::startup_window_for_root(&root.join("other-install"));
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(ready.is_ok());
+        let (running, window) = other.unwrap();
+        assert!(!running && !window.ready && window.failure.is_none());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

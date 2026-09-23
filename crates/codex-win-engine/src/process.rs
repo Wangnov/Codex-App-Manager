@@ -304,8 +304,10 @@ pub(crate) fn spawn_and_check_startup(
     let mut child = command
         .spawn()
         .map_err(|e| RunError::Spawn(e.to_string()))?;
-    let deadline = Instant::now() + window;
-    let startup_deadline = Instant::now() + Duration::from_secs(30);
+    let started = Instant::now();
+    let deadline = started + window;
+    let startup_deadline = started + Duration::from_secs(MSIX_ACTIVATION_WINDOW_SECS);
+    let mut progress = crate::startup_window::StartupProgress::default();
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -315,11 +317,14 @@ pub(crate) fn spawn_and_check_startup(
             }
             Ok(None) => {
                 let state = crate::startup_window::inspect(child.id());
-                if let Some(failure) = state.failure {
-                    terminate_tree(&mut child);
-                    return Err(RunError::Wait(format!("Codex startup dialog: {failure}")));
-                }
-                if Instant::now() >= deadline && (!require_window || state.ready) {
+                let ready = match progress.observe(started.elapsed(), &state, window) {
+                    Ok(ready) => ready,
+                    Err(failure) => {
+                        terminate_tree(&mut child);
+                        return Err(RunError::Wait(failure));
+                    }
+                };
+                if (require_window && ready) || (!require_window && Instant::now() >= deadline) {
                     return Ok(LivenessResult::Survived { child });
                 }
                 if require_window && Instant::now() >= startup_deadline {

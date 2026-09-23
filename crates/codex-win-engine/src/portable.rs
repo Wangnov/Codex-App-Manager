@@ -1512,6 +1512,46 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    #[ignore = "requires official CODEX_REAL_MSIX and a marked disposable CODEX_REAL_MSIX_SMOKE_DIR"]
+    fn real_msix_portable_startup() {
+        let msix = PathBuf::from(std::env::var_os("CODEX_REAL_MSIX").expect("CODEX_REAL_MSIX"));
+        let root = PathBuf::from(
+            std::env::var_os("CODEX_REAL_MSIX_SMOKE_DIR").expect("CODEX_REAL_MSIX_SMOKE_DIR"),
+        );
+        assert!(
+            root.join(".codex-manager-smoke").is_file(),
+            "use a marked disposable directory"
+        );
+        assert!(crate::authenticode::verify_openai_authenticode(&msix)
+            .unwrap()
+            .is_valid_openai());
+        let prepared = prepare_portable_payload(&msix, &root).unwrap();
+        let payload = prepared.payload_dir;
+        ensure_portable_launcher(&payload).unwrap();
+        let mut command = portable_launch_command(&installed_app_exe(&payload).unwrap()).unwrap();
+        command
+            .env("CODEX_HOME", root.join("home"))
+            .env("CODEX_ELECTRON_USER_DATA_PATH", root.join("profile"))
+            .env("CODEX_SPARKLE_ENABLED", "false")
+            .arg(format!(
+                "--user-data-dir={}",
+                root.join("profile").display()
+            ));
+        let result =
+            crate::process::spawn_and_check_startup(command, PORTABLE_LIVENESS_WINDOW, true);
+        let cleanup = close_codex_gracefully_for_root(10, &payload);
+        cleanup.unwrap();
+        assert!(
+            matches!(result, Ok(LivenessResult::Survived { .. })),
+            "{result:?}"
+        );
+        // Keep the marked lab and app logs for investigation. No MSIX install
+        // or shortcut is created. The desktop app itself can register Chrome
+        // hosts; restore lab discovery/manifest entries as documented in #353.
+    }
+
+    #[cfg(windows)]
+    #[test]
     #[ignore = "requires an isolated affected 26.915.31029 payload via CODEX_REAL_PORTABLE"]
     fn real_portable_bootstrap_dialog_is_rejected() {
         let root =

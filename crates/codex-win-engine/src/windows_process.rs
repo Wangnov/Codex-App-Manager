@@ -105,6 +105,7 @@ mod imp {
         pid: u32,
         handle: OwnedHandle,
         can_terminate: bool,
+        is_gui_app: bool,
     }
 
     impl TargetProcess {
@@ -132,7 +133,7 @@ mod imp {
         EngineError::Install(format!("{context}: {}", std::io::Error::last_os_error()))
     }
 
-    fn open_process_under_root(pid: u32, root: &Path) -> Option<TargetProcess> {
+    fn open_process_under_root(pid: u32, root: &Path, for_shutdown: bool) -> Option<TargetProcess> {
         let query_access = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE;
         // Query every snapshot entry without requesting termination rights on
         // unrelated system processes. Escalate access only after the image path
@@ -156,16 +157,22 @@ mod imp {
             return None;
         }
 
-        log::info!(
-            "managed install process discovered pid={pid} image={}",
-            image_path.display()
-        );
+        if for_shutdown {
+            log::info!(
+                "managed install process discovered pid={pid} image={}",
+                image_path.display()
+            );
+        }
 
         let full_access = query_access | PROCESS_TERMINATE;
         // SAFETY: access flags and PID come from the process snapshot. If
         // policy denies termination, keep the query/synchronize handle so a
         // graceful close can still succeed.
-        let terminate_handle = OwnedHandle::new(unsafe { OpenProcess(full_access, 0, pid) });
+        let terminate_handle = if for_shutdown {
+            OwnedHandle::new(unsafe { OpenProcess(full_access, 0, pid) })
+        } else {
+            None
+        };
         let can_terminate = terminate_handle.is_some();
         let handle = terminate_handle.unwrap_or(query_handle);
 
@@ -173,10 +180,17 @@ mod imp {
             pid,
             handle,
             can_terminate,
+            is_gui_app: image_path.file_name().is_some_and(|name| {
+                let name = name.to_string_lossy();
+                name.eq_ignore_ascii_case("Codex.exe") || name.eq_ignore_ascii_case("ChatGPT.exe")
+            }),
         })
     }
 
-    fn target_processes_under_root(root: &Path) -> Result<Vec<TargetProcess>, EngineError> {
+    fn target_processes_under_root(
+        root: &Path,
+        for_shutdown: bool,
+    ) -> Result<Vec<TargetProcess>, EngineError> {
         // SAFETY: TH32CS_SNAPPROCESS ignores the process-id argument.
         let snapshot = OwnedHandle::new(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) })
             .ok_or_else(|| last_error("create process snapshot"))?;
@@ -202,7 +216,7 @@ mod imp {
             // The Manager itself can be installed under a user-selected tree;
             // never include the process performing the replacement.
             let target = if entry.th32ProcessID != manager_pid {
-                open_process_under_root(entry.th32ProcessID, root)
+                open_process_under_root(entry.th32ProcessID, root, for_shutdown)
             } else {
                 None
             };
@@ -225,9 +239,24 @@ mod imp {
     }
 
     pub(crate) fn codex_processes_running_for_root(root: &Path) -> Result<bool, EngineError> {
-        Ok(target_processes_under_root(root)?
+        Ok(target_processes_under_root(root, false)?
             .iter()
             .any(TargetProcess::is_running))
+    }
+
+    /// Hold image-verified process handles while inspecting their windows. This
+    /// also follows Electron replacement processes without accepting another
+    /// installed Codex (or an unrelated ChatGPT) elsewhere on disk.
+    pub(crate) fn startup_window_for_root(
+        root: &Path,
+    ) -> Result<(bool, crate::startup_window::StartupWindow), EngineError> {
+        let targets = target_processes_under_root(root, false)?;
+        let pids: Vec<u32> = targets
+            .iter()
+            .filter(|p| p.is_running())
+            .map(|p| p.pid)
+            .collect();
+        Ok((!pids.is_empty(), crate::startup_window::inspect_pids(&pids)))
     }
 
     unsafe extern "system" fn post_close_to_pid(hwnd: HWND, target_pid: LPARAM) -> i32 {
@@ -274,13 +303,42 @@ mod imp {
         timeout_secs: u64,
         root: &Path,
     ) -> Result<(), EngineError> {
-        let targets = target_processes_under_root(root)?;
+        let targets = target_processes_under_root(root, true)?;
+        close_targets(&targets, timeout_secs)
+    }
+
+    /// A successful install probe closes the GUI it opened, as the former
+    /// PowerShell probe did. Packaged background services are not GUI startup
+    /// processes and must not turn a healthy installation into a false failure.
+    pub(crate) fn close_startup_gui_for_root(root: &Path) -> Result<(), EngineError> {
+        for _ in 0..3 {
+            let targets: Vec<_> = target_processes_under_root(root, true)?
+                .into_iter()
+                .filter(|p| p.is_gui_app && p.is_running())
+                .collect();
+            if targets.is_empty() {
+                return Ok(());
+            }
+            close_targets(&targets, 2)?;
+        }
+        if target_processes_under_root(root, false)?
+            .iter()
+            .any(|p| p.is_gui_app && p.is_running())
+        {
+            return Err(EngineError::Install(
+                "package GUI kept restarting during startup cleanup".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn close_targets(targets: &[TargetProcess], timeout_secs: u64) -> Result<(), EngineError> {
         if targets.is_empty() {
             return Ok(());
         }
 
-        request_graceful_close(&targets);
-        if wait_until_exited(&targets, Duration::from_secs(timeout_secs)) {
+        request_graceful_close(targets);
+        if wait_until_exited(targets, Duration::from_secs(timeout_secs)) {
             return Ok(());
         }
 
@@ -307,7 +365,7 @@ mod imp {
             }
         }
 
-        if wait_until_exited(&targets, FORCE_CLOSE_TIMEOUT) {
+        if wait_until_exited(targets, FORCE_CLOSE_TIMEOUT) {
             log::warn!(
                 "managed install processes required native force-close pids={:?}",
                 force_ids
@@ -361,7 +419,10 @@ mod imp {
                 .unwrap();
 
             let discover_deadline = Instant::now() + Duration::from_secs(10);
-            while target_processes_under_root(&root).unwrap().is_empty() {
+            while target_processes_under_root(&root, false)
+                .unwrap()
+                .is_empty()
+            {
                 if Instant::now() >= discover_deadline {
                     let _ = child.kill();
                     panic!("helper process was not discovered under its install root");
@@ -383,7 +444,10 @@ mod imp {
 }
 
 #[cfg(windows)]
-pub(crate) use imp::{close_codex_processes_for_root, codex_processes_running_for_root};
+pub(crate) use imp::{
+    close_codex_processes_for_root, close_startup_gui_for_root, codex_processes_running_for_root,
+    startup_window_for_root,
+};
 
 #[cfg(not(windows))]
 pub(crate) fn close_codex_processes_for_root(

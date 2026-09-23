@@ -364,6 +364,7 @@ export interface Diagnostics {
   logsDir: string | null;
   recentErrors: string[];
   logTail: string;
+  windowsRuntime?: string[];
   generatedAtUnix: number;
 }
 
@@ -535,7 +536,7 @@ export interface MsixHealthReport {
   /**
    * Machine-stable failure class for notes / routing. Empty when healthy.
    * Values: not-registered | status-bad | aumid-unresolved |
-   * missing-dependencies | activation-failed | immediate-exit | timeout |
+   * missing-dependencies | activation-failed | immediate-exit | startup-dialog | main-window-timeout | timeout |
    * probe-failed | policy.
    */
   failureKind?: string;

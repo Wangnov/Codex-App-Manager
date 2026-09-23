@@ -22,6 +22,9 @@ export function formatDiagnostics(diagnostics: Diagnostics, jsError?: Error | nu
     `Provenance: ${health.provenanceStatus}`,
     `Unknown source: ${health.unknownSource ?? "none"}`,
     `Detail: ${health.detail ?? "none"}`,
+    ...(diagnostics.windowsRuntime?.length
+      ? ["", "## Windows Codex runtime", ...diagnostics.windowsRuntime.map((line) => `- ${line}`)]
+      : []),
     "",
     "## Recent warnings/errors",
     recentErrors,

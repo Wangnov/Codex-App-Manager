@@ -1664,6 +1664,9 @@ fn perform_verified_windows_stage_tail(
         let health = verify_msix_health_with_options(was_running);
         if !health.healthy {
             log::warn!("Windows route changed to portable fallback from_route=msix-sideload to_route=portable-fallback");
+            // Preserve selected app-level runtime evidence before uninstalling
+            // the failed MSIX (which can remove its redirected logs).
+            crate::app::diagnostics::record_windows_runtime_failure(sideload.installed.as_ref());
             // Activation probe may have started Codex (or left a half-started
             // process). Close it before portable install and Remove-AppxPackage
             // so package files unlock cleanly. Prefer the sideload install path
@@ -2189,7 +2192,10 @@ pub fn launch_codex(settings: &AppSettings) -> Result<(), AppError> {
             remote_debugging_port: None,
         },
     )
-    .map_err(|e| AppError::Engine(e.to_string()))
+    .map_err(|e| {
+        crate::app::diagnostics::record_windows_runtime_failure(Some(&installed));
+        AppError::Engine(e.to_string())
+    })
 }
 
 pub fn uninstall_windows_codex(

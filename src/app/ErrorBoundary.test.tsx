@@ -286,6 +286,11 @@ describe("ErrorBoundary", () => {
   });
 
   it("renders a crash screen and copies diagnostics with the JS error", async () => {
+    getDiagnostics.mockResolvedValue({
+      ...diagnostics,
+      os: "windows",
+      windowsRuntime: ["bundled_executable_relocation_failed errorCode=EACCES"],
+    });
     const user = userEvent.setup();
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
@@ -308,6 +313,8 @@ describe("ErrorBoundary", () => {
     await user.click(screen.getByRole("button", { name: CATALOG.en["crash.copy"] }));
     await waitFor(() => expect(writeText).toHaveBeenCalled());
     expect(writeText.mock.calls[0][0]).toContain("## Frontend error");
+    expect(writeText.mock.calls[0][0]).toContain("## Windows Codex runtime");
+    expect(writeText.mock.calls[0][0]).toContain("bundled_executable_relocation_failed errorCode=EACCES");
     expect(
       screen.getByRole("button", { name: CATALOG.en["crash.copied"] }),
     ).toBeInTheDocument();
