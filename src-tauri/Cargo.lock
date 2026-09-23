@@ -536,7 +536,7 @@ dependencies = [
 
 [[package]]
 name = "codex-app-manager"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "base64 0.23.1",
  "codex-mac-engine",
