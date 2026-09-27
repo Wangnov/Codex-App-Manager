@@ -164,7 +164,7 @@ function head(t, data, page) {
     sameAs: [REPO.manager, REPO.mirror, REPO.skins],
     offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
   };
-  return `
+  return `${redirect}
     <title>${esc(title)}</title>
     <meta name="description" content="${esc(t.meta.description)}">
     ${page === "404" ? `<meta name="robots" content="noindex">` : `<link rel="canonical" href="${url}">`}
@@ -189,7 +189,6 @@ function head(t, data, page) {
     ${t.lang === "zh" ? `<link rel="preload" href="/fonts/shs-heavy.woff2" as="font" type="font/woff2" crossorigin>` : ""}
     ${page === "404" ? "" : `<link rel="preload" as="image" type="image/avif" media="(prefers-color-scheme: dark)" imagesrcset="/img/hero-dark-960.avif 960w, /img/hero-dark-1672.avif 1672w" imagesizes="100vw">
     <link rel="preload" as="image" type="image/avif" media="(prefers-color-scheme: light)" imagesrcset="/img/hero-light-960.avif 960w, /img/hero-light-1672.avif 1672w" imagesizes="100vw">`}
-    ${redirect}
     <script type="application/ld+json">${JSON.stringify(ld)}</script>`;
 }
 
