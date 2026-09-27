@@ -140,6 +140,11 @@ p {
   padding-block: var(--section-y);
 }
 
+.anchor-alias {
+  position: absolute;
+  top: 0;
+}
+
 .section-head {
   display: grid;
   gap: 18px;

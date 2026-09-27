@@ -260,7 +260,7 @@ function hero(t, data) {
         <h1>${t.hero.h1.split("<br>").map((l) => `<span class="h1-line">${l}</span>`).join("")}</h1>
         <p class="hero-lead">${esc(t.hero.lead)}</p>
         <div class="hero-ctas">
-          <a class="btn btn-primary btn-lg" id="hero-dl" href="#download">${icon("download-simple")}<span>${esc(t.hero.ctaManager)}</span><span class="btn-hint" data-platform-hint hidden></span></a>
+          <a class="btn btn-primary btn-lg" id="hero-dl" href="#download" data-open-tab="manager">${icon("download-simple")}<span>${esc(t.hero.ctaManager)}</span><span class="btn-hint" data-platform-hint hidden></span></a>
           <a class="btn btn-glass btn-lg" href="#download" data-open-tab="codex">${esc(t.hero.ctaCodex)}</a>
         </div>
       </div>
@@ -317,6 +317,7 @@ function suite(t, data) {
       </article>`;
   return `
   <section class="section suite" id="suite">
+    <span class="anchor-alias" id="why" aria-hidden="true"></span>
     <div class="container">
       <header class="section-head" data-reveal>
         <h2>${esc(s.h2)}</h2>
@@ -395,7 +396,7 @@ function manager(t, data) {
       </div>
       <ul class="spec-row" data-reveal>${m.specs.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>
       <div class="mgr-cta" data-reveal>
-        <a class="btn btn-primary btn-lg" href="#download">${icon("download-simple")}<span>${esc(m.cta)}</span></a>
+        <a class="btn btn-primary btn-lg" href="#download" data-open-tab="manager">${icon("download-simple")}<span>${esc(m.cta)}</span></a>
         ${cmd(t, COMMANDS.brew)}
       </div>
     </div>
@@ -503,6 +504,7 @@ function mirror(t, data) {
   const channelIcons = ["check-circle", "flask", "linux-logo"];
   return `
   <section class="section mirror" id="mirror">
+    <span class="anchor-alias" id="pipeline" aria-hidden="true"></span>
     <div class="mirror-banner">
       ${themedPicture({ dark: "lake-dark", light: "lake-light", widths: [960, 1672], sizes: "100vw", alt: "", width: 1672, height: 941, cls: "banner-bg" })}
       <div class="container banner-inner">
@@ -550,6 +552,7 @@ function trust(t, data) {
   const pointIcons = ["seal-check", "fingerprint", "info", "github-logo"];
   return `
   <section class="section trust" id="trust">
+    <span class="anchor-alias" id="scope" aria-hidden="true"></span>
     <div class="container trust-grid">
       <div class="trust-copy">
         <header class="section-head" data-reveal>

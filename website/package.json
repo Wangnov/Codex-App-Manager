@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "data": "node scripts/fetch-data.mjs",
     "fonts": "node scripts/subset-fonts.mjs",
-    "images": "node scripts/optimize-images.mjs",
+    "images": "node scripts/optimize-images.mjs && node scripts/og-image.mjs",
     "assets": "npm run fonts && npm run images",
     "deploy": "npm run build && npx wrangler@4 deploy"
   },
