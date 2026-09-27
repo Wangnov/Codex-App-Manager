@@ -1,16 +1,28 @@
 {
-  // The official website, served as static assets at the root of
-  // https://codexapp.agentsmirror.com/. Path routing on the zone:
+  // The official website at https://codexapp.agentsmirror.com/.
+  // Path routing on the zone (longest match wins):
   //   /manager/* -> codex-app-manager-download-router (this repo, cloudflare/)
-  //   /latest/*  -> codex-app-mirror download-router (mirror repo)
-  //   /*         -> this worker (longest-match precedence keeps the two above)
+  //   /latest/*, /stats/* -> codex-app-mirror download-router (mirror repo)
+  //   /*         -> this worker: static assets from ./dist, plus /api/* below
   "name": "codex-app-manager-website",
+  "main": "worker/index.js",
   "compatibility_date": "2026-06-04",
   "workers_dev": false,
   "assets": {
     "directory": "./dist",
-    "not_found_handling": "single-page-application"
+    "binding": "ASSETS",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page",
+    // Only the live status endpoint runs code; every page and file is served
+    // straight from the asset store.
+    "run_worker_first": ["/api/*"]
   },
+  // Read-only lookups for /api/status.json: the mirror's latest release
+  // manifest and the manager's Tauri updater manifest.
+  "r2_buckets": [
+    { "binding": "MIRROR_BUCKET", "bucket_name": "codex-app-mirror" },
+    { "binding": "MANAGER_BUCKET", "bucket_name": "codex-app-manager" }
+  ],
   "routes": [
     {
       "pattern": "codexapp.agentsmirror.com/*",

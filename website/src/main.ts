@@ -1,705 +1,553 @@
 import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/sections.css";
-import "./styles/pipeline.css";
 
-import gsap from "gsap";
-import { ScrollTrigger } from "gsap/ScrollTrigger";
-import { MotionPathPlugin } from "gsap/MotionPathPlugin";
-import { applyLang, initialLang, t, type Lang } from "./i18n";
+// Progressive enhancement only: every section is complete static HTML.
+const root = document.documentElement;
+root.classList.add("js");
 
-gsap.registerPlugin(ScrollTrigger, MotionPathPlugin);
+const lang: "zh" | "en" = root.lang.startsWith("zh") ? "zh" : "en";
+const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const SKINS_ORIGIN = "https://skins.agentsmirror.com";
 
-/* ============================== i18n ==================================== */
+const $ = <T extends Element = HTMLElement>(sel: string, scope: ParentNode = document) =>
+  scope.querySelector<T>(sel);
+const $$ = <T extends Element = HTMLElement>(sel: string, scope: ParentNode = document) =>
+  Array.from(scope.querySelectorAll<T>(sel));
 
-let lang: Lang = initialLang();
+/* --------------------------------------------------------- language choice */
 
-function syncLangUI() {
-  const label = document.getElementById("lang-switch-label");
-  if (label) label.textContent = t(lang, "ui.langSwitch") as string;
-}
-
-applyLang(lang);
-syncLangUI();
-
-/* ====================== loading orchestration =========================== */
-
-// The shell fades once the critical pixels are in: hero image + display font,
-// capped so a slow connection never stares at the spinner.
-const ready: Promise<void> = (() => {
-  const heroImg = document.querySelector<HTMLImageElement>(".hero-bg img");
-  const imgReady: Promise<void> =
-    heroImg && !heroImg.complete
-      ? new Promise((r) => {
-          heroImg.addEventListener("load", () => r(), { once: true });
-          heroImg.addEventListener("error", () => r(), { once: true });
-        })
-      : Promise.resolve();
-  const fontsReady: Promise<unknown> = document.fonts?.ready ?? Promise.resolve();
-  const cap = new Promise<void>((r) => setTimeout(r, 2200));
-  return Promise.race([Promise.all([imgReady, fontsReady]).then(() => undefined), cap]);
-})();
-
-ready.then(() => {
-  document.body.classList.add("loaded");
-  window.setTimeout(() => document.getElementById("preloader")?.remove(), 600);
-});
-
-// Every image stays invisible until decoded, then eases in — no half-painted
-// decorative layers while the network catches up.
-document.querySelectorAll<HTMLImageElement>("img").forEach((img) => {
-  if (img.closest(".preloader")) return;
-  img.classList.add("fade-in");
-  if (img.complete && img.naturalWidth > 0) return;
-  img.classList.add("fade-pending");
-  const done = () => img.classList.remove("fade-pending");
-  img.addEventListener("load", done, { once: true });
-  img.addEventListener("error", done, { once: true });
-});
-
-document.getElementById("lang-switch")?.addEventListener("click", () => {
-  lang = lang === "zh" ? "en" : "zh";
-  applyLang(lang);
-  syncLangUI();
-  // headline lengths differ a lot between languages
-  requestAnimationFrame(() => ScrollTrigger.refresh());
-});
-
-/* ============================== nav ===================================== */
-
-const nav = document.getElementById("nav")!;
-const onScroll = () => nav.classList.toggle("is-scrolled", window.scrollY > 24);
-onScroll();
-addEventListener("scroll", onScroll, { passive: true });
-
-const burger = document.getElementById("nav-burger");
-const menu = document.getElementById("nav-menu");
-
-function setMenu(open: boolean) {
-  document.body.classList.toggle("menu-open", open);
-  burger?.setAttribute("aria-expanded", String(open));
-  burger?.setAttribute("aria-label", t(lang, open ? "ui.close" : "ui.menu") as string);
-  menu?.setAttribute("aria-hidden", String(!open));
-}
-
-burger?.addEventListener("click", () =>
-  setMenu(!document.body.classList.contains("menu-open"))
-);
-menu?.querySelectorAll("a").forEach((a) =>
-  a.addEventListener("click", () => setMenu(false))
-);
-
-/* ===================== decorative hex stream (trust) ==================== */
-
-(() => {
-  const host = document.getElementById("trust-hex");
-  if (!host) return;
-  // deterministic LCG so the texture is stable between loads
-  let seed = 0x5f3a;
-  const rnd = () => ((seed = (seed * 48271) % 0x7fffffff) & 0xff)
-    .toString(16)
-    .padStart(2, "0");
-  const lines: string[] = [];
-  for (let i = 0; i < 26; i++) {
-    lines.push(Array.from({ length: 48 }, rnd).join(" "));
-  }
-  host.textContent = lines.join("\n");
-})();
-
-/* ====================== platform recommendation ========================= */
-
-(() => {
-  const ua = navigator.userAgent;
-  let platform: string | null = null;
-  // iPhone/iPad UAs contain "like Mac OS X", and desktop-mode iPadOS even
-  // reports "Macintosh" — neither can run a DMG, so bail out before the Mac
-  // branch (touch points are the reliable tell for masquerading iPads).
-  const isAppleMobile =
-    /iPhone|iPad|iPod/i.test(ua) ||
-    (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1);
-  if (/Windows/i.test(ua)) platform = "windows";
-  else if (!isAppleMobile && /Macintosh/i.test(ua)) {
-    // Only commit to an architecture on a positive GPU signal — guessing
-    // wrong would deep-link the hero CTA to an installer that won't run.
+for (const a of $$<HTMLAnchorElement>("[data-lang-switch]")) {
+  a.addEventListener("click", () => {
     try {
-      const gl = document.createElement("canvas").getContext("webgl");
-      const dbg = gl?.getExtension("WEBGL_debug_renderer_info");
-      const renderer = dbg
-        ? String(gl!.getParameter(dbg.UNMASKED_RENDERER_WEBGL))
-        : "";
-      // Order matters: Chrome's ANGLE-on-Metal renderer string on Intel Macs
-      // reads "ANGLE (Apple, ... Intel ...)" — the discrete-GPU vendors are
-      // the discriminating signal, "Apple" alone is not.
-      if (/(intel|amd|nvidia|radeon)/i.test(renderer)) platform = "mac-intel";
-      else if (/apple/i.test(renderer)) platform = "mac-arm";
+      localStorage.setItem("cas-lang", a.dataset.langSwitch ?? "");
     } catch {
-      /* unknown — let the user pick from the download section */
+      /* storage unavailable: the switch still navigates */
+    }
+  });
+}
+
+/* --------------------------------------------------------------------- nav */
+
+const nav = $("[data-nav]");
+if (nav) {
+  const sentinel = document.createElement("div");
+  sentinel.setAttribute("aria-hidden", "true");
+  sentinel.style.cssText = "position:absolute;top:0;left:0;width:1px;height:24px;pointer-events:none";
+  document.body.prepend(sentinel);
+  new IntersectionObserver(([entry]) => nav.classList.toggle("is-scrolled", !entry.isIntersecting)).observe(sentinel);
+
+  const burger = $<HTMLButtonElement>(".nav-burger", nav);
+  const menu = $("#mobile-menu");
+  const setMenu = (open: boolean) => {
+    nav.classList.toggle("is-open", open);
+    if (menu) menu.hidden = !open;
+    burger?.setAttribute("aria-expanded", String(open));
+    burger?.setAttribute("aria-label", (open ? burger.dataset.labelClose : burger.dataset.labelOpen) ?? "");
+  };
+  burger?.addEventListener("click", () => setMenu(!nav.classList.contains("is-open")));
+  for (const a of $$("a", menu ?? nav)) a.addEventListener("click", () => setMenu(false));
+  addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && nav.classList.contains("is-open")) {
+      setMenu(false);
+      burger?.focus();
+    }
+  });
+}
+
+/* --------------------------------------------------------- reveal on scroll */
+
+(() => {
+  const els = $$("[data-reveal]");
+  const groups = new Map<Element, number>();
+  for (const el of els) {
+    const parent = el.parentElement ?? document.body;
+    const i = groups.get(parent) ?? 0;
+    groups.set(parent, i + 1);
+    el.style.setProperty("--stagger", String(Math.min(i, 6)));
+  }
+  if (!("IntersectionObserver" in window) || reducedMotion) {
+    els.forEach((el) => el.classList.add("is-in"));
+    return;
+  }
+  const io = new IntersectionObserver(
+    (entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        e.target.classList.add("is-in");
+        io.unobserve(e.target);
+      }
+    },
+    { rootMargin: "0px 0px -6% 0px", threshold: 0.08 }
+  );
+  els.forEach((el) => io.observe(el));
+})();
+
+/* --------------------------------------------------------------- live data */
+
+type FileInfo = { bytes: number | null; sha256: string | null } | null;
+interface Status {
+  codex?: { version: string | null; publishedAt: string | null; files: Record<string, FileInfo> };
+  manager?: { version: string | null; publishedAt: string | null };
+}
+
+const setLive = (key: string, value: string, html = false) => {
+  for (const el of $$(`[data-live="${key}"]`)) {
+    if (html) el.innerHTML = value;
+    else el.textContent = value;
+  }
+};
+
+function formatBytes(bytes: number | null | undefined) {
+  if (!bytes) return "";
+  const mb = bytes / 1024 / 1024;
+  return `${mb >= 100 ? Math.round(mb) : mb.toFixed(1)} MB`;
+}
+
+function formatDate(iso: string) {
+  const d = new Date(iso);
+  return lang === "zh"
+    ? `${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日`
+    : d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+}
+
+function relativeTime(iso: string) {
+  const diff = (new Date(iso).getTime() - Date.now()) / 1000;
+  const rtf = new Intl.RelativeTimeFormat(lang === "zh" ? "zh-CN" : "en", { numeric: "auto" });
+  const abs = Math.abs(diff);
+  if (abs < 3600) return rtf.format(Math.round(diff / 60), "minute");
+  if (abs < 86400) return rtf.format(Math.round(diff / 3600), "hour");
+  if (abs < 86400 * 30) return rtf.format(Math.round(diff / 86400), "day");
+  return formatDate(iso);
+}
+
+function applyCodexTimes(iso: string | null | undefined) {
+  if (!iso || Number.isNaN(Date.parse(iso))) return;
+  for (const el of $$<HTMLTimeElement>('[data-live="codex-age"]')) {
+    el.dateTime = iso;
+    el.textContent = relativeTime(iso);
+    el.title = formatDate(iso);
+  }
+  for (const el of $$<HTMLTimeElement>('[data-live="codex-date"]')) {
+    el.dateTime = iso;
+    el.textContent = formatDate(iso);
+  }
+}
+
+function applyStatus(s: Status) {
+  const c = s.codex;
+  if (c?.version) setLive("codex-version", c.version);
+  if (c?.publishedAt) applyCodexTimes(c.publishedAt);
+  for (const [key, info] of Object.entries(c?.files ?? {})) {
+    if (!info) continue;
+    if (info.bytes) setLive(`size-${key}`, formatBytes(info.bytes));
+    if (info.sha256) {
+      setLive(`hash-${key}`, `${info.sha256.slice(0, 10)}…${info.sha256.slice(-6)}`);
+      setLive(`sha-${key}`, key.startsWith("win") ? info.sha256.toUpperCase() : info.sha256);
     }
   }
-  if (!platform) return;
-  document
-    .querySelector(`.dl-card[data-platform="${platform}"]`)
-    ?.classList.add("is-recommended");
+  if (s.manager?.version) setLive("manager-version", s.manager.version);
+}
 
-  // the hero CTA deep-links straight to the matching installer
-  const cta = document.getElementById("hero-dl") as HTMLAnchorElement | null;
-  const targets: Record<string, { href: string; key: string }> = {
-    "mac-arm": {
-      href: "https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_aarch64.dmg",
-      key: "hero.dl.macArm",
-    },
-    "mac-intel": {
-      href: "https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x86_64.dmg",
-      key: "hero.dl.macIntel",
-    },
-    windows: {
-      href: "https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x64-setup.exe",
-      key: "hero.dl.win",
-    },
-  };
-  const entry = targets[platform];
-  if (cta && entry) {
-    cta.href = entry.href;
-    cta.dataset.i18n = entry.key; // applyLang keeps the label right after a switch
-    cta.textContent = t(lang, entry.key) as string;
+function formatDownloads(badge: string) {
+  const m = /^([\d.]+)\s*([kKmM]?)$/.exec(badge.trim());
+  if (!m) return null;
+  const n = parseFloat(m[1]) * ({ k: 1e3, m: 1e6 } as Record<string, number>)[m[2].toLowerCase()] || parseFloat(m[1]);
+  if (lang === "zh" && n >= 1e4) return `${Math.floor(n / 1e4)}<span class="stat-unit">万</span>`;
+  return badge.replace(/[<>&"]/g, "");
+}
+
+async function getJSON<T>(url: string, timeoutMs = 6000): Promise<T> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal, headers: { accept: "application/json" } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return (await res.json()) as T;
+  } finally {
+    clearTimeout(timer);
   }
-})();
+}
 
-/* ===================== interactive product demo ========================= */
-
-/* keep the 400x640 replica at the right scale inside the laptop screen */
-(() => {
-  const screen = document.getElementById("mac-screen");
-  const win = document.getElementById("cam-demo");
-  if (!screen || !win) return;
-  const fit = () => {
-    if (window.innerWidth < 1024) return; // phones show the bare window
-    const scale = Math.min((screen.clientHeight * 0.92) / 640, (screen.clientWidth * 0.86) / 400);
-    win.style.setProperty("--app-scale", scale.toFixed(4));
-  };
-  fit();
-  addEventListener("resize", fit, { passive: true });
-})();
-
-(() => {
-  const win = document.getElementById("cam-demo");
-  if (!win) return;
-  const scenes = win.querySelectorAll<HTMLElement>(".cam-scene");
-  const banner = document.getElementById("cam-banner")!;
-  const pct = document.getElementById("cam-pct")!;
-  const fill = document.getElementById("cam-bar-fill")!;
-  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  let bannerTimer = 0;
-  let busy = false;
-
-  const show = (name: string) =>
-    scenes.forEach((sc) => sc.classList.toggle("is-active", sc.dataset.scene === name));
-
-  const runUpdate = () => {
-    if (busy) return;
-    busy = true;
-    banner.classList.remove("is-show");
-    show("progress");
-    const state = { p: 0 };
-    gsap.to(state, {
-      p: 100,
-      duration: reduced ? 0 : 2.2,
-      ease: "power1.inOut",
-      onUpdate() {
-        pct.textContent = String(Math.round(state.p));
-        fill.style.width = `${state.p}%`;
-      },
-      onComplete() {
-        show("done");
-        banner.classList.add("is-show");
-        clearTimeout(bannerTimer);
-        bannerTimer = window.setTimeout(() => banner.classList.remove("is-show"), 4200);
-        busy = false;
-      },
+// Baked values render first; relative time is always computed client-side.
+applyCodexTimes($<HTMLTimeElement>('[data-live="codex-age"]')?.dateTime);
+if ($('[data-live="codex-version"]')) {
+  getJSON<Status>("/api/status.json")
+    .then(applyStatus)
+    .catch(() => {
+      /* keep the build-time snapshot */
     });
+  getJSON<{ message?: string }>("/stats/downloads.json")
+    .then((b) => {
+      const html = b.message ? formatDownloads(b.message) : null;
+      if (html) setLive("downloads", html, true);
+    })
+    .catch(() => {
+      /* keep the build-time snapshot */
+    });
+}
+
+/* -------------------------------------------------------------- platforms */
+
+type Platform = "mac-arm64" | "mac-intel" | "win-x64" | "win-arm64";
+
+async function detectPlatform(): Promise<Platform | null> {
+  const ua = navigator.userAgent;
+  const isAppleMobile = /iPhone|iPad|iPod/i.test(ua) || (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1);
+  if (isAppleMobile || /Android|CrOS|Linux/i.test(ua)) return null;
+  let arch: string | undefined;
+  const uad = (navigator as Navigator & {
+    userAgentData?: { getHighEntropyValues(h: string[]): Promise<{ architecture?: string }> };
+  }).userAgentData;
+  if (uad?.getHighEntropyValues) {
+    try {
+      arch = (await uad.getHighEntropyValues(["architecture"])).architecture;
+    } catch {
+      /* not exposed */
+    }
+  }
+  if (/Windows/i.test(ua)) return arch === "arm" ? "win-arm64" : "win-x64";
+  if (!/Macintosh|Mac OS X/i.test(ua)) return null;
+  if (arch === "arm") return "mac-arm64";
+  if (arch === "x86") return "mac-intel";
+  // No client hints (Safari, Firefox): only trust an explicit GPU name.
+  // Safari reports a generic "Apple GPU" on every Mac, so that stays unknown.
+  try {
+    const gl = document.createElement("canvas").getContext("webgl");
+    const dbg = gl?.getExtension("WEBGL_debug_renderer_info");
+    const renderer = dbg && gl ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : "";
+    if (/(intel|amd|nvidia|radeon)/i.test(renderer)) return "mac-intel";
+    if (/apple m\d|apple silicon/i.test(renderer)) return "mac-arm64";
+  } catch {
+    /* no WebGL */
+  }
+  return null;
+}
+
+const PLATFORM_HINT: Record<Platform, string> = {
+  "mac-arm64": "Apple Silicon",
+  "mac-intel": "Intel Mac",
+  "win-x64": "Windows",
+  "win-arm64": "Windows ARM64",
+};
+
+void detectPlatform().then((platform) => {
+  if (!platform) return;
+  for (const row of $$(`.file-row[data-platform="${platform}"]`)) row.classList.add("is-recommended");
+  const managerRow = $<HTMLAnchorElement>(`#panel-manager .file-row[data-platform="${platform}"] a`);
+  const cta = $<HTMLAnchorElement>("#hero-dl");
+  const hint = $("[data-platform-hint]");
+  if (cta && managerRow) {
+    cta.href = managerRow.href;
+    if (hint) {
+      hint.textContent = PLATFORM_HINT[platform];
+      hint.hidden = false;
+    }
+  }
+  if (platform.startsWith("win")) selectTerminal("win");
+});
+
+/* ------------------------------------------------------------------- tabs */
+
+function wireTabs(buttons: HTMLButtonElement[], onSelect: (btn: HTMLButtonElement) => void) {
+  const select = (btn: HTMLButtonElement, focus = false) => {
+    for (const b of buttons) {
+      const on = b === btn;
+      b.setAttribute("aria-selected", String(on));
+      b.tabIndex = on ? 0 : -1;
+      const panel = document.getElementById(b.getAttribute("aria-controls") ?? "");
+      if (panel) panel.hidden = !on;
+    }
+    if (focus) btn.focus();
+    onSelect(btn);
   };
+  for (const b of buttons) {
+    b.addEventListener("click", () => select(b));
+    b.addEventListener("keydown", (e) => {
+      const i = buttons.indexOf(b);
+      const next =
+        e.key === "ArrowRight" ? buttons[(i + 1) % buttons.length]
+        : e.key === "ArrowLeft" ? buttons[(i - 1 + buttons.length) % buttons.length]
+        : e.key === "Home" ? buttons[0]
+        : e.key === "End" ? buttons[buttons.length - 1]
+        : null;
+      if (next) {
+        e.preventDefault();
+        select(next, true);
+      }
+    });
+  }
+  return select;
+}
 
-  const runRecheck = () => {
-    if (busy) return;
-    busy = true;
-    show("checking");
-    window.setTimeout(
-      () => {
-        show("done");
-        busy = false;
-      },
-      reduced ? 60 : 1100
-    );
-  };
+const dlTabs = $$<HTMLButtonElement>(".dl-tabs [role=tab]");
+const selectDl = wireTabs(dlTabs, () => {});
+const openTab = (key: string) => {
+  const btn = dlTabs.find((b) => b.dataset.tab === key);
+  if (btn) selectDl(btn);
+};
+for (const a of $$<HTMLAnchorElement>("[data-open-tab]")) {
+  a.addEventListener("click", () => openTab(a.dataset.openTab ?? "manager"));
+}
 
-  win.addEventListener("click", (e) => {
-    const btn = (e.target as HTMLElement).closest<HTMLElement>("[data-demo]");
-    if (!btn) return;
-    if (btn.dataset.demo === "update") runUpdate();
-    else if (btn.dataset.demo === "recheck") runRecheck();
-    else gsap.fromTo(btn, { scale: 1 }, { scale: 0.94, yoyo: true, repeat: 1, duration: 0.12 });
-  });
-})();
+const termTabs = $$<HTMLButtonElement>(".term-tabs [role=tab]");
+const selectTerm = wireTabs(termTabs, () => {});
+function selectTerminal(os: "mac" | "win") {
+  const btn = termTabs.find((b) => b.dataset.os === os);
+  if (btn) selectTerm(btn);
+}
 
-/* ============================ copy button =============================== */
+/* ------------------------------------------------------------------- copy */
 
-(() => {
-  const btn = document.getElementById("copy-brew");
-  const cmd = document.getElementById("brew-cmd");
-  if (!btn || !cmd) return;
+async function copyText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.cssText = "position:fixed;opacity:0;pointer-events:none";
+    document.body.append(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
+  }
+}
+
+for (const btn of $$<HTMLButtonElement>(".copy-btn")) {
+  const label = $("span", btn);
   let timer = 0;
   btn.addEventListener("click", async () => {
-    try {
-      await navigator.clipboard.writeText(cmd.textContent ?? "");
-      btn.classList.add("is-copied");
-      btn.textContent = t(lang, "ui.copied") as string;
-      clearTimeout(timer);
-      timer = window.setTimeout(() => {
-        btn.classList.remove("is-copied");
-        btn.textContent = t(lang, "ui.copy") as string;
-      }, 1800);
-    } catch {
-      /* clipboard unavailable */
-    }
+    if (!(await copyText(btn.dataset.copy ?? ""))) return;
+    btn.classList.add("is-done");
+    if (label) label.textContent = btn.dataset.done ?? "";
+    clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      btn.classList.remove("is-done");
+      if (label) label.textContent = btn.dataset.label ?? "";
+    }, 1600);
   });
+}
+
+/* ------------------------------------------------------ hero skin rotation */
+
+(() => {
+  const stage = $(".hero-stage");
+  if (!stage) return;
+  const frames = $$(".stage-frame", stage);
+  const dots = $$<HTMLButtonElement>(".skin-dot", stage);
+  const nameEl = $("[data-stage-name]", stage);
+  if (frames.length < 2) return;
+
+  const hydrate = (frame: HTMLElement) => {
+    for (const el of $$<HTMLSourceElement | HTMLImageElement>("[data-srcset], [data-src]", frame)) {
+      if (el.dataset.srcset) {
+        el.setAttribute("srcset", el.dataset.srcset);
+        delete el.dataset.srcset;
+      }
+      if (el instanceof HTMLImageElement && el.dataset.src) {
+        el.src = el.dataset.src;
+        delete el.dataset.src;
+      }
+    }
+  };
+  const ready = (frame: HTMLElement) =>
+    new Promise<void>((resolve) => {
+      const img = $<HTMLImageElement>("img", frame);
+      if (!img || (img.complete && img.naturalWidth)) return resolve();
+      img.addEventListener("load", () => resolve(), { once: true });
+      img.addEventListener("error", () => resolve(), { once: true });
+      setTimeout(resolve, 2500);
+    });
+
+  let index = 0;
+  let timer = 0;
+  let hovering = false;
+  let visible = true;
+
+  const show = async (i: number) => {
+    const next = (i + frames.length) % frames.length;
+    hydrate(frames[next]);
+    await ready(frames[next]);
+    index = next;
+    frames.forEach((f, j) => f.classList.toggle("is-active", j === index));
+    dots.forEach((d, j) => d.setAttribute("aria-pressed", String(j === index)));
+    if (nameEl) nameEl.textContent = dots[index]?.dataset.name ?? "";
+    hydrate(frames[(index + 1) % frames.length]);
+  };
+
+  const schedule = () => {
+    clearTimeout(timer);
+    if (reducedMotion || hovering || !visible || document.hidden) return;
+    timer = window.setTimeout(async () => {
+      await show(index + 1);
+      schedule();
+    }, 4800);
+  };
+
+  dots.forEach((d, i) =>
+    d.addEventListener("click", async () => {
+      await show(i);
+      schedule();
+    })
+  );
+  stage.addEventListener("pointerenter", () => {
+    hovering = true;
+    schedule();
+  });
+  stage.addEventListener("pointerleave", () => {
+    hovering = false;
+    schedule();
+  });
+  stage.addEventListener("focusin", () => {
+    hovering = true;
+    schedule();
+  });
+  stage.addEventListener("focusout", () => {
+    hovering = false;
+    schedule();
+  });
+  document.addEventListener("visibilitychange", schedule);
+  new IntersectionObserver(([e]) => {
+    visible = e.isIntersecting;
+    schedule();
+  }).observe(stage);
+
+  const warm = () => frames.forEach(hydrate);
+  if (document.readyState === "complete") setTimeout(warm, 800);
+  else addEventListener("load", () => setTimeout(warm, 800), { once: true });
+  schedule();
 })();
 
-/* ============================== motion ================================== */
+/* ------------------------------------------------------------ skin gallery */
 
-const mm = gsap.matchMedia();
+(() => {
+  const grid = $(".skins-grid");
+  if (!grid) return;
+  const items = $$<HTMLLIElement>(".skin-item", grid);
+  const radios = $$<HTMLButtonElement>(".filter [role=radio]");
+  const toggle = $<HTMLButtonElement>("[data-skins-toggle]");
+  const LIMIT = 12;
+  let filter = "all";
+  let expanded = false;
 
-/* manager-enactment lookups — declared before any mm.add(), because a
-   matching context (e.g. prefers-reduced-motion) runs its callback
-   synchronously at registration */
-const steps = gsap.utils.toArray<HTMLElement>("#manager-steps .step");
-const panels = gsap.utils.toArray<HTMLElement>(".mock-panel");
-
-function setManagerStage(k: number) {
-  steps.forEach((s, i) => s.classList.toggle("is-active", i === k));
-  panels.forEach((p, i) => p.classList.toggle("is-active", i === k));
-}
-
-mm.add("(prefers-reduced-motion: no-preference)", () => {
-  /* ---- generic reveals (hero has its own intro) ---- */
-  document.querySelectorAll<HTMLElement>("[data-reveal]").forEach((el) => {
-    if (el.closest(".hero")) return;
-    gsap.from(el, {
-      y: 30,
-      autoAlpha: 0,
-      duration: 1,
-      ease: "power3.out",
-      scrollTrigger: { trigger: el, start: "top 86%", once: true },
-    });
-  });
-  document.querySelectorAll<HTMLElement>("[data-reveal-group]").forEach((group) => {
-    gsap.from(group.children, {
-      y: 34,
-      autoAlpha: 0,
-      duration: 0.9,
-      ease: "power3.out",
-      stagger: 0.12,
-      scrollTrigger: { trigger: group, start: "top 84%", once: true },
-    });
-  });
-
-  /* ---- hero intro (waits for the preloader to lift) ---- */
-  void ready.then(() => {
-    gsap.from(".hero-title .line > span", {
-      yPercent: 118,
-      duration: 1.25,
-      ease: "power4.out",
-      stagger: 0.14,
-      delay: 0.1,
-    });
-    gsap.from(".hero-copy [data-reveal]", {
-      y: 26,
-      autoAlpha: 0,
-      duration: 1,
-      ease: "power3.out",
-      stagger: 0.1,
-      delay: 0.4,
-    });
-    gsap.from(".hero-cloud", {
-      y: 60,
-      autoAlpha: 0,
-      duration: 1.6,
-      ease: "power3.out",
-      delay: 0.25,
-    });
-  });
-  gsap.from(".hero-demo", {
-    y: 60,
-    autoAlpha: 0,
-    duration: 1.1,
-    ease: "power3.out",
-    scrollTrigger: { trigger: ".hero-demo", start: "top 88%", once: true },
-  });
-
-  /* ---- hero pointer parallax (fine pointers only) ---- */
-  let onPointer: ((e: Event) => void) | undefined;
-  const hero = document.querySelector(".hero");
-  if (matchMedia("(pointer: fine)").matches && hero) {
-    const layers = Array.from(
-      document.querySelectorAll<HTMLElement>(".hero [data-depth], .hero img.layer")
-    );
-    const movers = layers.map((el) => ({
-      depth: parseFloat(el.dataset.depth ?? "0.15"),
-      x: gsap.quickTo(el, "x", { duration: 0.9, ease: "power3.out" }),
-      y: gsap.quickTo(el, "y", { duration: 0.9, ease: "power3.out" }),
-    }));
-    onPointer = (e) => {
-      const { innerWidth: w, innerHeight: h } = window;
-      const nx = (e as PointerEvent).clientX / w - 0.5;
-      const ny = (e as PointerEvent).clientY / h - 0.5;
-      movers.forEach((m) => {
-        m.x(nx * 70 * m.depth);
-        m.y(ny * 46 * m.depth);
-      });
-    };
-    hero.addEventListener("pointermove", onPointer);
-  }
-
-  /* ---- checksum card: hashes scramble, settle identical, chip pops ---- */
-  const hashes = gsap.utils.toArray<HTMLElement>("[data-vc-hash]");
-  if (hashes.length) {
-    const finals = hashes.map((h) => h.textContent ?? "");
-    ScrollTrigger.create({
-      trigger: ".verify-card",
-      start: "top 78%",
-      once: true,
-      onEnter: () => {
-        const HEX = "0123456789abcdef";
-        const state = { p: 0 };
-        gsap.to(state, {
-          p: 1,
-          duration: 1.1,
-          ease: "power2.out",
-          onUpdate() {
-            hashes.forEach((h, i) => {
-              const final = finals[i];
-              h.textContent = final
-                .split("")
-                .map((ch, j) =>
-                  ch === " " || j / final.length < state.p
-                    ? ch
-                    : HEX[(Math.random() * 16) | 0]
-                )
-                .join("");
-            });
-          },
-          onComplete() {
-            hashes.forEach((h, i) => (h.textContent = finals[i]));
-          },
-        });
-        gsap.from("#vc-match-chip", {
-          scale: 0.5,
-          autoAlpha: 0,
-          duration: 0.5,
-          ease: "back.out(2.2)",
-          delay: 1.05,
-        });
-      },
-    });
-  }
-
-  return () => {
-    if (onPointer) hero?.removeEventListener("pointermove", onPointer);
-  };
-});
-
-/* ---- reduced motion: settle everything into its final, visible state ---- */
-mm.add("(prefers-reduced-motion: reduce)", () => {
-  gsap.set("#rail-fill", { scaleY: 1 });
-  document.querySelectorAll(".rail-item").forEach((el) => el.classList.add("is-lit"));
-  // show the final "execute" panel, with every step lit and the outcome settled
-  setManagerStage(2);
-  steps.forEach((s) => s.classList.add("is-active"));
-  gsap.set("#mock-progress-bar", { width: "100%" });
-  gsap.set("#mock-done, #mock-launch", { opacity: 1 });
-  return () => {};
-});
-
-/* ---- manager enactment: desktop = pinned scrub, mobile = step triggers -- */
-
-mm.add(
-  "(min-width: 1024px) and (prefers-reduced-motion: no-preference)",
-  () => {
-    /* hero scroll parallax — desktop only: on phones the hero is taller than
-       the viewport, so fading the content out would hide the demo mid-read */
-    const heroTl = gsap
-      .timeline({
-        scrollTrigger: {
-          trigger: ".hero",
-          start: "top top",
-          end: "bottom top",
-          scrub: true,
-        },
-      })
-      .to(".hero-bg img", { yPercent: 14, scale: 1.06, ease: "none" }, 0)
-      .to(".hero-bokeh", { yPercent: -16, ease: "none" }, 0)
-      .to(".hero-mist", { yPercent: -26, ease: "none" }, 0)
-      .to(".hero-cloud", { yPercent: -52, rotation: 2.5, ease: "none" }, 0);
-
-    /* pinned manager */
-    const checks = gsap.utils.toArray<HTMLElement>(".mock-panel .mock-check");
-    const tl = gsap.timeline({
-      scrollTrigger: {
-        trigger: "#manager-stage",
-        start: "top 12%",
-        end: "+=2200",
-        pin: true,
-        scrub: 0.6,
-        onUpdate(self) {
-          const p = self.progress;
-          const k = p < 0.33 ? 0 : p < 0.66 ? 1 : 2;
-          setManagerStage(k);
-          checks.forEach((c, i) =>
-            c.classList.toggle(
-              "is-done",
-              p > 0.38 + i * 0.062 // ticks march down the plan list
-            )
-          );
-        },
-      },
-    });
-    tl.fromTo(
-      ".mock-scanline",
-      { y: -30, opacity: 0.9 },
-      { y: 360, opacity: 0.4, duration: 30, ease: "none" },
-      0
-    )
-      .to("#mock-progress-bar", { width: "100%", duration: 22, ease: "none" }, 70)
-      .to("#mock-done", { opacity: 1, duration: 4 }, 92)
-      .to("#mock-launch", { opacity: 1, duration: 4 }, 95);
-
-    /* pinned pipeline */
-    const pipeTl = buildPipeline();
-
-    return () => {
-      pipeTl?.kill();
-      setManagerStage(0);
-    };
-  }
-);
-
-mm.add("(max-width: 1023px) and (prefers-reduced-motion: no-preference)", () => {
-  /* manager steps activate as they pass; exec panel plays a one-shot fill */
-  const triggers = steps.map((step, i) =>
-    ScrollTrigger.create({
-      trigger: step,
-      start: "top 62%",
-      onEnter: () => {
-        setManagerStage(i);
-        if (i === 2) {
-          gsap.to("#mock-progress-bar", { width: "100%", duration: 1.1, ease: "power1.inOut" });
-          gsap.to("#mock-done, #mock-launch", { opacity: 1, delay: 1.0, duration: 0.5 });
-        }
-      },
-      onEnterBack: () => setManagerStage(i),
-    })
-  );
-
-  /* pipeline rail */
-  const fill = document.getElementById("rail-fill");
-  let railTl: gsap.core.Tween | undefined;
-  if (fill) {
-    railTl = gsap.to(fill, {
-      scaleY: 1,
-      ease: "none",
-      scrollTrigger: {
-        trigger: "#pipeline-rail",
-        start: "top 64%",
-        end: "bottom 78%",
-        scrub: true,
-      },
-    });
-  }
-  const items = gsap.utils.toArray<HTMLElement>(".rail-item");
-  const itemTriggers = items.map((item) =>
-    ScrollTrigger.create({
-      trigger: item,
-      start: "top 68%",
-      onEnter: () => item.classList.add("is-lit"),
-      onLeaveBack: () => item.classList.remove("is-lit"),
-    })
-  );
-
-  return () => {
-    triggers.forEach((tr) => tr.kill());
-    itemTriggers.forEach((tr) => tr.kill());
-    railTl?.kill();
-  };
-});
-
-/* ===================== the pipeline (pinned, scrubbed) =================== */
-
-function buildPipeline(): gsap.core.Timeline | undefined {
-  const stage = document.getElementById("pipeline-stage");
-  if (!stage) return;
-
-  const cards = gsap.utils.toArray<HTMLElement>(".stage-card");
-  const nodes = [
-    "#node-0",
-    "#node-1",
-    "#node-2",
-    "#node-r2",
-    "#node-4",
-    "#node-5",
-  ];
-  const labels = gsap.utils.toArray<SVGTextElement>(".pipe-label");
-  const bars = gsap.utils.toArray<HTMLElement>("#stage-progress i");
-  const index = document.getElementById("stage-index")!;
-
-  // prepare lit paths for progressive draw
-  const litPairs = [
-    ["#lit-1", "#lit-glow-1"],
-    ["#lit-r2", "#lit-glow-r2"],
-    ["#lit-cn", "#lit-glow-cn"],
-    ["#lit-tail", "#lit-glow-tail"],
-  ];
-  for (const pair of litPairs) {
-    for (const sel of pair) {
-      const el = document.querySelector<SVGPathElement>(sel)!;
-      const len = el.getTotalLength();
-      el.style.strokeDasharray = `${len}`;
-      el.style.strokeDashoffset = `${len}`;
+  const apply = () => {
+    let shown = 0;
+    for (const li of items) {
+      const match = filter === "all" || li.dataset.cat === filter;
+      li.hidden = !match;
+      if (match) {
+        li.classList.toggle("beyond", filter === "all" && shown >= LIMIT);
+        shown++;
+      }
     }
-  }
-  const draw = (sel: string[], from: number, to: number, dur: number, pos: number, tl: gsap.core.Timeline) => {
-    for (const s of sel) {
-      const el = document.querySelector<SVGPathElement>(s)!;
-      const len = el.getTotalLength();
-      tl.fromTo(
-        el,
-        { strokeDashoffset: len * (1 - from) },
-        { strokeDashoffset: len * (1 - to), duration: dur, ease: "none" },
-        pos
-      );
+    grid.dataset.collapsed = String(!expanded);
+    if (toggle) {
+      toggle.hidden = filter !== "all";
+      toggle.setAttribute("aria-expanded", String(expanded));
+      const label = expanded ? toggle.dataset.less : toggle.dataset.more;
+      const text = toggle.firstChild;
+      if (text && text.nodeType === Node.TEXT_NODE) text.textContent = label ?? "";
     }
   };
 
-  // card k fades in at these timeline positions (of 100)
-  const STAGE_BOUNDS = [0.116, 0.276, 0.456, 0.636, 0.796];
-  const stageFromProgress = (p: number) =>
-    STAGE_BOUNDS.reduce((k, bound) => (p >= bound ? k + 1 : k), 0);
-
-  const tl = gsap.timeline({
-    defaults: { ease: "none" },
-    scrollTrigger: {
-      trigger: "#pipeline-scroll",
-      start: "top top",
-      end: "+=5200",
-      pin: "#pipeline-stage",
-      scrub: 0.7,
-      anticipatePin: 1,
-      onUpdate(self) {
-        const p = self.progress;
-        const k = stageFromProgress(p);
-        index.textContent = `0${k + 1}`;
-        bars.forEach((b, i) => b.classList.toggle("is-on", i <= k));
-        const lit = (i: number, on: boolean) => {
-          document.querySelector(nodes[i])?.classList.toggle("is-lit", on);
-          labels[i]?.classList.toggle("is-lit", on);
-        };
-        lit(0, p > 0.02);
-        lit(1, p > 0.2);
-        lit(2, p > 0.4);
-        document.querySelector("#node-cn")?.classList.toggle("is-lit", p > 0.56);
-        lit(3, p > 0.56);
-        lit(4, p > 0.76);
-        lit(5, p > 0.92);
-      },
-    },
-  });
-
-  const card = (k: number, pos: number) => {
-    if (k > 0) tl.to(cards[k - 1], { autoAlpha: 0, y: 18, duration: 2.4 }, pos);
-    tl.fromTo(
-      cards[k],
-      { autoAlpha: 0, y: 24 },
-      { autoAlpha: 1, y: 0, duration: 2.6 },
-      pos + 1.6
-    );
+  const choose = (btn: HTMLButtonElement, focus = false) => {
+    filter = btn.dataset.filter ?? "all";
+    for (const r of radios) {
+      const on = r === btn;
+      r.setAttribute("aria-checked", String(on));
+      r.tabIndex = on ? 0 : -1;
+    }
+    if (focus) btn.focus();
+    apply();
   };
 
-  // -- timeline body (100 duration units; zero tween pins the total) --
-  tl.to("#pipeline-stage", { duration: 0 }, 100);
+  radios.forEach((r, i) => {
+    r.addEventListener("click", () => choose(r));
+    r.addEventListener("keydown", (e) => {
+      const d = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
+      if (!d) return;
+      e.preventDefault();
+      choose(radios[(i + d + radios.length) % radios.length], true);
+    });
+  });
 
-  // s0: the packet wakes up at the upstream node
-  tl.fromTo("#packet", { autoAlpha: 0, scale: 0.4 }, { autoAlpha: 1, scale: 1, duration: 3 }, 1);
-  tl.to("#packet", {
-    motionPath: { path: "#lit-1", align: "#lit-1", alignOrigin: [0.5, 0.5], start: 0, end: 0.001 },
-    duration: 0.01,
-  }, 0);
+  toggle?.addEventListener("click", () => {
+    expanded = !expanded;
+    apply();
+    if (!expanded) grid.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "start" });
+  });
+  apply();
 
-  // s1: draw to the probe; pulse rings sweep
-  card(1, 10);
-  draw(["#lit-1", "#lit-glow-1"], 0, 0.5, 9, 10, tl);
-  tl.to("#packet", {
-    motionPath: { path: "#lit-1", align: "#lit-1", alignOrigin: [0.5, 0.5], start: 0.001, end: 0.5 },
-    duration: 9,
-  }, 10);
-  tl.fromTo("#pulse-a", { attr: { r: 36 }, opacity: 0.8 }, { attr: { r: 96 }, opacity: 0, duration: 6, immediateRender: false }, 15);
-  tl.fromTo("#pulse-b", { attr: { r: 36 }, opacity: 0.8 }, { attr: { r: 96 }, opacity: 0, duration: 6, immediateRender: false }, 18.5);
+  /* ---- detail dialog ---- */
+  const dialog = $<HTMLDialogElement>("#skin-dialog");
+  if (!dialog || typeof dialog.showModal !== "function") return;
+  const img = $<HTMLImageElement>("#sd-img", dialog)!;
+  const fields = {
+    name: $("#sd-name", dialog)!,
+    desc: $("#sd-desc", dialog)!,
+    cat: $("#sd-cat", dialog)!,
+    version: $("#sd-version", dialog)!,
+    verified: $("#sd-verified", dialog)!,
+    appearance: $("#sd-appearance", dialog)!,
+  };
+  const pack = $<HTMLAnchorElement>("#sd-pack", dialog)!;
+  let list: HTMLButtonElement[] = [];
+  let pos = 0;
 
-  // s2: continue to the release node; shards join the packet
-  card(2, 26);
-  draw(["#lit-1", "#lit-glow-1"], 0.5, 1, 10, 27, tl);
-  tl.to("#packet", {
-    motionPath: { path: "#lit-1", align: "#lit-1", alignOrigin: [0.5, 0.5], start: 0.5, end: 1 },
-    duration: 10,
-  }, 27);
-  tl.fromTo("#packet img:first-child", { scale: 1 }, { scale: 1.3, yoyo: true, repeat: 1, duration: 1.6 }, 36);
+  let pending: HTMLImageElement | null = null;
+  const render = () => {
+    const card = list[pos];
+    if (!card) return;
+    const d = card.dataset;
+    const thumb = $<HTMLImageElement>("img", card);
+    // Show the already-cached thumbnail at once, then swap in the full-size
+    // capture from the skin CDN when it arrives.
+    img.src = thumb?.currentSrc || thumb?.src || "";
+    img.alt = thumb?.alt ?? "";
+    const full = new Image();
+    pending = full;
+    full.decoding = "async";
+    full.onload = () => {
+      if (pending === full) img.src = full.src;
+    };
+    full.src = `${SKINS_ORIGIN}/previews/${d.skin}.webp?v=${encodeURIComponent(d.version ?? "")}`;
+    fields.name.textContent = d.name ?? "";
+    fields.desc.textContent = d.desc ?? "";
+    fields.cat.textContent = d.catLabel ?? "";
+    fields.version.textContent = d.version ? `v${d.version}` : "";
+    fields.verified.textContent = d.verified ?? "";
+    const ap = d.appearance ?? "";
+    fields.appearance.textContent =
+      (ap === "dual" ? dialog.dataset.appearanceDual : ap === "dark" ? dialog.dataset.appearanceDark : ap === "light" ? dialog.dataset.appearanceLight : "") ?? "";
+    pack.href = d.pack ?? SKINS_ORIGIN;
+  };
 
-  // s3: split onto the two mirror branches
-  card(3, 44);
-  draw(["#lit-r2", "#lit-glow-r2"], 0, 0.55, 9, 45, tl);
-  draw(["#lit-cn", "#lit-glow-cn"], 0, 0.55, 9, 45, tl);
-  tl.to("#packet", {
-    motionPath: { path: "#lit-r2", align: "#lit-r2", alignOrigin: [0.5, 0.5], start: 0, end: 0.55 },
-    duration: 9,
-  }, 45);
-  tl.fromTo("#packet-2", { autoAlpha: 0 }, { autoAlpha: 1, duration: 1.5 }, 45);
-  tl.to("#packet-2", {
-    motionPath: { path: "#lit-cn", align: "#lit-cn", alignOrigin: [0.5, 0.5], start: 0, end: 0.55 },
-    duration: 9,
-  }, 45);
+  const step = (dir: number) => {
+    if (!list.length) return;
+    pos = (pos + dir + list.length) % list.length;
+    render();
+  };
 
-  // s4: converge on the router
-  card(4, 62);
-  draw(["#lit-r2", "#lit-glow-r2"], 0.55, 1, 8, 63, tl);
-  draw(["#lit-cn", "#lit-glow-cn"], 0.55, 1, 8, 63, tl);
-  tl.to("#packet", {
-    motionPath: { path: "#lit-r2", align: "#lit-r2", alignOrigin: [0.5, 0.5], start: 0.55, end: 1 },
-    duration: 8,
-  }, 63);
-  tl.to("#packet-2", {
-    motionPath: { path: "#lit-cn", align: "#lit-cn", alignOrigin: [0.5, 0.5], start: 0.55, end: 1 },
-    duration: 8,
-  }, 63);
-  tl.to("#packet-2", { autoAlpha: 0, scale: 0.5, duration: 2 }, 71.5);
-
-  // s5: the tail — delta lands on the desktop
-  card(5, 78);
-  draw(["#lit-tail", "#lit-glow-tail"], 0, 1, 7, 80, tl);
-  tl.to("#packet", {
-    motionPath: { path: "#lit-tail", align: "#lit-tail", alignOrigin: [0.5, 0.5], start: 0, end: 1 },
-    duration: 7,
-  }, 80);
-  tl.to("#packet", { scale: 0.3, autoAlpha: 0, duration: 2.5 }, 88);
-
-  // finale
-  tl.fromTo("#pipe-finale", { autoAlpha: 0 }, { autoAlpha: 1, duration: 5 }, 93);
-  tl.fromTo(
-    "#pipe-finale .chip",
-    { scale: 0.6, autoAlpha: 0 },
-    { scale: 1, autoAlpha: 1, duration: 3, ease: "back.out(2)" },
-    94
-  );
-  tl.to("#stage-index", { autoAlpha: 0, duration: 3 }, 93);
-
-  return tl;
-}
-
-/* ---- keep ScrollTrigger honest once webfonts settle ---- */
-document.fonts?.ready.then(() => ScrollTrigger.refresh());
+  grid.addEventListener("click", (e) => {
+    const card = (e.target as Element).closest<HTMLButtonElement>(".skin-card");
+    if (!card) return;
+    list = $$<HTMLButtonElement>(".skin-card", grid).filter((c) => c.offsetParent !== null);
+    pos = Math.max(0, list.indexOf(card));
+    render();
+    dialog.showModal();
+  });
+  for (const b of $$<HTMLButtonElement>("[data-step]", dialog)) {
+    b.addEventListener("click", () => step(Number(b.dataset.step)));
+  }
+  dialog.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowRight") step(1);
+    if (e.key === "ArrowLeft") step(-1);
+  });
+  for (const el of $$("[data-close-dialog]", dialog)) el.addEventListener("click", () => dialog.close());
+  dialog.addEventListener("click", (e) => {
+    if (e.target === dialog) dialog.close();
+  });
+})();

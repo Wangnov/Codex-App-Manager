@@ -1,95 +1,119 @@
-/* ---------------------------------------------------------------------------
-   Design tokens — inherited from the Manager app's OKLCH material system
-   (hue 274 porcelain neutrals + amber journey light + jade verification).
-   Dark is the default; light follows prefers-color-scheme.
---------------------------------------------------------------------------- */
+/* Self-hosted type. Mona Sans (GitHub, OFL) carries Latin in every weight and
+   width; Source Han Sans (Adobe, OFL) is subset to the CJK used in headings;
+   Monaspace Neon (GitHub Next, OFL) sets commands, versions and hashes. */
+@font-face {
+  font-family: "Mona Sans";
+  src: url("/fonts/mona-sans.woff2") format("woff2-variations"), url("/fonts/mona-sans.woff2") format("woff2");
+  font-weight: 200 900;
+  font-stretch: 75% 125%;
+  font-display: swap;
+}
+@font-face {
+  font-family: "SHS Display";
+  src: url("/fonts/shs-heavy.woff2") format("woff2");
+  font-weight: 800 900;
+  font-display: swap;
+  unicode-range: U+2E80-2FFF, U+3000-303F, U+3040-9FFF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
+}
+@font-face {
+  font-family: "SHS Display";
+  src: url("/fonts/shs-bold.woff2") format("woff2");
+  font-weight: 500 700;
+  font-display: swap;
+  unicode-range: U+2E80-2FFF, U+3000-303F, U+3040-9FFF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
+}
+@font-face {
+  font-family: "Monaspace Neon";
+  src: url("/fonts/monaspace-400.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Monaspace Neon";
+  src: url("/fonts/monaspace-600.woff2") format("woff2");
+  font-weight: 600;
+  font-display: swap;
+}
 
+/* Dark is the default palette; light mirrors every token under
+   prefers-color-scheme so the two themes stay peers. One accent (the
+   blue-violet of the logos) is used everywhere; skins bring the rest. */
 :root {
-  color-scheme: dark;
+  color-scheme: light dark;
 
-  --bg: oklch(0.162 0.015 274);
-  --bg-deep: oklch(0.125 0.013 274);
-  --surface: oklch(0.212 0.017 274);
-  --surface-top: oklch(0.245 0.018 274);
-  --surface-2: oklch(0.255 0.019 274);
-  --surface-2-top: oklch(0.29 0.02 274);
+  --font-display: "Mona Sans", "SHS Display", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-body: "Mona Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", sans-serif;
+  --font-mono: "Monaspace Neon", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 
-  --ink: oklch(0.945 0.01 274);
-  --ink-2: oklch(0.78 0.02 274);
-  --ink-3: oklch(0.62 0.022 274);
+  --bg: #090a14;
+  --bg-soft: #0d0f1e;
+  --card: #10122a;
+  --card-2: #151839;
+  --glass: rgb(16 18 42 / 0.62);
+  --line: rgb(185 190 255 / 0.11);
+  --line-strong: rgb(185 190 255 / 0.2);
+  --text: #eceefb;
+  --text-2: #adb2d4;
+  --text-3: #8288ab;
+  --accent: #8f95ff;
+  --accent-2: #b8a6ff;
+  --accent-btn: #5256ee;
+  --accent-btn-hover: #6064f6;
+  --accent-soft: rgb(124 131 255 / 0.14);
+  --accent-line: rgb(143 149 255 / 0.36);
+  --ok: #4ade80;
+  --danger: #ff8a9a;
+  --shadow-lg: 0 40px 90px -40px rgb(2 3 16 / 0.9), 0 0 0 1px rgb(185 190 255 / 0.08);
+  --shadow-md: 0 22px 50px -26px rgb(2 3 16 / 0.85);
+  --hero-ink: #f3f4ff;
+  --hero-ink-2: #c4c8ea;
+  --hero-scrim: rgb(9 10 20 / 0.78);
 
-  --accent: oklch(0.72 0.145 276);
-  --accent-2: oklch(0.62 0.18 271);
-  --accent-soft: oklch(0.83 0.085 278);
-  --accent-ink: oklch(0.99 0.01 274);
+  --term-bg: #0b0d1c;
+  --term-line: rgb(185 190 255 / 0.12);
+  --term-text: #d9dcff;
+  --term-dim: #7a81b5;
+  --term-hash: #c9bcff;
 
-  --amber: oklch(0.83 0.115 80);
-  --amber-deep: oklch(0.72 0.13 70);
-  --jade: oklch(0.8 0.125 168);
+  --r-lg: 24px;
+  --r: 16px;
+  --r-sm: 10px;
+  --pill: 999px;
 
-  --line: color-mix(in oklch, var(--ink) 13%, transparent);
-  --line-strong: color-mix(in oklch, var(--ink) 22%, transparent);
-  --accent-tint: color-mix(in oklch, var(--accent) 16%, transparent);
-  --accent-glow: color-mix(in oklch, var(--accent) 32%, transparent);
-  --amber-tint: color-mix(in oklch, var(--amber) 16%, transparent);
-  --jade-tint: color-mix(in oklch, var(--jade) 15%, transparent);
-
-  --shadow-soft: 0 24px 60px -24px oklch(0.05 0.01 274 / 0.55);
-  --shadow-card: 0 10px 34px -14px oklch(0.05 0.01 274 / 0.5);
-  --highlight: inset 0 1px 0 oklch(1 0 0 / 0.07);
-
-  --nav-bg: color-mix(in oklch, var(--bg) 78%, transparent);
-
-  --font-display-zh: "SHS Display", "Source Han Serif SC", "Noto Serif CJK SC",
-    "Songti SC", "SimSun", serif;
-  --font-display-en: "Fraunces", "Georgia", "Times New Roman", serif;
-  --font-body: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC",
-    "Hiragino Sans GB", "HarmonyOS Sans SC", "Microsoft YaHei", "Segoe UI",
-    Roboto, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
-    "Liberation Mono", monospace;
-
-  --radius: 18px;
-  --radius-lg: 26px;
-  --container: 1180px;
+  --pad: clamp(20px, 4vw, 40px);
+  --wrap: 1240px;
+  --section-y: clamp(72px, 8.5vw, 120px);
   --nav-h: 64px;
+
+  --fs-h1: clamp(2.5rem, 1.3rem + 3.5vw, 4.25rem);
+  --fs-h2: clamp(2rem, 1.35rem + 2vw, 3.25rem);
+  --fs-lead: clamp(1.0625rem, 1rem + 0.3vw, 1.25rem);
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @media (prefers-color-scheme: light) {
   :root {
-    color-scheme: light;
-
-    --bg: oklch(0.952 0.008 274);
-    --bg-deep: oklch(0.925 0.01 274);
-    --surface: oklch(0.99 0.003 274);
-    --surface-top: oklch(1 0 0);
-    --surface-2: oklch(0.973 0.005 274);
-    --surface-2-top: oklch(0.988 0.004 274);
-
-    --ink: oklch(0.27 0.024 274);
-    --ink-2: oklch(0.43 0.022 274);
-    --ink-3: oklch(0.56 0.02 274);
-
-    --accent: oklch(0.54 0.19 273);
-    --accent-2: oklch(0.49 0.2 270);
-    --accent-soft: oklch(0.5 0.17 274);
-    --accent-ink: oklch(0.99 0.01 274);
-
-    --amber: oklch(0.67 0.13 72);
-    --amber-deep: oklch(0.6 0.13 66);
-    --jade: oklch(0.56 0.125 165);
-
-    --line: color-mix(in oklch, var(--ink) 13%, transparent);
-    --line-strong: color-mix(in oklch, var(--ink) 24%, transparent);
-    --accent-tint: color-mix(in oklch, var(--accent) 11%, transparent);
-    --accent-glow: color-mix(in oklch, var(--accent) 22%, transparent);
-    --amber-tint: color-mix(in oklch, var(--amber) 14%, transparent);
-    --jade-tint: color-mix(in oklch, var(--jade) 13%, transparent);
-
-    --shadow-soft: 0 24px 60px -28px oklch(0.4 0.04 274 / 0.35);
-    --shadow-card: 0 10px 30px -14px oklch(0.4 0.04 274 / 0.28);
-    --highlight: inset 0 1px 0 oklch(1 0 0 / 0.85);
-
-    --nav-bg: color-mix(in oklch, var(--surface) 80%, transparent);
+    --bg: #f5f6fb;
+    --bg-soft: #eceef8;
+    --card: #ffffff;
+    --card-2: #f7f7fe;
+    --glass: rgb(255 255 255 / 0.66);
+    --line: rgb(28 32 90 / 0.1);
+    --line-strong: rgb(28 32 90 / 0.18);
+    --text: #11132a;
+    --text-2: #454a6e;
+    --text-3: #62678a;
+    --accent: #4b4fe0;
+    --accent-2: #7c5cff;
+    --accent-soft: rgb(82 86 238 / 0.09);
+    --accent-line: rgb(82 86 238 / 0.3);
+    --ok: #16a34a;
+    --danger: #c42d4a;
+    --shadow-lg: 0 40px 80px -42px rgb(42 46 120 / 0.42), 0 0 0 1px rgb(28 32 90 / 0.06);
+    --shadow-md: 0 20px 44px -26px rgb(42 46 120 / 0.34);
+    --hero-ink: #11132a;
+    --hero-ink-2: #3c4166;
+    --hero-scrim: rgb(245 246 251 / 0.66);
   }
 }

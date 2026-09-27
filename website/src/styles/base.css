@@ -5,37 +5,60 @@
 }
 
 html {
-  scroll-behavior: smooth;
   -webkit-text-size-adjust: 100%;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  html {
-    scroll-behavior: auto;
-  }
+  text-size-adjust: 100%;
+  scroll-behavior: smooth;
+  scroll-padding-top: calc(var(--nav-h) + 16px);
 }
 
 body {
   margin: 0;
+  min-height: 100svh;
   background: var(--bg);
-  color: var(--ink);
+  color: var(--text);
   font-family: var(--font-body);
-  font-size: 16px;
-  line-height: 1.75;
+  font-size: 1rem;
+  line-height: 1.65;
+  font-synthesis-weight: none;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   overflow-x: clip;
 }
 
+:lang(zh) body {
+  line-height: 1.75;
+}
+
 img,
+picture,
 svg {
   display: block;
   max-width: 100%;
 }
 
-/* width/height attributes reserve layout space; CSS decides the real size */
 img {
   height: auto;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+ul,
+ol,
+dl,
+dd,
+figure,
+pre {
+  margin: 0;
+}
+
+ul,
+ol {
+  padding: 0;
+  list-style: none;
 }
 
 a {
@@ -48,18 +71,320 @@ button {
   color: inherit;
   background: none;
   border: 0;
-  cursor: pointer;
   padding: 0;
+  cursor: pointer;
 }
 
-::selection {
-  background: var(--accent-glow);
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-display);
+  color: var(--text);
+  text-wrap: balance;
 }
+
+h1 {
+  font-size: var(--fs-h1);
+  font-weight: 860;
+  font-stretch: 108%;
+  line-height: 1.06;
+  letter-spacing: -0.028em;
+}
+
+h2 {
+  font-size: var(--fs-h2);
+  font-weight: 820;
+  font-stretch: 106%;
+  line-height: 1.1;
+  letter-spacing: -0.022em;
+}
+
+h3 {
+  font-size: 1.1875rem;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: -0.008em;
+}
+
+:lang(zh) h1,
+:lang(zh) h2 {
+  letter-spacing: -0.012em;
+}
+
+:lang(zh) h1 {
+  line-height: 1.16;
+}
+
+:lang(zh) h2 {
+  line-height: 1.2;
+}
+
+p {
+  text-wrap: pretty;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+.container {
+  width: min(100% - 2 * var(--pad), var(--wrap));
+  margin-inline: auto;
+}
+
+.section {
+  position: relative;
+  padding-block: var(--section-y);
+}
+
+.section-head {
+  display: grid;
+  gap: 18px;
+  max-width: 780px;
+  margin-bottom: clamp(40px, 5vw, 64px);
+}
+
+.section-head .lead {
+  max-width: 62ch;
+}
+
+.lead {
+  font-size: var(--fs-lead);
+  line-height: 1.6;
+  color: var(--text-2);
+}
+
+.i {
+  width: 1.15em;
+  height: 1.15em;
+  flex: none;
+}
+
+/* ---------------------------------------------------------------- buttons */
+
+.btn {
+  --btn-h: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55em;
+  height: var(--btn-h);
+  padding-inline: 1.2em;
+  border-radius: var(--pill);
+  font-weight: 650;
+  font-size: 0.975rem;
+  white-space: nowrap;
+  transition:
+    transform 0.25s var(--ease-out),
+    background-color 0.25s ease,
+    border-color 0.25s ease,
+    box-shadow 0.25s ease,
+    color 0.25s ease;
+}
+
+.btn:active {
+  transform: translateY(1px) scale(0.985);
+}
+
+.btn-lg {
+  --btn-h: 54px;
+  padding-inline: 1.45em;
+  font-size: 1.0625rem;
+}
+
+.btn-sm {
+  --btn-h: 36px;
+  padding-inline: 0.95em;
+  font-size: 0.9rem;
+}
+
+.btn-primary {
+  background: var(--accent-btn);
+  color: #fff;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.28),
+    0 10px 26px -12px rgb(82 86 238 / 0.9);
+}
+
+.btn-primary:hover {
+  background: var(--accent-btn-hover);
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.3),
+    0 16px 34px -14px rgb(82 86 238 / 0.95);
+}
+
+.btn-ghost {
+  border: 1px solid var(--line-strong);
+  background: var(--card);
+  color: var(--text);
+}
+
+.btn-ghost:hover {
+  border-color: var(--accent-line);
+  transform: translateY(-1px);
+}
+
+.btn-glass {
+  border: 1px solid rgb(255 255 255 / 0.22);
+  background: rgb(255 255 255 / 0.08);
+  color: var(--hero-ink);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  backdrop-filter: blur(14px) saturate(140%);
+}
+
+.btn-glass:hover {
+  background: rgb(255 255 255 / 0.14);
+  transform: translateY(-1px);
+}
+
+@media (prefers-color-scheme: light) {
+  .btn-glass {
+    border-color: rgb(28 32 90 / 0.16);
+    background: rgb(255 255 255 / 0.55);
+  }
+  .btn-glass:hover {
+    background: rgb(255 255 255 / 0.8);
+  }
+}
+
+.btn-quiet {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.btn-quiet:hover {
+  background: color-mix(in srgb, var(--accent-soft) 60%, var(--accent) 16%);
+}
+
+.btn-hint {
+  padding: 2px 8px;
+  margin-left: 2px;
+  border-radius: var(--pill);
+  background: rgb(255 255 255 / 0.18);
+  font-size: 0.78em;
+  font-weight: 600;
+}
+
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--pill);
+  color: var(--text-2);
+  transition: color 0.2s ease, background-color 0.2s ease;
+}
+
+.icon-btn:hover {
+  color: var(--text);
+  background: var(--accent-soft);
+}
+
+.icon-btn .i {
+  width: 20px;
+  height: 20px;
+}
+
+.arrow-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  font-weight: 650;
+  color: var(--accent);
+}
+
+.arrow-link .i {
+  transition: transform 0.25s var(--ease-out);
+}
+
+.arrow-link:hover .i {
+  transform: translateX(3px);
+}
+
+/* Inline command with a copy button. */
+.cmd {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 8px 8px 8px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-soft);
+}
+
+.cmd-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  color: var(--text-3);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.cmd code {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+
+.cmd code::-webkit-scrollbar {
+  display: none;
+}
+
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  height: 32px;
+  padding-inline: 10px;
+  border-radius: 8px;
+  color: var(--text-2);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.copy-btn:hover {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.copy-btn.is-done {
+  color: var(--ok);
+}
+
+.live-dot {
+  position: relative;
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent);
+}
+
+/* ---------------------------------------------------------- accessibility */
 
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
   border-radius: 6px;
+}
+
+.btn:focus-visible,
+.icon-btn:focus-visible {
+  border-radius: var(--pill);
 }
 
 .skip-link {
@@ -68,196 +393,48 @@ button {
   left: 10px;
   z-index: 100;
   padding: 10px 16px;
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  transform: translateY(-220%);
-  transition: transform 0.2s;
+  border-radius: var(--pill);
+  background: var(--accent-btn);
+  color: #fff;
+  font-weight: 650;
+  transform: translateY(-160%);
+  transition: transform 0.2s ease;
 }
 
-.skip-link:focus-visible {
+.skip-link:focus {
   transform: none;
 }
 
-/* ---- typography ---------------------------------------------------------- */
+/* ------------------------------------------------------------ reveal on scroll */
 
-.display {
-  margin: 0;
-  font-family: var(--font-display-zh);
-  font-weight: 900;
-  line-height: 1.2;
-  letter-spacing: 0.015em;
-  text-wrap: balance;
+.js [data-reveal] {
+  opacity: 0;
+  transform: translateY(22px);
+  transition:
+    opacity 0.8s var(--ease-out),
+    transform 0.8s var(--ease-out);
+  transition-delay: calc(var(--stagger, 0) * 70ms);
 }
 
-body[data-lang="en"] .display {
-  font-family: var(--font-display-en);
-  font-weight: 580;
-  line-height: 1.08;
-  letter-spacing: -0.012em;
-  font-variation-settings: "opsz" 78, "SOFT" 30, "WONK" 0;
+.js [data-reveal].is-in {
+  opacity: 1;
+  transform: none;
 }
 
-.kicker {
-  margin: 0 0 18px;
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.28em;
-  text-transform: uppercase;
-  color: var(--amber-deep);
-}
-
-body[data-lang="zh"] .kicker {
-  letter-spacing: 0.42em;
-}
-
-.lead {
-  margin: 22px 0 0;
-  max-width: 34em;
-  font-size: clamp(16px, 1.35vw, 19px);
-  color: var(--ink-2);
-}
-
-.section-title {
-  font-size: clamp(34px, 4.6vw, 58px);
-  max-width: 18em;
-}
-
-/* ---- layout -------------------------------------------------------------- */
-
-.container {
-  width: min(var(--container), calc(100% - clamp(40px, 8vw, 128px)));
-  margin-inline: auto;
-}
-
-section {
-  position: relative;
-  scroll-margin-top: calc(var(--nav-h) + 12px);
-}
-
-.section-pad {
-  padding-block: clamp(96px, 14vh, 170px);
-}
-
-.section-head {
-  position: relative;
-  z-index: 2;
-}
-
-/* ---- buttons ------------------------------------------------------------- */
-
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 15px 30px;
-  border-radius: 999px;
-  font-weight: 600;
-  font-size: 16px;
-  line-height: 1.2;
-  transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.35s, background-color 0.35s, border-color 0.35s;
-  will-change: transform;
-}
-
-.btn:active {
-  transform: scale(0.97);
-}
-
-.btn-primary {
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklch, var(--accent) 82%, white),
-    var(--accent-2)
-  );
-  color: var(--accent-ink);
-  box-shadow: 0 10px 28px -8px var(--accent-glow), var(--highlight);
-}
-
-.btn-primary:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 16px 36px -8px var(--accent-glow), var(--highlight);
-}
-
-.btn-ghost {
-  border: 1px solid var(--line-strong);
-  background: color-mix(in oklch, var(--surface) 55%, transparent);
-  color: var(--ink);
-  backdrop-filter: blur(6px);
-}
-
-.btn-ghost:hover {
-  transform: translateY(-2px);
-  border-color: color-mix(in oklch, var(--ink) 38%, transparent);
-}
-
-/* ---- cards & chips ------------------------------------------------------- */
-
-.card {
-  position: relative;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--line);
-  background: linear-gradient(180deg, var(--surface-top), var(--surface));
-  box-shadow: var(--shadow-card), var(--highlight);
-  padding: 30px 30px 32px;
-}
-
-.card h3 {
-  margin: 0 0 10px;
-  font-size: 19px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-}
-
-.card p {
-  margin: 0;
-  color: var(--ink-2);
-  font-size: 15.5px;
-}
-
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 15px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: color-mix(in oklch, var(--surface-2) 72%, transparent);
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--ink-2);
-  backdrop-filter: blur(8px);
-}
-
-.chip-amber {
-  border-color: color-mix(in oklch, var(--amber) 30%, transparent);
-  background: var(--amber-tint);
-  color: var(--amber-deep);
-}
-
-.chip-jade {
-  border-color: color-mix(in oklch, var(--jade) 32%, transparent);
-  background: var(--jade-tint);
-  color: var(--jade);
-}
-
-code {
-  font-family: var(--font-mono);
-  font-size: 0.92em;
-}
-
-/* decorative layers never intercept input */
-.layer {
-  position: absolute;
-  pointer-events: none;
-  user-select: none;
-}
-
-/* progressive image loading: stay invisible until decoded, then ease in */
-img.fade-in {
-  transition: opacity 0.7s ease;
-}
-
-img.fade-pending {
-  opacity: 0 !important;
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0s !important;
+  }
+  .js [data-reveal] {
+    opacity: 1;
+    transform: none;
+  }
 }

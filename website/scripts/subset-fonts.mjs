@@ -1,57 +1,65 @@
-// Subsets the self-hosted display fonts to exactly the glyphs the site uses.
-// Source Han Serif SC is ~24 MB; the subset ships at a few dozen KB.
+// Subsets the self-hosted fonts to exactly the glyphs the site renders.
 //
 //   node scripts/subset-fonts.mjs
 //
-// Inputs : assets/fonts-src/*.otf|ttf  (downloaded, git-ignored)
+// Inputs : assets/fonts-src/SourceHanSansCN-{Heavy,Bold}.otf (git-ignored,
+//          Adobe Source Han Sans, OFL) and the Fontsource packages for Mona Sans
+//          and Monaspace Neon (OFL, devDependencies).
 // Outputs: public/fonts/*.woff2
+//
+// CJK only renders in display type (headings, numbers), so only those strings
+// feed the Source Han subsets; body copy uses the system CJK face.
 
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import subsetFont from "subset-font";
+import { displayStrings } from "../site/render.mjs";
+import zh from "../site/locales/zh.mjs";
+import en from "../site/locales/en.mjs";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const SRC = path.join(root, "assets/fonts-src");
 const OUT = path.join(root, "public/fonts");
-
-// Every file whose text can end up rendered in the display face.
-const TEXT_SOURCES = [
-  "index.html",
-  "src/locales/zh.ts",
-  "src/locales/en.ts",
-];
+const SRC = path.join(root, "assets/fonts-src");
+const pkg = (p) => path.join(root, "node_modules", p);
 
 const ASCII = Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i)).join("");
-// CJK punctuation & typographic marks used by the design even if a locale
-// string is edited later.
-const SAFETY = "「」『』《》〈〉、。,;:?!·—…··％℃①②③→←↑↓×✓✕“”‘’";
+const LATIN_EXTRA = "“”‘’…·×→←↗↓✓✕•–";
+const CJK_SAFETY = "，。、；：？！「」『』（）《》·…—0123456789";
 
-async function collectText() {
-  let chars = new Set((ASCII + SAFETY).split(""));
-  for (const rel of TEXT_SOURCES) {
-    const body = await readFile(path.join(root, rel), "utf8");
-    for (const ch of body) {
-      if (ch.charCodeAt(0) > 0x2000) chars.add(ch);
-    }
+function cjkChars() {
+  const set = new Set(CJK_SAFETY);
+  for (const dict of [zh, en]) {
+    for (const s of displayStrings(dict)) for (const ch of s) if (ch.codePointAt(0) > 0x2e7f) set.add(ch);
   }
-  return Array.from(chars).join("");
+  return [...set].join("");
 }
 
-async function subset(srcFile, outFile, text) {
-  const buf = await readFile(path.join(SRC, srcFile));
-  const woff2 = await subsetFont(buf, text, { targetFormat: "woff2" });
-  await writeFile(path.join(OUT, outFile), woff2);
-  console.log(
-    `${outFile}: ${(buf.length / 1024 / 1024).toFixed(1)} MB -> ${(woff2.length / 1024).toFixed(1)} KB`
+async function subset(src, out, text, opts = {}) {
+  const buf = await readFile(src);
+  const woff2 = await subsetFont(buf, text, { targetFormat: "woff2", ...opts });
+  await writeFile(path.join(OUT, out), woff2);
+  console.log(`${out.padEnd(22)} ${(buf.length / 1024).toFixed(0).padStart(6)} KB -> ${(woff2.length / 1024).toFixed(1)} KB`);
+}
+
+await rm(OUT, { recursive: true, force: true });
+await mkdir(OUT, { recursive: true });
+
+const cjk = cjkChars();
+console.log(`display CJK glyphs: ${cjk.length}`);
+await subset(path.join(SRC, "SourceHanSansCN-Heavy.otf"), "shs-heavy.woff2", cjk);
+await subset(path.join(SRC, "SourceHanSansCN-Bold.otf"), "shs-bold.woff2", cjk);
+
+// Mona Sans keeps both variation axes (wght 200-900, wdth 75-125%).
+await subset(
+  pkg("@fontsource-variable/mona-sans/files/mona-sans-latin-standard-normal.woff2"),
+  "mona-sans.woff2",
+  ASCII + LATIN_EXTRA
+);
+for (const w of [400, 600]) {
+  await subset(
+    pkg(`@fontsource/monaspace-neon/files/monaspace-neon-latin-${w}-normal.woff2`),
+    `monaspace-${w}.woff2`,
+    ASCII + LATIN_EXTRA
   );
 }
-
-await mkdir(OUT, { recursive: true });
-const text = await collectText();
-console.log(`glyph set: ${text.length} chars`);
-
-await subset("SourceHanSerifSC-Heavy.otf", "shs-heavy.woff2", text);
-await subset("SourceHanSerifSC-Bold.otf", "shs-bold.woff2", text);
-// Fraunces only ever renders Latin.
-await subset("Fraunces-VF.ttf", "fraunces.woff2", ASCII + "“”‘’—–…·");

@@ -3,19 +3,21 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "Official website for Codex App Manager & Codex App Mirror",
+  "description": "Official website for the Codex App suite: codex-app-mirror, Codex App Manager and awesome-codex-skins",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && node scripts/check-security-headers.mjs",
+    "build": "vite build && node scripts/finalize-headers.mjs",
     "preview": "vite preview",
+    "data": "node scripts/fetch-data.mjs",
     "fonts": "node scripts/subset-fonts.mjs",
     "images": "node scripts/optimize-images.mjs",
-    "assets": "npm run fonts && npm run images"
-  },
-  "dependencies": {
-    "gsap": "^3.15.0"
+    "assets": "npm run fonts && npm run images",
+    "deploy": "npm run build && npx wrangler@4 deploy"
   },
   "devDependencies": {
+    "@fontsource-variable/mona-sans": "^5.3.0",
+    "@fontsource/monaspace-neon": "^5.3.0",
+    "@phosphor-icons/core": "^2.1.1",
     "fontkit": "^2.0.4",
     "sharp": "^0.35.4",
     "subset-font": "^2.7.0",

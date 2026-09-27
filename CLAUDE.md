@@ -37,10 +37,16 @@ Codex App Manager:官方 OpenAI Codex 桌面应用的安装/更新/卸载管理�
 ## website/ 子工程(官网,codexapp.agentsmirror.com)
 
 - 独立 npm 工程,**不要在仓库根目录为它装依赖**(会污染主工程 package.json)。
-- 文案唯一来源 `website/src/locales/{zh,en}.ts`;改文案后重跑 `npm run fonts`
+- 站点介绍全家桶三个项目(mirror / Manager / awesome-codex-skins),构建期由
+  `website/site/render.mjs` 渲染出 `/`(中文)、`/en/`(英文)、`404.html` 三个静态页。
+- 文案唯一来源 `website/site/locales/{zh,en}.mjs`;改文案后重跑 `npm run fonts`
   (中文显示字体按用字子集化,缺字会回退系统字体)。
-- 素材管线:`assets/raw/`(git-ignored,AI 生成)→ `npm run images` → `public/img/`。
-- 部署:`cd website && npm run build && npx wrangler deploy`。zone 路由:
-  `/manager/*` → 本仓库下载路由器,`/latest/*` → mirror 仓库,`/*` → 官网,互不抢路。
+- 数据快照 `website/site/data/site.json` 由 `npm run data` 刷新(镜像最新版本/哈希、
+  Manager 版本、Star、下载量、皮肤目录);线上再由 Worker `/api/status.json` 实时刷新。
+- 素材管线:`assets/raw/`(git-ignored:gpt-image-2-skill Codex provider 生成的背景/透明物件、
+  皮肤真机截图、Manager 浏览器预览截图)→ `npm run images` → `public/img/`。
+- 部署:`cd website && npm run deploy`(build + `npx wrangler@4 deploy`)。zone 路由:
+  `/manager/*` → 本仓库下载路由器,`/latest/*`、`/stats/*` → mirror 仓库,`/*` → 官网,互不抢路;
+  官网 Worker 只接管 `/api/*`,并只读绑定 `codex-app-mirror`、`codex-app-manager` 两个 R2 桶。
 - README banner(`assets/banner.svg`)由 `node website/scripts/readme-banner.mjs`
   再生;官网视觉资产更新后记得重新生成。

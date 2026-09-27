@@ -1,0 +1,587 @@
+{
+  "generatedAt": "2026-09-27T04:38:28.457Z",
+  "codex": {
+    "version": "26.924.22138",
+    "publishedAt": "2026-09-26T08:31:51Z",
+    "files": {
+      "mac-arm64": {
+        "bytes": 710245920,
+        "sha256": "353c802b5a373dda256d661a5cf82be4cfadf14ccc2befd067b709392dc48e5c"
+      },
+      "mac-intel": {
+        "bytes": 699917615,
+        "sha256": "fc65262ed9f40c4c5282be772623266afcf1b2a3819d5b4af6db06b2fe722f46"
+      },
+      "win-x64": {
+        "bytes": 876623361,
+        "sha256": "132431a26fe4de44d1fa3c6e148506dbb4c8d806dad40cfd48e3ed554f2755a2"
+      },
+      "win-arm64": {
+        "bytes": 870865036,
+        "sha256": "e32058c1b8336047a02d457f72081e86c91ef28282ae2e4da77176dfd453e366"
+      }
+    }
+  },
+  "manager": {
+    "version": "0.5.10",
+    "publishedAt": "2026-09-23T17:45:53Z"
+  },
+  "stars": {
+    "Wangnov/codex-app-mirror": 3515,
+    "Wangnov/Codex-App-Manager": 519,
+    "Wangnov/awesome-codex-skins": 47
+  },
+  "downloads": "1.09M",
+  "skins": [
+    {
+      "id": "asuka-eva02",
+      "name": "NERV EVA-02 Asuka Terminal",
+      "description": "明日香与 EVA 二号机：NERV 指挥中心风格的素材化主题（深色为主，浅色为白昼报告风）。",
+      "version": "1.2.0",
+      "category": "anime",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 2146246,
+      "pack": "packs/asuka-eva02-1.2.0.codexskin"
+    },
+    {
+      "id": "caishen-jubao",
+      "name": "财神聚宝阁 · Fortune Pavilion",
+      "description": "原创卡通财神主题：朱红聚宝阁、鎏金元宝、铜钱祥云与青玉如意共同构成的中国风 Codex 素材化皮肤。",
+      "version": "1.2.0",
+      "category": "guofeng",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 3318317,
+      "pack": "packs/caishen-jubao-1.2.0.codexskin"
+    },
+    {
+      "id": "celestial-court",
+      "name": "凌霄金阙 · Celestial Court",
+      "description": "原创国风天庭主题：白玉宫阙、凌霄云海、金色星轨、玉皇大帝与青玉法器构成明净庄严的天宫 Codex 皮肤。",
+      "version": "1.2.0",
+      "category": "guofeng",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 3439074,
+      "pack": "packs/celestial-court-1.2.0.codexskin"
+    },
+    {
+      "id": "cyra-sacred-radiance",
+      "name": "席拉 — 晨曦神愈",
+      "description": "《永劫无间》席拉全覆盖双模式主题：以月轮晨曦圣女、晦昼拱廊、神愈光环和蓝金圣枪为主轴，提供主页持枪全身与任务页施愈近景双人物卡、四张独立建议卡、16 类功能图标、四类 Retina 鼠标指针及双状态圣辉光球发送机关。",
+      "version": "1.0.0",
+      "category": "games",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 5197402,
+      "pack": "packs/cyra-sacred-radiance-1.0.0.codexskin"
+    },
+    {
+      "id": "dasiming-soul-passage",
+      "name": "大司命 — 往生司殿",
+      "description": "《王者荣耀》大司命全覆盖主题：往生司殿、青蓝灵途、银白魂籍与面具长戈组成主页引魂全身像和任务页审籍独立姿态，并完整替换 16 类图标及四类 Retina 鼠标指针。",
+      "version": "1.1.0",
+      "category": "games",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 2743340,
+      "pack": "packs/dasiming-soul-passage-1.1.0.codexskin"
+    },
+    {
+      "id": "dilraba-starlight",
+      "name": "迪丽热巴 · STARLIGHT 星蝶光廊",
+      "description": "迪丽热巴星蝶应援工作室：以珍珠白、极光紫、电光青、晶心与切面蝴蝶构成的明亮偶像陪伴主题。",
+      "version": "1.2.0",
+      "category": "stars",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 2940659,
+      "pack": "packs/dilraba-starlight-1.2.0.codexskin"
+    },
+    {
+      "id": "elon-mars-protocol",
+      "name": "Elon Mars Protocol",
+      "description": "An aerospace-black Codex skin driven by Starship, Tesla energy, xAI intelligence and Grok curiosity.",
+      "version": "1.2.0",
+      "category": "tech",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 1461668,
+      "pack": "packs/elon-mars-protocol-1.2.0.codexskin"
+    },
+    {
+      "id": "emilia-rezero",
+      "name": "Elior Forest — Spirit Companion",
+      "description": "Re:Zero 爱蜜莉雅精灵陪伴主题：冰晶森林、紫水晶、香槟金与帕克精灵光构成主页和任务页的双姿态陪伴体验。",
+      "version": "1.2.0",
+      "category": "anime",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 3452132,
+      "pack": "packs/emilia-rezero-1.2.0.codexskin"
+    },
+    {
+      "id": "gu-qinghan-frostbound",
+      "name": "冰雁顾清寒 — 藏雨冰镜",
+      "description": "《永劫无间》顾清寒全覆盖双模式主题：藏雨阁案牍、冰心诀镜面与冰寒飞影构成独立主页执剑全身卡和任务页冰镜战斗卡，并完整替换 16 类功能图标、三类精确字标及四类 Retina 鼠标指针。",
+      "version": "1.0.0",
+      "category": "games",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 3318654,
+      "pack": "packs/gu-qinghan-frostbound-1.0.0.codexskin"
+    },
+    {
+      "id": "gundam-rx78",
+      "name": "White Base — RX-78-2 Launch Deck",
+      "description": "机动战士高达 RX-78-2 陪伴主题：White Base 发进甲板、月神钛合金、联邦蓝红黄信号和哈罗双状态构成主页全身与任务页半身的双姿态工作台。",
+      "version": "1.0.1",
+      "category": "anime",
+      "appearance": "dual",
+      "codexVerified": "26.707.91948",
+      "bytes": 5150624,
+      "pack": "packs/gundam-rx78-1.0.1.codexskin"
+    },
+    {
+      "id": "guts-terminal",
+      "name": "TPC GUTS Command Terminal",
+      "description": "还原自迪迦奥特曼 TPC/GUTS 概念图的素材化指挥终端主题。",
+      "version": "1.2.0",
+      "category": "anime",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 2019095,
+      "pack": "packs/guts-terminal-1.2.0.codexskin"
+    },
+    {
+      "id": "han-li-mortal-path",
+      "name": "韩老魔 — 青竹问道",
+      "description": "《凡人修仙传》韩立全覆盖陪伴主题：洞府案牍、青竹蜂云剑阵、掌天瓶、噬金虫、风雷翅与辟邪神雷组成主页全身与任务页掌瓶双姿态，并完整替换 16 类图标及四类 Retina 鼠标指针。",
+      "version": "1.0.0",
+      "category": "guofeng",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 7716157,
+      "pack": "packs/han-li-mortal-path-1.0.0.codexskin"
+    },
+    {
+      "id": "hancock-onepiece",
+      "name": "Amazon Lily — Kuja Empress",
+      "description": "ONE PIECE 波雅·汉库克陪伴主题：亚马逊·百合宫殿、朱漆、玉石、蛇纹金饰与心形光粒构成帝王感双姿态工作台。",
+      "version": "1.2.0",
+      "category": "anime",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 3744550,
+      "pack": "packs/hancock-onepiece-1.2.0.codexskin"
+    },
+    {
+      "id": "jay-chou-inkstone-rhapsody",
+      "name": "周杰伦 · 墨键夜航",
+      "description": "以墨蓝漆面、象牙琴键、青瓷月光与旧铜节拍构成的周杰伦个人创作非官方应援主题。",
+      "version": "1.2.0",
+      "category": "stars",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 1182150,
+      "pack": "packs/jay-chou-inkstone-rhapsody-1.2.0.codexskin"
+    },
+    {
+      "id": "jensen-infinite-compute",
+      "name": "Jensen Infinite Compute",
+      "description": "A graphite-and-green Codex skin powered by Jensen and infinite GPU energy.",
+      "version": "1.2.0",
+      "category": "tech",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 1389155,
+      "pack": "packs/jensen-infinite-compute-1.2.0.codexskin"
+    },
+    {
+      "id": "ji-canghai-blazing-gallant",
+      "name": "季沧海 — 烈豪焚夜",
+      "description": "《永劫无间》季沧海全覆盖双模式主题：以焚夜酒馆、焦铁靛布、旧铜阔刀与酒焰疾行主轴，提供主页持刀举壶全身与任务页燎原冲拳双人物卡、四张独立建议卡、16 类功能图标、四类 Retina 鼠标指针及双状态火酒葫芦发送机关。",
+      "version": "1.0.0",
+      "category": "games",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 2973426,
+      "pack": "packs/ji-canghai-blazing-gallant-1.0.0.codexskin"
+    },
+    {
+      "id": "jj-lin-soulwave-sanctuary",
+      "name": "林俊杰 · 回响圣所",
+      "description": "以深海蓝绿、烟青玻璃、铂银结构与琥珀脉冲构成的林俊杰个人创作非官方应援主题。",
+      "version": "1.2.0",
+      "category": "stars",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 1865704,
+      "pack": "packs/jj-lin-soulwave-sanctuary-1.2.0.codexskin"
+    },
+    {
+      "id": "journey-to-west",
+      "name": "大圣云途 · Journey to the West",
+      "description": "原创国风西游主题：齐天大圣、筋斗云、金箍棒、火焰山与取经法器构成灵动热烈的西游记 Codex 皮肤。",
+      "version": "1.2.0",
+      "category": "guofeng",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 4522937,
+      "pack": "packs/journey-to-west-1.2.0.codexskin"
+    },
+    {
+      "id": "kakashi-naruto",
+      "name": "Konoha ANBU — Lightning Copy Ninja",
+      "description": "NARUTO 卡卡西陪伴主题：木叶任务档案、战术橄榄、卷轴纸、写轮眼红与雷切蓝构成双姿态忍者工作台。",
+      "version": "1.2.0",
+      "category": "anime",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 2799325,
+      "pack": "packs/kakashi-naruto-1.2.0.codexskin"
+    },
+    {
+      "id": "kaworu-mark06",
+      "name": "SEELE Mark.06 Kaworu Terminal",
+      "description": "渚薰与 Mark.06：月下 Terminal Dogma 风格的素材化主题，深紫月光为主，浅色为银灰观测报告风。",
+      "version": "1.2.0",
+      "category": "anime",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 2621462,
+      "pack": "packs/kaworu-mark06-1.2.0.codexskin"
+    },
+    {
+      "id": "kun-afterglow",
+      "name": "KUN Afterglow Fan Studio",
+      "description": "蔡徐坤星轨返场工作室：以午夜丝绒、香槟金 Cue 灯、茉莉花与演出余辉构成的偶像应援主题。",
+      "version": "1.2.0",
+      "category": "stars",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 1897441,
+      "pack": "packs/kun-afterglow-1.2.0.codexskin"
+    },
+    {
+      "id": "kurumi-sunward-onmyoji",
+      "name": "土御门胡桃 — 日轮净域",
+      "description": "《永劫无间》土御门胡桃全覆盖双模式主题：以日轮阴阳寮、月白障子、黑漆朱绳、庇护光线与净天地花阵为主轴，提供主页持伞全身与任务页张伞施愈双人物卡、四张独立建议卡、16 类功能图标、四类 Retina 鼠标指针及双状态光伞发送机关。",
+      "version": "1.0.0",
+      "category": "games",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 2451469,
+      "pack": "packs/kurumi-sunward-onmyoji-1.0.0.codexskin"
+    },
+    {
+      "id": "lan-meng-caiyun-trick",
+      "name": "蓝梦 — 彩云戏法",
+      "description": "《永劫无间》蓝梦全覆盖双模式主题：以市井戏法、青玉戏布、红金彩球与纸鸟灯彩为主轴，提供主页完整站姿与任务页抛球近景双人物卡、四张独立建议卡、16 类功能图标、四类 Retina 鼠标指针及双状态戏球发送机关。",
+      "version": "1.0.0",
+      "category": "games",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 5501873,
+      "pack": "packs/lan-meng-caiyun-trick-1.0.0.codexskin"
+    },
+    {
+      "id": "luffy-onepiece",
+      "name": "Thousand Sunny — Dawn Adventure",
+      "description": "ONE PIECE 路飞陪伴主题：阳光号甲板、海天青、草帽金、珊瑚红与航海木构成轻快的双姿态冒险工作台。",
+      "version": "1.2.0",
+      "category": "anime",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 3147745,
+      "pack": "packs/luffy-onepiece-1.2.0.codexskin"
+    },
+    {
+      "id": "luo-feng-domain",
+      "name": "银河领主 — 罗峰·陨墨星域",
+      "description": "《吞噬星空》罗峰全覆盖陪伴主题：陨墨星传承、遁天梭、金角巨兽、黑洞法则与 Babata 双状态，组成主页全身与任务页掌心黑洞双姿态工作台，并完整替换 16 类图标及四类 Retina 鼠标指针。",
+      "version": "1.0.2",
+      "category": "anime",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 6811808,
+      "pack": "packs/luo-feng-domain-1.0.2.codexskin"
+    },
+    {
+      "id": "mai-shiranui",
+      "name": "Shiranui Dojo — Scarlet Flame",
+      "description": "KOF 不知火舞陪伴主题：山间道场、朱漆、和纸、折扇金骨与火焰凤凰构成深浅双模式的双姿态格斗工作台。",
+      "version": "1.2.0",
+      "category": "games",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 3368727,
+      "pack": "packs/mai-shiranui-1.2.0.codexskin"
+    },
+    {
+      "id": "marco-polo-clockwork-expedition",
+      "name": "马可波罗 — 海都远征",
+      "description": "《王者荣耀》马可波罗全覆盖主题：海都航图室、黄铜机关、胡桃木、红皮革与琥珀枪火组成主页双枪远征全身像和任务页拆枪校准独立姿态，并完整替换 16 类图标及四类 Retina 鼠标指针。",
+      "version": "1.1.0",
+      "category": "games",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 3117702,
+      "pack": "packs/marco-polo-clockwork-expedition-1.1.0.codexskin"
+    },
+    {
+      "id": "ming-imperial",
+      "name": "大明金阙 · Ming Imperial",
+      "description": "原创大明王朝主题：朱墙金瓦、明制衮服、青花瓷、日月山河纹与宝船构成端正华贵的历史国风 Codex 皮肤。",
+      "version": "1.2.0",
+      "category": "guofeng",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 4015976,
+      "pack": "packs/ming-imperial-1.2.0.codexskin"
+    },
+    {
+      "id": "naraka-wanxiang-cangdi-fourfold-axis",
+      "name": "苍帝 · 森罗天枢",
+      "description": "《永劫无间》征神之路木万象·苍帝专属全覆盖主题：以根座、多面、多臂、古金法轮与天枢光球为核心，完整覆盖主页、任务页、建议卡、16 类功能图标及六类 Retina 鼠标指针。",
+      "version": "1.0.0",
+      "category": "games",
+      "appearance": "dual",
+      "codexVerified": "26.715.31925",
+      "bytes": 6995470,
+      "pack": "packs/naraka-wanxiang-cangdi-fourfold-axis-1.0.0.codexskin"
+    },
+    {
+      "id": "naraka-wanxiang-five-aspects",
+      "name": "万象 · 五相征神",
+      "description": "《永劫无间》征神之路万象五行首领全覆盖主题：狱炎、魁石、烁金、溟祸与苍帝组成首页五相列阵和任务页轮值图谱，并完整覆盖建议卡、输入框、品牌、16 类功能图标及五类 Retina 鼠标指针。",
+      "version": "1.0.0",
+      "category": "games",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 10551625,
+      "pack": "packs/naraka-wanxiang-five-aspects-1.0.0.codexskin"
+    },
+    {
+      "id": "naraka-wanxiang-kuishi-mountain-seal",
+      "name": "魁石 · 镇岳山门",
+      "description": "《永劫无间》征神之路土万象·魁石专属全覆盖主题：以层岩甲、镇岳巨拳、峡谷断层与地脉压力为核心，完整覆盖主页、任务页、建议卡、16 类功能图标及六类 Retina 鼠标指针。",
+      "version": "1.0.0",
+      "category": "games",
+      "appearance": "dual",
+      "codexVerified": "26.715.31925",
+      "bytes": 6136806,
+      "pack": "packs/naraka-wanxiang-kuishi-mountain-seal-1.0.0.codexskin"
+    },
+    {
+      "id": "naraka-wanxiang-minghuo-abyssal-tide",
+      "name": "溟祸 · 沉渊逆潮",
+      "description": "《永劫无间》征神之路水万象·溟祸专属全覆盖主题：以蓝黑双角、潮刃长兵、蛇尾与逆流水势为核心，完整覆盖主页、任务页、建议卡、16 类功能图标及六类 Retina 鼠标指针。",
+      "version": "1.0.0",
+      "category": "games",
+      "appearance": "dual",
+      "codexVerified": "26.715.31925",
+      "bytes": 5927255,
+      "pack": "packs/naraka-wanxiang-minghuo-abyssal-tide-1.0.0.codexskin"
+    },
+    {
+      "id": "naraka-wanxiang-shuojin-thunder-forge",
+      "name": "烁金 · 天人雷铸",
+      "description": "《永劫无间》征神之路金万象·烁金专属全覆盖主题：以旧青铜重甲、双轮锤、熔金炉心与雷铸机构为核心，完整覆盖主页、任务页、建议卡、16 类功能图标及六类 Retina 鼠标指针。",
+      "version": "1.0.0",
+      "category": "games",
+      "appearance": "dual",
+      "codexVerified": "26.715.31925",
+      "bytes": 7301917,
+      "pack": "packs/naraka-wanxiang-shuojin-thunder-forge-1.0.0.codexskin"
+    },
+    {
+      "id": "naraka-wanxiang-yuyan-ember-prison",
+      "name": "狱炎 · 烬狱刀冢",
+      "description": "《永劫无间》征神之路火万象·狱炎专属全覆盖主题：以火冠鬼面、黑红腐蚀甲、熔火长刀与烬狱封印为核心，完整覆盖主页、任务页、建议卡、16 类功能图标及六类 Retina 鼠标指针。",
+      "version": "1.0.0",
+      "category": "games",
+      "appearance": "dual",
+      "codexVerified": "26.715.31925",
+      "bytes": 5338408,
+      "pack": "packs/naraka-wanxiang-yuyan-ember-prison-1.0.0.codexskin"
+    },
+    {
+      "id": "ning-hongye-crimson-night",
+      "name": "宁红夜 — 赤练无明",
+      "description": "《永劫无间》宁红夜全覆盖双模式主题：以昆仑盲剑客、赤练蛇纹、阴神之眼和宿命红绳为主轴，提供真实视频开屏、主页全身守阵与任务页结印近景双人物卡、四张独立建议卡、16 类功能图标、四类 Retina 鼠标指针及双状态蛇眼发送机关。",
+      "version": "1.1.0",
+      "category": "games",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 12249836,
+      "pack": "packs/ning-hongye-crimson-night-1.1.0.codexskin"
+    },
+    {
+      "id": "rei-eva00",
+      "name": "NERV EVA-00 Rei Prototype Terminal",
+      "description": "绫波丽与 EVA 零号机：冷静克制的 NERV 原型机实验终端（深色为主，浅色为医疗观察报告风）。",
+      "version": "1.2.0",
+      "category": "anime",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 2265376,
+      "pack": "packs/rei-eva00-1.2.0.codexskin"
+    },
+    {
+      "id": "rem-rezero",
+      "name": "Roswaal Mansion — Rem Companion",
+      "description": "Re:Zero 西方玄幻蕾姆陪伴主题：月夜宅邸、拉碧斯蓝珐琅、黄铜纹章与冰蓝魔力共同构成主页和任务页的双姿态陪伴体验。",
+      "version": "1.2.1",
+      "category": "anime",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 6606962,
+      "pack": "packs/rem-rezero-1.2.1.codexskin"
+    },
+    {
+      "id": "san-tibo",
+      "name": "San Tibo",
+      "description": "A warm editorial Codex skin inspired by the generous reset.",
+      "version": "1.2.0",
+      "category": "tech",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 2706735,
+      "pack": "packs/san-tibo-1.2.0.codexskin"
+    },
+    {
+      "id": "shaosiyuan-fateweave",
+      "name": "少司缘 — 司缘堂",
+      "description": "《王者荣耀》少司缘全覆盖陪伴主题：云梦司缘堂、红线缘契、叶脉灵光、露珠琉璃与粉蓝双灵组成主页执线全身像和任务页阅笺双姿态，并完整替换 16 类图标及四类 Retina 鼠标指针。",
+      "version": "1.1.0",
+      "category": "games",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 2835026,
+      "pack": "packs/shaosiyuan-fateweave-1.1.0.codexskin"
+    },
+    {
+      "id": "shinji-eva01",
+      "name": "NERV EVA-01 Shinji Synchronization Terminal",
+      "description": "碇真嗣与 EVA 初号机：以 CAGE-01 拘束机库、同步诊断和紫绿装甲构成的 NERV 素材化主题。",
+      "version": "1.2.0",
+      "category": "anime",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 1849529,
+      "pack": "packs/shinji-eva01-1.2.0.codexskin"
+    },
+    {
+      "id": "three-kingdoms",
+      "name": "赤壁风云 · Three Kingdoms",
+      "description": "原创三国演义主题：关羽、青龙偃月刀、赤壁火光、军阵沙盘与三方旌旗构成雄浑而富戏剧性的 Codex 皮肤。",
+      "version": "1.2.0",
+      "category": "guofeng",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 3851140,
+      "pack": "packs/three-kingdoms-1.2.0.codexskin"
+    },
+    {
+      "id": "tianhai-vajra-thunder-temple",
+      "name": "天海 — 雷霆伏魔",
+      "description": "《永劫无间》天海全覆盖双模式主题：以伏魔金刚殿、古铜金钟、僧黄经布与雷霆愿力为主轴，提供主页持杖全身与任务页金钟手印双人物卡、四张独立建议卡、16 类功能图标、四类 Retina 鼠标指针及双状态金钟发送机关。",
+      "version": "1.0.0",
+      "category": "games",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 2937146,
+      "pack": "packs/tianhai-vajra-thunder-temple-1.0.0.codexskin"
+    },
+    {
+      "id": "trump-golden-order",
+      "name": "Trump Golden Order",
+      "description": "A gold-and-midnight executive deal terminal inspired by ceremonial orders, skyline ambition and the decisive stroke of a signing pen.",
+      "version": "1.2.0",
+      "category": "stars",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 1435664,
+      "pack": "packs/trump-golden-order-1.2.0.codexskin"
+    },
+    {
+      "id": "underworld-yama",
+      "name": "幽都判府 · Underworld Tribunal",
+      "description": "原创国风幽冥主题：阎罗公堂、鬼门石阙、判官朱批、青冥灯火与古铜法器构成庄重而略带卡通感的阴曹地府 Codex 皮肤。",
+      "version": "1.2.0",
+      "category": "guofeng",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 4011955,
+      "pack": "packs/underworld-yama-1.2.0.codexskin"
+    },
+    {
+      "id": "western-pure-land",
+      "name": "莲界琉光 · Western Pure Land",
+      "description": "原创东方净土主题：如来佛祖、八瓣莲台、琉璃宝光、莲池与金色法轮构成庄严宁静的西方极乐世界 Codex 皮肤。",
+      "version": "1.2.0",
+      "category": "guofeng",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 3929911,
+      "pack": "packs/western-pure-land-1.2.0.codexskin"
+    },
+    {
+      "id": "wuchen-twofold-transit",
+      "name": "无尘 — 两仪通玄",
+      "description": "《永劫无间》无尘全覆盖双模式主题：以黑白道藏、两仪飞剑、星移阵门和青玉天机为主轴，提供主页结印全身与任务页开阵近景双人物卡、四张独立建议卡、16 类功能图标、四类 Retina 鼠标指针及双状态星移阵盘发送机关。",
+      "version": "1.0.0",
+      "category": "games",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 4581819,
+      "pack": "packs/wuchen-twofold-transit-1.0.0.codexskin"
+    },
+    {
+      "id": "yao-deer-spirit-grove",
+      "name": "瑶 — 鹿灵梦境",
+      "description": "《王者荣耀》瑶全覆盖主题：月夜森林、鹿灵微光、青玉藤蔓、粉紫雾与黑羽组成主页跃林全身像和任务页枝头阅卷独立姿态，并完整替换 16 类图标及四类 Retina 鼠标指针。",
+      "version": "1.1.0",
+      "category": "games",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 2991321,
+      "pack": "packs/yao-deer-spirit-grove-1.1.0.codexskin"
+    },
+    {
+      "id": "yu-linglong-foxfire-enchant",
+      "name": "玉玲珑 — 迷魂狐影",
+      "description": "《永劫无间》玉玲珑全覆盖双模式主题：以天狐魂魄、月池祭台、紫蓝狐火和摄魂灵器为主轴，提供主页慵懒全身与任务页施咒近景双人物卡、四张独立建议卡、16 类功能图标、四类 Retina 鼠标指针及双状态狐魂灵珠发送机关。",
+      "version": "1.0.0",
+      "category": "games",
+      "appearance": "dual",
+      "codexVerified": "26.715.21425",
+      "bytes": 5179606,
+      "pack": "packs/yu-linglong-foxfire-enchant-1.0.0.codexskin"
+    },
+    {
+      "id": "yu-linglong-mistveil-sorceress",
+      "name": "玉玲珑 — 雾隐妖罗",
+      "description": "《永劫无间》玉玲珑神品时装〖雾隐妖罗〗全覆盖双模式主题：以破画惊梦、人形与妖心形切换、魄灵花和魂灯息为主轴，提供主页月白人形与任务页冰蓝妖心形两张独立人物卡、四张剧情建议卡、16 类功能图标、四类 Retina 鼠标指针及双状态摄魂灯发送机关。",
+      "version": "1.0.0",
+      "category": "games",
+      "appearance": "dual",
+      "codexVerified": "26.715.31925",
+      "bytes": 6928312,
+      "pack": "packs/yu-linglong-mistveil-sorceress-1.0.0.codexskin"
+    },
+    {
+      "id": "zhang-qiling-bronze-gate",
+      "name": "张起灵 — 长白守门",
+      "description": "《盗墓笔记》张起灵全覆盖素材化主题：长白雪线、青铜巨门、黑金古刀、麒麟纹、奇长双指与鬼玺覆盖主页和任务页双人物、实体输入框框体、侧栏、任务牌、三套 Logo、16 类遗物图标及四类 Retina 鼠标指针。",
+      "version": "2.0.1",
+      "category": "guofeng",
+      "appearance": "dual",
+      "codexVerified": "26.715.31251",
+      "bytes": 4706065,
+      "pack": "packs/zhang-qiling-bronze-gate-2.0.1.codexskin"
+    }
+  ]
+}
