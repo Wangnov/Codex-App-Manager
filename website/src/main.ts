@@ -20,7 +20,7 @@ const $$ = <T extends Element = HTMLElement>(sel: string, scope: ParentNode = do
 for (const a of $$<HTMLAnchorElement>("[data-lang-switch]")) {
   a.addEventListener("click", () => {
     try {
-      localStorage.setItem("cas-lang", a.dataset.langSwitch ?? "");
+      localStorage.setItem("cam-site-lang", a.dataset.langSwitch ?? "");
     } catch {
       /* storage unavailable: the switch still navigates */
     }

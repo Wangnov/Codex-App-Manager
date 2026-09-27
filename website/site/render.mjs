@@ -151,7 +151,7 @@ function head(t, data, page) {
   const title = page === "404" ? t.notFound.title : t.meta.title;
   const redirect =
     t.lang === "zh" && page !== "404"
-      ? `<script>(function(){try{if(location.pathname!=="/")return;var s=localStorage.getItem("cas-lang");if(s==="zh")return;if(s==="en"||(!/^zh\\b/i.test(navigator.language||"")&&!/bot|crawl|spider|slurp|preview|lighthouse/i.test(navigator.userAgent))){location.replace("/en/"+location.hash)}}catch(e){}})();</script>`
+      ? `<script>(function(){try{if(location.pathname!=="/")return;var s=localStorage.getItem("cam-site-lang");if(s==="zh")return;if(s==="en"||(!/^zh\\b/i.test(navigator.language||"")&&!/bot|crawl|spider|slurp|preview|lighthouse/i.test(navigator.userAgent))){location.replace("/en/"+location.hash)}}catch(e){}})();</script>`
       : "";
   const ld = {
     "@context": "https://schema.org",
