@@ -261,6 +261,10 @@ function wireTabs(buttons: HTMLButtonElement[], onSelect: (btn: HTMLButtonElemen
     if (focus) btn.focus();
     onSelect(btn);
   };
+  // Panels ship visible so the page works without JavaScript; hide the
+  // inactive ones only once the tabs are live.
+  const initial = buttons.find((b) => b.getAttribute("aria-selected") === "true") ?? buttons[0];
+  if (initial) select(initial);
   for (const b of buttons) {
     b.addEventListener("click", () => select(b));
     b.addEventListener("keydown", (e) => {

@@ -1,8 +1,8 @@
 {
-  "generatedAt": "2026-09-27T04:38:28.457Z",
+  "generatedAt": "2026-09-27T05:39:34.346Z",
   "codex": {
     "version": "26.924.22138",
-    "publishedAt": "2026-09-26T08:31:51Z",
+    "publishedAt": "2026-09-26T08:31:51.000Z",
     "files": {
       "mac-arm64": {
         "bytes": 710245920,
@@ -24,7 +24,7 @@
   },
   "manager": {
     "version": "0.5.10",
-    "publishedAt": "2026-09-23T17:45:53Z"
+    "publishedAt": "2026-09-23T17:45:53.000Z"
   },
   "stars": {
     "Wangnov/codex-app-mirror": 3515,

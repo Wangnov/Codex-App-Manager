@@ -8,6 +8,7 @@
   border-bottom: 1px solid transparent;
 }
 
+html:not(.js) .nav,
 .nav.is-scrolled,
 .nav.is-open {
   background: color-mix(in srgb, var(--bg) 80%, transparent);
@@ -2205,6 +2206,27 @@
 
 .dl-panel[hidden] {
   display: none;
+}
+
+.panel-title {
+  font-size: 1.1rem;
+}
+
+.js .panel-title {
+  display: none;
+}
+
+html:not(.js) .dl-tabs,
+html:not(.js) .term-tabs {
+  display: none;
+}
+
+.dl-panel + .dl-panel {
+  border-top: 1px solid var(--line);
+}
+
+.term-body + .term-body {
+  border-top: 1px solid var(--term-line);
 }
 
 .panel-intro {

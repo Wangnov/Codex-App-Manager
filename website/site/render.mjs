@@ -586,7 +586,7 @@ function trust(t, data) {
 <span class="th" data-live="sha-mac-arm64">${esc(mac)}</span>
   Codex-mac-arm64.dmg
 <span class="tok">✓ ${esc(term.match)}</span></pre>
-          <pre class="term-body" id="term-win" role="tabpanel" aria-labelledby="term-tab-win" hidden><span class="tc">${esc(term.cDownloadWin)}</span>
+          <pre class="term-body" id="term-win" role="tabpanel" aria-labelledby="term-tab-win"><span class="tc">${esc(term.cDownloadWin)}</span>
 <span class="tp">PS&gt;</span> Invoke-WebRequest ${ORIGIN}/latest/win-x64 \`
       -OutFile Codex-Windows-x64.msix
 <span class="tc">${esc(term.cHashWin)}</span>
@@ -634,6 +634,7 @@ function download(t, data) {
           ${tab("skins", `<img src="/img/obj/cards-320.webp" alt="" width="22" height="22">`, false)}
         </div>
         <div class="dl-panel" role="tabpanel" id="panel-manager" aria-labelledby="tab-manager">
+          <h3 class="panel-title">${esc(d.tabs.manager)}</h3>
           <p class="panel-intro">${esc(d.manager.intro)}</p>
           <div class="panel-grid">
             <div class="pm">
@@ -644,12 +645,14 @@ function download(t, data) {
           </div>
           <p class="panel-note">${fill(d.manager.note, { version: `<span class="mono" data-live="manager-version">${esc(data.manager.version)}</span>` })}</p>
         </div>
-        <div class="dl-panel" role="tabpanel" id="panel-codex" aria-labelledby="tab-codex" hidden>
+        <div class="dl-panel" role="tabpanel" id="panel-codex" aria-labelledby="tab-codex">
+          <h3 class="panel-title">${esc(d.tabs.codex)}</h3>
           <p class="panel-intro">${esc(d.codex.intro)}</p>
           <ul class="file-list">${CODEX_FILES.map((f) => fileRow(f, `<span class="file-size mono" data-live="size-${f.key}">${esc(formatBytes(data.codex.files[f.key]?.bytes))}</span>`)).join("")}</ul>
           <p class="link-chips">${chips.map(([h, ic, l]) => `<a href="${h}">${icon(ic)}${esc(l)}</a>`).join("")}</p>
         </div>
-        <div class="dl-panel" role="tabpanel" id="panel-skins" aria-labelledby="tab-skins" hidden>
+        <div class="dl-panel" role="tabpanel" id="panel-skins" aria-labelledby="tab-skins">
+          <h3 class="panel-title">${esc(d.tabs.skins)}</h3>
           <p class="panel-intro">${esc(d.skins.intro)}</p>
           <ul class="routes">
             <li><span class="route-icon">${icon("storefront")}</span><div><h3>${esc(d.skins.viaManager.title)}</h3><p>${esc(d.skins.viaManager.body)}</p></div><a class="btn btn-sm btn-quiet" href="#download" data-open-tab="manager">${esc(d.tabs.manager)}</a></li>
