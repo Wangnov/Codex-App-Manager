@@ -32,10 +32,12 @@ enum CurlAttemptError {
 }
 
 impl CurlAttemptError {
-    fn into_message(self, url: &str) -> String {
+    fn into_message(self, url: &str, network: &NetworkConfig) -> String {
         match self {
             Self::Cancelled => "download cancelled".to_string(),
-            Self::Curl { exit_code, stderr } => curl_failure_message(url, exit_code, &stderr),
+            Self::Curl { exit_code, stderr } => {
+                curl_failure_message(url, exit_code, &stderr, network)
+            }
             Self::Other(message) => message,
         }
     }
@@ -98,24 +100,30 @@ fn url_host(url: &str) -> &str {
         .unwrap_or("")
 }
 
-fn proxy_env_summary() -> String {
+fn proxy_env_summary(network: &NetworkConfig) -> String {
     let vars = ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY"];
     let configured = vars
         .iter()
         .filter(|name| std::env::var_os(name).is_some())
         .copied()
         .collect::<Vec<_>>();
-    if configured.is_empty() {
-        "no curl proxy environment variables are set; Windows system proxy/PAC may not be used automatically".to_string()
+    let env = if configured.is_empty() {
+        "no curl proxy environment variables set".to_string()
     } else {
         format!(
             "curl proxy environment variables set: {}",
             configured.join(", ")
         )
-    }
+    };
+    format!("{env}; proxy mode: {}", network.proxy_summary())
 }
 
-fn curl_failure_message(url: &str, exit_code: Option<i32>, stderr: &str) -> String {
+fn curl_failure_message(
+    url: &str,
+    exit_code: Option<i32>,
+    stderr: &str,
+    network: &NetworkConfig,
+) -> String {
     let base = format!(
         "curl failed for host={} exit={}: stderr='{}'",
         url_host(url),
@@ -127,7 +135,7 @@ fn curl_failure_message(url: &str, exit_code: Option<i32>, stderr: &str) -> Stri
     // Append the proxy diagnostic only for connectivity failures — pasting it
     // onto write / disk / HTTP errors (e.g. exit 23) only misleads.
     if is_connectivity_exit(exit_code) {
-        format!("{base}; {}", proxy_env_summary())
+        format!("{base}; {}", proxy_env_summary(network))
     } else {
         base
     }
@@ -357,11 +365,11 @@ fn run_curl(
                     .or_else(|err| {
                         retry_with_schannel_no_revoke(err, &run, ProgressMode::SilentWithErrors)
                     })
-                    .map_err(|err| err.into_message(url));
+                    .map_err(|err| err.into_message(url, network));
             }
         }
         return retry_with_schannel_no_revoke(first_err, &run, ProgressMode::NoProgressMeter)
-            .map_err(|err| err.into_message(url));
+            .map_err(|err| err.into_message(url, network));
     }
     Ok(())
 }

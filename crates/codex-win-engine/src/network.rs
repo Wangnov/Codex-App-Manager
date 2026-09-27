@@ -1,9 +1,81 @@
 use std::process::Command;
 
+#[cfg(windows)]
+use windows::core::{w, PCWSTR};
+#[cfg(windows)]
+use windows::Win32::Foundation::ERROR_SUCCESS;
+#[cfg(windows)]
+use windows::Win32::System::Registry::{
+    RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SchannelRevocationCheck {
     Strict,
     Disabled,
+}
+
+/// WinINET per-user proxy settings live under this HKCU key — the same values
+/// Windows shows in Settings > Network & Internet > Proxy.
+#[cfg(windows)]
+const INTERNET_SETTINGS_KEY: PCWSTR =
+    w!("Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings");
+
+#[cfg(windows)]
+fn reg_read_dword(value: PCWSTR) -> Option<u32> {
+    let mut data = 0u32;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            INTERNET_SETTINGS_KEY,
+            value,
+            RRF_RT_REG_DWORD,
+            None,
+            Some(&mut data as *mut u32 as *mut _),
+            Some(&mut size),
+        )
+    };
+    (status == ERROR_SUCCESS).then_some(data)
+}
+
+#[cfg(windows)]
+fn reg_read_string(value: PCWSTR) -> Option<String> {
+    let mut size = 0u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            INTERNET_SETTINGS_KEY,
+            value,
+            RRF_RT_REG_SZ,
+            None,
+            None,
+            Some(&mut size),
+        )
+    };
+    if status != ERROR_SUCCESS || size < 2 {
+        return None;
+    }
+    let mut buffer = vec![0u16; (size / 2) as usize + 1];
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            INTERNET_SETTINGS_KEY,
+            value,
+            RRF_RT_REG_SZ,
+            None,
+            Some(buffer.as_mut_ptr() as *mut _),
+            Some(&mut size),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return None;
+    }
+    let end = buffer
+        .iter()
+        .position(|&unit| unit == 0)
+        .unwrap_or(buffer.len());
+    Some(String::from_utf16_lossy(&buffer[..end]))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,7 +111,15 @@ impl NetworkConfig {
 
     pub(crate) fn curl_args(&self) -> Vec<String> {
         match &self.proxy_mode {
-            ProxyMode::System => Vec::new(),
+            ProxyMode::System => match resolved_system_proxy() {
+                Some(proxy) => vec![
+                    "--proxy".to_string(),
+                    proxy.url,
+                    "--noproxy".to_string(),
+                    proxy.bypass,
+                ],
+                None => Vec::new(),
+            },
             ProxyMode::Direct => vec![
                 "--proxy".to_string(),
                 String::new(),
@@ -76,12 +156,117 @@ impl NetworkConfig {
             command.args(args);
         }
     }
+
+    /// One-line proxy state appended to connectivity-failure diagnostics. The
+    /// custom URL is never included — it may embed credentials.
+    pub(crate) fn proxy_summary(&self) -> String {
+        match &self.proxy_mode {
+            ProxyMode::System => match resolved_system_proxy() {
+                Some(proxy) => format!("system (resolved to {})", proxy.url),
+                None => {
+                    "system (no manual proxy; PAC/WPAD cannot be evaluated)".to_string()
+                }
+            },
+            ProxyMode::Direct => "direct".to_string(),
+            ProxyMode::Custom(_) => "custom".to_string(),
+        }
+    }
 }
 
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self::system()
     }
+}
+
+/// The manual WinINET proxy translated for curl: `url` feeds `--proxy` and
+/// `bypass` feeds `--noproxy`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SystemProxy {
+    pub url: String,
+    pub bypass: String,
+}
+
+/// The system-proxy read for "system" mode. On Windows this resolves the
+/// WinINET per-user settings; every other platform has nothing to resolve.
+pub(crate) fn resolved_system_proxy() -> Option<SystemProxy> {
+    let (server, overrides) = system_proxy_settings()?;
+    resolve_system_proxy(&server, &overrides)
+}
+
+#[cfg(windows)]
+fn system_proxy_settings() -> Option<(String, String)> {
+    if reg_read_dword(w!("ProxyEnable")).unwrap_or(0) == 0 {
+        return None;
+    }
+    let server = reg_read_string(w!("ProxyServer"))?;
+    let overrides = reg_read_string(w!("ProxyOverride")).unwrap_or_default();
+    Some((server, overrides))
+}
+
+#[cfg(not(windows))]
+fn system_proxy_settings() -> Option<(String, String)> {
+    None
+}
+
+fn resolve_system_proxy(server: &str, overrides: &str) -> Option<SystemProxy> {
+    Some(SystemProxy {
+        url: system_proxy_url(server)?,
+        bypass: system_proxy_bypass(overrides),
+    })
+}
+
+/// ProxyServer is either a single `host:port` applied to every scheme or a
+/// per-scheme map (`http=h:p;https=h:p;socks=h:p`). Downloads are https-only,
+/// so the https entry wins, then http, then a SOCKS fallback.
+fn system_proxy_url(server: &str) -> Option<String> {
+    let server = server.trim();
+    if server.is_empty() {
+        return None;
+    }
+    if !server.contains('=') {
+        return Some(qualify_proxy_url(server, "http"));
+    }
+    let (mut https, mut http, mut socks) = (None, None, None);
+    for entry in server.split(';') {
+        let Some((scheme, target)) = entry.trim().split_once('=') else {
+            continue;
+        };
+        let target = target.trim();
+        if target.is_empty() {
+            continue;
+        }
+        match scheme.trim().to_ascii_lowercase().as_str() {
+            "https" => https = Some(target),
+            "http" => http = Some(target),
+            "socks" => socks = Some(target),
+            _ => {}
+        }
+    }
+    https
+        .or(http)
+        .map(|target| qualify_proxy_url(target, "http"))
+        .or_else(|| socks.map(|target| qualify_proxy_url(target, "socks5")))
+}
+
+fn qualify_proxy_url(target: &str, default_scheme: &str) -> String {
+    if target.contains("://") {
+        target.to_string()
+    } else {
+        format!("{default_scheme}://{target}")
+    }
+}
+
+/// ProxyOverride is a `;`-separated bypass list that may carry the `<local>`
+/// token for dotless intranet names; curl's `--noproxy` takes a `,`-separated
+/// list and cannot express `<local>`, so it is dropped.
+fn system_proxy_bypass(overrides: &str) -> String {
+    overrides
+        .split(';')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty() && !entry.eq_ignore_ascii_case("<local>"))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 pub(crate) fn is_schannel_revocation_offline(exit_code: Option<i32>, stderr: &str) -> bool {
@@ -101,7 +286,10 @@ fn push_schannel_no_revoke(_args: &mut Vec<String>) {}
 
 #[cfg(test)]
 mod tests {
-    use super::{is_schannel_revocation_offline, NetworkConfig, SchannelRevocationCheck};
+    use super::{
+        is_schannel_revocation_offline, resolve_system_proxy, system_proxy_bypass,
+        system_proxy_url, NetworkConfig, SchannelRevocationCheck, SystemProxy,
+    };
 
     #[test]
     fn direct_proxy_mode_disables_curl_proxy_resolution() {
@@ -117,6 +305,60 @@ mod tests {
             NetworkConfig::custom("socks5h://127.0.0.1:7890").curl_args(),
             vec!["--proxy", "socks5h://127.0.0.1:7890", "--noproxy", ""]
         );
+    }
+
+    #[test]
+    fn system_proxy_url_accepts_single_server_for_all_protocols() {
+        assert_eq!(
+            system_proxy_url("127.0.0.1:7890"),
+            Some("http://127.0.0.1:7890".to_string())
+        );
+        assert_eq!(
+            system_proxy_url(" https://proxy.example.com:443 "),
+            Some("https://proxy.example.com:443".to_string())
+        );
+        assert_eq!(system_proxy_url(""), None);
+        assert_eq!(system_proxy_url("   "), None);
+    }
+
+    #[test]
+    fn system_proxy_url_prefers_https_entry_in_per_scheme_map() {
+        assert_eq!(
+            system_proxy_url("http=10.0.0.1:8080;https=10.0.0.2:8443;socks=10.0.0.3:1080"),
+            Some("http://10.0.0.2:8443".to_string())
+        );
+        assert_eq!(
+            system_proxy_url("http=10.0.0.1:8080;ftp=10.0.0.4:21"),
+            Some("http://10.0.0.1:8080".to_string())
+        );
+        assert_eq!(
+            system_proxy_url("ftp=10.0.0.4:21;socks=10.0.0.3:1080"),
+            Some("socks5://10.0.0.3:1080".to_string())
+        );
+        // Only unusable schemes -> nothing to hand to curl.
+        assert_eq!(system_proxy_url("ftp=10.0.0.4:21"), None);
+    }
+
+    #[test]
+    fn system_proxy_bypass_converts_semicolons_and_drops_local_token() {
+        assert_eq!(
+            system_proxy_bypass("localhost;127.*;*.internal;<local>"),
+            "localhost,127.*,*.internal"
+        );
+        assert_eq!(system_proxy_bypass(""), "");
+        assert_eq!(system_proxy_bypass("<LOCAL>"), "");
+    }
+
+    #[test]
+    fn resolve_system_proxy_combines_url_and_bypass() {
+        assert_eq!(
+            resolve_system_proxy("127.0.0.1:7890", "localhost;<local>"),
+            Some(SystemProxy {
+                url: "http://127.0.0.1:7890".to_string(),
+                bypass: "localhost".to_string(),
+            })
+        );
+        assert_eq!(resolve_system_proxy("", ""), None);
     }
 
     #[test]

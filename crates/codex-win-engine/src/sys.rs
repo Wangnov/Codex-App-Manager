@@ -262,6 +262,7 @@ pub fn fetch_text_with_network(url: &str, network: &NetworkConfig) -> Result<Str
             url,
             output.status.code(),
             &String::from_utf8_lossy(&output.stderr),
+            network,
         ));
         log::warn!("fetch Windows text failed source={source} error={err}");
         return Err(err);
@@ -279,7 +280,12 @@ pub fn fetch_text_with_network(url: &str, network: &NetworkConfig) -> Result<Str
     Ok(text)
 }
 
-fn curl_failure_message(url: &str, exit_code: Option<i32>, stderr: &str) -> String {
+fn curl_failure_message(
+    url: &str,
+    exit_code: Option<i32>,
+    stderr: &str,
+    network: &NetworkConfig,
+) -> String {
     let base = format!(
         "curl failed for host={} exit={}: stderr='{}'",
         url_host(url),
@@ -291,7 +297,7 @@ fn curl_failure_message(url: &str, exit_code: Option<i32>, stderr: &str) -> Stri
     // Append the proxy diagnostic only for connectivity failures — pasting it
     // onto write / disk / HTTP errors (e.g. exit 23) only misleads.
     if is_connectivity_exit(exit_code) {
-        format!("{base}; {}", proxy_env_summary())
+        format!("{base}; {}", proxy_env_summary(network))
     } else {
         base
     }
@@ -330,21 +336,22 @@ fn url_host(url: &str) -> &str {
         .unwrap_or("")
 }
 
-fn proxy_env_summary() -> String {
+fn proxy_env_summary(network: &NetworkConfig) -> String {
     let vars = ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY"];
     let configured = vars
         .iter()
         .filter(|name| std::env::var_os(name).is_some())
         .copied()
         .collect::<Vec<_>>();
-    if configured.is_empty() {
-        "no curl proxy environment variables are set; Windows system proxy/PAC may not be used automatically".to_string()
+    let env = if configured.is_empty() {
+        "no curl proxy environment variables set".to_string()
     } else {
         format!(
             "curl proxy environment variables set: {}",
             configured.join(", ")
         )
-    }
+    };
+    format!("{env}; proxy mode: {}", network.proxy_summary())
 }
 
 pub fn detect_installed_codex(portable_root: &Path) -> Option<InstalledWindowsCodex> {
