@@ -31,7 +31,7 @@ pub use download::{
     download_to_with_progress_bounded_with_network, download_to_with_progress_with_network,
     pause_active_download,
 };
-pub use network::NetworkConfig;
+pub use network::{NetworkConfig, SystemProxyState};
 pub use plan::{plan_update, UpdatePlan, UpdateStrategy};
 pub use swap::{
     inject_swap_fault, install_gated_bundle, quit_codex_at, relaunch, rollback, swap_in_place,

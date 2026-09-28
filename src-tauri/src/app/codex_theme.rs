@@ -641,6 +641,7 @@ fn curl_fetch_attempt(
     max_bytes: &str,
     timeout_secs: &str,
     schannel_best_effort: bool,
+    proxy_args: &[String],
 ) -> Result<std::process::Output, AppError> {
     let mut command = curl_command();
     #[cfg(target_os = "windows")]
@@ -650,6 +651,7 @@ fn curl_fetch_attempt(
     #[cfg(not(target_os = "windows"))]
     let _ = schannel_best_effort;
     command
+        .args(proxy_args)
         .args([
             "-sSfL",
             "--proto",
@@ -686,7 +688,9 @@ fn is_schannel_revocation_offline(exit_code: Option<i32>, stderr: &[u8]) -> bool
 }
 
 fn curl_fetch(url: &str, max_bytes: &str, timeout_secs: &str) -> Result<Vec<u8>, AppError> {
-    let output = curl_fetch_attempt(url, max_bytes, timeout_secs, false)?;
+    // The catalog follows the same Settings > Network choice as update checks.
+    let proxy_args = crate::app::network::curl_proxy_args(&AppSettings::load())?;
+    let output = curl_fetch_attempt(url, max_bytes, timeout_secs, false, &proxy_args)?;
     #[cfg(target_os = "windows")]
     let output = if !output.status.success()
         && is_schannel_revocation_offline(output.status.code(), &output.stderr)
@@ -696,7 +700,7 @@ fn curl_fetch(url: &str, max_bytes: &str, timeout_secs: &str) -> Result<Vec<u8>,
                 "theme catalog Schannel revocation endpoint unavailable; retrying best-effort url={}",
                 crate::app::logging::redact_url(url)
             );
-            curl_fetch_attempt(url, max_bytes, timeout_secs, true)?
+            curl_fetch_attempt(url, max_bytes, timeout_secs, true, &proxy_args)?
         } else {
             log::warn!(
                 "theme catalog Schannel revocation endpoint unavailable and curl lacks safe retry support url={}",

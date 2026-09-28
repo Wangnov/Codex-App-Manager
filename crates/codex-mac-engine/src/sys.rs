@@ -10,25 +10,33 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::limits::MAX_TEXT_BYTES;
-use crate::network::NetworkConfig;
+use crate::network::{is_connectivity_exit, NetworkConfig};
 use crate::EngineError;
 
 const CURL: &str = "/usr/bin/curl";
 const LIPO: &str = "/usr/bin/lipo";
 
-fn text_from_curl(url: &str, output: std::process::Output) -> Result<String, EngineError> {
+fn text_from_curl(
+    url: &str,
+    output: std::process::Output,
+    network: &NetworkConfig,
+) -> Result<String, EngineError> {
     if !output.status.success() {
         // Keep the exit code in the message so the app-layer classifier can tell
         // a connect / timeout / TLS failure apart (mirrors the Windows engine).
-        return Err(EngineError::Io(format!(
+        let exit_code = output.status.code();
+        let mut message = format!(
             "curl failed for {url} exit={}: stderr='{}'",
-            output
-                .status
-                .code()
+            exit_code
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| "signal".to_string()),
             String::from_utf8_lossy(&output.stderr).trim()
-        )));
+        );
+        // The proxy route only matters when the peer was never reached.
+        if is_connectivity_exit(exit_code) {
+            message.push_str(&format!("; proxy mode: {}", network.proxy_summary()));
+        }
+        return Err(EngineError::Io(message));
     }
     if output.stdout.len() > MAX_TEXT_BYTES as usize {
         return Err(EngineError::Io(format!(
@@ -65,7 +73,7 @@ pub fn fetch_text_with_network(url: &str, network: &NetworkConfig) -> Result<Str
         .output()
         .map_err(|e| EngineError::Io(format!("spawn curl: {e}")))?;
 
-    text_from_curl(url, output)
+    text_from_curl(url, output, network)
 }
 
 /// Fetch a trusted HTTPS metadata endpoint without following redirects. This is
@@ -95,7 +103,7 @@ pub fn fetch_text_no_redirect_with_network(
         .output()
         .map_err(|e| EngineError::Io(format!("spawn curl: {e}")))?;
 
-    text_from_curl(url, output)
+    text_from_curl(url, output, network)
 }
 
 /// Like `fetch_text` but with a caller-set total timeout. Used to probe a
@@ -131,7 +139,7 @@ pub fn fetch_text_timeout_with_network(
         .output()
         .map_err(|e| EngineError::Io(format!("spawn curl: {e}")))?;
 
-    text_from_curl(url, output)
+    text_from_curl(url, output, network)
 }
 
 /// The Codex product's stable bundle identifier — the trust anchor for "is

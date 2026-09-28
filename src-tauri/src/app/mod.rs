@@ -8,6 +8,7 @@ pub mod install_tx;
 pub mod logging;
 pub mod mac_update;
 pub mod msix_policy_tx;
+pub mod network;
 pub mod op_phase;
 pub mod operation_outcome;
 pub mod oplock;

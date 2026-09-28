@@ -578,6 +578,7 @@ dependencies = [
  "log",
  "roxmltree",
  "serde",
+ "system-configuration",
  "thiserror 2.0.20",
  "uuid",
 ]

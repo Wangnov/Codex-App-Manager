@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::limits::MAX_PACKAGE_BYTES;
-use crate::network::NetworkConfig;
+use crate::network::{is_connectivity_exit, NetworkConfig};
 use crate::EngineError;
 
 const CURL: &str = "/usr/bin/curl";
@@ -192,13 +192,17 @@ fn run_curl(
                     // Carry the curl exit code so the app-layer classifier can
                     // tell a connect / timeout / write failure apart (stderr is
                     // not piped for the streamed download).
-                    return Err(EngineError::Io(format!(
+                    let exit_code = status.code();
+                    let mut message = format!(
                         "curl download failed exit={} url={url}",
-                        status
-                            .code()
+                        exit_code
                             .map(|c| c.to_string())
                             .unwrap_or_else(|| "signal".to_string()),
-                    )));
+                    );
+                    if is_connectivity_exit(exit_code) {
+                        message.push_str(&format!("; proxy mode: {}", network.proxy_summary()));
+                    }
+                    return Err(EngineError::Io(message));
                 }
                 break;
             }

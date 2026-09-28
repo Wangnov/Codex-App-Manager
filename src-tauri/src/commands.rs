@@ -15,6 +15,7 @@ use crate::app::diagnostics::Diagnostics;
 use crate::app::disk::available_space;
 use crate::app::install_tx::SelfUpdatePolicyTransition;
 use crate::app::logging::redact_url;
+use crate::app::network;
 use crate::app::mac_update::{
     cancel_macos_download, detect_existing_install_at_path as detect_macos_install_at_path,
     discard_macos_download, install_macos_historical_release,
@@ -42,7 +43,7 @@ use crate::app::release_install::{
 };
 use crate::app::settings_store::AppSettings as PersistedAppSettings;
 use crate::app::settings_store::{ProxyMode, UpdateSource};
-use crate::app::url_guard::{validate_custom_proxy, validate_custom_source};
+use crate::app::url_guard::validate_custom_source;
 use crate::app::win_update::{
     auto_stage_windows_update_with_install_mode_and_network, cancel_windows_download,
     detect_existing_windows_install_at_path as detect_windows_install_at_path,
@@ -132,36 +133,12 @@ fn windows_install_mode_for_settings() -> String {
     }
 }
 
-fn validated_custom_proxy_for_settings(raw: &str, context: &str) -> Result<String, AppError> {
-    validate_custom_proxy(raw).map_err(|e| {
-        log::warn!("url_guard rejected {context} proxy reason={e}");
-        AppError::Engine(e.to_string())
-    })
-}
-
 fn mac_network_config_for_settings() -> Result<codex_mac_engine::NetworkConfig, AppError> {
-    let saved = PersistedAppSettings::load();
-    match saved.proxy_mode {
-        ProxyMode::System => Ok(codex_mac_engine::NetworkConfig::system()),
-        ProxyMode::Direct => Ok(codex_mac_engine::NetworkConfig::direct()),
-        ProxyMode::Custom => {
-            let proxy = validated_custom_proxy_for_settings(&saved.custom_proxy_url, "mac update")?;
-            Ok(codex_mac_engine::NetworkConfig::custom(proxy))
-        }
-    }
+    network::mac_network_config(&PersistedAppSettings::load())
 }
 
 fn win_network_config_for_settings() -> Result<codex_win_engine::NetworkConfig, AppError> {
-    let saved = PersistedAppSettings::load();
-    match saved.proxy_mode {
-        ProxyMode::System => Ok(codex_win_engine::NetworkConfig::system()),
-        ProxyMode::Direct => Ok(codex_win_engine::NetworkConfig::direct()),
-        ProxyMode::Custom => {
-            let proxy =
-                validated_custom_proxy_for_settings(&saved.custom_proxy_url, "Windows update")?;
-            Ok(codex_win_engine::NetworkConfig::custom(proxy))
-        }
-    }
+    network::win_network_config(&PersistedAppSettings::load())
 }
 
 enum HistoricalReleaseNetwork {
@@ -427,7 +404,7 @@ fn manager_updater_builder(
         }
         ProxyMode::Custom => {
             let normalized =
-                validated_custom_proxy_for_settings(&saved.custom_proxy_url, "manager updater")?;
+                network::validated_custom_proxy(&saved.custom_proxy_url, "manager updater")?;
             let proxy = url::Url::parse(&normalized)
                 .map_err(|e| AppError::Engine(format!("invalid proxy URL: {e}")))?;
             builder = builder.proxy(proxy);
@@ -1737,7 +1714,7 @@ pub fn set_settings(
         })?;
     }
     if s.proxy_mode == ProxyMode::Custom {
-        s.custom_proxy_url = validated_custom_proxy_for_settings(&s.custom_proxy_url, "settings")?;
+        s.custom_proxy_url = network::validated_custom_proxy(&s.custom_proxy_url, "settings")?;
     }
     let previous = PersistedAppSettings::load();
     let _op = begin_guard(&state, OperationKind::SetInstallRoot)?;
@@ -3244,10 +3221,10 @@ mod tests {
         normalize_windows_source_base, record_macos_policy_install_state,
         record_windows_policy_install_state, settings_or_strict_error,
         validate_historical_architecture_with_compatibility, validate_install_root_path,
-        validated_custom_proxy_for_settings, HistoricalPolicyInstallState,
-        INSTALL_LOCATION_PROBE_PREFIX,
+        HistoricalPolicyInstallState, INSTALL_LOCATION_PROBE_PREFIX,
     };
     use crate::app::config_health::StoreLoadHealth;
+    use crate::app::network;
     use crate::app::mac_update::HistoricalMacEvidence;
     use crate::app::op_phase::OperationPhase;
     use crate::app::oplock::{OperationKind, OperationManager};
@@ -3433,10 +3410,10 @@ mod tests {
 
     #[test]
     fn settings_custom_proxy_requires_a_url() {
-        let err = validated_custom_proxy_for_settings("  ", "settings").unwrap_err();
+        let err = network::validated_custom_proxy("  ", "settings").unwrap_err();
         assert!(err.to_string().contains("代理不能为空"));
         assert_eq!(
-            validated_custom_proxy_for_settings("socks5h://127.0.0.1:1080", "settings").unwrap(),
+            network::validated_custom_proxy("socks5h://127.0.0.1:1080", "settings").unwrap(),
             "socks5h://127.0.0.1:1080"
         );
     }

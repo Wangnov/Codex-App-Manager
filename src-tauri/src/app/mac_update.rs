@@ -245,7 +245,7 @@ where
     G: FnOnce(&str) -> Result<Vec<IpAddr>, UrlRejectReason>,
 {
     match local_resolver(raw) {
-        Err(UrlRejectReason::DnsResolutionFailed) if network.is_custom_proxy() => {
+        Err(UrlRejectReason::DnsResolutionFailed) if network.routes_through_proxy() => {
             let host = custom_source_host(raw)?;
             let addresses = proxy_resolver(&host)?;
             resolve_custom_source_with_addresses(raw, addresses)
@@ -3527,6 +3527,29 @@ mod tests {
             |_| panic!("direct mode must not disclose DNS names to the proxy DoH fallback"),
         );
         assert_eq!(direct_error, Err(UrlRejectReason::DnsResolutionFailed));
+
+        // A resolved system proxy reaches the same hosts a custom one does.
+        let system_proxy = NetworkConfig::with_system_proxy(
+            codex_mac_engine::SystemProxyState::manual("http://127.0.0.1:7890", ""),
+        );
+        let resolved = resolve_custom_source_for_network_with(
+            "https://proxy-only.invalid/appcast.xml",
+            &system_proxy,
+            |_| Err(UrlRejectReason::DnsResolutionFailed),
+            |_| Ok(vec!["93.184.216.34".parse().unwrap()]),
+        )
+        .unwrap();
+        assert_eq!(resolved.host, "proxy-only.invalid");
+
+        let no_system_proxy =
+            NetworkConfig::with_system_proxy(codex_mac_engine::SystemProxyState::default());
+        let system_direct_error = resolve_custom_source_for_network_with(
+            "https://proxy-only.invalid/appcast.xml",
+            &no_system_proxy,
+            |_| Err(UrlRejectReason::DnsResolutionFailed),
+            |_| panic!("system mode without a proxy must not use the proxy DoH fallback"),
+        );
+        assert_eq!(system_direct_error, Err(UrlRejectReason::DnsResolutionFailed));
     }
 
     #[test]
