@@ -33,6 +33,13 @@ vi.mock("../../services/managerApi", async (importOriginal) => {
       beginTrackedOperation: vi.fn(),
       armDestructive: vi.fn(),
       checkManagerUpdate: vi.fn(),
+      getManagerUpdateRuntime: vi
+        .fn()
+        .mockResolvedValue(actual.IDLE_MANAGER_UPDATE_SNAPSHOT),
+      ackManagerUpdateRuntime: vi
+        .fn()
+        .mockResolvedValue(actual.IDLE_MANAGER_UPDATE_SNAPSHOT),
+      onManagerUpdateRuntime: vi.fn().mockResolvedValue(() => {}),
       getSettings: vi.fn(),
       getSettingsStrict: vi.fn(),
       getHostArchitecture: vi.fn(),

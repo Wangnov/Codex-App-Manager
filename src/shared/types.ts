@@ -127,6 +127,28 @@ export interface DownloadProgress {
   operationId?: string;
 }
 
+/** Phase of the Manager's own self-update, mirroring
+ *  `manager_update_runtime::ManagerUpdatePhase` on the Rust side. */
+export type ManagerUpdatePhase =
+  | "idle"
+  | "downloading"
+  | "installing"
+  | "installed"
+  | "error";
+
+/** Backend-owned snapshot of the Manager's self-update progress. Emitted on
+ *  `manager://update-state` and readable via `manager_get_update_runtime`, so
+ *  every open view (Home, WinHome, About) reflects the same in-flight
+ *  download/install instead of each holding its own local guess. */
+export interface ManagerUpdateSnapshot {
+  phase: ManagerUpdatePhase;
+  version: string | null;
+  downloaded: number;
+  total: number | null;
+  message: string | null;
+  updatedAtMs: number;
+}
+
 export type HistoricalReleasePlatform = "macos" | "windows";
 export type HistoricalReleaseArchitecture = "arm64" | "x64";
 export type HistoricalPackageFormat = "dmg" | "zip" | "msix";

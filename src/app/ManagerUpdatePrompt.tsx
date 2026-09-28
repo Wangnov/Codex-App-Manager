@@ -9,15 +9,60 @@ import {
 
 import {
   errorCode,
+  IDLE_MANAGER_UPDATE_SNAPSHOT,
   managerApi,
   SETTINGS_CHANGED_EVENT,
   type ManagerUpdateAvailable,
 } from "../services/managerApi";
-import type { AppSettings } from "../shared/types";
+import type { AppSettings, ManagerUpdateSnapshot } from "../shared/types";
+import { mib } from "./format";
 import { StatusBanner, Ring } from "./components";
 import { userErrorMessage } from "./errorCopy";
 import { useI18n } from "./i18n";
 import { Sheet } from "./Sheet";
+
+/**
+ * Reads the Manager's own self-update progress straight from the Rust
+ * backend (`ManagerState.manager_update`) instead of a promise any single
+ * view happens to be awaiting. Any view that calls this hook — Home, WinHome,
+ * About — sees the exact same phase/bytes for the lifetime of one
+ * check-confirm-download-install cycle, including one started from a
+ * different window.
+ */
+export function useManagerUpdateRuntime(): ManagerUpdateSnapshot {
+  const [snapshot, setSnapshot] = useState<ManagerUpdateSnapshot>(
+    IDLE_MANAGER_UPDATE_SNAPSHOT,
+  );
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void managerApi
+      .getManagerUpdateRuntime()
+      .then((initial) => {
+        if (!disposed) setSnapshot(initial);
+      })
+      .catch(() => undefined);
+    void managerApi
+      .onManagerUpdateRuntime((next) => {
+        if (!disposed) setSnapshot(next);
+      })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+        } else {
+          unlisten = fn;
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  return snapshot;
+}
 
 export interface ManagerUpdatePromptController {
   update: ManagerUpdateAvailable | null;
@@ -152,6 +197,15 @@ export function ManagerUpdatePrompt({
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  // Dismissing the banner ("remind me later") is tracked by the exact update
+  // object rather than a boolean: `check()` hands out a brand-new object on
+  // every successful "available" result (see `replaceUpdate`), so the next
+  // periodic/manual check — even one that finds the same version again —
+  // naturally un-dismisses the banner instead of hiding it forever.
+  const [dismissed, setDismissed] = useState<ManagerUpdateAvailable | null>(
+    null,
+  );
+  const runtime = useManagerUpdateRuntime();
   const titleId = useId();
   const bodyId = useId();
 
@@ -162,7 +216,11 @@ export function ManagerUpdatePrompt({
     setChecksPaused(false);
     setConfirmOpen(false);
     setFailure(null);
-  }, [installing, setChecksPaused]);
+    // A terminal error snapshot must not linger and confuse another view
+    // (e.g. About) that starts watching the runtime afresh after this one
+    // gave up.
+    if (runtime.phase === "error") void managerApi.ackManagerUpdateRuntime();
+  }, [installing, runtime.phase, setChecksPaused]);
 
   const installUpdate = useCallback(async () => {
     if (!update || installing) return;
@@ -183,7 +241,15 @@ export function ManagerUpdatePrompt({
     }
   }, [installing, refresh, setChecksPaused, t, update]);
 
-  if (!update) return null;
+  if (!update || dismissed === update) return null;
+
+  const showProgress =
+    installing &&
+    (runtime.phase === "downloading" || runtime.phase === "installing");
+  const downloadPct =
+    runtime.phase === "downloading" && runtime.total
+      ? Math.min(100, Math.round((runtime.downloaded / runtime.total) * 100))
+      : null;
 
   return (
     <>
@@ -205,6 +271,7 @@ export function ManagerUpdatePrompt({
               {t("confirm.ok")}
             </button>
           }
+          onClose={() => setDismissed(update)}
         >
           {t("about.mgrFound", { version: update.version })}
         </StatusBanner>
@@ -221,6 +288,32 @@ export function ManagerUpdatePrompt({
         <Ring icon="arrowUp" />
         <h3 id={titleId}>{t("confirm.title", { version: update.version })}</h3>
         <p id={bodyId}>{t("about.mgrConfirmBody")}</p>
+        {showProgress ? (
+          <div className="mgr-update-progress" aria-live="polite">
+            <div className="sub">
+              {runtime.phase === "installing"
+                ? t("progress.installing")
+                : t("progress.title")}
+            </div>
+            <div
+              className="bar"
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={downloadPct ?? undefined}
+            >
+              <div
+                className={`bar-fill${downloadPct === null ? " indeterminate" : ""}`}
+                style={downloadPct === null ? undefined : { width: `${downloadPct}%` }}
+              />
+            </div>
+            {runtime.phase === "downloading" && runtime.total ? (
+              <div className="dlmeta">
+                {mib(runtime.downloaded)} / {mib(runtime.total)}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         {failure ? <StatusBanner tone="err">{failure}</StatusBanner> : null}
         <div className="row2 sheet-actions">
           <button
@@ -237,7 +330,11 @@ export function ManagerUpdatePrompt({
             onClick={() => void installUpdate()}
             disabled={installing}
           >
-            {installing ? t("progress.installing") : t("confirm.ok")}
+            {installing
+              ? runtime.phase === "installing"
+                ? t("progress.installing")
+                : t("progress.title")
+              : t("confirm.ok")}
           </button>
         </div>
       </Sheet>

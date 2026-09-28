@@ -12,7 +12,6 @@
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-scale-factor",
-    "dialog:allow-open",
-    "process:allow-restart"
+    "dialog:allow-open"
   ]
 }

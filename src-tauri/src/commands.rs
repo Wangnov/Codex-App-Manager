@@ -15,6 +15,7 @@ use crate::app::diagnostics::Diagnostics;
 use crate::app::disk::available_space;
 use crate::app::install_tx::SelfUpdatePolicyTransition;
 use crate::app::logging::redact_url;
+use crate::app::manager_update_runtime::{ManagerUpdateRuntime, ManagerUpdateSnapshot};
 use crate::app::network;
 use crate::app::mac_update::{
     cancel_macos_download, detect_existing_install_at_path as detect_macos_install_at_path,
@@ -446,12 +447,24 @@ pub async fn manager_check_update(
     }))
 }
 
+/// Emits the runtime's current snapshot on `manager://update-state` so every
+/// open view (Home, WinHome, About) sees the same progress without polling.
+fn emit_manager_update_state(app: &AppHandle, runtime: &ManagerUpdateRuntime) {
+    let _ = app.emit("manager://update-state", runtime.snapshot());
+}
+
 #[tauri::command]
 pub async fn manager_install_update(
     app: AppHandle,
+    state: State<'_, ManagerState>,
     expected_version: String,
     expected_current_version: String,
 ) -> Result<(), CommandError> {
+    // Shares the single-instance operation lock with Codex install/update/
+    // uninstall/adopt so a Manager self-update can never run concurrently
+    // with one of those (and vice versa).
+    let _op = begin_guard(&state, OperationKind::ManagerUpdate)?;
+
     let updater = manager_updater_builder(&app)?
         .build()
         .map_err(|e| AppError::Engine(format!("build manager updater: {e}")))?;
@@ -472,10 +485,71 @@ pub async fn manager_install_update(
         )
         .into());
     }
-    update
-        .download_and_install(|_, _| {}, || {})
-        .await
-        .map_err(|e| AppError::Engine(format!("install manager update: {e}")))?;
+
+    let runtime = &state.manager_update;
+    runtime.start_download(&update.version);
+    emit_manager_update_state(&app, runtime);
+
+    let progress_app = app.clone();
+    let install_result = update
+        .download_and_install(
+            |chunk_len, total| {
+                runtime.add_progress(chunk_len as u64, total);
+                emit_manager_update_state(&progress_app, runtime);
+            },
+            || {
+                runtime.mark_installing();
+                emit_manager_update_state(&progress_app, runtime);
+            },
+        )
+        .await;
+
+    match install_result {
+        Ok(()) => {
+            runtime.mark_installed();
+            emit_manager_update_state(&app, runtime);
+            Ok(())
+        }
+        Err(error) => {
+            let message = format!("install manager update: {error}");
+            runtime.mark_error(message.clone());
+            emit_manager_update_state(&app, runtime);
+            Err(AppError::Engine(message).into())
+        }
+    }
+}
+
+/// Lets the renderer reattach to the current self-update progress after a
+/// reload (or a second window opening) instead of losing it — the runtime
+/// lives on `ManagerState`, independent of any one view's component state.
+#[tauri::command]
+pub fn manager_get_update_runtime(state: State<'_, ManagerState>) -> ManagerUpdateSnapshot {
+    state.manager_update.snapshot()
+}
+
+/// Clears a terminal (installed/error) snapshot back to idle once the
+/// renderer has shown it to the user. A no-op while a download/install is
+/// still in flight, returned as the (unchanged) current snapshot.
+#[tauri::command]
+pub fn manager_ack_update_runtime(state: State<'_, ManagerState>) -> ManagerUpdateSnapshot {
+    state.manager_update.ack();
+    state.manager_update.snapshot()
+}
+
+/// Restarts the Manager process from the Rust backend rather than the
+/// renderer, so `process:allow-restart` no longer needs to be exposed to the
+/// webview at all. Single-claim: a second call while a restart is already in
+/// flight is treated as an idempotent no-op instead of an error, since the
+/// process is about to exit anyway.
+#[tauri::command]
+pub fn manager_relaunch(app: AppHandle, state: State<'_, ManagerState>) -> Result<(), CommandError> {
+    if !state.manager_update.reserve_relaunch() {
+        return Ok(());
+    }
+    // `request_restart` only flags the intent and asks the runtime to exit;
+    // it returns immediately rather than blocking, so no extra thread is
+    // needed to keep this command responsive.
+    app.request_restart();
     Ok(())
 }
 

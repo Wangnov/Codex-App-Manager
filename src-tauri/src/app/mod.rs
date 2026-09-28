@@ -7,6 +7,7 @@ pub mod disk;
 pub mod install_tx;
 pub mod logging;
 pub mod mac_update;
+pub mod manager_update_runtime;
 pub mod msix_policy_tx;
 pub mod network;
 pub mod op_phase;

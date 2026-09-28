@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { relaunch } from "@tauri-apps/plugin-process";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type {
   AncillaryRetryReport,
@@ -22,6 +22,7 @@ import type {
   MacPerformReport,
   MacUninstallReport,
   MacUpdateReport,
+  ManagerUpdateSnapshot,
   OperationKind,
   OperationSnapshot,
   OperationCompletion,
@@ -63,6 +64,19 @@ interface ManagerUpdateMetadata {
   currentVersion: string;
   body?: string;
 }
+
+/** Event the Rust backend emits on every runtime-snapshot change; carries the
+ *  same shape `manager_get_update_runtime` returns. */
+const MANAGER_UPDATE_STATE_EVENT = "manager://update-state";
+
+export const IDLE_MANAGER_UPDATE_SNAPSHOT: ManagerUpdateSnapshot = {
+  phase: "idle",
+  version: null,
+  downloaded: 0,
+  total: null,
+  message: null,
+  updatedAtMs: 0,
+};
 
 export interface FrontendErrorPayload {
   kind: string;
@@ -966,6 +980,40 @@ export const managerApi = {
     }
     return managerUpdateAvailable(update);
   },
+  // Real-time progress for the Manager's own self-update, owned by the Rust
+  // backend so Home, WinHome and About all reflect the same in-flight
+  // download/install instead of each guessing from their own promise.
+  getManagerUpdateRuntime(): Promise<ManagerUpdateSnapshot> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve(IDLE_MANAGER_UPDATE_SNAPSHOT);
+    }
+    return invoke<ManagerUpdateSnapshot>("manager_get_update_runtime");
+  },
+  // Clears a terminal (installed/error) snapshot back to idle once a view has
+  // shown it. A no-op while a download/install is still in flight.
+  ackManagerUpdateRuntime(): Promise<ManagerUpdateSnapshot> {
+    if (!hasTauriRuntime()) {
+      return Promise.resolve(IDLE_MANAGER_UPDATE_SNAPSHOT);
+    }
+    return invoke<ManagerUpdateSnapshot>("manager_ack_update_runtime");
+  },
+  // Subscribes to live runtime-snapshot updates. Resolves to a no-op unlisten
+  // function in the browser dev preview, where there is no Tauri event bus.
+  async onManagerUpdateRuntime(
+    onSnapshot: (snapshot: ManagerUpdateSnapshot) => void,
+  ): Promise<UnlistenFn> {
+    if (!hasTauriRuntime()) {
+      return () => {};
+    }
+    try {
+      return await listen<ManagerUpdateSnapshot>(
+        MANAGER_UPDATE_STATE_EVENT,
+        (event) => onSnapshot(event.payload),
+      );
+    } catch {
+      return () => {};
+    }
+  },
   macStatus(): Promise<MacInstallStatus> {
     if (!hasTauriRuntime()) {
       return Promise.resolve({ installed: null, status: "none" });
@@ -1594,7 +1642,10 @@ function managerUpdateAvailable(
         expectedVersion: update.version,
         expectedCurrentVersion: update.currentVersion,
       });
-      await relaunch();
+      // Relaunch runs on the Rust side (`manager_relaunch`) rather than via
+      // the renderer's own plugin-process call, so the webview no longer
+      // needs the `process:allow-restart` capability at all.
+      await invoke<void>("manager_relaunch");
     },
     discard: async () => {},
   };

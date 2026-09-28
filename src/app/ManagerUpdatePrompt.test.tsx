@@ -3,12 +3,13 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  IDLE_MANAGER_UPDATE_SNAPSHOT,
   managerApi,
   SETTINGS_CHANGED_EVENT,
   type ManagerUpdateAvailable,
   type ManagerUpdateCheck,
 } from "../services/managerApi";
-import { DEFAULT_SETTINGS } from "../shared/types";
+import { DEFAULT_SETTINGS, type ManagerUpdateSnapshot } from "../shared/types";
 import { I18nProvider } from "./i18n";
 import {
   ManagerUpdatePrompt,
@@ -23,6 +24,13 @@ vi.mock("../services/managerApi", async (importOriginal) => {
     managerApi: {
       getSettingsStrict: vi.fn(),
       checkManagerUpdate: vi.fn(),
+      getManagerUpdateRuntime: vi
+        .fn()
+        .mockResolvedValue(actual.IDLE_MANAGER_UPDATE_SNAPSHOT),
+      ackManagerUpdateRuntime: vi
+        .fn()
+        .mockResolvedValue(actual.IDLE_MANAGER_UPDATE_SNAPSHOT),
+      onManagerUpdateRuntime: vi.fn().mockResolvedValue(() => {}),
     },
   };
 });
@@ -72,6 +80,10 @@ describe("ManagerUpdatePrompt", () => {
     api.getSettingsStrict.mockReset();
     api.getSettingsStrict.mockResolvedValue(DEFAULT_SETTINGS);
     api.checkManagerUpdate.mockReset();
+    api.getManagerUpdateRuntime.mockReset();
+    api.getManagerUpdateRuntime.mockResolvedValue(IDLE_MANAGER_UPDATE_SNAPSHOT);
+    api.onManagerUpdateRuntime.mockReset();
+    api.onManagerUpdateRuntime.mockResolvedValue(() => {});
   });
 
   it("quietly checks on startup and stays hidden when no update is available", async () => {
@@ -478,5 +490,68 @@ describe("ManagerUpdatePrompt", () => {
     expect(api.checkManagerUpdate).toHaveBeenCalledTimes(1);
     expect(update.discard).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("shows live download progress from the backend update runtime while installing", async () => {
+    const user = userEvent.setup();
+    let emit: ((snapshot: ManagerUpdateSnapshot) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+    let resolveInstall!: () => void;
+    const update = available({
+      installAndRelaunch: vi.fn(
+        () => new Promise<void>((resolve) => { resolveInstall = resolve; }),
+      ),
+    });
+    api.checkManagerUpdate.mockResolvedValue(update);
+
+    renderPrompt();
+    await user.click(await screen.findByRole("button", { name: "更新" }));
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "更新" }),
+    );
+    await waitFor(() => expect(emit).toBeDefined());
+
+    act(() => {
+      emit?.({
+        phase: "downloading",
+        version: "0.5.3",
+        downloaded: 50,
+        total: 100,
+        message: null,
+        updatedAtMs: Date.now(),
+      });
+    });
+
+    const bar = await screen.findByRole("progressbar");
+    expect(bar).toHaveAttribute("aria-valuenow", "50");
+
+    await act(async () => resolveInstall());
+  });
+
+  it("dismisses the banner as a remind-later and shows it again on the next check", async () => {
+    const user = userEvent.setup();
+    // Mirrors the real `checkManagerUpdate`, which hands back a fresh object
+    // (new closures) on every call, even when nothing changed. `dismissed`
+    // is compared by reference, so this is what lets the next check cycle
+    // un-dismiss the banner.
+    api.checkManagerUpdate.mockImplementation(() => Promise.resolve(available()));
+
+    renderPrompt(true);
+    await screen.findByText("发现管理器新版本 0.5.3");
+
+    await user.click(screen.getByRole("button", { name: "关闭" }));
+    expect(
+      screen.queryByText("发现管理器新版本 0.5.3"),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "手动刷新" }));
+    expect(
+      await screen.findByText("发现管理器新版本 0.5.3"),
+    ).toBeInTheDocument();
   });
 });

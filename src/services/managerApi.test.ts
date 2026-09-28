@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_SETTINGS } from "../shared/types";
@@ -12,10 +13,16 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(),
+}));
+
 const invokeMock = vi.mocked(invoke);
+const listenMock = vi.mocked(listen);
 
 beforeEach(() => {
   invokeMock.mockReset();
+  listenMock.mockReset();
   vi.stubGlobal("window", { open: vi.fn(), __TAURI_INTERNALS__: undefined });
   localStorage.clear();
 });
@@ -310,5 +317,155 @@ describe("macOS resumable target API", () => {
       expectedTargetBuild: 150,
       expectedTargetVersion: "1.5.0",
     });
+  });
+});
+
+describe("manager self-update API", () => {
+  it("reports development when there is no Tauri runtime, without contacting the backend", async () => {
+    const result = await managerApi.checkManagerUpdate();
+    expect(result).toEqual({ kind: "development" });
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("treats a feed failure as unavailable rather than throwing", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    invokeMock.mockRejectedValueOnce(new Error("offline"));
+
+    const result = await managerApi.checkManagerUpdate();
+
+    expect(result).toEqual({ kind: "unavailable" });
+  });
+
+  it("reports none when the backend has no update", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    invokeMock.mockResolvedValueOnce(null);
+
+    const result = await managerApi.checkManagerUpdate();
+
+    expect(result).toEqual({ kind: "none" });
+    expect(invokeMock).toHaveBeenCalledWith("manager_check_update");
+  });
+
+  it("relaunches through the Rust backend (not the renderer process plugin) after installing", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    invokeMock.mockResolvedValueOnce({
+      version: "0.6.0",
+      currentVersion: "0.5.10",
+      body: "notes",
+    });
+
+    const result = await managerApi.checkManagerUpdate();
+    expect(result.kind).toBe("available");
+    if (result.kind !== "available") throw new Error("expected available");
+
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValueOnce(undefined).mockResolvedValueOnce(undefined);
+
+    await result.installAndRelaunch();
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "manager_install_update", {
+      expectedVersion: "0.6.0",
+      expectedCurrentVersion: "0.5.10",
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "manager_relaunch");
+  });
+
+  it("does not relaunch when the install itself fails", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    invokeMock.mockResolvedValueOnce({
+      version: "0.6.0",
+      currentVersion: "0.5.10",
+    });
+    const result = await managerApi.checkManagerUpdate();
+    if (result.kind !== "available") throw new Error("expected available");
+
+    invokeMock.mockReset();
+    invokeMock.mockRejectedValueOnce({
+      code: "stale_expectation",
+      message: "release changed",
+    });
+
+    await expect(result.installAndRelaunch()).rejects.toBeTruthy();
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).not.toHaveBeenCalledWith("manager_relaunch");
+  });
+});
+
+describe("manager self-update runtime snapshot", () => {
+  it("reports the idle snapshot in development without contacting the backend", async () => {
+    const snapshot = await managerApi.getManagerUpdateRuntime();
+    expect(snapshot.phase).toBe("idle");
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("fetches the current snapshot from the backend", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    const snapshot = {
+      phase: "downloading" as const,
+      version: "0.6.0",
+      downloaded: 512,
+      total: 2048,
+      message: null,
+      updatedAtMs: 1234,
+    };
+    invokeMock.mockResolvedValueOnce(snapshot);
+
+    const result = await managerApi.getManagerUpdateRuntime();
+
+    expect(result).toEqual(snapshot);
+    expect(invokeMock).toHaveBeenCalledWith("manager_get_update_runtime");
+  });
+
+  it("acks a terminal snapshot through the backend", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    invokeMock.mockResolvedValueOnce({
+      phase: "idle",
+      version: null,
+      downloaded: 0,
+      total: null,
+      message: null,
+      updatedAtMs: 0,
+    });
+
+    await managerApi.ackManagerUpdateRuntime();
+
+    expect(invokeMock).toHaveBeenCalledWith("manager_ack_update_runtime");
+  });
+
+  it("subscribes to live snapshot updates and forwards each payload", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    const unlisten = vi.fn();
+    let handler: ((event: { payload: unknown }) => void) | undefined;
+    listenMock.mockImplementation(async (_event, cb) => {
+      handler = cb as typeof handler;
+      return unlisten;
+    });
+
+    const onSnapshot = vi.fn();
+    const dispose = await managerApi.onManagerUpdateRuntime(onSnapshot);
+
+    expect(listenMock).toHaveBeenCalledWith(
+      "manager://update-state",
+      expect.any(Function),
+    );
+    const payload = {
+      phase: "installing",
+      version: "0.6.0",
+      downloaded: 2048,
+      total: 2048,
+      message: null,
+      updatedAtMs: 5678,
+    };
+    handler?.({ payload });
+    expect(onSnapshot).toHaveBeenCalledWith(payload);
+
+    dispose();
+    expect(unlisten).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves to a no-op unlisten function in development", async () => {
+    const dispose = await managerApi.onManagerUpdateRuntime(vi.fn());
+    expect(listenMock).not.toHaveBeenCalled();
+    expect(() => dispose()).not.toThrow();
   });
 });

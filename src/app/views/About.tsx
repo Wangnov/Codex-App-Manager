@@ -5,6 +5,8 @@ import {
   managerApi,
   type ManagerUpdateAvailable,
 } from "../../services/managerApi";
+import { mib } from "../format";
+import { useManagerUpdateRuntime } from "../ManagerUpdatePrompt";
 import { userErrorMessage } from "../errorCopy";
 import { Icon, CodexMark } from "../icons";
 import { useI18n } from "../i18n";
@@ -20,6 +22,10 @@ export function About({ onBack }: { onBack: () => void }) {
   const [mgrBusy, setMgrBusy] = useState(false);
   const [mgrMsg, setMgrMsg] = useState<string | null>(null);
   const [pendingUpdate, setPendingUpdate] = useState<ManagerUpdateAvailable | null>(null);
+  // Same backend-owned snapshot the Home banner reads: if a self-update was
+  // started from Home and the user then opens About, both show the exact
+  // same download/install progress instead of About guessing from nothing.
+  const runtime = useManagerUpdateRuntime();
   const updateTitleId = useId();
   const updateBodyId = useId();
 
@@ -27,7 +33,8 @@ export function About({ onBack }: { onBack: () => void }) {
     if (mgrBusy) return;
     void pendingUpdate?.discard();
     setPendingUpdate(null);
-  }, [mgrBusy, pendingUpdate]);
+    if (runtime.phase === "error") void managerApi.ackManagerUpdateRuntime();
+  }, [mgrBusy, pendingUpdate, runtime.phase]);
 
   const checkManager = useCallback(async () => {
     setMgrBusy(true);
@@ -160,6 +167,50 @@ export function About({ onBack }: { onBack: () => void }) {
           {pendingUpdate ? t("confirm.title", { version: pendingUpdate.version }) : ""}
         </h3>
         <p id={updateBodyId}>{t("about.mgrConfirmBody")}</p>
+        {mgrBusy &&
+        (runtime.phase === "downloading" || runtime.phase === "installing") ? (
+          <div className="mgr-update-progress" aria-live="polite">
+            <div className="sub">
+              {runtime.phase === "installing"
+                ? t("progress.installing")
+                : t("progress.title")}
+            </div>
+            <div
+              className="bar"
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={
+                runtime.phase === "downloading" && runtime.total
+                  ? Math.min(
+                      100,
+                      Math.round((runtime.downloaded / runtime.total) * 100),
+                    )
+                  : undefined
+              }
+            >
+              <div
+                className={`bar-fill${
+                  runtime.phase === "downloading" && runtime.total
+                    ? ""
+                    : " indeterminate"
+                }`}
+                style={
+                  runtime.phase === "downloading" && runtime.total
+                    ? {
+                        width: `${Math.min(100, (runtime.downloaded / runtime.total) * 100)}%`,
+                      }
+                    : undefined
+                }
+              />
+            </div>
+            {runtime.phase === "downloading" && runtime.total ? (
+              <div className="dlmeta">
+                {mib(runtime.downloaded)} / {mib(runtime.total)}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         <div className="row2 sheet-actions">
           <button className="btn ghost" onClick={closeUpdateConfirm} disabled={mgrBusy}>
             {t("confirm.cancel")}

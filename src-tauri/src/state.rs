@@ -3,6 +3,7 @@ use std::sync::Mutex;
 
 use crate::adapters::host;
 use crate::app::config_health::ConfigHealth;
+use crate::app::manager_update_runtime::ManagerUpdateRuntime;
 use crate::app::oplock::OperationManager;
 use crate::app::provenance::ProvenanceStore;
 use crate::app::settings_store::AppSettings as PersistedAppSettings;
@@ -32,6 +33,11 @@ pub struct ManagerState {
     pub frontend: FrontendGate,
     /// Codex UI theme orchestration (daemon handle + status).
     pub codex_theme: crate::app::codex_theme::ThemeService,
+    /// Real download/install progress for the Manager's own self-update,
+    /// shared across every renderer view (Home, WinHome, About) so a reload
+    /// or a second window can reattach to the in-flight state instead of
+    /// losing it.
+    pub manager_update: ManagerUpdateRuntime,
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -92,6 +98,7 @@ impl ManagerState {
             config_health,
             frontend: FrontendGate::default(),
             codex_theme: crate::app::codex_theme::ThemeService::default(),
+            manager_update: ManagerUpdateRuntime::default(),
         }
     }
 

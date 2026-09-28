@@ -55,10 +55,13 @@ describe("desktop trust-boundary config", () => {
       // renderer reads the monitor scale to convert onResized's physical px.
       "core:window:allow-scale-factor",
       "dialog:allow-open",
-      "process:allow-restart",
     ]);
     expect(capability.permissions).not.toContain("core:default");
     expect(capability.permissions).not.toContain("updater:default");
     expect(capability.permissions).not.toContain("process:default");
+    // Relaunching the Manager after a self-update runs entirely on the Rust
+    // side now (`manager_relaunch` -> `AppHandle::request_restart`), so the
+    // webview no longer needs the process plugin's restart permission at all.
+    expect(capability.permissions).not.toContain("process:allow-restart");
   });
 });
