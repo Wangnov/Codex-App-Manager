@@ -109,7 +109,9 @@ impl NetworkConfig {
         }
     }
 
-    pub(crate) fn curl_args(&self) -> Vec<String> {
+    /// The proxy arguments alone, for app-layer curl calls that do not go
+    /// through this engine (e.g. the theme catalog).
+    pub fn curl_proxy_args(&self) -> Vec<String> {
         match &self.proxy_mode {
             ProxyMode::System => match resolved_system_proxy() {
                 Some(proxy) => vec![
@@ -133,6 +135,10 @@ impl NetworkConfig {
                 String::new(),
             ],
         }
+    }
+
+    pub(crate) fn curl_args(&self) -> Vec<String> {
+        self.curl_proxy_args()
     }
 
     pub(crate) fn curl_args_with_schannel_revocation(
@@ -162,7 +168,7 @@ impl NetworkConfig {
     pub(crate) fn proxy_summary(&self) -> String {
         match &self.proxy_mode {
             ProxyMode::System => match resolved_system_proxy() {
-                Some(proxy) => format!("system (resolved to {})", proxy.url),
+                Some(proxy) => format!("system (resolved to {})", redact_userinfo(&proxy.url)),
                 None => {
                     "system (no manual proxy; PAC/WPAD cannot be evaluated)".to_string()
                 }
@@ -246,7 +252,7 @@ fn system_proxy_url(server: &str) -> Option<String> {
     https
         .or(http)
         .map(|target| qualify_proxy_url(target, "http"))
-        .or_else(|| socks.map(|target| qualify_proxy_url(target, "socks5")))
+        .or_else(|| socks.map(|target| qualify_proxy_url(target, "socks5h")))
 }
 
 fn qualify_proxy_url(target: &str, default_scheme: &str) -> String {
@@ -269,6 +275,17 @@ fn system_proxy_bypass(overrides: &str) -> String {
         .join(",")
 }
 
+/// Strips embedded credentials from a proxy URL before it is logged.
+fn redact_userinfo(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    match rest.rsplit_once('@') {
+        Some((_, host)) => format!("{scheme}://***@{host}"),
+        None => url.to_string(),
+    }
+}
+
 pub(crate) fn is_schannel_revocation_offline(exit_code: Option<i32>, stderr: &str) -> bool {
     let lower = stderr.to_ascii_lowercase();
     exit_code == Some(35)
@@ -287,8 +304,9 @@ fn push_schannel_no_revoke(_args: &mut Vec<String>) {}
 #[cfg(test)]
 mod tests {
     use super::{
-        is_schannel_revocation_offline, resolve_system_proxy, system_proxy_bypass,
-        system_proxy_url, NetworkConfig, SchannelRevocationCheck, SystemProxy,
+        is_schannel_revocation_offline, redact_userinfo, resolve_system_proxy,
+        system_proxy_bypass, system_proxy_url, NetworkConfig, SchannelRevocationCheck,
+        SystemProxy,
     };
 
     #[test]
@@ -305,6 +323,28 @@ mod tests {
             NetworkConfig::custom("socks5h://127.0.0.1:7890").curl_args(),
             vec!["--proxy", "socks5h://127.0.0.1:7890", "--noproxy", ""]
         );
+    }
+
+    #[test]
+    fn curl_args_reuses_curl_proxy_args() {
+        let config = NetworkConfig::custom("http://127.0.0.1:8080");
+        assert_eq!(config.curl_args(), config.curl_proxy_args());
+
+        let direct = NetworkConfig::direct();
+        assert_eq!(direct.curl_args(), direct.curl_proxy_args());
+    }
+
+    #[test]
+    fn redact_userinfo_strips_credentials_but_keeps_host() {
+        assert_eq!(
+            redact_userinfo("http://user:secret@127.0.0.1:7890"),
+            "http://***@127.0.0.1:7890"
+        );
+        assert_eq!(
+            redact_userinfo("http://127.0.0.1:7890"),
+            "http://127.0.0.1:7890"
+        );
+        assert_eq!(redact_userinfo("not-a-url"), "not-a-url");
     }
 
     #[test]
@@ -333,7 +373,7 @@ mod tests {
         );
         assert_eq!(
             system_proxy_url("ftp=10.0.0.4:21;socks=10.0.0.3:1080"),
-            Some("socks5://10.0.0.3:1080".to_string())
+            Some("socks5h://10.0.0.3:1080".to_string())
         );
         // Only unusable schemes -> nothing to hand to curl.
         assert_eq!(system_proxy_url("ftp=10.0.0.4:21"), None);
