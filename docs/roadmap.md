@@ -16,7 +16,7 @@
 | Windows 全链路（识别→侧载/便携→运行中替换→回滚） | 🟡 | α 阶段已上线且持续修复至 v0.5.10（MSIX 侧载失败自动回退便携、启动校验、日志恢复等）；文件级/块级增量（β/γ）未开始 |
 | Windows 便携直启入口（`ChatGPT.exe` 双击） | ⬜ | Codex 26.915 起需要包身份，双击官方 EXE 仍失败；[#370](https://github.com/Wangnov/Codex-App-Manager/issues/370) 跟踪 |
 | Windows 块级增量更新（γ，zsync/Range 复用） | ⬜ | 见下 §3；当前 Windows 更新是全量重下 |
-| Windows Authenticode 签名 | ⬜ | SignPath Foundation 申请（2026-07-11 提交）不再继续推进，正在评估备选签名服务商；当前无 Authenticode 签名 |
+| Windows Authenticode 签名 | ⬜ | SignPath Foundation 免费签名申请已于 2026-07-11 提交，仍在审核（见 [`windows-signing.md`](./windows-signing.md)）；PR #177 已落地 SignPath 迁移的占位与 fail-closed 门禁，但需 Foundation 批准与外部账号信息核实等外部门禁才能启用；当前无 Authenticode 签名 |
 | 上游兼容性监测流水线 | ⬜ | 见下 §4；当前只有 15 分钟探测触发镜像发布，无「新版发布后自动探测功能是否被破坏」的诊断/修复闭环 |
 | Cargo workspace 整合 | ⬜ | `src-tauri` / 三个 engine crate 仍各自独立 `Cargo.lock`，未合并为单一 workspace |
 | `~/.codex` 边界 | ⬜ | 仅卸载时保留/清除，其余预留不做 |
@@ -56,9 +56,10 @@
 
 ## 5. Windows Authenticode 签名 ⬜
 
-- SignPath Foundation 免费签名申请已于 2026-07-11 提交，PR #180 落地了申请前置文档；但该路线不再继续推进，正在评估备选签名服务商。
+- SignPath Foundation 免费签名申请已于 2026-07-11 提交并仍在审核，PR #180 落地了申请前置文档（政策、角色、多因素认证要求）；服务尚未批准，签名流水线也未启用。
+- PR #177（open，"prepare SignPath migration"）已在代码侧落地 SignPath 迁移的占位与 fail-closed 门禁（未获批前 Windows 发布环节按设计拒绝发布未签名或不完整的 Release），但接入本身仍需等待 Foundation 批准、organization/project/policy ID 下发，以及人工复核并提交申请中的个人/法律信息等外部门禁完成后才能合并启用。
 - 仓库现有的 PFX 签名脚手架（`scripts/sign-windows-authenticode.ps1` 等）是可选占位路径，不等于任何正式签名集成；证书未配置时签名步骤跳过、校验非阻塞。
-- 当前风险披露与核验方式（`SHA256SUMS`、Tauri updater 签名）见 [`windows-signing.md`](./windows-signing.md) 与 [`code-signing-policy.md`](./code-signing-policy.md)，选定新供应商后需要单独 PR 接入并更新这两份文档。
+- 当前风险披露与核验方式（`SHA256SUMS`、Tauri updater 签名）见 [`windows-signing.md`](./windows-signing.md) 与 [`code-signing-policy.md`](./code-signing-policy.md)；若 SignPath 审核未通过或另择方案，需要单独 PR 更新这两份文档与本节。
 
 ## 6. 上游兼容性监测流水线 ⬜
 
