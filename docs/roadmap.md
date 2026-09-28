@@ -11,7 +11,7 @@
 | macOS 更新引擎（appcast→plan→download→verify→apply→gate→swap→rollback） | ✅ | 自 v0.1.13 起随包出厂的 BinaryDelta 已端到端可用；一版落后仅下 ~18MB delta（全量 406MB） |
 | mirror 服务端：Sparkle appcast + zip + delta 镜像 | ✅ | `codex-app-mirror` 重写 appcast enclosure URL 指向镜像、原样保留 OpenAI EdDSA 签名，manager 端 `PROD_ARM64_APPCAST` / `PROD_X64_APPCAST` 消费 |
 | mirror 服务端：manifest 契约（schemaVersion 2） | ✅ | [`manifest-contract.md`](./manifest-contract.md)；`sources.windows/macos` + `manager.payloads` 预留字段稳定 |
-| manager 自更新 + 分发（latest.json / R2+IHEP 双活） | ✅ | `scripts/mirror-release.mjs` 做 R2 CAS 主链路 + IHEP 跟随，`release.yml` 自动签 `latest.json`；见 [`release.md`](./release.md) |
+| manager 自更新 + 分发（latest.json / R2+IHEP 双活） | ✅ | `scripts/mirror-release.mjs` 做 R2 CAS 主链路 + IHEP 跟随，`release.yml` 用各更新包自身的 Tauri 签名生成 `latest.json`（清单文件本身不再单独签名）；见 [`release.md`](./release.md) |
 | macOS 纳管 / provenance UX | ✅ | managed/external/none 分类 + 显式同意纳管 |
 | Windows 全链路（识别→侧载/便携→运行中替换→回滚） | 🟡 | α 阶段已上线且持续修复至 v0.5.10（MSIX 侧载失败自动回退便携、启动校验、日志恢复等）；文件级/块级增量（β/γ）未开始 |
 | Windows 便携直启入口（`ChatGPT.exe` 双击） | ⬜ | Codex 26.915 起需要包身份，双击官方 EXE 仍失败；[#370](https://github.com/Wangnov/Codex-App-Manager/issues/370) 跟踪 |
@@ -28,7 +28,7 @@
 已上线并在生产验证：
 - `codex-mac-engine`：`mac_plan_update` → `download_and_verify`（EdDSA 钉死官方公钥）→ `apply_delta` / `unpack_app_zip` → `codesign` gate（Team `2DC432GLL2`，Notarized）→ 退出→同卷原子替换→健康检查→`relaunch`/`rollback`。
 - `codex-app-mirror` 侧：`build-appcast.sh` 重写 enclosure 指向镜像、保留 OpenAI 原始 `sparkle:edSignature`；`.delta` 与全量 `.zip` 一并同步、按最近窗口 prune。
-- manager 消费镜像 appcast（`PROD_ARM64_APPCAST`/`PROD_X64_APPCAST`），官方 appcast 仅作不可达兜底。
+- manager 消费镜像 appcast（`PROD_ARM64_APPCAST`/`PROD_X64_APPCAST`）；`auto` 更新源下若镜像与官方均可达，`fetch_appcast_for_arch` 会取 build 更新的一侧，官方 appcast 不只是不可达兜底。
 - 自 v0.1.13（BinaryDelta 随包出厂）起持续验证，至 v0.5.10 稳定运行；[`macos-delta-updates.md`](./macos-delta-updates.md) 记录构建期两个前置条件（vendor BinaryDelta + 内嵌助手签名）。
 
 ## 2. manager 自更新 + 分发 ✅
