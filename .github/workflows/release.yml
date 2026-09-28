@@ -42,11 +42,28 @@ name: Release
 # The old MANAGER_*_ACCESS_KEY_ID / SECRET_ACCESS_KEY names must stay deleted;
 # otherwise a historical workflow revision could still perform unconditional writes.
 #
-# Optional Windows Authenticode (non-blocking until configured; see docs/windows-signing.md):
-#   WINDOWS_CERTIFICATE          base64 of OV/EV code-signing .pfx
-#   WINDOWS_CERTIFICATE_PASSWORD password for that .pfx
-#   vars.AUTHENTICODE_REQUIRED   set to "true" to fail release when PE is unsigned
-#   vars.WINDOWS_TIMESTAMP_URL   optional RFC3161 timestamp URL override
+# Optional Windows Authenticode signing (non-blocking until configured; see
+# docs/windows-signing.md and docs/code-signing-policy.md). Provider-agnostic:
+# scripts/sign-windows-authenticode.ps1 is wired as Tauri's
+# bundle.windows.signCommand and dispatches on vars.WINDOWS_SIGNING_PROVIDER,
+# so the main exe, the generated uninstaller, and the final installer are all
+# signed in one pass during `tauri build` (win-installer-check.yml's PR-time
+# NSIS build never sets this var, so it stays unsigned there exactly as before).
+#   vars.WINDOWS_SIGNING_PROVIDER  "" (default/unsigned) | "esigner" (recommended,
+#                                   SSL.com eSigner CKA) | "certum" (fallback,
+#                                   Certum SimplySign) | "local-pfx" (testing)
+#   ESIGNER_USERNAME / ESIGNER_PASSWORD / ESIGNER_TOTP_SECRET
+#                                   SSL.com account credentials (provider=esigner)
+#   CERTUM_USERNAME / CERTUM_TOTP_SECRET
+#                                   Certum SimplySign credentials (provider=certum)
+#   WINDOWS_CERTIFICATE / WINDOWS_CERTIFICATE_PASSWORD
+#                                   base64 PFX + password (provider=local-pfx only;
+#                                   legacy scaffold, kept for testing/fallback)
+#   vars.AUTHENTICODE_REQUIRED     set to "true" to fail release when a PE is
+#                                   unsigned — flip only after a real provider
+#                                   has been verified end to end (3 PE layers,
+#                                   both archs; see docs/code-signing-policy.md)
+#   vars.WINDOWS_TIMESTAMP_URL     optional RFC3161 timestamp URL override
 
 on:
   # `workflow_run` always loads this credentialed workflow from the repository
@@ -416,9 +433,91 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KC"
           security list-keychains -d user -s "$KC" $(security list-keychains -d user | sed s/\"//g)
 
-      # ── Build WITHOUT a tauri signingIdentity; we sign inside-out after ────
-      - name: Build (Tauri, unsigned)
+      # ── Windows: provision the eSigner CKA certificate (recommended provider) ─
+      #    Only runs when vars.WINDOWS_SIGNING_PROVIDER == 'esigner'. No-op
+      #    (and no secrets touched) for every other value, including the
+      #    default empty string — matching today's unsigned release exactly.
+      #    Authenticates to SSL.com and installs a CNG-backed certificate into
+      #    the runner's CurrentUser certificate store *before* `tauri build`
+      #    runs, so the signCommand hook (scripts/sign-windows-authenticode.ps1)
+      #    can sign with plain signtool.exe. Only the resulting certificate
+      #    thumbprint — not a secret — is exported to WINDOWS_SIGNING_THUMBPRINT.
+      #    Flags follow SSL.com's published eSigner CKA CI/CD guide; validate
+      #    against a real SSL.com account before relying on this in production
+      #    (see docs/windows-signing.md).
+      - name: Provision eSigner CKA certificate
+        if: matrix.os == 'windows' && vars.WINDOWS_SIGNING_PROVIDER == 'esigner'
+        shell: pwsh
+        env:
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ([string]::IsNullOrWhiteSpace($env:ESIGNER_USERNAME) -or [string]::IsNullOrWhiteSpace($env:ESIGNER_PASSWORD) -or [string]::IsNullOrWhiteSpace($env:ESIGNER_TOTP_SECRET)) {
+            Write-Host "::error::WINDOWS_SIGNING_PROVIDER=esigner but ESIGNER_USERNAME/ESIGNER_PASSWORD/ESIGNER_TOTP_SECRET are not fully configured on the release environment"
+            exit 1
+          }
+          $installDir = Join-Path $env:RUNNER_TEMP "eSignerCKA"
+          New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+          $zip = Join-Path $env:RUNNER_TEMP "eSignerCKA.zip"
+          Invoke-WebRequest -OutFile $zip -Uri "https://github.com/SSLcom/eSignerCKA/releases/download/v1.0.6/SSL.COM-eSigner-CKA_1.0.6.zip"
+          Expand-Archive -Force -Path $zip -DestinationPath $installDir
+          $installer = Get-ChildItem -Path $installDir -Filter "eSigner_CKA_Installer.exe" -Recurse | Select-Object -First 1
+          if (-not $installer) {
+            Write-Host "::error::eSigner CKA installer not found after extracting the release archive"
+            exit 1
+          }
+          & $installer.FullName /CURRENTUSER /VERYSILENT /SUPPRESSMSGBOXES "/DIR=$installDir" | Out-Null
+          $tool = Join-Path $installDir "eSignerCKATool.exe"
+          $masterKey = Join-Path $installDir "master.key"
+          & $tool config -mode "product" -user "$env:ESIGNER_USERNAME" -pass "$env:ESIGNER_PASSWORD" -totp "$env:ESIGNER_TOTP_SECRET" -key "$masterKey" -r
+          & $tool unload
+          & $tool load
+          $cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert | Select-Object -First 1
+          if (-not $cert) {
+            Write-Host "::error::no code-signing certificate found in CurrentUser\My after eSigner CKA load"
+            exit 1
+          }
+          Write-Host "eSigner CKA certificate loaded: thumbprint=$($cert.Thumbprint) subject=$($cert.Subject)"
+          "WINDOWS_SIGNING_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # ── Windows: provision the Certum SimplySign certificate (fallback) ────
+      #    Only runs when vars.WINDOWS_SIGNING_PROVIDER == 'certum'. Uses the
+      #    community-maintained, SHA-pinned jay0lee/certum-cloud-code-sign
+      #    action to authenticate to SimplySign and install the certificate.
+      #    Only its cert-thumbprint output (not a secret) feeds the signCommand
+      #    hook. See docs/windows-signing.md for setup and the risk note about
+      #    depending on a third-party action.
+      - name: Provision Certum SimplySign certificate
+        if: matrix.os == 'windows' && vars.WINDOWS_SIGNING_PROVIDER == 'certum'
+        id: certum
+        uses: jay0lee/certum-cloud-code-sign@a3324503499c49090869856eeeecfe95fb613d87 # v1
+        with:
+          username: ${{ secrets.CERTUM_USERNAME }}
+          totp_secret: ${{ secrets.CERTUM_TOTP_SECRET }}
+
+      - name: Export Certum certificate thumbprint
+        if: matrix.os == 'windows' && vars.WINDOWS_SIGNING_PROVIDER == 'certum'
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace("${{ steps.certum.outputs.cert-thumbprint }}")) {
+            Write-Host "::error::Certum provisioning produced no cert-thumbprint output"
+            exit 1
+          }
+          "WINDOWS_SIGNING_THUMBPRINT=${{ steps.certum.outputs.cert-thumbprint }}" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # ── Build (macOS: signed inside-out after; Windows: signed inline via ──
+      #    the signCommand hook — scripts/sign-windows-authenticode.ps1 — when
+      #    vars.WINDOWS_SIGNING_PROVIDER selects a provider; unsigned no-op
+      #    otherwise, which is today's exact default behavior) ────────────────
+      - name: Build (Tauri)
         shell: bash
+        env:
+          WINDOWS_SIGNING_PROVIDER: ${{ vars.WINDOWS_SIGNING_PROVIDER }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
         # Bundling downloads toolchains on the fly (e.g. the NSIS archive from
         # GitHub) which occasionally 504s and fails the whole release. Retry a
         # few times so a transient download hiccup doesn't sink the run — cargo
@@ -492,38 +591,33 @@ jobs:
             Write-Host "::notice::ARM64 main PE asserted machine=0xAA64 (cross-build on x64). Full Manager installer smoke remains x64-only; native ARM64 portable MSIX extraction and cua_node module resolution run in windows-portable-msix-e2e.yml."
           }
 
-      # ── Windows: optional Authenticode (OV/EV) on final NSIS installer ────
-      #    Non-blocking until WINDOWS_CERTIFICATE is configured in the release
-      #    environment. When present, signs the published -setup.exe. Full
-      #    inside-out signing of main binary + uninstaller should eventually
-      #    move into tauri build via certificateThumbprint (docs/windows-signing.md).
-      #    This is independent of the Tauri updater minisign key below.
-      - name: Authenticode-sign Windows installer (optional)
-        if: matrix.os == 'windows'
-        shell: pwsh
-        env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
-        run: |
-          $setup = Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe" -ErrorAction Stop
-          & .\scripts\sign-windows-authenticode.ps1 -Path $setup.FullName -Stage "sign"
-
-      - name: Verify Authenticode on Windows installer
+      # ── Windows: verify Authenticode on the main exe + final NSIS installer ─
+      #    Signing itself already happened inline during `tauri build` via the
+      #    signCommand hook (scripts/sign-windows-authenticode.ps1), covering
+      #    the main binary, the generated uninstaller (via NSIS
+      #    !uninstfinalize), and the final -setup.exe in one pass — see
+      #    src-tauri/tauri.conf.json bundle.windows.signCommand. The
+      #    uninstaller itself only exists once actually installed, so its
+      #    signature is verified by the packaged lifecycle smoke in
+      #    win-installer-check.yml, not here. Optional until
+      #    vars.AUTHENTICODE_REQUIRED=true; unsigned (NotSigned) is expected
+      #    and non-blocking while no WINDOWS_SIGNING_PROVIDER is configured.
+      - name: Verify Authenticode on Windows binaries
         if: matrix.os == 'windows'
         shell: pwsh
         env:
           AUTHENTICODE_MODE: ${{ vars.AUTHENTICODE_REQUIRED == 'true' && 'required' || 'optional' }}
         run: |
+          $main = "src-tauri/target/${{ matrix.target }}/release/codex-app-manager.exe"
           $setup = Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe" -ErrorAction Stop
           & .\scripts\verify-windows-authenticode.ps1 `
-            -Path $setup.FullName `
+            -Path @($main, $setup.FullName) `
             -Mode $env:AUTHENTICODE_MODE `
             -Stage "sign-verify"
 
       # ── Windows: sign the NSIS installer for the updater ──────────────────
-      #    The build is intentionally unsigned for Authenticode (until OV/EV is
-      #    configured), so Tauri emits no updater `.sig` during build. In Tauri 2
+      #    Tauri never emits an updater `.sig` on its own during build; this is
+      #    unrelated to whether Authenticode signing is configured. In Tauri 2
       #    the Windows updater ships the `-setup.exe` itself, so signing it here
       #    with the updater key — exactly what finalize-macos.sh does for the
       #    .app.tar.gz — is equivalent to `createUpdaterArtifacts` and is what

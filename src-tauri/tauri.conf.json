@@ -48,6 +48,18 @@
     "targets": ["nsis", "dmg", "app"],
     "resources": ["resources/*"],
     "windows": {
+      "signCommand": {
+        "cmd": "pwsh",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "scripts/sign-windows-authenticode.ps1",
+          "-Path",
+          "%1"
+        ]
+      },
       "nsis": {
         "displayLanguageSelector": true,
         "installMode": "currentUser",

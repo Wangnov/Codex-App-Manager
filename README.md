@@ -89,7 +89,7 @@ brew install --cask wangnov/tap/codex-app-manager
 | Windows x64 | `CodexAppManager_x64-setup.exe` | [⤓ 镜像下载](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x64-setup.exe) |
 | Windows ARM64 | `CodexAppManager_arm64-setup.exe` | [⤓ 镜像下载](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_arm64-setup.exe) |
 
-macOS 版本经 **Developer ID 签名 + Apple 公证**,首次打开不会被 Gatekeeper 拦截。Windows 安装器(`CodexAppManager_x64-setup.exe` / `CodexAppManager_arm64-setup.exe`)当前**没有 Authenticode 代码签名**,首次运行可能出现 SmartScreen 提示;应用内自更新使用的 Tauri updater 签名只校验下载字节,不代表 Windows 发行者信任。SignPath Foundation 申请已提交、仍在审核,当前下载不得被描述为已获批或已签名。详情见 [代码签名政策](docs/code-signing-policy.md)与 [Windows signing and verification](docs/windows-signing.md)。
+macOS 版本经 **Developer ID 签名 + Apple 公证**,首次打开不会被 Gatekeeper 拦截。Windows 安装器(`CodexAppManager_x64-setup.exe` / `CodexAppManager_arm64-setup.exe`)当前**没有 Authenticode 代码签名**,首次运行可能出现 SmartScreen 提示;应用内自更新使用的 Tauri updater 签名只校验下载字节,不代表 Windows 发行者信任。SignPath Foundation 申请已不再推进,项目已改为规划付费云 HSM 证书方案,在证书真正配置并验证前,当前下载不得被描述为已签名。详情见 [代码签名政策](docs/code-signing-policy.md)与 [Windows signing and verification](docs/windows-signing.md)。
 
 下载后建议用同一 GitHub Release 的 `SHA256SUMS` 核验文件。Windows 可用 PowerShell,macOS 可用 `shasum`:
 
@@ -176,7 +176,7 @@ npm run tauri:build    # 本地构建(未签名)
 
 ## 政策与隐私
 
-- [代码签名政策](docs/code-signing-policy.md):SignPath Foundation 申请状态、项目角色、逐次人工审批、可签工件边界与未来的 trusted-build 验证要求。
+- [代码签名政策](docs/code-signing-policy.md):签名供应商方案(SignPath Foundation 已不再推进)、项目角色、逐次人工审批、可签工件边界与生产签名启用前的验证要求。
 - [隐私政策](docs/privacy.md):Manager 更新检查、下载源/代理网络行为、官网本地存储、本地诊断与第三方连接元数据。
 
 ## 致谢
@@ -239,7 +239,7 @@ Grab your platform's file from the [latest GitHub Release](https://github.com/Wa
 | Windows x64 | `CodexAppManager_x64-setup.exe` | [⤓ mirror](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_x64-setup.exe) |
 | Windows ARM64 | `CodexAppManager_arm64-setup.exe` | [⤓ mirror](https://codexapp.agentsmirror.com/manager/latest/CodexAppManager_arm64-setup.exe) |
 
-The macOS builds are **Developer ID signed + Apple notarized**, so Gatekeeper won't block first launch. The Windows installers (`CodexAppManager_x64-setup.exe` / `CodexAppManager_arm64-setup.exe`) are **not Authenticode-signed** yet, so SmartScreen may warn on first run; the Tauri updater signature used for in-app updates verifies bytes only and is not Windows publisher trust. The SignPath Foundation application is pending, so current downloads must not be described as approved or signed by SignPath. See the [code signing policy](docs/code-signing-policy.md) and [Windows signing and verification](docs/windows-signing.md).
+The macOS builds are **Developer ID signed + Apple notarized**, so Gatekeeper won't block first launch. The Windows installers (`CodexAppManager_x64-setup.exe` / `CodexAppManager_arm64-setup.exe`) are **not Authenticode-signed** yet, so SmartScreen may warn on first run; the Tauri updater signature used for in-app updates verifies bytes only and is not Windows publisher trust. The SignPath Foundation application is no longer being pursued; the project is instead planning a paid cloud-HSM certificate, and current downloads must not be described as signed until one is actually configured and verified. See the [code signing policy](docs/code-signing-policy.md) and [Windows signing and verification](docs/windows-signing.md).
 
 After downloading, compare the file with `SHA256SUMS` from the same GitHub Release. Use PowerShell on Windows or `shasum` on macOS:
 
@@ -326,7 +326,7 @@ npm run tauri:build    # local (unsigned) build
 
 ## Policy and privacy
 
-- [Code signing policy](docs/code-signing-policy.md): SignPath Foundation application status, project roles, per-request human approval, artifact scope, and future trusted-build verification requirements.
+- [Code signing policy](docs/code-signing-policy.md): signing provider plan (SignPath Foundation is no longer being pursued), project roles, per-request human approval, artifact scope, and the verification required before production signing can go live.
 - [Privacy policy](docs/privacy.md): Manager update checks, download-source and proxy behavior, website local storage, local diagnostics, and third-party connection metadata.
 
 ## Acknowledgements

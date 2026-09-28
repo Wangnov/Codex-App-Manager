@@ -6,7 +6,9 @@ name: Windows installer check
 # install → first launch → upgrade → uninstall.
 #
 # Also probes Authenticode on the installer and installed PE files in
-# non-blocking (optional) mode until OV/EV secrets are configured.
+# non-blocking (optional) mode until a real provider is configured, and proves
+# the signCommand plumbing itself with a throwaway self-signed certificate (no
+# real secrets involved — see docs/windows-signing.md).
 #
 # ARM64 is NOT smoke-tested here: GitHub-hosted runners are x64, and a
 # cross-built ARM64 PE is not runtime verification. See docs/windows-signing.md.
@@ -63,9 +65,13 @@ jobs:
       # NSIS only — just needs to compile the template, resolve the brand images,
       # and link all languages. NO signing secrets here on purpose: this is a
       # pull_request trigger running PR-authored code (config/template/hooks), so
-      # exposing TAURI_SIGNING_PRIVATE_KEY / WINDOWS_CERTIFICATE would let a PR
-      # exfiltrate keys. createUpdaterArtifacts is off; Authenticode remains a
-      # release-time concern (release.yml) with optional post-build path.
+      # exposing TAURI_SIGNING_PRIVATE_KEY / a real signing provider's credentials
+      # would let a PR exfiltrate keys. createUpdaterArtifacts is off.
+      # vars.WINDOWS_SIGNING_PROVIDER is never set on this PR trigger, so Tauri's
+      # bundle.windows.signCommand hook (scripts/sign-windows-authenticode.ps1)
+      # runs its unsigned no-op branch here — the throwaway self-signed proof
+      # below exercises the real signing path separately and safely, without
+      # a real certificate.
       - name: Build NSIS installer
         id: build
         shell: bash
@@ -97,6 +103,87 @@ jobs:
           # not match the payload architecture.
           & .\scripts\windows-pe-arch.ps1 -Path $main -ExpectMachine 0x8664
           & .\scripts\windows-pe-arch.ps1 -Path $setup.FullName
+
+      # ── Prove the signCommand plumbing end-to-end without a real certificate ─
+      #    Creates a throwaway self-signed code-signing cert, runs the SAME
+      #    script Tauri's bundle.windows.signCommand calls
+      #    (scripts/sign-windows-authenticode.ps1) in local-pfx mode against
+      #    COPIES of the built main exe + installer, then asserts every copy
+      #    carries a signature whose SignerCertificate.Thumbprint matches the
+      #    throwaway cert. A self-signed cert never chains to a trusted root,
+      #    so Status is expected to be non-Valid here — this step proves the
+      #    dispatch/signing path works, not trust (that's what
+      #    verify-windows-authenticode.ps1 in required mode is for, once a
+      #    real provider is configured). Runs on copies so the real installer
+      #    used by the smoke test below stays untouched.
+      - name: Authenticode signCommand proof (throwaway self-signed cert)
+        shell: pwsh
+        run: |
+          Write-Host "::group::[proof] create throwaway self-signed code-signing certificate"
+          $cert = New-SelfSignedCertificate `
+            -Type CodeSigningCert `
+            -Subject "CN=Codex App Manager CI Signing Proof" `
+            -CertStoreLocation Cert:\CurrentUser\My `
+            -KeyExportPolicy Exportable `
+            -KeyUsage DigitalSignature `
+            -KeyAlgorithm RSA `
+            -KeyLength 2048 `
+            -NotAfter (Get-Date).AddDays(1)
+          $thumbprint = $cert.Thumbprint
+          Write-Host "Created throwaway cert thumbprint=$thumbprint"
+
+          $proofDir = Join-Path $env:RUNNER_TEMP "signcommand-proof"
+          New-Item -ItemType Directory -Force -Path $proofDir | Out-Null
+          $pfxPath = Join-Path $proofDir "proof.pfx"
+          $pfxPassword = [guid]::NewGuid().ToString("n")
+          $securePass = ConvertTo-SecureString -String $pfxPassword -AsPlainText -Force
+          Export-PfxCertificate -Cert $cert -FilePath $pfxPath -Password $securePass | Out-Null
+          Remove-Item -LiteralPath "Cert:\CurrentUser\My\$thumbprint" -ErrorAction SilentlyContinue
+          $pfxBase64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($pfxPath))
+          Write-Host "::endgroup::"
+
+          $mainSrc = "src-tauri/target/x86_64-pc-windows-msvc/release/codex-app-manager.exe"
+          $setupSrc = "${{ steps.artifact.outputs.installer }}"
+          $mainProof = Join-Path $proofDir "codex-app-manager.exe"
+          $setupProof = Join-Path $proofDir (Split-Path -Leaf $setupSrc)
+          Copy-Item -LiteralPath $mainSrc -Destination $mainProof -Force
+          Copy-Item -LiteralPath $setupSrc -Destination $setupProof -Force
+
+          $env:WINDOWS_SIGNING_PROVIDER = "local-pfx"
+          $env:WINDOWS_CERTIFICATE = $pfxBase64
+          $env:WINDOWS_CERTIFICATE_PASSWORD = $pfxPassword
+          try {
+            & .\scripts\sign-windows-authenticode.ps1 -Path @($mainProof, $setupProof) -Stage "sign-proof"
+          }
+          finally {
+            Remove-Item Env:\WINDOWS_CERTIFICATE, Env:\WINDOWS_CERTIFICATE_PASSWORD, Env:\WINDOWS_SIGNING_PROVIDER -ErrorAction SilentlyContinue
+          }
+
+          Write-Host "::group::[proof] assert every binary carries the throwaway certificate's signature"
+          $failed = $false
+          foreach ($path in @($mainProof, $setupProof)) {
+            $sig = Get-AuthenticodeSignature -LiteralPath $path
+            if (-not $sig.SignerCertificate) {
+              Write-Host "::error::[proof] $path has no signer certificate"
+              $failed = $true
+              continue
+            }
+            if ($sig.SignerCertificate.Thumbprint -ne $thumbprint) {
+              Write-Host "::error::[proof] $path signer thumbprint $($sig.SignerCertificate.Thumbprint) does not match throwaway cert $thumbprint"
+              $failed = $true
+              continue
+            }
+            # Do NOT assert Status -eq Valid: a throwaway self-signed cert never
+            # chains to a trusted root, so Status here is expected to be
+            # UnknownError/NotTrusted even on a fully successful sign.
+            Write-Host "[proof] OK: $(Split-Path -Leaf $path) status=$($sig.Status) thumbprint=$($sig.SignerCertificate.Thumbprint)"
+          }
+          Write-Host "::endgroup::"
+          Remove-Item -LiteralPath $proofDir -Recurse -Force -ErrorAction SilentlyContinue
+          if ($failed) {
+            Write-Host "::error::[proof] Authenticode signCommand proof failed"
+            exit 1
+          }
 
       - name: Authenticode probe (optional / non-blocking)
         shell: pwsh

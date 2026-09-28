@@ -1,30 +1,86 @@
-# Authenticode-sign Windows PE files when a code-signing certificate is available.
+# Provider-agnostic Authenticode signing entry point.
 #
-# Non-blocking milestone: if WINDOWS_CERTIFICATE (base64 PFX) is unset/empty,
-# the script prints a clear skip message and exits 0. Wire secrets into the
-# `release` environment, then set repo variable AUTHENTICODE_REQUIRED=true to
-# make verify-windows-authenticode.ps1 enforce Valid signatures.
+# This is the SINGLE script every Windows PE signing path in this repository
+# calls: Tauri's own `bundle.windows.signCommand` hook (invoked once per file
+# during `tauri build` for the main binary, the NSIS uninstaller via
+# `!uninstfinalize`, and the final `-setup.exe`), the CI self-signed-certificate
+# proof job, and any ad-hoc/manual signing. It dispatches on the
+# WINDOWS_SIGNING_PROVIDER configuration instead of hard-coding one CA:
 #
-# Signing order for a full release (see docs/windows-signing.md):
-#   1. Prefer signing during `tauri build` via certificateThumbprint once the
-#      cert is imported (covers main binary + uninstaller + installer).
-#   2. This script is the post-build fallback for final published artifacts
-#      (primarily the NSIS -setup.exe) and for local/CI verification of the path.
+#   (unset / "" / "none")  — no provider configured. Prints a skip message and
+#                             returns 0. This is the DEFAULT and matches today's
+#                             behavior exactly: installers stay unsigned and the
+#                             release is still published (non-blocking).
+#   "local-pfx"             — imports an ephemeral PFX (WINDOWS_CERTIFICATE +
+#                             WINDOWS_CERTIFICATE_PASSWORD, base64-encoded PFX)
+#                             into CurrentUser\My, signs, then removes it. Used
+#                             for local/CI testing (including with a throwaway
+#                             self-signed certificate — see
+#                             .github/workflows/win-installer-check.yml) and as
+#                             a legacy fallback if a real OV/EV PFX is ever
+#                             issued directly instead of through a cloud HSM.
+#   "esigner"                — recommended provider (SSL.com eSigner, via the
+#                             eSigner CKA Cloud Key Adapter). A separate CI
+#                             provisioning step authenticates to SSL.com and
+#                             installs a CNG-backed certificate into the
+#                             runner's certificate store *before* this script
+#                             runs, and exports its thumbprint as
+#                             WINDOWS_SIGNING_THUMBPRINT. This script only
+#                             calls signtool with that thumbprint — it never
+#                             sees the eSigner account credentials.
+#   "certum"                  — fallback provider (Certum Open Source Code
+#                             Signing via SimplySign). Same shape as "esigner":
+#                             a separate provisioning step logs into SimplySign
+#                             and exports WINDOWS_SIGNING_THUMBPRINT; this
+#                             script just signs with it.
 #
-# Usage:
+# See docs/windows-signing.md and docs/code-signing-policy.md for the full
+# provider comparison, the required secrets/variables, and the rollout plan
+# (WINDOWS_SIGNING_PROVIDER stays unset until a certificate exists; repo
+# variable AUTHENTICODE_REQUIRED then gates verify-windows-authenticode.ps1
+# between "optional" and "required" mode once signing is proven end to end).
+#
+# This script signs. It does NOT decide whether a signature must be Valid —
+# that is verify-windows-authenticode.ps1's job (optional vs required mode).
+# A self-signed test certificate (local-pfx in CI) will never show
+# Status=Valid; this script only asserts that signtool succeeded and that the
+# resulting signature's certificate thumbprint matches the one it signed with.
+#
+# Never logs secret values (PFX password, eSigner/Certum credentials). The
+# certificate thumbprint is not a secret and is safe to print.
+#
+# Does NOT produce Tauri updater .sig files — use `tauri signer sign` for that
+# (see .github/workflows/release.yml, "Sign Windows updater artifact").
+#
+# Usage (manual/CI, one or more files):
+#   $env:WINDOWS_SIGNING_PROVIDER = "local-pfx"
 #   $env:WINDOWS_CERTIFICATE = "<base64 pfx>"
 #   $env:WINDOWS_CERTIFICATE_PASSWORD = "..."
 #   pwsh scripts/sign-windows-authenticode.ps1 -Path path\to\setup.exe
 #
-# Does NOT produce Tauri updater .sig files — use `tauri signer sign` for that.
+# Usage (Tauri signCommand, wired in src-tauri/tauri.conf.json):
+#   { "cmd": "pwsh", "args": ["-NoProfile", "-ExecutionPolicy", "Bypass",
+#     "-File", "scripts/sign-windows-authenticode.ps1", "-Path", "%1"] }
+#   Tauri substitutes %1 with the absolute path of each binary it signs
+#   (main exe, generated uninstaller, final NSIS installer) and invokes this
+#   script once per file with WINDOWS_SIGNING_PROVIDER (and the matching
+#   secrets/thumbprint) already present in the job environment.
 
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [string[]]$Path,
 
+    [string]$Provider = $(if ($env:WINDOWS_SIGNING_PROVIDER) { $env:WINDOWS_SIGNING_PROVIDER } else { "" }),
+
+    # local-pfx only.
     [string]$CertificateBase64 = $env:WINDOWS_CERTIFICATE,
     [string]$CertificatePassword = $env:WINDOWS_CERTIFICATE_PASSWORD,
+
+    # esigner / certum only: the thumbprint of a certificate a prior CI step
+    # already installed into the certificate store.
+    [string]$Thumbprint = $env:WINDOWS_SIGNING_THUMBPRINT,
+
     [string]$TimestampUrl = $(if ($env:WINDOWS_TIMESTAMP_URL) { $env:WINDOWS_TIMESTAMP_URL } else { "http://timestamp.digicert.com" }),
     [string]$Stage = "sign"
 )
@@ -45,85 +101,136 @@ function Fail-Stage([string]$Message) {
     throw "[$Stage] $Message"
 }
 
-if ([string]::IsNullOrWhiteSpace($CertificateBase64)) {
-    Write-Host "[$Stage] WINDOWS_CERTIFICATE not set — skipping Authenticode signing (non-blocking milestone)."
-    Write-Host "[$Stage] Installer remains unsigned; see docs/windows-signing.md."
-    # Do not `exit` — CI invokes this in-process with `&`.
-    return
-}
-
-Write-Stage "Import certificate and locate signtool"
-
-$tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("cam-codesign-" + [guid]::NewGuid().ToString("n"))
-New-Item -ItemType Directory -Path $tempDir | Out-Null
-$pfxPath = Join-Path $tempDir "codesign.pfx"
-$securePass = $null
-$cert = $null
-
-try {
-    [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($CertificateBase64.Trim()))
-
-    if ([string]::IsNullOrEmpty($CertificatePassword)) {
-        $securePass = New-Object System.Security.SecureString
-    }
-    else {
-        $securePass = ConvertTo-SecureString -String $CertificatePassword -AsPlainText -Force
-    }
-
-    $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $securePass
-    if (-not $cert) {
-        Fail-Stage "Import-PfxCertificate returned no certificate"
-    }
-    $thumbprint = $cert.Thumbprint
-    Write-Host "[$Stage] Imported cert thumbprint=$thumbprint subject=$($cert.Subject)"
-
-    $signtool = $null
+function Find-SignTool {
     $kitsRoot = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
     if (Test-Path $kitsRoot) {
         $candidates = Get-ChildItem -Path $kitsRoot -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
             Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
             Sort-Object FullName -Descending
-        if ($candidates) { $signtool = $candidates[0].FullName }
+        if ($candidates) { return $candidates[0].FullName }
     }
-    if (-not $signtool) {
-        $cmd = Get-Command signtool.exe -ErrorAction SilentlyContinue
-        if ($cmd) { $signtool = $cmd.Source }
-    }
-    if (-not $signtool) {
-        Fail-Stage "signtool.exe not found (install Windows SDK signing tools on the runner)"
-    }
-    Write-Host "[$Stage] Using signtool: $signtool"
-    Close-Stage
+    $cmd = Get-Command signtool.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    return $null
+}
 
-    foreach ($raw in $Path) {
+# Signs every $Path with signtool using an already-known certificate
+# thumbprint (already imported/loaded into a certificate store the local
+# signtool.exe can see). Shared by local-pfx (after import), esigner, and
+# certum (after their provisioning steps have loaded a cert).
+function Invoke-ThumbprintSign([string]$SignTool, [string]$SignThumbprint, [string[]]$Paths) {
+    foreach ($raw in $Paths) {
         if ([string]::IsNullOrWhiteSpace($raw)) { continue }
         $item = Get-Item -LiteralPath $raw -ErrorAction Stop
         Write-Stage "Sign $($item.Name)"
-        & $signtool sign `
+        & $SignTool sign `
             /fd SHA256 `
             /td SHA256 `
             /tr $TimestampUrl `
-            /sha1 $thumbprint `
+            /sha1 $SignThumbprint `
             $item.FullName
         if ($LASTEXITCODE -ne 0) {
             Fail-Stage "signtool failed for $($item.FullName) (exit=$LASTEXITCODE)"
         }
+
+        # Do NOT require Status -eq Valid here: a throwaway self-signed
+        # certificate (local-pfx CI proof) will never chain to a trusted
+        # root, so its Status will be UnknownError/NotTrusted even though
+        # signing genuinely succeeded. Assert instead that a signature was
+        # actually attached and that it came from the certificate we signed
+        # with. Whether the signature must additionally be Status=Valid is
+        # verify-windows-authenticode.ps1's job (optional vs required mode).
         $sig = Get-AuthenticodeSignature -LiteralPath $item.FullName
-        if ($sig.Status -ne "Valid") {
-            Fail-Stage "post-sign status for $($item.Name) is $($sig.Status), expected Valid"
+        if ($sig.Status -eq "NotSigned" -or -not $sig.SignerCertificate) {
+            Fail-Stage "post-sign check for $($item.Name): no signature attached (Status=$($sig.Status))"
         }
-        Write-Host "[$Stage] Signed OK: $($item.Name) subject=$($sig.SignerCertificate.Subject)"
+        if ($sig.SignerCertificate.Thumbprint -ne $SignThumbprint) {
+            Fail-Stage "post-sign check for $($item.Name): signer thumbprint $($sig.SignerCertificate.Thumbprint) does not match $SignThumbprint"
+        }
+        Write-Host "[$Stage] Signed OK: $($item.Name) status=$($sig.Status) subject=$($sig.SignerCertificate.Subject) thumbprint=$($sig.SignerCertificate.Thumbprint)"
         Close-Stage
     }
 }
-finally {
-    if ($cert -and $cert.Thumbprint) {
-        Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($cert.Thumbprint)" -ErrorAction SilentlyContinue
-    }
-    if (Test-Path $tempDir) {
-        Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
-    }
+
+$normalizedProvider = $Provider.Trim().ToLowerInvariant()
+
+if ([string]::IsNullOrWhiteSpace($normalizedProvider) -or $normalizedProvider -eq "none") {
+    Write-Host "[$Stage] WINDOWS_SIGNING_PROVIDER not set — skipping Authenticode signing (non-blocking milestone)."
+    Write-Host "[$Stage] Binaries remain unsigned; see docs/windows-signing.md."
+    # Do not `exit` — CI and Tauri's signCommand invoke this in-process/as a
+    # subprocess whose success (exit 0) must not block the unsigned release.
+    return
 }
 
-Write-Host "[$Stage] Authenticode signing complete"
-return
+if ($normalizedProvider -eq "local-pfx") {
+    if ([string]::IsNullOrWhiteSpace($CertificateBase64)) {
+        Fail-Stage "WINDOWS_SIGNING_PROVIDER=local-pfx but WINDOWS_CERTIFICATE is empty — set the base64 PFX secret or unset the provider."
+    }
+
+    Write-Stage "Import certificate and locate signtool"
+
+    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("cam-codesign-" + [guid]::NewGuid().ToString("n"))
+    New-Item -ItemType Directory -Path $tempDir | Out-Null
+    $pfxPath = Join-Path $tempDir "codesign.pfx"
+    $securePass = $null
+    $cert = $null
+
+    try {
+        [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($CertificateBase64.Trim()))
+
+        if ([string]::IsNullOrEmpty($CertificatePassword)) {
+            $securePass = New-Object System.Security.SecureString
+        }
+        else {
+            $securePass = ConvertTo-SecureString -String $CertificatePassword -AsPlainText -Force
+        }
+
+        $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $securePass
+        if (-not $cert) {
+            Fail-Stage "Import-PfxCertificate returned no certificate"
+        }
+        Write-Host "[$Stage] Imported cert thumbprint=$($cert.Thumbprint) subject=$($cert.Subject)"
+
+        $signtool = Find-SignTool
+        if (-not $signtool) {
+            Fail-Stage "signtool.exe not found (install Windows SDK signing tools on the runner)"
+        }
+        Write-Host "[$Stage] Using signtool: $signtool"
+        Close-Stage
+
+        Invoke-ThumbprintSign -SignTool $signtool -SignThumbprint $cert.Thumbprint -Paths $Path
+    }
+    finally {
+        if ($cert -and $cert.Thumbprint) {
+            Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($cert.Thumbprint)" -ErrorAction SilentlyContinue
+        }
+        if (Test-Path $tempDir) {
+            Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    Write-Host "[$Stage] Authenticode signing complete (provider=local-pfx)"
+    return
+}
+
+if ($normalizedProvider -eq "esigner" -or $normalizedProvider -eq "certum") {
+    if ([string]::IsNullOrWhiteSpace($Thumbprint)) {
+        Fail-Stage "WINDOWS_SIGNING_PROVIDER=$normalizedProvider but WINDOWS_SIGNING_THUMBPRINT is empty — the $normalizedProvider provisioning step must run and export the certificate thumbprint before this script (see docs/windows-signing.md)."
+    }
+
+    Write-Stage "Locate signtool ($normalizedProvider)"
+    $signtool = Find-SignTool
+    if (-not $signtool) {
+        Fail-Stage "signtool.exe not found (install Windows SDK signing tools on the runner)"
+    }
+    Write-Host "[$Stage] Using signtool: $signtool"
+    Write-Host "[$Stage] Using $normalizedProvider certificate thumbprint=$Thumbprint"
+    Close-Stage
+
+    Invoke-ThumbprintSign -SignTool $signtool -SignThumbprint $Thumbprint -Paths $Path
+
+    Write-Host "[$Stage] Authenticode signing complete (provider=$normalizedProvider)"
+    return
+}
+
+Fail-Stage "unknown WINDOWS_SIGNING_PROVIDER '$Provider' (expected one of: (empty)/none, local-pfx, esigner, certum)"
