@@ -252,6 +252,7 @@ picture (provider comparison, rollout steps, CI proof). Summary:
 | `WINDOWS_SIGNING_PROVIDER` (repo **variable**) | `esigner` (recommended) / `certum` (fallback) / `local-pfx` (testing) / unset (default, unsigned) |
 | `ESIGNER_USERNAME` / `ESIGNER_PASSWORD` / `ESIGNER_TOTP_SECRET` | SSL.com eSigner account credentials (provider=`esigner`) |
 | `CERTUM_USERNAME` / `CERTUM_TOTP_SECRET` | Certum SimplySign credentials (provider=`certum`) |
+| `CERTUM_ACTION_AUDITED` (repo **variable**) | must be `true` before provider=`certum` will run — see [`docs/windows-signing.md#certum-action-audit`](./windows-signing.md#certum-action-audit) |
 | `WINDOWS_CERTIFICATE` / `WINDOWS_CERTIFICATE_PASSWORD` | base64 PFX + password (provider=`local-pfx` only; legacy scaffold, not for production) |
 | `AUTHENTICODE_REQUIRED` (repo **variable**) | `true` → fail release when a PE is not `Valid` or lacks an RFC3161 timestamp |
 | `WINDOWS_TIMESTAMP_URL` (repo **variable**) | optional RFC3161 timestamp URL override |

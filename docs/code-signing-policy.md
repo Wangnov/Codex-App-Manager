@@ -196,12 +196,19 @@ artifacts:
    (`Get-AuthenticodeSignature` `Status -eq "Valid"`) from the expected
    publisher and carries a valid RFC3161 timestamp
    (`TimeStamperCertificate` present) — enforced by
-   `scripts/verify-windows-authenticode.ps1` in `required` mode. For x64 this
+   `scripts/verify-windows-authenticode.ps1` in `required` mode. "Expected
+   publisher" is checked by exact certificate identity, not just validity:
+   `release.yml` passes the specific thumbprint the `esigner`/`certum`
+   provisioning step just loaded (`WINDOWS_SIGNING_THUMBPRINT`) as
+   `-ExpectedThumbprint`, so a signature that is `Valid` but from a
+   *different*, unrelated trusted certificate still fails the check — a
+   plain `Status -eq "Valid"` check alone would not catch that. For x64 this
    includes the uninstaller, verified in `release.yml` by installing the
    real, just-signed release artifact (the uninstaller only exists once
-   installed). `windows-latest` is x64-only, so a cross-built ARM64
-   installer cannot be installed/run in CI; its uninstaller must be checked
-   manually before each release using the checklist in
+   installed) and checking it against the same expected thumbprint.
+   `windows-latest` is x64-only, so a cross-built ARM64 installer cannot be
+   installed/run in CI; its uninstaller must be checked manually before each
+   release using the checklist in
    [`Windows signing and verification`](./windows-signing.md#arm64-runtime-verification-strategy)
    until a native or trusted-virtualization ARM64 runner is available.
 5. The Tauri updater signature is generated only after Authenticode signing so

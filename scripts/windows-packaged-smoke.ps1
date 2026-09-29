@@ -6,11 +6,18 @@
 #   launch    — first start of the installed main executable
 #   upgrade   — re-run installer with /P /UPDATE (in-place upgrade path)
 #   uninstall — passive uninstall of the installed product (always attempted in finally)
-#   sign-verify — optional Authenticode probe on installer + installed PE files
+#   sign-verify — Authenticode probe on installer + installed PE files
+#                 (optional/required/skip via -AuthenticodeMode; pass
+#                 -ExpectedThumbprint to also assert a specific certificate
+#                 signed them — this is the only place the uninstaller can be
+#                 checked at all, since it does not exist as a file until
+#                 install actually writes it)
 #
 # Usage (prefer in-process from CI shell:pwsh steps — nested `pwsh -File` breaks
 # array binding for -Path on some runners):
 #   & .\scripts\windows-packaged-smoke.ps1 -Installer path\to\*-setup.exe
+#   & .\scripts\windows-packaged-smoke.ps1 -Installer path\to\*-setup.exe `
+#       -AuthenticodeMode required -ExpectedThumbprint $thumbprint
 #
 # Safe for CI: currentUser installMode → %LOCALAPPDATA%\Codex App Manager
 # (no admin elevation). Kills the app between stages. Does not touch ~/.codex.
@@ -24,7 +31,16 @@ param(
     [string]$MainBinaryName = "codex-app-manager",
     [int]$LaunchSeconds = 12,
     [ValidateSet("optional", "required", "skip")]
-    [string]$AuthenticodeMode = "optional"
+    [string]$AuthenticodeMode = "optional",
+
+    # Forwarded to verify-windows-authenticode.ps1's -ExpectedThumbprint on
+    # both sign-verify probes (installer, and installed exe + uninstaller).
+    # Lets a caller assert every PE — including the uninstaller, which only
+    # exists once actually installed, which is exactly what this script
+    # does — was signed by one specific certificate, not just "signed by
+    # something" or "Valid". Empty (default) is a no-op, matching prior
+    # behavior exactly.
+    [string]$ExpectedThumbprint = ""
 )
 
 Set-StrictMode -Version Latest
@@ -97,7 +113,7 @@ try {
     # ── sign-verify (installer artifact, pre-install) ───────────────────────
     if ($AuthenticodeMode -ne "skip" -and (Test-Path $verifyScript)) {
         Write-Stage "sign-verify" "Probe Authenticode on installer ($AuthenticodeMode)"
-        & $verifyScript -Path $installerItem.FullName -Mode $AuthenticodeMode -Stage "sign-verify"
+        & $verifyScript -Path $installerItem.FullName -Mode $AuthenticodeMode -ExpectedThumbprint $ExpectedThumbprint -Stage "sign-verify"
         Close-Stage
     }
 
@@ -129,7 +145,7 @@ try {
     # ── sign-verify (installed PE) ──────────────────────────────────────────
     if ($AuthenticodeMode -ne "skip" -and (Test-Path $verifyScript)) {
         Write-Stage "sign-verify" "Probe Authenticode on installed executable + uninstaller"
-        & $verifyScript -Path @($mainExe, $uninstaller) -Mode $AuthenticodeMode -Stage "sign-verify"
+        & $verifyScript -Path @($mainExe, $uninstaller) -Mode $AuthenticodeMode -ExpectedThumbprint $ExpectedThumbprint -Stage "sign-verify"
         Close-Stage
     }
 

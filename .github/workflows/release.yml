@@ -644,6 +644,12 @@ jobs:
       #    real signed release artifact. Optional until
       #    vars.AUTHENTICODE_REQUIRED=true; unsigned (NotSigned) is expected
       #    and non-blocking while no WINDOWS_SIGNING_PROVIDER is configured.
+      #    -ExpectedThumbprint pins the check to the specific certificate the
+      #    esigner/certum provisioning step loaded and exported as
+      #    WINDOWS_SIGNING_THUMBPRINT (see docs/code-signing-policy.md's "from
+      #    the expected publisher" requirement) — Valid + timestamp alone
+      #    would still pass for a trusted certificate belonging to someone
+      #    else. Empty for local-pfx/no provider, matching today's behavior.
       - name: Verify Authenticode on Windows binaries
         if: matrix.os == 'windows'
         shell: pwsh
@@ -655,6 +661,7 @@ jobs:
           & .\scripts\verify-windows-authenticode.ps1 `
             -Path @($main, $setup.FullName) `
             -Mode $env:AUTHENTICODE_MODE `
+            -ExpectedThumbprint $env:WINDOWS_SIGNING_THUMBPRINT `
             -Stage "sign-verify"
 
       # ── Windows (x64 only): uninstaller Authenticode gate on the real,
@@ -680,7 +687,10 @@ jobs:
         shell: pwsh
         run: |
           $setup = Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe" -ErrorAction Stop
-          & .\scripts\windows-packaged-smoke.ps1 -Installer $setup.FullName -AuthenticodeMode required
+          & .\scripts\windows-packaged-smoke.ps1 `
+            -Installer $setup.FullName `
+            -AuthenticodeMode required `
+            -ExpectedThumbprint $env:WINDOWS_SIGNING_THUMBPRINT
 
       # ── Windows: sign the NSIS installer for the updater ──────────────────
       #    Tauri never emits an updater `.sig` on its own during build; this is

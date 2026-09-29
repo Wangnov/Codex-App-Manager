@@ -47,6 +47,8 @@ public [code-signing policy](code-signing-policy.md) and
 | `certum` | **备选方案:** Certum Open Source / Individual Cloud Code Signing(SimplySign 云 HSM),经社区维护的 `jay0lee/certum-cloud-code-sign` action 接入。 | `CERTUM_USERNAME`、`CERTUM_TOTP_SECRET` |
 | `local-pfx` | **仅测试用**:导入一个 base64 PFX 到 `CurrentUser\My` 签名后立即删除。CI 的自签名证书链路证明就是用这个模式,不代表真实证书已配置。 | `WINDOWS_CERTIFICATE`、`WINDOWS_CERTIFICATE_PASSWORD`(均为 legacy 占位,production 场景不应使用) |
 
+**迁移防护:** 在这个 provider 概念出现之前,`release.yml` 里的旧签名步骤只要 `WINDOWS_CERTIFICATE` secret 存在就会签名安装包。为避免有人已经配置了这个 secret,却因为忘记同步设置 `WINDOWS_SIGNING_PROVIDER` 而悄悄发布未签名版本,`sign-windows-authenticode.ps1` 现在会在“未设置 provider 但 `WINDOWS_CERTIFICATE` 已配置”这一种情况下直接报错终止,而不是静默跳过签名 —— 需要显式设置 `WINDOWS_SIGNING_PROVIDER=local-pfx`(或迁移到 `esigner`/`certum`)才能继续。仓库里此前从未配置过 `WINDOWS_CERTIFICATE`,因此这条防护不会改变任何人今天看到的行为。
+
 选型依据(详见调研结论):SSL.com eSigner 是唯一同时满足“个人无需公司主体资质”“有官方维护的 GitHub Action(`SSLcom/esigner-codesign` / eSigner CKA)”“私钥全程留在云 HSM、CI 只经手证书指纹”三项要求的方案,列为推荐;Certum 的身份验证覆盖 180+ 国家且明确支持中文姓名音译,价格更低,但其 CI 自动化路径依赖社区脚本而非官方 action,稳定性稍弱,列为备选。两者都是 OV 级证书 —— 前面提到 EV 已不再有 SmartScreen 捷径,因此不建议为 EV 额外付费。
 
 **开通新供应商的步骤(以 esigner 为例,certum 同理替换变量前缀):**
@@ -83,7 +85,14 @@ public [code-signing policy](code-signing-policy.md) and
 
 ### 用一次性自签名证书证明签名链路(无需真实证书)
 
-`win-installer-check.yml` 的 “Authenticode signCommand proof” 步骤在每次改动打包/签名相关文件的 PR 上运行:用 `New-SelfSignedCertificate` 现场生成一张一天有效期的自签名代码签名证书,以 `local-pfx` 模式对主程序与 installer 的**副本**跑真实的 `scripts/sign-windows-authenticode.ps1`,然后断言每个文件的 `Get-AuthenticodeSignature().SignerCertificate.Thumbprint` 与这张自签名证书完全一致。自签名证书永远不会被系统信任链接受,所以 `Status` 预期是 `UnknownError` / `NotTrusted` 而不是 `Valid` —— 这个证明验证的是“分发/签名逻辑本身工作正常”,不是“证书受信任”,后者要等真实供应商接入后由 `verify-windows-authenticode.ps1` 的 `required` 模式把关。
+`win-installer-check.yml` 的 `nsis` job 在每次改动打包/签名相关文件的 PR 上运行,用四步无需真实证书就证明整条签名链路:
+
+1. **创建一次性自签名证书** —— 用 `New-SelfSignedCertificate` 现场生成一张一天有效期的自签名代码签名证书,导出为带随机密码的 base64 PFX。
+2. **用这张证书签名地构建 NSIS installer** —— 把这个临时 PFX 以 `WINDOWS_SIGNING_PROVIDER=local-pfx` / `WINDOWS_CERTIFICATE` / `WINDOWS_CERTIFICATE_PASSWORD` 的形式喂给 `npm run tauri build`,让 Tauri 自己的 `bundle.windows.signCommand` 挂载点在一次真实构建中签名全部三层 PE(主程序、NSIS uninstaller、installer)——这验证的是 Tauri 集成本身,而不只是脱离 Tauri 单独调用签名脚本。
+3. **断言构建产物携带这张证书** —— 用 `verify-windows-authenticode.ps1 -ExpectedThumbprint <临时证书指纹>` 断言构建出的主程序与 installer 的 `SignerCertificate.Thumbprint` 与临时证书完全一致。自签名证书永远不会被系统信任链接受,所以 `Status` 预期是 `UnknownError` / `NotTrusted` 而不是 `Valid`——`-ExpectedThumbprint` 才是让这个断言变得严格的关键:没有它,一个未签名文件在 `optional` 模式下会被静默放行。
+4. **打包生命周期冒烟**,同样带上 `-ExpectedThumbprint` —— NSIS uninstaller 只有在真正安装后才会作为文件存在(由 NSIS 在安装期间写入),所以这是这个 job 里唯一能校验它签名的地方。这补上了"只在构建期证明"会留下的缺口:如果 Tauri 未来不再针对 uninstaller 单独调用 `signCommand`,只有这一步(而非上面构建产物那一步)能抓到。
+
+这一整套证明的是"分发/签名逻辑本身工作正常,并且确实接入了真实的 `tauri build` + 安装路径、覆盖每一层 PE",不是"证书受信任"——后者是 `verify-windows-authenticode.ps1` 的 `required` 模式在真实供应商接入后的职责,同样通过 `-ExpectedThumbprint` 机制,只是这时指向真实供应商的证书指纹(见[生产验证要求](code-signing-policy.md#artifact-and-verification-requirements--工件与验证要求))。
 
 ### 如何核验下载
 
@@ -185,6 +194,8 @@ The single signing entry point is [`scripts/sign-windows-authenticode.ps1`](../s
 | `certum` | **Fallback:** Certum Open Source / Individual Cloud Code Signing (SimplySign cloud HSM), integrated via the community-maintained `jay0lee/certum-cloud-code-sign` action. | `CERTUM_USERNAME`, `CERTUM_TOTP_SECRET` |
 | `local-pfx` | **Testing only:** imports a base64 PFX into `CurrentUser\My`, signs, and removes it immediately. This is the mode CI's self-signed-certificate proof uses; it never implies a real certificate is configured. | `WINDOWS_CERTIFICATE`, `WINDOWS_CERTIFICATE_PASSWORD` (legacy scaffold; not for production use) |
 
+**Migration guard:** before this provider concept existed, `release.yml`'s old signing step signed the installer whenever the `WINDOWS_CERTIFICATE` secret alone was present. To make sure nobody who had already configured that secret silently ends up with an unsigned release just because `WINDOWS_SIGNING_PROVIDER` was never added, `sign-windows-authenticode.ps1` now fails loudly — instead of skipping silently — when `WINDOWS_CERTIFICATE` is set but no provider is configured; it requires explicitly setting `WINDOWS_SIGNING_PROVIDER=local-pfx` (or migrating to `esigner`/`certum`) to proceed. This repository has never had `WINDOWS_CERTIFICATE` configured on the `release` environment (confirmed via the GitHub API), so this guard does not change today's behavior for anyone.
+
 Why this pairing (full research write-up kept internally): SSL.com eSigner is the only option researched with (a) confirmed individual, no-business-registration eligibility, (b) a vendor-maintained GitHub Action (`SSLcom/esigner-codesign` / eSigner CKA), and (c) a cloud-HSM design where the private key never leaves the provider — CI only ever handles a certificate thumbprint. Certum accepts ID documents from 180+ countries (with explicit support for non-Latin name transliteration) at a lower price, but its CI automation is community-built rather than vendor-published, so it is the fallback. Both are OV-tier certificates — since EV no longer has a SmartScreen shortcut (see above), paying for EV is not recommended.
 
 **Steps to turn on a provider (using `esigner`; substitute the `CERTUM_*` variable names for `certum`):**
@@ -194,7 +205,7 @@ Why this pairing (full research write-up kept internally): SSL.com eSigner is th
 3. Add `ESIGNER_USERNAME`, `ESIGNER_PASSWORD`, and `ESIGNER_TOTP_SECRET` as secrets on the GitHub `release` environment.
 4. Set the repo variable `WINDOWS_SIGNING_PROVIDER=esigner`. `release.yml`'s Windows job then runs a "Provision eSigner CKA certificate" step before `tauri build`, installing the certificate into the runner's store and exporting its thumbprint as `WINDOWS_SIGNING_THUMBPRINT`; the `signCommand` hook signs all three PE layers with it during `tauri build`.
 5. **Run 1–2 real releases with `AUTHENTICODE_REQUIRED` left unset (optional mode) first**, and confirm all three PE layers on both x64 and arm64 verify `Get-AuthenticodeSignature` as `Valid` with an RFC3161 timestamp present (`TimeStamperCertificate` non-null).
-6. Only once that is proven, set the repo variable `AUTHENTICODE_REQUIRED=true`. `verify-windows-authenticode.ps1` then runs in `required` mode, and the x64 release job additionally runs an "Uninstaller Authenticode gate" step — a real install/launch/upgrade/uninstall pass against the just-signed installer, which also verifies the uninstaller's signature (it only exists once installed). Any PE layer that is not `Valid`, or lacks a timestamp, blocks the release — there is no unsigned fallback once this is on. ARM64 cannot install/run on an x64 runner, so its uninstaller must be checked manually — see [ARM64 runtime verification strategy](#arm64-runtime-verification-strategy) step 6.
+6. Only once that is proven, set the repo variable `AUTHENTICODE_REQUIRED=true`. `verify-windows-authenticode.ps1` then runs in `required` mode, checking both `Status -eq "Valid"`/timestamp AND (via `-ExpectedThumbprint $env:WINDOWS_SIGNING_THUMBPRINT`) that the signature is specifically from the certificate this run's provisioning step just loaded, not merely from *some* trusted certificate. The x64 release job additionally runs an "Uninstaller Authenticode gate" step — a real install/launch/upgrade/uninstall pass against the just-signed installer, which also verifies the uninstaller's signature the same way (it only exists once installed). Any PE layer that is not `Valid`, lacks a timestamp, or was signed by the wrong certificate, blocks the release — there is no unsigned fallback once this is on. ARM64 cannot install/run on an x64 runner, so its uninstaller must be checked manually — see [ARM64 runtime verification strategy](#arm64-runtime-verification-strategy) step 6.
 7. Only after step 6 is proven should user-facing docs (README, website) claim the Windows installers are signed.
 
 **Additional step for `certum` only:** before setting `WINDOWS_SIGNING_PROVIDER=certum`, also set the repo variable `CERTUM_ACTION_AUDITED=true` — `release.yml` refuses to run the Certum provisioning step without it. See [Certum action audit](#certum-action-audit) below for why this exists and what "audited" means here.
@@ -221,7 +232,14 @@ Until one of those happens, prefer `esigner` (the recommended, vendor-maintained
 
 ### Proving the signing plumbing without a real certificate
 
-The "Authenticode signCommand proof" step in `win-installer-check.yml` runs on every PR that touches packaging/signing files: it creates a throwaway, one-day-valid self-signed code-signing certificate with `New-SelfSignedCertificate`, runs the real `scripts/sign-windows-authenticode.ps1` in `local-pfx` mode against **copies** of the built main executable and installer, and asserts each file's `Get-AuthenticodeSignature().SignerCertificate.Thumbprint` matches that throwaway certificate. A self-signed certificate never chains to a trusted root, so `Status` is expected to be `UnknownError`/`NotTrusted`, never `Valid` — this proof exercises the dispatch/signing logic itself, not trust; trust is what `verify-windows-authenticode.ps1`'s `required` mode checks once a real provider is configured.
+`win-installer-check.yml`'s `nsis` job runs on every PR that touches packaging/signing files, and proves the real signing path end to end with no real certificate:
+
+1. **Create throwaway self-signed code-signing certificate** — a one-day-valid certificate via `New-SelfSignedCertificate`, exported as a base64 PFX with a random per-run password.
+2. **Build NSIS installer (signed with throwaway certificate)** — the throwaway PFX is fed into `npm run tauri build` as `WINDOWS_SIGNING_PROVIDER=local-pfx` / `WINDOWS_CERTIFICATE` / `WINDOWS_CERTIFICATE_PASSWORD`, so Tauri's own `bundle.windows.signCommand` hook actually signs all three PE layers (main exe, NSIS uninstaller, installer) during a real build — this tests the actual Tauri integration, not just the sign script called in isolation.
+3. **Assert build artifacts carry the throwaway certificate** — `verify-windows-authenticode.ps1 -ExpectedThumbprint <throwaway thumbprint>` asserts the built main exe and installer's `SignerCertificate.Thumbprint` exactly matches the throwaway certificate. A self-signed certificate never chains to a trusted root, so `Status` is expected to be `UnknownError`/`NotTrusted`, never `Valid` — `-ExpectedThumbprint` is what makes this assertion strict regardless of `Status`; without it, an unsigned file would otherwise soft-pass in `optional` mode.
+4. **Packaged lifecycle smoke**, with the same `-ExpectedThumbprint` threaded through — the NSIS uninstaller only exists as a file once the package is actually installed (NSIS writes it during install), so this is the only place this job can check its signature at all. This closes the gap a build-time-only proof would have: if Tauri ever stopped invoking `signCommand` for the uninstaller specifically, this step (not just the main-exe/installer check above) would catch it.
+
+Together these prove "the dispatch/signing logic works, and it is actually wired into the real `tauri build` + install path for every PE layer" — not trust; trust (a certificate chaining to a public root) is what `verify-windows-authenticode.ps1`'s `required` mode checks once a real provider is configured, via the same `-ExpectedThumbprint` mechanism pinned to the real provider's certificate (see the [production verification requirements](code-signing-policy.md#artifact-and-verification-requirements--工件与验证要求)).
 
 ### How to verify downloads
 

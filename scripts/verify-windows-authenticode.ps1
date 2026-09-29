@@ -10,6 +10,20 @@
 #               AUTHENTICODE_REQUIRED=true) — see docs/code-signing-policy.md's
 #               "Valid Authenticode + timestamp on all three PE layers" clause.
 #
+# -ExpectedThumbprint (either mode): when set, every path's
+#   SignerCertificate.Thumbprint must exactly match it, or that path fails —
+#   even in "optional" mode, where an unsigned/NotSigned file would otherwise
+#   soft-pass. This is what tells the difference between "no provider
+#   configured yet" (soft pass) and "a provider is configured and this file
+#   was expected to carry ITS certificate but doesn't" (hard fail). Used by:
+#   release.yml passing the real provider's WINDOWS_SIGNING_THUMBPRINT (once
+#   esigner/certum export it) so `required` mode also enforces publisher
+#   identity, not just Valid+timestamp; and by win-installer-check.yml's CI
+#   proof passing the throwaway self-signed certificate's thumbprint, so the
+#   proof fails if any expected PE (including the uninstaller, verified only
+#   after install) was not actually signed by the certificate the build was
+#   given.
+#
 # Usage:
 #   pwsh scripts/verify-windows-authenticode.ps1 -Path a.exe,b.exe -Mode optional
 #   pwsh scripts/verify-windows-authenticode.ps1 -Path (Get-ChildItem *.exe) -Mode required
@@ -27,6 +41,10 @@ param(
 
     # When set (required mode), SignerCertificate.Subject must contain this.
     [string]$ExpectedSubject = "",
+
+    # When set (either mode), SignerCertificate.Thumbprint must exactly
+    # match this. See the header comment above.
+    [string]$ExpectedThumbprint = "",
 
     [string]$Stage = "sign-verify"
 )
@@ -106,6 +124,20 @@ foreach ($raw in $Path) {
             else {
                 $ok = $true
             }
+        }
+    }
+
+    # Identity check: independent of Mode, and independent of whether the
+    # Mode-level check above already passed. Runs even in optional mode's
+    # soft-pass branches (e.g. NotSigned) so that "a certificate was
+    # expected but this file doesn't carry it" is always a hard failure once
+    # the caller supplies -ExpectedThumbprint, not just once enforcement
+    # (required mode) is fully on.
+    if ($ExpectedThumbprint) {
+        $actualThumbprint = if ($sig.SignerCertificate) { $sig.SignerCertificate.Thumbprint } else { "" }
+        if ($actualThumbprint -ne $ExpectedThumbprint) {
+            $ok = $false
+            Write-Host "::error::[$Stage] $($item.Name): signer thumbprint '$actualThumbprint' does not match expected '$ExpectedThumbprint'"
         }
     }
 

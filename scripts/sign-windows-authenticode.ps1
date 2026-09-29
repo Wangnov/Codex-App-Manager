@@ -216,6 +216,17 @@ if ($Path.Count -eq 0) {
 }
 
 if ([string]::IsNullOrWhiteSpace($normalizedProvider) -or $normalizedProvider -eq "none") {
+    # Migration guard: before this script existed, release.yml's old
+    # "Authenticode-sign Windows installer (optional)" step signed the
+    # installer whenever the WINDOWS_CERTIFICATE secret alone was present —
+    # no separate provider switch existed. If that secret is still set but
+    # WINDOWS_SIGNING_PROVIDER has not been added, silently returning here
+    # would turn a previously-signed release into an unsigned one with no
+    # error. Fail loudly instead and require an explicit provider choice,
+    # rather than ever silently downgrading an existing signing setup.
+    if (-not [string]::IsNullOrWhiteSpace($CertificateBase64)) {
+        Fail-Stage "WINDOWS_CERTIFICATE is set but WINDOWS_SIGNING_PROVIDER is not — refusing to silently publish an unsigned release. Set the repo variable WINDOWS_SIGNING_PROVIDER=local-pfx to keep signing with this PFX, or remove the WINDOWS_CERTIFICATE secret if it is no longer intended to be used."
+    }
     Write-Host "[$Stage] WINDOWS_SIGNING_PROVIDER not set — skipping Authenticode signing (non-blocking milestone)."
     Write-Host "[$Stage] Binaries remain unsigned; see docs/windows-signing.md."
     # Do not `exit` — CI and Tauri's signCommand invoke this in-process/as a
