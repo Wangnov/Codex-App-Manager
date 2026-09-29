@@ -449,7 +449,11 @@ jobs:
       #    before extraction: this step runs in the credentialed `release`
       #    environment (ESIGNER_* secrets), so a replaced/compromised GitHub
       #    release asset must not be able to execute inside it unnoticed.
-      #    Update ESIGNER_CKA_SHA256 (and the version/URL) together in a
+      #    Download/verify/extract/rename is factored into
+      #    scripts/resolve-esigner-cka-installer.ps1 (shared with the
+      #    secret-free CI dry run in win-installer-check.yml) — see that
+      #    script's header for why the extracted installer must be renamed.
+      #    Update its -Version / -ExpectedSha256 defaults together in a
       #    reviewed PR when bumping the eSigner CKA release.
       - name: Provision eSigner CKA certificate
         if: matrix.os == 'windows' && vars.WINDOWS_SIGNING_PROVIDER == 'esigner'
@@ -464,24 +468,9 @@ jobs:
             Write-Host "::error::WINDOWS_SIGNING_PROVIDER=esigner but ESIGNER_USERNAME/ESIGNER_PASSWORD/ESIGNER_TOTP_SECRET are not fully configured on the release environment"
             exit 1
           }
-          $esignerCkaSha256 = "e4971440e4ebed94328492cf36e18999554c5c657c856f1cb14a6072c8b1c263"
           $installDir = Join-Path $env:RUNNER_TEMP "eSignerCKA"
-          New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-          $zip = Join-Path $env:RUNNER_TEMP "eSignerCKA.zip"
-          Invoke-WebRequest -OutFile $zip -Uri "https://github.com/SSLcom/eSignerCKA/releases/download/v1.0.6/SSL.COM-eSigner-CKA_1.0.6.zip"
-          $actualSha256 = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
-          if ($actualSha256 -ne $esignerCkaSha256) {
-            Write-Host "::error::eSigner CKA archive SHA-256 mismatch: expected $esignerCkaSha256, got $actualSha256 — refusing to extract/execute a possibly-tampered release asset"
-            exit 1
-          }
-          Write-Host "eSigner CKA archive SHA-256 verified: $actualSha256"
-          Expand-Archive -Force -Path $zip -DestinationPath $installDir
-          $installer = Get-ChildItem -Path $installDir -Filter "eSigner_CKA_Installer.exe" -Recurse | Select-Object -First 1
-          if (-not $installer) {
-            Write-Host "::error::eSigner CKA installer not found after extracting the release archive"
-            exit 1
-          }
-          & $installer.FullName /CURRENTUSER /VERYSILENT /SUPPRESSMSGBOXES "/DIR=$installDir" | Out-Null
+          $installer = & ./scripts/resolve-esigner-cka-installer.ps1 -DestinationDir $installDir -Stage "esigner-provision"
+          & $installer /CURRENTUSER /VERYSILENT /SUPPRESSMSGBOXES "/DIR=$installDir" | Out-Null
           $tool = Join-Path $installDir "eSignerCKATool.exe"
           $masterKey = Join-Path $installDir "master.key"
           & $tool config -mode "product" -user "$env:ESIGNER_USERNAME" -pass "$env:ESIGNER_PASSWORD" -totp "$env:ESIGNER_TOTP_SECRET" -key "$masterKey" -r

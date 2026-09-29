@@ -31,6 +31,7 @@ on:
       - "scripts/windows-*.ps1"
       - "scripts/sign-windows-authenticode.ps1"
       - "scripts/verify-windows-authenticode.ps1"
+      - "scripts/resolve-esigner-cka-installer.ps1"
       - ".github/workflows/win-installer-check.yml"
   workflow_dispatch:
 
@@ -42,6 +43,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  esigner-archive-check:
+    name: eSigner CKA archive extraction check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      # Secret-free dry run on every PR that touches this script or its pin:
+      # downloads the real, publicly pinned SSL.com eSigner CKA release
+      # archive, verifies its SHA-256, and asserts the extraction/rename
+      # logic still resolves the shipped, build-stamped executable (e.g.
+      # "SSL.COM eSigner CKA_1.0.6_build_20230829.exe") to the fixed
+      # `eSigner_CKA_Installer.exe` path that release.yml's credentialed
+      # "Provision eSigner CKA certificate" step depends on. No installer is
+      # ever executed here. This is what would have caught (and now
+      # prevents a regression of) the archive-layout mismatch described in
+      # scripts/resolve-esigner-cka-installer.ps1's header comment: a future
+      # SSL.com release that changes the archive layout, or a bad pin bump,
+      # fails here instead of on the first real release attempt.
+      - name: Resolve + assert eSigner CKA installer path
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP "esigner-archive-check"
+          $installer = & ./scripts/resolve-esigner-cka-installer.ps1 -DestinationDir $dest -Stage "esigner-archive-check"
+          $expected = Join-Path $dest "eSigner_CKA_Installer.exe"
+          if ($installer -ne $expected) {
+            Write-Host "::error::[esigner-archive-check] resolved path '$installer' does not match expected '$expected'"
+            exit 1
+          }
+          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
+            Write-Host "::error::[esigner-archive-check] resolved installer '$installer' does not exist on disk"
+            exit 1
+          }
+          Write-Host "[esigner-archive-check] OK: $installer"
+
   nsis:
     runs-on: windows-latest
     steps:
