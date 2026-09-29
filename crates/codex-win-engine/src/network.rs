@@ -286,11 +286,14 @@ fn redact_userinfo(url: &str) -> String {
     }
 }
 
-pub(crate) fn is_schannel_revocation_offline(exit_code: Option<i32>, stderr: &str) -> bool {
+pub(crate) fn is_schannel_revocation_check_failure(exit_code: Option<i32>, stderr: &str) -> bool {
     let lower = stderr.to_ascii_lowercase();
     exit_code == Some(35)
         && lower.contains("schannel")
-        && (stderr.contains("CRYPT_E_REVOCATION_OFFLINE") || lower.contains("0x80092013"))
+        && (lower.contains("crypt_e_revocation_offline")
+            || lower.contains("0x80092013")
+            || lower.contains("crypt_e_no_revocation_check")
+            || lower.contains("0x80092012"))
 }
 
 #[cfg(windows)]
@@ -304,7 +307,7 @@ fn push_schannel_no_revoke(_args: &mut Vec<String>) {}
 #[cfg(test)]
 mod tests {
     use super::{
-        is_schannel_revocation_offline, redact_userinfo, resolve_system_proxy,
+        is_schannel_revocation_check_failure, redact_userinfo, resolve_system_proxy,
         system_proxy_bypass, system_proxy_url, NetworkConfig, SchannelRevocationCheck,
         SystemProxy,
     };
@@ -403,13 +406,35 @@ mod tests {
 
     #[test]
     fn detects_schannel_revocation_offline_failure() {
-        let stderr = "curl: (35) schannel: next InitializeSecurityContext failed: CRYPT_E_REVOCATION_OFFLINE (0x80092013)";
-
-        assert!(is_schannel_revocation_offline(Some(35), stderr));
-        assert!(!is_schannel_revocation_offline(Some(6), stderr));
-        assert!(!is_schannel_revocation_offline(
+        for reason in ["CRYPT_E_REVOCATION_OFFLINE", "0x80092013"] {
+            let stderr = format!(
+                "curl: (35) schannel: next InitializeSecurityContext failed: {reason}"
+            );
+            assert!(is_schannel_revocation_check_failure(Some(35), &stderr));
+            assert!(!is_schannel_revocation_check_failure(Some(6), &stderr));
+        }
+        assert!(!is_schannel_revocation_check_failure(
             Some(35),
             "curl: (35) OpenSSL SSL_connect: connection reset"
+        ));
+    }
+
+    #[test]
+    fn detects_schannel_no_revocation_check_failure() {
+        for reason in ["CRYPT_E_NO_REVOCATION_CHECK", "0x80092012"] {
+            let stderr = format!(
+                "curl: (35) schannel: next InitializeSecurityContext failed: {reason}"
+            );
+            assert!(is_schannel_revocation_check_failure(Some(35), &stderr));
+            assert!(!is_schannel_revocation_check_failure(Some(6), &stderr));
+            assert!(!is_schannel_revocation_check_failure(
+                Some(35),
+                &stderr.replace("schannel", "OpenSSL")
+            ));
+        }
+        assert!(!is_schannel_revocation_check_failure(
+            Some(35),
+            "curl: (35) schannel: unrelated TLS handshake failure"
         ));
     }
 

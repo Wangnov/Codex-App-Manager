@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use sha2::{Digest, Sha256};
 
 use crate::limits::MAX_PACKAGE_BYTES;
-use crate::network::{is_schannel_revocation_offline, NetworkConfig, SchannelRevocationCheck};
+use crate::network::{is_schannel_revocation_check_failure, NetworkConfig, SchannelRevocationCheck};
 use crate::process::{
     curl_exe, hidden_command, run_with_progress, RunError, RunLimits, TimeoutKind,
 };
@@ -311,7 +311,7 @@ fn retry_with_schannel_no_revoke(
 ) -> Result<(), CurlAttemptError> {
     let should_retry = match &err {
         CurlAttemptError::Curl { exit_code, stderr } => {
-            is_schannel_revocation_offline(*exit_code, stderr)
+            is_schannel_revocation_check_failure(*exit_code, stderr)
         }
         _ => false,
     };

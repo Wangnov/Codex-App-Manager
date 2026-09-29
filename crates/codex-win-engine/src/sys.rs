@@ -10,7 +10,7 @@ use crate::capability::WinCapabilityReport;
 use crate::capability::{CapabilityCheck, CapabilityState};
 use crate::limits::MAX_TEXT_BYTES;
 use crate::msix::parse_appx_manifest_xml;
-use crate::network::{is_schannel_revocation_offline, NetworkConfig, SchannelRevocationCheck};
+use crate::network::{is_schannel_revocation_check_failure, NetworkConfig, SchannelRevocationCheck};
 use crate::process::{
     curl_exe, hidden_command, run_capturing, LivenessResult, RunError, RunLimits, TimeoutKind,
     MSIX_ACTIVATION_WINDOW_SECS, MSIX_LIVENESS_WINDOW_SECS, PORTABLE_LIVENESS_WINDOW,
@@ -248,7 +248,7 @@ pub fn fetch_text_with_network(url: &str, network: &NetworkConfig) -> Result<Str
     let should_retry_without_revocation = {
         let stderr = String::from_utf8_lossy(&output.stderr);
         !output.status.success()
-            && is_schannel_revocation_offline(output.status.code(), stderr.as_ref())
+            && is_schannel_revocation_check_failure(output.status.code(), stderr.as_ref())
     };
     if should_retry_without_revocation {
         log::warn!(
