@@ -1,6 +1,6 @@
 # Code signing policy · 代码签名政策
 
-Last updated / 最后更新：2026-09-29
+Last updated / 最后更新：2026-09-30
 
 ## Current status · 当前状态
 
@@ -176,12 +176,15 @@ role changes must remain auditable.
   required-reviewers rule (it only has a branch policy), and no provider is
   configured, so no signing is happening and releases stay unsigned; this
   rule is a precondition the maintainer must complete before enabling a
-  provider, not something already in force. As a backstop, `release.yml`
-  reads the environment's protection rules before any signing secret is used
-  and fails the job when a cloud provider is selected and the answer it gets
-  contains no required-reviewers rule (if the workflow token cannot read
-  the rules it only warns, so the manual verification above is still
-  required).
+  provider, not something already in force. `release.yml` also makes a
+  **best-effort** attempt to read the environment's protection rules before
+  any signing secret is used, and fails the job if a cloud provider is
+  selected and it gets a readable answer with no required-reviewers rule.
+  Treat this as a tripwire, not a control: the default `GITHUB_TOKEN` has no
+  permission to read environment protection rules (there is no `environments`
+  workflow permission), so the call is expected to fail and only warn ("not
+  verified"), in which case it enforces nothing. The manual verification
+  above is the real, required control.
 
 - `main` 由启用中的 GitHub ruleset 保护。所有变更通过 pull request 进入，并必须通过
   Frontend、macOS Rust 与 Windows Rust 检查。
@@ -203,10 +206,12 @@ role changes must remain auditable.
   （`esigner` 或 `certum`）。
   **当前状态：** `release` Environment 目前**尚未**配置必需审批人规则（只有分支策略），
   也没有配置任何供应商，因此当前没有任何签名发生，发布保持未签名；这条规则是维护者启用
-  供应商之前必须先完成的前置条件，而不是已经生效的控制。作为兜底，`release.yml` 会在使用
-  任何签名 secret 之前读取该 environment 的保护规则，选中云供应商而读到的答复里没有
-  required-reviewers 规则（包括完全没有保护规则）时直接让 job 失败（如果 workflow token 读不到这些规则则只给
-  warning，所以上述人工验证仍然必需）。
+  供应商之前必须先完成的前置条件，而不是已经生效的控制。`release.yml` 还会**尽力而为**地
+  在使用任何签名 secret 之前读取该 environment 的保护规则，选中云供应商而读到的答复里
+  没有 required-reviewers 规则时让 job 失败。请把它当作预警而不是控制手段：默认的
+  `GITHUB_TOKEN` 没有读取 environment 保护规则的权限（workflow 权限里没有
+  `environments`），这个调用预计会失败并只给出“未验证”的 warning，此时它不强制任何东西。
+  上述人工验证才是真正必需的控制。
 
 ## Artifact and verification requirements · 工件与验证要求
 

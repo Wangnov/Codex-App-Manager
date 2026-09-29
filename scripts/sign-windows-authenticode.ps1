@@ -7,28 +7,28 @@
 # proof job, and any ad-hoc/manual signing. It dispatches on the
 # WINDOWS_SIGNING_PROVIDER configuration instead of hard-coding one CA:
 #
-#   (unset / "" / "none")  — no provider configured. Prints a skip message and
+#   (unset / "" / "none")  - no provider configured. Prints a skip message and
 #                             returns 0. This is the DEFAULT and matches today's
 #                             behavior exactly: installers stay unsigned and the
 #                             release is still published (non-blocking).
-#   "local-pfx"             — imports an ephemeral PFX (WINDOWS_CERTIFICATE +
+#   "local-pfx"             - imports an ephemeral PFX (WINDOWS_CERTIFICATE +
 #                             WINDOWS_CERTIFICATE_PASSWORD, base64-encoded PFX)
 #                             into CurrentUser\My, signs, then removes it. Used
 #                             for local/CI testing (including with a throwaway
-#                             self-signed certificate — see
+#                             self-signed certificate - see
 #                             .github/workflows/win-installer-check.yml) and as
 #                             a legacy fallback if a real OV/EV PFX is ever
 #                             issued directly instead of through a cloud HSM.
-#   "esigner"                — recommended provider (SSL.com eSigner, via the
+#   "esigner"                - recommended provider (SSL.com eSigner, via the
 #                             eSigner CKA Cloud Key Adapter). A separate CI
 #                             provisioning step authenticates to SSL.com and
 #                             installs a CNG-backed certificate into the
 #                             runner's certificate store *before* this script
 #                             runs, and exports its thumbprint as
 #                             WINDOWS_SIGNING_THUMBPRINT. This script only
-#                             calls signtool with that thumbprint — it never
+#                             calls signtool with that thumbprint - it never
 #                             sees the eSigner account credentials.
-#   "certum"                  — fallback provider (Certum Open Source Code
+#   "certum"                  - fallback provider (Certum Open Source Code
 #                             Signing via SimplySign). Same shape as "esigner":
 #                             a separate provisioning step logs into SimplySign
 #                             and exports WINDOWS_SIGNING_THUMBPRINT; this
@@ -40,7 +40,7 @@
 # variable AUTHENTICODE_REQUIRED then gates verify-windows-authenticode.ps1
 # between "optional" and "required" mode once signing is proven end to end).
 #
-# This script signs. It does NOT decide whether a signature must be Valid —
+# This script signs. It does NOT decide whether a signature must be Valid -
 # that is verify-windows-authenticode.ps1's job (optional vs required mode).
 # A self-signed test certificate (local-pfx in CI) will never show
 # Status=Valid; this script only asserts that signtool succeeded and that the
@@ -49,7 +49,7 @@
 # Never logs secret values (PFX password, eSigner/Certum credentials). The
 # certificate thumbprint is not a secret and is safe to print.
 #
-# Does NOT produce Tauri updater .sig files — use `tauri signer sign` for that
+# Does NOT produce Tauri updater .sig files - use `tauri signer sign` for that
 # (see .github/workflows/release.yml, "Sign Windows updater artifact").
 #
 # Usage (manual/CI, one or more files):
@@ -63,7 +63,7 @@
 #     "-File", "../scripts/sign-windows-authenticode.ps1", "-Path", "%1"] }
 #   `tauri build` sets its process working directory to src-tauri/ before
 #   bundling (see tauri-cli's `set_current_dir(dirs.tauri)`), so the -File
-#   path here is relative to src-tauri/, NOT the repo root — hence "../".
+#   path here is relative to src-tauri/, NOT the repo root - hence "../".
 #   Tauri substitutes %1 with the absolute path of each binary it signs
 #   (main exe, generated uninstaller, final NSIS installer) and invokes this
 #   script once per file with WINDOWS_SIGNING_PROVIDER (and the matching
@@ -71,8 +71,8 @@
 #   The hook intentionally invokes `powershell` (Windows PowerShell 5.1,
 #   preinstalled on every supported Windows version) rather than `pwsh`
 #   (PowerShell 7+): this script uses only PS 5.1-compatible syntax, and
-#   `tauri build` runs this hook unconditionally — including for a
-#   contributor's local unsigned build — so it must not require installing
+#   `tauri build` runs this hook unconditionally - including for a
+#   contributor's local unsigned build - so it must not require installing
 #   PowerShell 7 just to keep local Windows builds working. CI workflow
 #   steps that call this script directly (win-installer-check.yml,
 #   release.yml) continue to use `shell: pwsh` for everything else.
@@ -82,7 +82,7 @@
 #   its own nsis_tauri_utils.dll helper. This script recognizes those by
 #   filename and skips them (see the $nsisThirdPartyPluginNames check
 #   below) instead of signing third-party binaries with this project's
-#   certificate — docs/code-signing-policy.md's scope explicitly rules
+#   certificate - docs/code-signing-policy.md's scope explicitly rules
 #   that out. The main exe, uninstaller, and final installer are never in
 #   that list and are always signed when a provider is configured.
 
@@ -116,9 +116,35 @@ function Close-Stage {
     Write-Host "::endgroup::"
 }
 
+# Signing failures are deterministic (bad/missing certificate, expired HSM
+# login, signtool exhausting its retries, provider misconfiguration): running
+# the whole `tauri build` again cannot fix them, and with a cloud provider
+# every repeat spends metered signing operations. release.yml's build retry
+# loop exists only for transient toolchain-download failures, so it points
+# WINDOWS_SIGNING_FAILURE_MARKER at a file; when this script fails it writes a
+# short, non-secret message there and the loop stops retrying instead of
+# repeating the bundle and burying the real error.
+function Write-FailureMarker([string]$Message) {
+    if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_FAILURE_MARKER)) { return }
+    try {
+        Set-Content -LiteralPath $env:WINDOWS_SIGNING_FAILURE_MARKER -Value $Message -Encoding ASCII -ErrorAction Stop
+    }
+    catch {
+        Write-Host "::warning::[$Stage] could not write failure marker: $($_.Exception.Message)"
+    }
+}
+
 function Fail-Stage([string]$Message) {
     Write-Host "::error::[$Stage] $Message"
+    Write-FailureMarker "[$Stage] $Message"
     throw "[$Stage] $Message"
+}
+
+# Catch-all for unexpected terminating errors (e.g. Get-Item on a missing
+# path) that do not go through Fail-Stage, so they also stop the retry loop.
+trap {
+    Write-FailureMarker "[$Stage] $($_.Exception.Message)"
+    break
 }
 
 function Find-SignTool {
@@ -215,10 +241,10 @@ function Invoke-ThumbprintSign([string]$SignTool, [string]$SignThumbprint, [stri
 # Tauri's NSIS bundler also invokes signCommand for the stock NSIS plugin
 # DLLs it copies alongside the installer (NSISdl.dll, StartMenu.dll,
 # System.dll, nsDialogs.dll) plus its own nsis_tauri_utils.dll helper, in
-# addition to this project's own main exe / uninstaller / installer — see
+# addition to this project's own main exe / uninstaller / installer - see
 # tauri-bundler's `nsis/mod.rs` ("Signing NSIS plugins", NSIS_PLUGIN_FILES).
 # Those DLLs ship as part of the NSIS toolset (and the tauri-apps org's own
-# helper), not code this project authored — signing them with this
+# helper), not code this project authored - signing them with this
 # project's certificate would present third-party binaries as project-owned
 # code, which docs/code-signing-policy.md's scope section rules out ("third-
 # party binaries must not be presented or separately signed as
@@ -239,7 +265,7 @@ function Get-SignablePaths([string[]]$Candidates, [string]$StageName) {
         if ([string]::IsNullOrWhiteSpace($raw)) { continue }
         $leaf = Split-Path -Path $raw -Leaf
         if ($nsisThirdPartyPluginNames -contains $leaf) {
-            Write-Host "[$StageName] Skipping $leaf — third-party NSIS plugin DLL, not project-owned code (see docs/code-signing-policy.md)."
+            Write-Host "[$StageName] Skipping $leaf - third-party NSIS plugin DLL, not project-owned code (see docs/code-signing-policy.md)."
             continue
         }
         $result.Add($raw)
@@ -258,25 +284,25 @@ if ($Path.Count -eq 0) {
 if ([string]::IsNullOrWhiteSpace($normalizedProvider) -or $normalizedProvider -eq "none") {
     # Migration guard: before this script existed, release.yml's old
     # "Authenticode-sign Windows installer (optional)" step signed the
-    # installer whenever the WINDOWS_CERTIFICATE secret alone was present —
+    # installer whenever the WINDOWS_CERTIFICATE secret alone was present -
     # no separate provider switch existed. If that secret is still set but
     # WINDOWS_SIGNING_PROVIDER has not been added, silently returning here
     # would turn a previously-signed release into an unsigned one with no
     # error. Fail loudly instead and require an explicit provider choice,
     # rather than ever silently downgrading an existing signing setup.
     if (-not [string]::IsNullOrWhiteSpace($CertificateBase64)) {
-        Fail-Stage "WINDOWS_CERTIFICATE is set but WINDOWS_SIGNING_PROVIDER is not — refusing to silently publish an unsigned release. Set the repo variable WINDOWS_SIGNING_PROVIDER=local-pfx to keep signing with this PFX, or remove the WINDOWS_CERTIFICATE secret if it is no longer intended to be used."
+        Fail-Stage "WINDOWS_CERTIFICATE is set but WINDOWS_SIGNING_PROVIDER is not - refusing to silently publish an unsigned release. Set the repo variable WINDOWS_SIGNING_PROVIDER=local-pfx to keep signing with this PFX, or remove the WINDOWS_CERTIFICATE secret if it is no longer intended to be used."
     }
-    Write-Host "[$Stage] WINDOWS_SIGNING_PROVIDER not set — skipping Authenticode signing (non-blocking milestone)."
+    Write-Host "[$Stage] WINDOWS_SIGNING_PROVIDER not set - skipping Authenticode signing (non-blocking milestone)."
     Write-Host "[$Stage] Binaries remain unsigned; see docs/windows-signing.md."
-    # Do not `exit` — CI and Tauri's signCommand invoke this in-process/as a
+    # Do not `exit` - CI and Tauri's signCommand invoke this in-process/as a
     # subprocess whose success (exit 0) must not block the unsigned release.
     return
 }
 
 if ($normalizedProvider -eq "local-pfx") {
     if ([string]::IsNullOrWhiteSpace($CertificateBase64)) {
-        Fail-Stage "WINDOWS_SIGNING_PROVIDER=local-pfx but WINDOWS_CERTIFICATE is empty — set the base64 PFX secret or unset the provider."
+        Fail-Stage "WINDOWS_SIGNING_PROVIDER=local-pfx but WINDOWS_CERTIFICATE is empty - set the base64 PFX secret or unset the provider."
     }
 
     Write-Stage "Import certificate and locate signtool"
@@ -327,7 +353,7 @@ if ($normalizedProvider -eq "local-pfx") {
 
 if ($normalizedProvider -eq "esigner" -or $normalizedProvider -eq "certum") {
     if ([string]::IsNullOrWhiteSpace($Thumbprint)) {
-        Fail-Stage "WINDOWS_SIGNING_PROVIDER=$normalizedProvider but WINDOWS_SIGNING_THUMBPRINT is empty — the $normalizedProvider provisioning step must run and export the certificate thumbprint before this script (see docs/windows-signing.md)."
+        Fail-Stage "WINDOWS_SIGNING_PROVIDER=$normalizedProvider but WINDOWS_SIGNING_THUMBPRINT is empty - the $normalizedProvider provisioning step must run and export the certificate thumbprint before this script (see docs/windows-signing.md)."
     }
 
     Write-Stage "Locate signtool ($normalizedProvider)"

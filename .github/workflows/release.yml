@@ -453,11 +453,13 @@ jobs:
       #    configuration, not workflow code, so without this step forgetting to
       #    configure it would silently sign with a stored credential and no
       #    approval. Only runs when a cloud provider is selected — never in
-      #    today's unsigned default. Best effort by construction: the default
-      #    GITHUB_TOKEN cannot always read environment protection rules, so an
-      #    unreadable answer is a warning, but a readable answer with no
-      #    required_reviewers rule (including no protection rules at all) is a
-      #    hard failure.
+      #    today's unsigned default. Best effort by construction, and likely
+      #    INERT with the default token: GITHUB_TOKEN has no `environments`
+      #    permission, so this call is expected to fail and only warn (rule
+      #    not verified) - it is a tripwire, not the control. The real control
+      #    is the manual checklist in docs/windows-signing.md (step 2). Only a
+      #    readable answer with no required_reviewers rule (including no
+      #    protection rules at all) is a hard failure.
       - name: Assert release environment requires reviewers (cloud signing)
         if: matrix.os == 'windows' && (vars.WINDOWS_SIGNING_PROVIDER == 'esigner' || vars.WINDOWS_SIGNING_PROVIDER == 'certum')
         shell: pwsh
@@ -609,13 +611,30 @@ jobs:
           WINDOWS_CERTIFICATE: ${{ matrix.os == 'windows' && contains(fromJSON('["","none","local-pfx"]'), vars.WINDOWS_SIGNING_PROVIDER) && secrets.WINDOWS_CERTIFICATE || '' }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ matrix.os == 'windows' && contains(fromJSON('["","none","local-pfx"]'), vars.WINDOWS_SIGNING_PROVIDER) && secrets.WINDOWS_CERTIFICATE_PASSWORD || '' }}
           WINDOWS_TIMESTAMP_URL: ${{ matrix.os == 'windows' && vars.WINDOWS_TIMESTAMP_URL || '' }}
+          # The signing script writes this file when signing fails (see
+          # Write-FailureMarker in scripts/sign-windows-authenticode.ps1) so the
+          # retry loop below can tell a deterministic signing failure from a
+          # transient toolchain download failure.
+          WINDOWS_SIGNING_FAILURE_MARKER: ${{ matrix.os == 'windows' && format('{0}/signing-failed.marker', runner.temp) || '' }}
         # Bundling downloads toolchains on the fly (e.g. the NSIS archive from
         # GitHub) which occasionally 504s and fails the whole release. Retry a
         # few times so a transient download hiccup doesn't sink the run — cargo
         # output is cached, so a retry mostly just re-runs the bundling step.
         run: |
+          marker=""
+          if [ -n "${WINDOWS_SIGNING_FAILURE_MARKER:-}" ]; then
+            marker="$(cygpath -u "$WINDOWS_SIGNING_FAILURE_MARKER" 2>/dev/null || printf '%s' "$WINDOWS_SIGNING_FAILURE_MARKER")"
+          fi
           for attempt in 1 2 3; do
+            [ -z "$marker" ] || rm -f "$marker"
             npm run tauri build -- --target ${{ matrix.target }} && exit 0
+            # Authenticode signing failed: deterministic, and each repeat would
+            # re-run (and, with a cloud provider, re-bill) every signing call.
+            # Do not retry; surface the real error instead.
+            if [ -n "$marker" ] && [ -e "$marker" ]; then
+              echo "::error::tauri build failed during Windows signing (not retrying): $(cat "$marker")"
+              exit 1
+            fi
             echo "::warning::tauri build attempt ${attempt} failed (often a transient NSIS/toolchain download, e.g. HTTP 504) — retrying in 20s"
             sleep 20
           done

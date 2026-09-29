@@ -1,17 +1,17 @@
 # Verify Authenticode signatures on Windows PE files (installer, app, uninstaller).
 #
 # Modes:
-#   optional  — report status; unsigned/NotSigned exits 0 (current milestone while
+#   optional  - report status; unsigned/NotSigned exits 0 (current milestone while
 #               no WINDOWS_SIGNING_PROVIDER is configured). Fail only if a path is
 #               missing or Get-AuthenticodeSignature itself errors.
-#   required  — every path must have Status -eq Valid AND carry an RFC3161
+#   required  - every path must have Status -eq Valid AND carry an RFC3161
 #               countersignature (TimeStamperCertificate present). Use after a
 #               real provider is wired into release (repo var
-#               AUTHENTICODE_REQUIRED=true) — see docs/code-signing-policy.md's
+#               AUTHENTICODE_REQUIRED=true) - see docs/code-signing-policy.md's
 #               "Valid Authenticode + timestamp on all three PE layers" clause.
 #
 # -ExpectedThumbprint (either mode): when set, every path's
-#   SignerCertificate.Thumbprint must exactly match it, or that path fails —
+#   SignerCertificate.Thumbprint must exactly match it, or that path fails -
 #   even in "optional" mode, where an unsigned/NotSigned file would otherwise
 #   soft-pass. This is what tells the difference between "no provider
 #   configured yet" (soft pass) and "a provider is configured and this file
@@ -28,7 +28,7 @@
 #   pwsh scripts/verify-windows-authenticode.ps1 -Path a.exe,b.exe -Mode optional
 #   pwsh scripts/verify-windows-authenticode.ps1 -Path (Get-ChildItem *.exe) -Mode required
 #
-# Does NOT check Tauri updater (.sig / latest.json) signatures — that is a
+# Does NOT check Tauri updater (.sig / latest.json) signatures - that is a
 # separate system (see docs/windows-signing.md).
 
 [CmdletBinding()]
@@ -115,7 +115,7 @@ foreach ($raw in $Path) {
             }
             elseif (-not $hasTimestamp) {
                 $ok = $false
-                Write-Host "::error::[$Stage] $($item.Name): Valid but missing an RFC3161 timestamp (TimeStamperCertificate absent) — the signature will invalidate at certificate expiry"
+                Write-Host "::error::[$Stage] $($item.Name): Valid but missing an RFC3161 timestamp (TimeStamperCertificate absent) - the signature will invalidate at certificate expiry"
             }
             elseif ($ExpectedSubject -and ($subject -notlike "*$ExpectedSubject*")) {
                 $ok = $false
@@ -162,6 +162,6 @@ if ($failed) {
 }
 
 Write-Host "[$Stage] Authenticode check passed (mode=$Mode, files=$($results.Count))"
-# Do not `exit` — scripts are invoked in-process with `&` from CI steps;
+# Do not `exit` - scripts are invoked in-process with `&` from CI steps;
 # `exit` would terminate the whole step (and skip e.g. smoke after verify).
 return

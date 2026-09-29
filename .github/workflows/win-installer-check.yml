@@ -77,6 +77,60 @@ jobs:
           }
           Write-Host "[esigner-archive-check] OK: $installer"
 
+  # Windows PowerShell 5.1 smoke for the signCommand hook. `tauri build` runs
+  # scripts/sign-windows-authenticode.ps1 with `powershell` (5.1), which reads
+  # BOM-less files as the ANSI code page, so a non-ASCII character in a string
+  # can break parsing there while pwsh 7 (UTF-8 default) parses it fine. Every
+  # other job here uses `shell: pwsh`, so this is the only place 5.1 is
+  # exercised on its own, with no provider configured: the exact
+  # default-release path that must keep working unchanged.
+  signing-hook-ps51:
+    name: signCommand hook under Windows PowerShell 5.1
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Parse signing scripts with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          Write-Host "PSVersion=$($PSVersionTable.PSVersion)"
+          $failed = $false
+          foreach ($f in "sign-windows-authenticode.ps1", "verify-windows-authenticode.ps1", "resolve-esigner-cka-installer.ps1") {
+            $errors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD "scripts\$f"), [ref]$null, [ref]$errors)
+            if ($errors -and $errors.Count -gt 0) {
+              $failed = $true
+              $errors | ForEach-Object { Write-Host "::error::$f`: $($_.Message) (line $($_.Extent.StartLineNumber))" }
+            }
+            else { Write-Host "OK: $f parses under PS 5.1" }
+          }
+          if ($failed) { exit 1 }
+
+      # Invoke the hook exactly the way tauri.conf.json does (powershell -File,
+      # cwd = src-tauri) so an unset provider is proven to be a clean no-op.
+      - name: signCommand no-provider no-op (default release path)
+        shell: cmd
+        working-directory: src-tauri
+        env:
+          WINDOWS_SIGNING_PROVIDER: ""
+          WINDOWS_CERTIFICATE: ""
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/sign-windows-authenticode.ps1 -Path "%SystemRoot%\System32\notepad.exe"
+          if errorlevel 1 exit /b 1
+
+      - name: signCommand unknown provider fails loudly
+        shell: cmd
+        working-directory: src-tauri
+        env:
+          WINDOWS_SIGNING_PROVIDER: bogus
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/sign-windows-authenticode.ps1 -Path "%SystemRoot%\System32\notepad.exe"
+          if not errorlevel 1 (
+            echo ::error::sign-windows-authenticode.ps1 accepted an unknown provider
+            exit /b 1
+          )
+          exit /b 0
+
   nsis:
     runs-on: windows-latest
     steps:
@@ -130,6 +184,12 @@ jobs:
           Remove-Item -LiteralPath "Cert:\CurrentUser\My\$thumbprint" -ErrorAction SilentlyContinue
           $pfxBase64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($pfxPath))
           Remove-Item -LiteralPath $proofDir -Recurse -Force -ErrorAction SilentlyContinue
+
+          # Throwaway values, but mask them anyway so nothing in this job can
+          # ever echo them (matches the "never log secrets" rule of the
+          # signing script and docs).
+          Write-Host "::add-mask::$pfxPassword"
+          Write-Host "::add-mask::$pfxBase64"
 
           "thumbprint=$thumbprint" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "THROWAWAY_CERT_PFX_BASE64=$pfxBase64" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8

@@ -5,7 +5,7 @@
 # The archive (SSL.COM-eSigner-CKA_<version>.zip) does NOT contain a file
 # named "eSigner_CKA_Installer.exe". It contains exactly one executable
 # named after the specific build, e.g.
-# "SSL.COM eSigner CKA_1.0.6_build_20230829.exe" — SSL.com's own published
+# "SSL.COM eSigner CKA_1.0.6_build_20230829.exe" - SSL.com's own published
 # CI/CD integration guide renames it with `Move-Item` immediately after
 # extraction for exactly this reason:
 # https://www.ssl.com/how-to/how-to-integrate-esigner-cka-with-ci-cd-tools-for-automated-code-signing/
@@ -14,16 +14,16 @@
 # a given release.
 #
 # Used by:
-#   - .github/workflows/release.yml ("Provision eSigner CKA certificate") —
+#   - .github/workflows/release.yml ("Provision eSigner CKA certificate") -
 #     the credentialed step that actually installs and loads the
 #     certificate from the resolved installer.
 #   - .github/workflows/win-installer-check.yml ("eSigner CKA archive
-#     extraction check") — a secret-free, no-execute dry run on every PR
+#     extraction check") - a secret-free, no-execute dry run on every PR
 #     that touches this script or the pin, so a future SSL.com release
 #     that changes the archive layout (or a bad pin bump) fails CI instead
 #     of only failing the first real release attempt.
 #
-# Never runs the installer itself — only resolves its path. Only the
+# Never runs the installer itself - only resolves its path. Only the
 # credentialed "Provision eSigner CKA certificate" step should ever execute
 # it, since that is the only place ESIGNER_* secrets are in scope.
 #
@@ -56,7 +56,7 @@ New-Item -ItemType Directory -Force -Path $DestinationDir | Out-Null
 $zip = Join-Path $DestinationDir "eSignerCKA.zip"
 
 # GitHub Releases downloads occasionally hiccup (transient network errors,
-# 5xx responses) — retry a few times with backoff so one bad request doesn't
+# 5xx responses) - retry a few times with backoff so one bad request doesn't
 # fail an otherwise-unrelated PR (this also runs unauthenticated, secret-free,
 # on every PR touching this script via win-installer-check.yml) or a real
 # release attempt. Mirrors the retry pattern already used for the Tauri
@@ -71,14 +71,14 @@ for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
         if ($attempt -ge $maxAttempts) {
             Fail-Stage "failed to download eSigner CKA archive from $archiveUrl after $maxAttempts attempts: $($_.Exception.Message)"
         }
-        Write-Host "::warning::[$Stage] download attempt $attempt/$maxAttempts failed ($($_.Exception.Message)) — retrying in 10s"
+        Write-Host "::warning::[$Stage] download attempt $attempt/$maxAttempts failed ($($_.Exception.Message)) - retrying in 10s"
         Start-Sleep -Seconds 10
     }
 }
 
 $actualSha256 = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
 if ($actualSha256 -ne $ExpectedSha256) {
-    Fail-Stage "eSigner CKA archive SHA-256 mismatch: expected $ExpectedSha256, got $actualSha256 — refusing to extract/execute a possibly-tampered release asset"
+    Fail-Stage "eSigner CKA archive SHA-256 mismatch: expected $ExpectedSha256, got $actualSha256 - refusing to extract/execute a possibly-tampered release asset"
 }
 Write-Host "[$Stage] eSigner CKA archive SHA-256 verified: $actualSha256"
 
@@ -93,7 +93,7 @@ if (Test-Path -LiteralPath $extractDir) {
 Expand-Archive -Force -Path $zip -DestinationPath $extractDir
 
 # The archive contains exactly one top-level executable, named after the
-# specific build rather than a fixed name — normalize it so callers have
+# specific build rather than a fixed name - normalize it so callers have
 # one stable path to invoke. See the header comment above for why this
 # rename is required.
 $extracted = Get-ChildItem -Path $extractDir -Filter "*.exe" -Recurse | Select-Object -First 1

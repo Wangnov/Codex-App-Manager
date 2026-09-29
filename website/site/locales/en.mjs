@@ -191,7 +191,7 @@ export default {
       { title: "Checksums and provenance", body: "Every release ships SHA256SUMS and a release-manifest.json recording where each file came from." },
       {
         title: "Honest signing status",
-        body: "Manager for macOS is Developer ID signed and notarized by Apple. The Windows installer is not Authenticode-signed yet; the SignPath application is still under review.",
+        body: "Manager for macOS is Developer ID signed and notarized by Apple. The Windows installer is not Authenticode-signed yet; a paid code-signing certificate is planned, and releases stay unsigned until one is configured.",
       },
       { title: "Everything is public", body: "All three projects are MIT licensed. The mirror pipeline and every release are on GitHub for anyone to audit." },
     ],

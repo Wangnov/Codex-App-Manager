@@ -191,7 +191,7 @@ export default {
       { title: "校验和与上游指纹", body: "每个版本附 SHA256SUMS 和记录上游来源的 release-manifest.json，任何人都能比对。" },
       {
         title: "签名状态如实说明",
-        body: "Manager 的 macOS 版经 Developer ID 签名并通过 Apple 公证；Windows 安装器暂未做 Authenticode 签名，SignPath 申请仍在审核。",
+        body: "Manager 的 macOS 版经 Developer ID 签名并通过 Apple 公证；Windows 安装器暂未做 Authenticode 签名，已计划采用付费代码签名证书，证书配置完成前发布保持未签名。",
       },
       { title: "代码全部公开", body: "三个项目都以 MIT 协议开源，镜像流水线和每次发布记录都能在 GitHub 上查到。" },
     ],
