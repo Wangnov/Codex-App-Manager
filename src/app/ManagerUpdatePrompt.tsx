@@ -217,21 +217,59 @@ export function ManagerUpdatePrompt({
     null,
   );
   const runtime = useManagerUpdateRuntime();
+  const [relaunching, setRelaunching] = useState(false);
   const titleId = useId();
   const bodyId = useId();
+
+  // True whenever the backend is actually mid-flight, independent of whether
+  // *this* mount is the one that started it — a renderer reload during a
+  // self-update loses `installing`/`update` (both local component state) but
+  // not the backend's own snapshot, so a fresh mount must still be able to
+  // show it and let the user finish (relaunch) or recover (retry).
+  const runtimeBusy =
+    runtime.phase === "downloading" || runtime.phase === "installing";
+  const runtimeDone = runtime.phase === "installed";
+  const runtimeFailed = runtime.phase === "error";
+  // Only reattach when this mount has no local update/installing state of its
+  // own to drive the confirm sheet below — otherwise that flow already
+  // covers the exact same phases.
+  const reattached = !update && (runtimeBusy || runtimeDone || runtimeFailed);
 
   useEffect(() => () => setChecksPaused(false), [setChecksPaused]);
 
   const closeConfirm = useCallback(() => {
-    if (installing) return;
+    if (installing || runtimeBusy) return;
     setChecksPaused(false);
     setConfirmOpen(false);
     setFailure(null);
-    // A terminal error snapshot must not linger and confuse another view
-    // (e.g. About) that starts watching the runtime afresh after this one
-    // gave up.
-    if (runtime.phase === "error") void managerApi.ackManagerUpdateRuntime();
-  }, [installing, runtime.phase, setChecksPaused]);
+    // A terminal snapshot must not linger and confuse another view (e.g.
+    // About) that starts watching the runtime afresh after this one gave up
+    // or finished.
+    if (runtime.phase === "error" || runtime.phase === "installed") {
+      void managerApi.ackManagerUpdateRuntime();
+    }
+  }, [installing, runtime.phase, runtimeBusy, setChecksPaused]);
+
+  const relaunchNow = useCallback(async () => {
+    setRelaunching(true);
+    setFailure(null);
+    try {
+      await managerApi.relaunchManager();
+    } catch (cause) {
+      // Most commonly a genuine Block (an uninterruptible Codex operation
+      // elsewhere) — the backend already released the reservation, so this
+      // button stays clickable and the user can just try again once it
+      // finishes.
+      setFailure(userErrorMessage(cause, t));
+    } finally {
+      setRelaunching(false);
+    }
+  }, [t]);
+
+  const retryAfterFailure = useCallback(async () => {
+    await managerApi.ackManagerUpdateRuntime();
+    await refresh();
+  }, [refresh]);
 
   const installUpdate = useCallback(async () => {
     if (!update || installing) return;
@@ -252,10 +290,11 @@ export function ManagerUpdatePrompt({
     }
   }, [installing, refresh, setChecksPaused, t, update]);
 
-  if (!update || dismissed === update) return null;
+  const showBanner = Boolean(update) && dismissed !== update;
+  if (!showBanner && !reattached) return null;
 
   const showProgress =
-    installing &&
+    (installing || (reattached && runtimeBusy)) &&
     (runtime.phase === "downloading" || runtime.phase === "installing");
   const downloadPct =
     runtime.phase === "downloading" && runtime.total
@@ -264,41 +303,57 @@ export function ManagerUpdatePrompt({
 
   return (
     <>
-      <div className="manager-update-prompt">
-        <StatusBanner
-          tone="info"
-          icon="arrowUp"
-          action={
-            <button
-              type="button"
-              className="btn primary sm"
-              onClick={() => {
-                setChecksPaused(true);
-                setFailure(null);
-                setConfirmOpen(true);
-              }}
-              disabled={installing}
-            >
-              {t("confirm.ok")}
-            </button>
-          }
-          onClose={() => setDismissed(update)}
-        >
-          {t("about.mgrFound", { version: update.version })}
-        </StatusBanner>
-      </div>
+      {showBanner && update ? (
+        <div className="manager-update-prompt">
+          <StatusBanner
+            tone="info"
+            icon="arrowUp"
+            action={
+              <button
+                type="button"
+                className="btn primary sm"
+                onClick={() => {
+                  setChecksPaused(true);
+                  setFailure(null);
+                  setConfirmOpen(true);
+                }}
+                disabled={installing}
+              >
+                {t("confirm.ok")}
+              </button>
+            }
+            onClose={() => setDismissed(update)}
+          >
+            {t("about.mgrFound", { version: update.version })}
+          </StatusBanner>
+        </div>
+      ) : null}
 
       <Sheet
-        open={confirmOpen}
+        open={confirmOpen || reattached}
         onDismiss={closeConfirm}
-        dismissable={!installing}
+        dismissable={!installing && !runtimeBusy}
         labelledBy={titleId}
         describedBy={bodyId}
         initialFocus="dismiss"
       >
         <Ring icon="arrowUp" />
-        <h3 id={titleId}>{t("confirm.title", { version: update.version })}</h3>
-        <p id={bodyId}>{t("about.mgrConfirmBody")}</p>
+        <h3 id={titleId}>
+          {update
+            ? t("confirm.title", { version: update.version })
+            : reattached && runtime.version
+              ? t("confirm.title", { version: runtime.version })
+              : reattached
+                ? t("progress.title")
+                : ""}
+        </h3>
+        {update || (reattached && runtimeBusy) ? (
+          <p id={bodyId}>{t("about.mgrConfirmBody")}</p>
+        ) : reattached && runtimeDone ? (
+          <p id={bodyId}>{t("progress.updateInstalled")}</p>
+        ) : reattached ? (
+          <p id={bodyId}>{t("about.mgrUnavailable")}</p>
+        ) : null}
         {showProgress ? (
           <div className="mgr-update-progress" aria-live="polite">
             <div className="sub">
@@ -325,28 +380,65 @@ export function ManagerUpdatePrompt({
             ) : null}
           </div>
         ) : null}
-        {failure ? <StatusBanner tone="err">{failure}</StatusBanner> : null}
+        {reattached && runtimeFailed && runtime.message ? (
+          <StatusBanner tone="err">{runtime.message}</StatusBanner>
+        ) : failure ? (
+          <StatusBanner tone="err">{failure}</StatusBanner>
+        ) : null}
         <div className="row2 sheet-actions">
-          <button
-            type="button"
-            className="btn ghost"
-            onClick={closeConfirm}
-            disabled={installing}
-          >
-            {t("confirm.cancel")}
-          </button>
-          <button
-            type="button"
-            className="btn primary"
-            onClick={() => void installUpdate()}
-            disabled={installing}
-          >
-            {installing
-              ? runtime.phase === "installing"
-                ? t("progress.installing")
-                : t("progress.title")
-              : t("confirm.ok")}
-          </button>
+          {reattached ? (
+            runtimeBusy ? null : runtimeDone ? (
+              <>
+                <button type="button" className="btn ghost" onClick={closeConfirm}>
+                  {t("confirm.cancel")}
+                </button>
+                <button
+                  type="button"
+                  className="btn primary"
+                  onClick={() => void relaunchNow()}
+                  disabled={relaunching}
+                >
+                  {t("progress.relaunchNow")}
+                </button>
+              </>
+            ) : (
+              <>
+                <button type="button" className="btn ghost" onClick={closeConfirm}>
+                  {t("confirm.cancel")}
+                </button>
+                <button
+                  type="button"
+                  className="btn primary"
+                  onClick={() => void retryAfterFailure()}
+                >
+                  {t("settings.retry")}
+                </button>
+              </>
+            )
+          ) : (
+            <>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={closeConfirm}
+                disabled={installing}
+              >
+                {t("confirm.cancel")}
+              </button>
+              <button
+                type="button"
+                className="btn primary"
+                onClick={() => void installUpdate()}
+                disabled={installing}
+              >
+                {installing
+                  ? runtime.phase === "installing"
+                    ? t("progress.installing")
+                    : t("progress.title")
+                  : t("confirm.ok")}
+              </button>
+            </>
+          )}
         </div>
       </Sheet>
     </>

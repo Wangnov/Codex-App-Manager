@@ -10,7 +10,7 @@ import { useManagerUpdateRuntime } from "../ManagerUpdatePrompt";
 import { userErrorMessage } from "../errorCopy";
 import { Icon, CodexMark } from "../icons";
 import { useI18n } from "../i18n";
-import { NavBar, Ring } from "../components";
+import { NavBar, Ring, StatusBanner } from "../components";
 import { formatDiagnostics } from "../diagnostics";
 import { Sheet } from "../Sheet";
 
@@ -22,6 +22,7 @@ export function About({ onBack }: { onBack: () => void }) {
   const [mgrBusy, setMgrBusy] = useState(false);
   const [mgrMsg, setMgrMsg] = useState<string | null>(null);
   const [pendingUpdate, setPendingUpdate] = useState<ManagerUpdateAvailable | null>(null);
+  const [relaunching, setRelaunching] = useState(false);
   // Same backend-owned snapshot the Home banner reads: if a self-update was
   // started from Home and the user then opens About, both show the exact
   // same download/install progress instead of About guessing from nothing.
@@ -29,12 +30,43 @@ export function About({ onBack }: { onBack: () => void }) {
   const updateTitleId = useId();
   const updateBodyId = useId();
 
+  // True while the backend is actually downloading/installing, independent
+  // of whether *this* view is the one that started it — a check begun from
+  // Home leaves `pendingUpdate`/`mgrBusy` here at their initial values, but
+  // the runtime snapshot is shared, so About must still reflect it.
+  const runtimeBusy =
+    runtime.phase === "downloading" || runtime.phase === "installing";
+  const runtimeDone = runtime.phase === "installed";
+  const runtimeFailed = runtime.phase === "error";
+  // Only a *reattached* done/failed snapshot (no local `pendingUpdate`) needs
+  // its own sheet + actions; the normal confirm flow below already surfaces
+  // its own failure/installing copy while `pendingUpdate` is set.
+  const reattached = !pendingUpdate && (runtimeBusy || runtimeDone || runtimeFailed);
+  const updateSheetOpen = Boolean(pendingUpdate) || reattached;
+
   const closeUpdateConfirm = useCallback(() => {
-    if (mgrBusy) return;
+    if (mgrBusy || runtimeBusy) return;
     void pendingUpdate?.discard();
     setPendingUpdate(null);
-    if (runtime.phase === "error") void managerApi.ackManagerUpdateRuntime();
-  }, [mgrBusy, pendingUpdate, runtime.phase]);
+    if (runtime.phase === "error" || runtime.phase === "installed") {
+      void managerApi.ackManagerUpdateRuntime();
+    }
+  }, [mgrBusy, pendingUpdate, runtime.phase, runtimeBusy]);
+
+  const relaunchNow = useCallback(async () => {
+    setRelaunching(true);
+    try {
+      await managerApi.relaunchManager();
+    } catch (cause) {
+      // Most commonly a genuine Block (an uninterruptible Codex operation
+      // elsewhere) — the backend already released the reservation, so this
+      // button stays clickable and the user can just try again once it
+      // finishes.
+      setMgrMsg(userErrorMessage(cause, t));
+    } finally {
+      setRelaunching(false);
+    }
+  }, [t]);
 
   const checkManager = useCallback(async () => {
     setMgrBusy(true);
@@ -61,6 +93,15 @@ export function About({ onBack }: { onBack: () => void }) {
       setMgrBusy(false);
     }
   }, [pendingUpdate, t]);
+
+  // Recovers a *reattached* failed snapshot (no local `pendingUpdate`, e.g.
+  // the failure happened while this view wasn't the one driving the install):
+  // clear the terminal error back to idle, then run an ordinary check so a
+  // fresh confirmation is required, matching the `stale_expectation` path.
+  const retryAfterFailure = useCallback(async () => {
+    await managerApi.ackManagerUpdateRuntime();
+    await checkManager();
+  }, [checkManager]);
 
   const installManagerUpdate = useCallback(async () => {
     if (!pendingUpdate) return;
@@ -108,8 +149,12 @@ export function About({ onBack }: { onBack: () => void }) {
       {/* Block leaving while a self-update is downloading/installing — it
           relaunches the manager process and could interrupt a Codex op started
           back on the home screen. */}
-      <NavBar title={t("settings.more.about")} onBack={onBack} disableBack={mgrBusy} />
-      <div className="scroll view" inert={pendingUpdate ? true : undefined}>
+      <NavBar
+        title={t("settings.more.about")}
+        onBack={onBack}
+        disableBack={mgrBusy || runtimeBusy}
+      />
+      <div className="scroll view" inert={updateSheetOpen ? true : undefined}>
         <section className="hero" style={{ paddingTop: 8 }}>
           <div className="mark mark-lg" style={{ marginBottom: 14 }}>
             <CodexMark />
@@ -155,20 +200,31 @@ export function About({ onBack }: { onBack: () => void }) {
         </div>
       </div>
       <Sheet
-        open={Boolean(pendingUpdate)}
+        open={updateSheetOpen}
         onDismiss={closeUpdateConfirm}
-        dismissable={!mgrBusy}
+        dismissable={!mgrBusy && !runtimeBusy}
         labelledBy={updateTitleId}
         describedBy={updateBodyId}
         initialFocus="dismiss"
       >
         <Ring icon="arrowUp" />
         <h3 id={updateTitleId}>
-          {pendingUpdate ? t("confirm.title", { version: pendingUpdate.version }) : ""}
+          {pendingUpdate
+            ? t("confirm.title", { version: pendingUpdate.version })
+            : reattached && runtime.version
+              ? t("confirm.title", { version: runtime.version })
+              : reattached
+                ? t("progress.title")
+                : ""}
         </h3>
-        <p id={updateBodyId}>{t("about.mgrConfirmBody")}</p>
-        {mgrBusy &&
-        (runtime.phase === "downloading" || runtime.phase === "installing") ? (
+        {!reattached || runtimeBusy ? (
+          <p id={updateBodyId}>{t("about.mgrConfirmBody")}</p>
+        ) : runtimeDone ? (
+          <p id={updateBodyId}>{t("progress.updateInstalled")}</p>
+        ) : (
+          <p id={updateBodyId}>{t("about.mgrUnavailable")}</p>
+        )}
+        {runtimeBusy ? (
           <div className="mgr-update-progress" aria-live="polite">
             <div className="sub">
               {runtime.phase === "installing"
@@ -211,14 +267,47 @@ export function About({ onBack }: { onBack: () => void }) {
             ) : null}
           </div>
         ) : null}
-        <div className="row2 sheet-actions">
-          <button className="btn ghost" onClick={closeUpdateConfirm} disabled={mgrBusy}>
-            {t("confirm.cancel")}
-          </button>
-          <button className="btn primary" onClick={installManagerUpdate} disabled={mgrBusy}>
-            {mgrBusy ? t("progress.installing") : t("confirm.ok")}
-          </button>
-        </div>
+        {reattached && runtimeFailed && runtime.message ? (
+          <StatusBanner tone="err">{runtime.message}</StatusBanner>
+        ) : null}
+        {reattached ? (
+          runtimeBusy ? null : runtimeDone ? (
+            <div className="row2 sheet-actions">
+              <button className="btn ghost" onClick={closeUpdateConfirm}>
+                {t("confirm.cancel")}
+              </button>
+              <button
+                className="btn primary"
+                onClick={() => void relaunchNow()}
+                disabled={relaunching}
+              >
+                {t("progress.relaunchNow")}
+              </button>
+            </div>
+          ) : (
+            <div className="row2 sheet-actions">
+              <button className="btn ghost" onClick={closeUpdateConfirm} disabled={mgrBusy}>
+                {t("confirm.cancel")}
+              </button>
+              <button
+                className="btn primary"
+                onClick={() => void retryAfterFailure()}
+                disabled={mgrBusy}
+              >
+                {t("settings.retry")}
+              </button>
+            </div>
+          )
+        ) : (
+          <div className="row2 sheet-actions">
+            <button className="btn ghost" onClick={closeUpdateConfirm} disabled={mgrBusy}>
+              {t("confirm.cancel")}
+            </button>
+            <button className="btn primary" onClick={installManagerUpdate} disabled={mgrBusy}>
+              {mgrBusy ? t("progress.installing") : t("confirm.ok")}
+            </button>
+          </div>
+        )}
       </Sheet>
     </div>
   );

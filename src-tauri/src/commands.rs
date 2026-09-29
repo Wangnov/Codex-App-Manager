@@ -546,9 +546,28 @@ pub fn manager_relaunch(app: AppHandle, state: State<'_, ManagerState>) -> Resul
     if !state.manager_update.reserve_relaunch() {
         return Ok(());
     }
+    // The self-update confirm dialog already asked the user to accept a
+    // restart, so this must not raise the ordinary CloseRequested/
+    // ExitRequested handler's own "close the manager?" prompt a second time —
+    // treat it like an already-confirmed quit instead. A genuine `Block`
+    // (an uninterruptible Codex install/update/uninstall/adopt elsewhere)
+    // still wins: release the reservation so a later relaunch attempt (once
+    // that operation finishes) is not silenced forever by the single-claim
+    // guard above.
+    let policy = crate::confirmed_quit_policy_for(&app);
+    if !crate::native_confirm_allows_exit(&policy) {
+        state.manager_update.release_relaunch_reservation();
+        return Err(AppError::Engine(
+            "cannot relaunch while another operation is in progress".to_string(),
+        )
+        .into());
+    }
     // `request_restart` only flags the intent and asks the runtime to exit;
     // it returns immediately rather than blocking, so no extra thread is
-    // needed to keep this command responsive.
+    // needed to keep this command responsive. `confirmed_quit_policy_for`
+    // above already armed `force_quit` as a side effect (mirroring
+    // `exit_after_confirm`), so the ExitRequested handler it triggers will
+    // see `QuitPolicy::Allow` and let it through without asking again.
     app.request_restart();
     Ok(())
 }

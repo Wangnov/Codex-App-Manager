@@ -152,8 +152,13 @@ impl ManagerUpdateRuntime {
             .is_ok()
     }
 
-    #[cfg(test)]
-    pub fn reset_relaunch_reservation_for_test(&self) {
+    /// Releases a claimed reservation without restarting — used when the
+    /// restart the caller was about to perform did not actually happen (an
+    /// uninterruptible operation elsewhere blocked it). Without this, the
+    /// single-claim guard above would permanently silence every later
+    /// `manager_relaunch` call for the rest of the process's lifetime, even
+    /// after the blocking operation finishes.
+    pub fn release_relaunch_reservation(&self) {
         self.relaunch_reserved.store(false, Ordering::SeqCst);
     }
 }
@@ -241,8 +246,20 @@ mod tests {
         let runtime = ManagerUpdateRuntime::default();
         assert!(runtime.reserve_relaunch());
         assert!(!runtime.reserve_relaunch());
-        runtime.reset_relaunch_reservation_for_test();
+        runtime.release_relaunch_reservation();
         assert!(runtime.reserve_relaunch());
+    }
+
+    #[test]
+    fn a_released_reservation_can_be_reclaimed_after_a_blocked_restart() {
+        // Mirrors `manager_relaunch` finding out the process cannot actually
+        // exit (an uninterruptible operation is active elsewhere) and giving
+        // the reservation back so a later retry is not silenced forever.
+        let runtime = ManagerUpdateRuntime::default();
+        assert!(runtime.reserve_relaunch());
+        runtime.release_relaunch_reservation();
+        assert!(runtime.reserve_relaunch());
+        assert!(!runtime.reserve_relaunch());
     }
 
     #[test]

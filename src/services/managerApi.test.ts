@@ -432,6 +432,31 @@ describe("manager self-update runtime snapshot", () => {
     expect(invokeMock).toHaveBeenCalledWith("manager_ack_update_runtime");
   });
 
+  it("relaunches standalone, without a Tauri runtime it is a silent no-op", async () => {
+    await expect(managerApi.relaunchManager()).resolves.toBeUndefined();
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("relaunches standalone through the backend so a view can finish a reattached install", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    invokeMock.mockResolvedValueOnce(undefined);
+
+    await managerApi.relaunchManager();
+
+    expect(invokeMock).toHaveBeenCalledWith("manager_relaunch");
+  });
+
+  it("propagates a blocked relaunch (an uninterruptible operation elsewhere) to the caller", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    invokeMock.mockRejectedValueOnce(
+      new Error("cannot relaunch while another operation is in progress"),
+    );
+
+    await expect(managerApi.relaunchManager()).rejects.toThrow(
+      "cannot relaunch while another operation is in progress",
+    );
+  });
+
   it("subscribes to live snapshot updates and forwards each payload", async () => {
     window.__TAURI_INTERNALS__ = {};
     const unlisten = vi.fn();

@@ -28,6 +28,7 @@ vi.mock("../../services/managerApi", async (importOriginal) => {
         .fn()
         .mockResolvedValue(actual.IDLE_MANAGER_UPDATE_SNAPSHOT),
       onManagerUpdateRuntime: vi.fn().mockResolvedValue(() => {}),
+      relaunchManager: vi.fn().mockResolvedValue(undefined),
     },
   };
 });
@@ -65,6 +66,8 @@ describe("About manager update", () => {
     api.getManagerUpdateRuntime.mockResolvedValue(IDLE_MANAGER_UPDATE_SNAPSHOT);
     api.onManagerUpdateRuntime.mockReset();
     api.onManagerUpdateRuntime.mockResolvedValue(() => {});
+    api.relaunchManager.mockReset();
+    api.relaunchManager.mockResolvedValue(undefined);
   });
 
   it("really rechecks stale metadata and requires a fresh confirmation", async () => {
@@ -144,5 +147,110 @@ describe("About manager update", () => {
     // exits from `manager_relaunch` first. Settle the promise only so the
     // test itself does not leave a dangling `act` warning.
     await act(async () => resolveInstall());
+  });
+
+  it("shows progress for a self-update About never started itself, with no pendingUpdate", async () => {
+    // About here has not clicked "check for update" at all — `pendingUpdate`
+    // and `mgrBusy` are at their initial values. A self-update started from
+    // Home must still be visible purely from the shared runtime snapshot.
+    let emit: ((snapshot: typeof IDLE_MANAGER_UPDATE_SNAPSHOT) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+
+    renderAbout();
+    await waitFor(() => expect(emit).toBeDefined());
+
+    act(() => {
+      emit?.({
+        phase: "downloading",
+        version: "0.5.4",
+        downloaded: 25,
+        total: 100,
+        message: null,
+        updatedAtMs: Date.now(),
+      });
+    });
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(await screen.findByRole("progressbar")).toHaveAttribute(
+      "aria-valuenow",
+      "25",
+    );
+    expect(api.checkManagerUpdate).not.toHaveBeenCalled();
+  });
+
+  it("reattaches to a self-update that finished installing elsewhere and offers a relaunch", async () => {
+    const user = userEvent.setup();
+    let emit: ((snapshot: typeof IDLE_MANAGER_UPDATE_SNAPSHOT) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+
+    renderAbout();
+    await waitFor(() => expect(emit).toBeDefined());
+
+    act(() => {
+      emit?.({
+        phase: "installed",
+        version: "0.5.4",
+        downloaded: 100,
+        total: 100,
+        message: null,
+        updatedAtMs: Date.now(),
+      });
+    });
+
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText("更新已安装，重新启动以应用。"),
+    ).toBeInTheDocument();
+    await user.click(
+      within(dialog).getByRole("button", { name: "立即重启" }),
+    );
+    expect(api.relaunchManager).toHaveBeenCalledTimes(1);
+  });
+
+  it("reattaches to a self-update that failed elsewhere and lets the user retry", async () => {
+    const user = userEvent.setup();
+    let emit: ((snapshot: typeof IDLE_MANAGER_UPDATE_SNAPSHOT) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+    api.checkManagerUpdate.mockResolvedValue({ kind: "none" });
+
+    renderAbout();
+    await waitFor(() => expect(emit).toBeDefined());
+
+    act(() => {
+      emit?.({
+        phase: "error",
+        version: "0.5.4",
+        downloaded: 20,
+        total: 100,
+        message: "install manager update: network unreachable",
+        updatedAtMs: Date.now(),
+      });
+    });
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("alert")).toHaveTextContent(
+      "install manager update: network unreachable",
+    );
+    await user.click(within(dialog).getByRole("button", { name: "重试" }));
+
+    expect(api.ackManagerUpdateRuntime).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(api.checkManagerUpdate).toHaveBeenCalledTimes(1),
+    );
   });
 });

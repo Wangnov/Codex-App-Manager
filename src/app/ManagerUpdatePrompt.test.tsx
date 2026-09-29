@@ -31,6 +31,7 @@ vi.mock("../services/managerApi", async (importOriginal) => {
         .fn()
         .mockResolvedValue(actual.IDLE_MANAGER_UPDATE_SNAPSHOT),
       onManagerUpdateRuntime: vi.fn().mockResolvedValue(() => {}),
+      relaunchManager: vi.fn().mockResolvedValue(undefined),
     },
   };
 });
@@ -84,6 +85,8 @@ describe("ManagerUpdatePrompt", () => {
     api.getManagerUpdateRuntime.mockResolvedValue(IDLE_MANAGER_UPDATE_SNAPSHOT);
     api.onManagerUpdateRuntime.mockReset();
     api.onManagerUpdateRuntime.mockResolvedValue(() => {});
+    api.relaunchManager.mockReset();
+    api.relaunchManager.mockResolvedValue(undefined);
   });
 
   it("quietly checks on startup and stays hidden when no update is available", async () => {
@@ -553,5 +556,81 @@ describe("ManagerUpdatePrompt", () => {
     expect(
       await screen.findByText("发现管理器新版本 0.5.3"),
     ).toBeInTheDocument();
+  });
+
+  it("reattaches to a self-update that finished installing elsewhere and offers a relaunch", async () => {
+    // No local `update` object was ever confirmed by this mount (e.g. a
+    // renderer reload right as the install finished) — the recovery UI must
+    // come entirely from the shared backend runtime snapshot.
+    const user = userEvent.setup();
+    api.checkManagerUpdate.mockResolvedValue({ kind: "none" });
+    let emit: ((snapshot: ManagerUpdateSnapshot) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+
+    renderPrompt();
+    await waitFor(() => expect(emit).toBeDefined());
+
+    act(() => {
+      emit?.({
+        phase: "installed",
+        version: "0.5.4",
+        downloaded: 100,
+        total: 100,
+        message: null,
+        updatedAtMs: Date.now(),
+      });
+    });
+
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText("更新已安装，重新启动以应用。"),
+    ).toBeInTheDocument();
+    await user.click(
+      within(dialog).getByRole("button", { name: "立即重启" }),
+    );
+    expect(api.relaunchManager).toHaveBeenCalledTimes(1);
+  });
+
+  it("reattaches to a self-update that failed elsewhere and lets the user retry", async () => {
+    const user = userEvent.setup();
+    api.checkManagerUpdate.mockResolvedValue({ kind: "none" });
+    let emit: ((snapshot: ManagerUpdateSnapshot) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+
+    renderPrompt();
+    await waitFor(() => expect(emit).toBeDefined());
+    await waitFor(() => expect(api.checkManagerUpdate).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      emit?.({
+        phase: "error",
+        version: "0.5.4",
+        downloaded: 20,
+        total: 100,
+        message: "install manager update: network unreachable",
+        updatedAtMs: Date.now(),
+      });
+    });
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("alert")).toHaveTextContent(
+      "install manager update: network unreachable",
+    );
+    await user.click(within(dialog).getByRole("button", { name: "重试" }));
+
+    expect(api.ackManagerUpdateRuntime).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(api.checkManagerUpdate).toHaveBeenCalledTimes(2),
+    );
   });
 });

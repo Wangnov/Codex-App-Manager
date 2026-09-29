@@ -997,6 +997,18 @@ export const managerApi = {
     }
     return invoke<ManagerUpdateSnapshot>("manager_ack_update_runtime");
   },
+  // Relaunches the Manager after its own update has installed. Runs on the
+  // Rust side (`manager_relaunch`) rather than via the renderer's own
+  // plugin-process call, so the webview no longer needs the
+  // `process:allow-restart` capability at all. Exposed standalone (not only
+  // via `ManagerUpdateAvailable.installAndRelaunch`) so a view that reattaches
+  // to an already-`installed` runtime snapshot — e.g. after a reload, or a
+  // view that never held the original update object — can still finish the
+  // flow.
+  async relaunchManager(): Promise<void> {
+    if (!hasTauriRuntime()) return;
+    await invoke<void>("manager_relaunch");
+  },
   // Subscribes to live runtime-snapshot updates. Resolves to a no-op unlisten
   // function in the browser dev preview, where there is no Tauri event bus.
   async onManagerUpdateRuntime(
@@ -1642,10 +1654,7 @@ function managerUpdateAvailable(
         expectedVersion: update.version,
         expectedCurrentVersion: update.currentVersion,
       });
-      // Relaunch runs on the Rust side (`manager_relaunch`) rather than via
-      // the renderer's own plugin-process call, so the webview no longer
-      // needs the `process:allow-restart` capability at all.
-      await invoke<void>("manager_relaunch");
+      await managerApi.relaunchManager();
     },
     discard: async () => {},
   };
