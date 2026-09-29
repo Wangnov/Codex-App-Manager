@@ -56,6 +56,13 @@ name: Release
 #                                   SSL.com account credentials (provider=esigner)
 #   CERTUM_USERNAME / CERTUM_TOTP_SECRET
 #                                   Certum SimplySign credentials (provider=certum)
+#   vars.CERTUM_ACTION_AUDITED     must be "true" before provider=certum will run
+#                                   (see docs/windows-signing.md#certum-action-audit —
+#                                   jay0lee/certum-cloud-code-sign is a third-party
+#                                   action that receives real account credentials
+#                                   and must be independently audited or vendored
+#                                   first; a deliberate second opt-in, separate
+#                                   from selecting the provider itself)
 #   WINDOWS_CERTIFICATE / WINDOWS_CERTIFICATE_PASSWORD
 #                                   base64 PFX + password (provider=local-pfx only;
 #                                   legacy scaffold, kept for testing/fallback)
@@ -475,12 +482,26 @@ jobs:
           $masterKey = Join-Path $installDir "master.key"
           & $tool config -mode "product" -user "$env:ESIGNER_USERNAME" -pass "$env:ESIGNER_PASSWORD" -totp "$env:ESIGNER_TOTP_SECRET" -key "$masterKey" -r
           & $tool unload
+          # Identify the certificate THIS step loads by diffing the store
+          # before/after `load`, rather than blindly taking the first
+          # CurrentUser\My code-signing cert — a runner (self-hosted, or a
+          # future change that provisions another cert earlier in the job)
+          # could otherwise have an unrelated code-signing certificate
+          # already present, silently signing the release with the wrong
+          # publisher.
+          $beforeThumbprints = @(Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert -ErrorAction SilentlyContinue | ForEach-Object Thumbprint)
           & $tool load
-          $cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert | Select-Object -First 1
-          if (-not $cert) {
-            Write-Host "::error::no code-signing certificate found in CurrentUser\My after eSigner CKA load"
+          $afterCerts = @(Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert -ErrorAction SilentlyContinue)
+          $newCerts = @($afterCerts | Where-Object { $beforeThumbprints -notcontains $_.Thumbprint })
+          if ($newCerts.Count -eq 0) {
+            Write-Host "::error::eSigner CKA load did not add a new code-signing certificate to CurrentUser\My (pre-existing: $($beforeThumbprints -join ', '))"
             exit 1
           }
+          if ($newCerts.Count -gt 1) {
+            Write-Host "::error::eSigner CKA load added more than one code-signing certificate to CurrentUser\My; cannot unambiguously pick one ($((($newCerts | ForEach-Object Thumbprint)) -join ', '))"
+            exit 1
+          }
+          $cert = $newCerts[0]
           Write-Host "eSigner CKA certificate loaded: thumbprint=$($cert.Thumbprint) subject=$($cert.Subject)"
           "WINDOWS_SIGNING_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
@@ -491,6 +512,25 @@ jobs:
       #    Only its cert-thumbprint output (not a secret) feeds the signCommand
       #    hook. See docs/windows-signing.md for setup and the risk note about
       #    depending on a third-party action.
+      #
+      #    That action is a single-author, unaudited-by-us repository that
+      #    GUI-automates the SimplySign Desktop client via its own
+      #    install/auth/verify scripts, and it receives the real Certum
+      #    account credentials (CERTUM_USERNAME + CERTUM_TOTP_SECRET), not a
+      #    scoped signing token. SHA-pinning stops the pinned commit from
+      #    changing under us, but it does not substitute for actually
+      #    reading that commit's scripts. Require an explicit, separate
+      #    opt-in (vars.CERTUM_ACTION_AUDITED=true) so enabling the certum
+      #    fallback is a deliberate decision made only after a maintainer
+      #    has read jay0lee/certum-cloud-code-sign@a3324503 (or vendored a
+      #    reviewed fork of it) — see docs/windows-signing.md#certum-action-audit.
+      - name: Require Certum action audit acknowledgment
+        if: matrix.os == 'windows' && vars.WINDOWS_SIGNING_PROVIDER == 'certum' && vars.CERTUM_ACTION_AUDITED != 'true'
+        shell: pwsh
+        run: |
+          Write-Host "::error::WINDOWS_SIGNING_PROVIDER=certum requires vars.CERTUM_ACTION_AUDITED=true. jay0lee/certum-cloud-code-sign is a third-party action that receives real Certum account credentials; read docs/windows-signing.md#certum-action-audit and audit (or vendor) that action before setting this variable."
+          exit 1
+
       - name: Provision Certum SimplySign certificate
         if: matrix.os == 'windows' && vars.WINDOWS_SIGNING_PROVIDER == 'certum'
         id: certum

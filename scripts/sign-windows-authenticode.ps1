@@ -59,7 +59,7 @@
 #   pwsh scripts/sign-windows-authenticode.ps1 -Path path\to\setup.exe
 #
 # Usage (Tauri signCommand, wired in src-tauri/tauri.conf.json):
-#   { "cmd": "pwsh", "args": ["-NoProfile", "-ExecutionPolicy", "Bypass",
+#   { "cmd": "powershell", "args": ["-NoProfile", "-ExecutionPolicy", "Bypass",
 #     "-File", "../scripts/sign-windows-authenticode.ps1", "-Path", "%1"] }
 #   `tauri build` sets its process working directory to src-tauri/ before
 #   bundling (see tauri-cli's `set_current_dir(dirs.tauri)`), so the -File
@@ -68,6 +68,23 @@
 #   (main exe, generated uninstaller, final NSIS installer) and invokes this
 #   script once per file with WINDOWS_SIGNING_PROVIDER (and the matching
 #   secrets/thumbprint) already present in the job environment.
+#   The hook intentionally invokes `powershell` (Windows PowerShell 5.1,
+#   preinstalled on every supported Windows version) rather than `pwsh`
+#   (PowerShell 7+): this script uses only PS 5.1-compatible syntax, and
+#   `tauri build` runs this hook unconditionally — including for a
+#   contributor's local unsigned build — so it must not require installing
+#   PowerShell 7 just to keep local Windows builds working. CI workflow
+#   steps that call this script directly (win-installer-check.yml,
+#   release.yml) continue to use `shell: pwsh` for everything else.
+#
+#   Tauri's NSIS bundler also invokes this hook for the stock NSIS plugin
+#   DLLs it stages next to the installer (NSISdl.dll, System.dll, etc.) and
+#   its own nsis_tauri_utils.dll helper. This script recognizes those by
+#   filename and skips them (see the $nsisThirdPartyPluginNames check
+#   below) instead of signing third-party binaries with this project's
+#   certificate — docs/code-signing-policy.md's scope explicitly rules
+#   that out. The main exe, uninstaller, and final installer are never in
+#   that list and are always signed when a provider is configured.
 
 [CmdletBinding()]
 param(
@@ -155,7 +172,48 @@ function Invoke-ThumbprintSign([string]$SignTool, [string]$SignThumbprint, [stri
     }
 }
 
+# Tauri's NSIS bundler also invokes signCommand for the stock NSIS plugin
+# DLLs it copies alongside the installer (NSISdl.dll, StartMenu.dll,
+# System.dll, nsDialogs.dll) plus its own nsis_tauri_utils.dll helper, in
+# addition to this project's own main exe / uninstaller / installer — see
+# tauri-bundler's `nsis/mod.rs` ("Signing NSIS plugins", NSIS_PLUGIN_FILES).
+# Those DLLs ship as part of the NSIS toolset (and the tauri-apps org's own
+# helper), not code this project authored — signing them with this
+# project's certificate would present third-party binaries as project-owned
+# code, which docs/code-signing-policy.md's scope section rules out ("third-
+# party binaries must not be presented or separately signed as
+# project-owned code"). Skip them by filename; every other invocation
+# (main exe, `!uninstfinalize` uninstaller, final `-setup.exe`) is this
+# project's own artifact and still gets signed normally.
+$nsisThirdPartyPluginNames = @(
+    "NSISdl.dll",
+    "StartMenu.dll",
+    "System.dll",
+    "nsDialogs.dll",
+    "nsis_tauri_utils.dll"
+)
+
+function Get-SignablePaths([string[]]$Candidates, [string]$StageName) {
+    $result = New-Object System.Collections.Generic.List[string]
+    foreach ($raw in $Candidates) {
+        if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+        $leaf = Split-Path -Path $raw -Leaf
+        if ($nsisThirdPartyPluginNames -contains $leaf) {
+            Write-Host "[$StageName] Skipping $leaf — third-party NSIS plugin DLL, not project-owned code (see docs/code-signing-policy.md)."
+            continue
+        }
+        $result.Add($raw)
+    }
+    return , $result.ToArray()
+}
+
 $normalizedProvider = $Provider.Trim().ToLowerInvariant()
+$Path = Get-SignablePaths -Candidates $Path -StageName $Stage
+
+if ($Path.Count -eq 0) {
+    Write-Host "[$Stage] Nothing left to sign after excluding third-party NSIS plugin DLLs."
+    return
+}
 
 if ([string]::IsNullOrWhiteSpace($normalizedProvider) -or $normalizedProvider -eq "none") {
     Write-Host "[$Stage] WINDOWS_SIGNING_PROVIDER not set — skipping Authenticode signing (non-blocking milestone)."

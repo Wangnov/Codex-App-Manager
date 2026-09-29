@@ -54,7 +54,27 @@ function Fail-Stage([string]$Message) {
 $archiveUrl = "https://github.com/SSLcom/eSignerCKA/releases/download/v$Version/SSL.COM-eSigner-CKA_$Version.zip"
 New-Item -ItemType Directory -Force -Path $DestinationDir | Out-Null
 $zip = Join-Path $DestinationDir "eSignerCKA.zip"
-Invoke-WebRequest -OutFile $zip -Uri $archiveUrl
+
+# GitHub Releases downloads occasionally hiccup (transient network errors,
+# 5xx responses) — retry a few times with backoff so one bad request doesn't
+# fail an otherwise-unrelated PR (this also runs unauthenticated, secret-free,
+# on every PR touching this script via win-installer-check.yml) or a real
+# release attempt. Mirrors the retry pattern already used for the Tauri
+# bundling step in release.yml.
+$maxAttempts = 3
+for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+    try {
+        Invoke-WebRequest -OutFile $zip -Uri $archiveUrl
+        break
+    }
+    catch {
+        if ($attempt -ge $maxAttempts) {
+            Fail-Stage "failed to download eSigner CKA archive from $archiveUrl after $maxAttempts attempts: $($_.Exception.Message)"
+        }
+        Write-Host "::warning::[$Stage] download attempt $attempt/$maxAttempts failed ($($_.Exception.Message)) — retrying in 10s"
+        Start-Sleep -Seconds 10
+    }
+}
 
 $actualSha256 = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
 if ($actualSha256 -ne $ExpectedSha256) {

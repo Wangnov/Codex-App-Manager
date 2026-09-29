@@ -59,12 +59,27 @@ public [code-signing policy](code-signing-policy.md) and
 6. 确认无误后,把 repo variable `AUTHENTICODE_REQUIRED` 设为 `true`。此后 `verify-windows-authenticode.ps1` 在 `required` 模式下运行,x64 release job 还会多跑一步“Uninstaller Authenticode gate”(对刚签好名的 installer 做一次真实的安装/启动/升级/卸载,顺带验出 uninstaller 的签名);任何一层不是 `Valid` 或缺少时间戳都会阻断发布(不允许回退到未签名)。ARM64 在 x64 runner 上无法安装运行,uninstaller 签名需按下方 [ARM64 运行验证策略](#arm64-运行验证策略) 第 6 步人工核验。
 7. 只有做到第 6 步之后,才能更新面向用户的文档(README、官网)声明 Windows 安装器已签名。
 
+**仅 `certum` 需要的额外一步:** 设置 `WINDOWS_SIGNING_PROVIDER=certum` 之前,还需要设置 repo variable `CERTUM_ACTION_AUDITED=true` —— 否则 `release.yml` 会拒绝跑 Certum 的证书装载步骤。原因和“审计”具体指什么,见下方 [Certum action 审计要求](#certum-action-audit)。
+
 **关键约束(见[代码签名政策](code-signing-policy.md)):**
 
 - 签名只能来自受信任的 GitHub Actions 构建,绑定到经过评审的 commit / tag / workflow run。
 - 每一次生产签名请求都需要独立的人工批准 —— 由 `release` GitHub Environment 上的 required-reviewers 规则落实(见上方第 2 步),不是云 HSM 供应商(SSL.com / Certum)的自动账号登录,也不做批量预批准。
 - installer、主程序、uninstaller 三层 PE 都必须验出 `Valid` Authenticode 签名 + 时间戳(x64 由 `release.yml` 自动验证;ARM64 uninstaller 需人工核验)。
 - 一旦 `AUTHENTICODE_REQUIRED=true` 生效,任何一层验证失败都必须阻断发布,不允许回退到未签名兜底。
+
+### Certum action 审计要求 {#certum-action-audit}
+
+`certum` 备选路径会用一个第三方组合式 GitHub Action —— 固定到单个 commit SHA 的 `jay0lee/certum-cloud-code-sign` —— 登录一个真实的 Certum SimplySign 账号(`CERTUM_USERNAME` + `CERTUM_TOTP_SECRET`,是完整账号凭据,不是限定权限的签名令牌)。和 `esigner`(SSL.com 官方维护、调用 SSL.com 自家 CLI 的 action)不同,这个 action 是社区自建的:审阅时它是一个刚创建不久、单一作者、没有历史积累的仓库,工作方式是通过自己的 `install`/`auth`/`verify` 脚本安装并 GUI 自动化操作 Certum SimplySign Desktop 客户端。SHA 固定能防止被锁定的那个 commit 内容事后被替换,但不代表项目里已经有人读过那个 commit 的脚本到底做了什么。
+
+这直接触及本项目自己的[代码签名政策](code-signing-policy.md)——其中明确写着不得“把签名能力交给无法审计的渠道”。如果没有人先审查过代码,就把真实的 Certum 账号凭据交给一个第三方 action 里未经审查的自动化脚本、并让它在有凭据权限的 `release` environment 里跑,正是这条政策要防的情形。
+
+因此 `release.yml` 给 Certum 的证书装载步骤加了第二道、独立的 repo variable 门槛:`CERTUM_ACTION_AUDITED=true`。只设置 `WINDOWS_SIGNING_PROVIDER=certum` 是不够的 —— “Require Certum action audit acknowledgment” 步骤会先失败,直到 `CERTUM_ACTION_AUDITED` 也被设置。这把“有没有人真的看过这段代码”从一段容易被忽略的文档文字,变成了一个必须单独、刻意完成的操作。设置它之前,维护者应当完成以下其中一项:
+
+- 在固定的那个 commit(`jay0lee/certum-cloud-code-sign@a3324503499c49090869856eeeecfe95fb613d87`)上读完 `install.ps1`、`auth.mjs`、`verify.ps1`,确认它们只做 README 里声称的事;或者
+- 把这些脚本的一份经过审查的副本/fork 直接 vendor 进本仓库,不再依赖上游 action,并把 `release.yml` 改成调用 vendor 进来的副本。
+
+在完成其中一项之前,优先使用 `esigner`(官方维护、推荐的方案)—— `certum` 存在的意义是 `esigner` 不可用时的备选,而不是与其同等默认的选项。
 
 ### 用一次性自签名证书证明签名链路(无需真实证书)
 
@@ -182,12 +197,27 @@ Why this pairing (full research write-up kept internally): SSL.com eSigner is th
 6. Only once that is proven, set the repo variable `AUTHENTICODE_REQUIRED=true`. `verify-windows-authenticode.ps1` then runs in `required` mode, and the x64 release job additionally runs an "Uninstaller Authenticode gate" step — a real install/launch/upgrade/uninstall pass against the just-signed installer, which also verifies the uninstaller's signature (it only exists once installed). Any PE layer that is not `Valid`, or lacks a timestamp, blocks the release — there is no unsigned fallback once this is on. ARM64 cannot install/run on an x64 runner, so its uninstaller must be checked manually — see [ARM64 runtime verification strategy](#arm64-runtime-verification-strategy) step 6.
 7. Only after step 6 is proven should user-facing docs (README, website) claim the Windows installers are signed.
 
+**Additional step for `certum` only:** before setting `WINDOWS_SIGNING_PROVIDER=certum`, also set the repo variable `CERTUM_ACTION_AUDITED=true` — `release.yml` refuses to run the Certum provisioning step without it. See [Certum action audit](#certum-action-audit) below for why this exists and what "audited" means here.
+
 **Hard constraints (see the [code-signing policy](code-signing-policy.md)):**
 
 - Signing only happens from a trusted GitHub Actions build tied to a reviewed commit/tag/workflow run.
 - Every production signing request requires a separate manual approval, enforced by the `release` GitHub Environment's required-reviewers rule (see step 2 above) — the cloud HSM provider's (SSL.com / Certum) own automated account login is not that manual gate on its own; no bulk pre-approval.
 - All three PE layers (installer, main executable, uninstaller) must show a `Valid` Authenticode signature plus a timestamp — automatically verified for x64 by `release.yml`; ARM64's uninstaller is checked manually.
 - Once `AUTHENTICODE_REQUIRED=true` is on, any verification failure must block the release — no unsigned fallback.
+
+### Certum action audit {#certum-action-audit}
+
+The `certum` fallback path authenticates to a real Certum SimplySign account (full account credentials — `CERTUM_USERNAME` + `CERTUM_TOTP_SECRET`, not a scoped signing token) by running a third-party composite GitHub Action, `jay0lee/certum-cloud-code-sign`, pinned to a single commit SHA. Unlike `esigner` (an SSL.com-maintained action calling SSL.com's own CLI), this action is community-built: at review time it was a very recently created, single-author repository with no prior track record, and it works by installing and GUI-automating the Certum SimplySign Desktop client through its own `install`/`auth`/`verify` scripts. SHA-pinning stops the pinned commit's *content* from changing after the fact, but it does not mean anyone on this project has read what that pinned commit's scripts actually do.
+
+That directly matters here: this project's own [code-signing policy](code-signing-policy.md) says not to "hand signing capability to channels that cannot be audited." Handing real Certum account credentials to a third-party action's unreviewed automation scripts inside the credentialed `release` environment would do exactly that unless someone has actually reviewed the code first.
+
+So `release.yml` gates the Certum provisioning step behind a second, explicit repo variable: `CERTUM_ACTION_AUDITED=true`. Setting `WINDOWS_SIGNING_PROVIDER=certum` alone is not enough — the "Require Certum action audit acknowledgment" step fails the job until `CERTUM_ACTION_AUDITED` is also set. This turns "did someone actually look at this" from an easy-to-miss doc paragraph into a required, separate, deliberate action. Before setting it, a maintainer should do one of:
+
+- Read `install.ps1`, `auth.mjs`, and `verify.ps1` at the exact pinned commit (`jay0lee/certum-cloud-code-sign@a3324503499c49090869856eeeecfe95fb613d87`) and confirm they do only what the README claims; or
+- Vendor a reviewed fork/copy of those scripts into this repository instead of depending on the upstream action at all, and update `release.yml` to call the vendored copy.
+
+Until one of those happens, prefer `esigner` (the recommended, vendor-maintained provider) — `certum` exists as a fallback in case `esigner` becomes unavailable, not as an equally-default choice.
 
 ### Proving the signing plumbing without a real certificate
 
