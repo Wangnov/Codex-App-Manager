@@ -82,18 +82,29 @@ if ($actualSha256 -ne $ExpectedSha256) {
 }
 Write-Host "[$Stage] eSigner CKA archive SHA-256 verified: $actualSha256"
 
-Expand-Archive -Force -Path $zip -DestinationPath $DestinationDir
+# Extract into a fresh subdirectory and select the executable only from
+# there: a reused $DestinationDir may already hold a previously renamed
+# eSigner_CKA_Installer.exe (or anything else), and only the archive whose
+# SHA-256 was just verified may supply the file the caller will execute.
+$extractDir = Join-Path $DestinationDir "extracted"
+if (Test-Path -LiteralPath $extractDir) {
+    Remove-Item -LiteralPath $extractDir -Recurse -Force
+}
+Expand-Archive -Force -Path $zip -DestinationPath $extractDir
 
 # The archive contains exactly one top-level executable, named after the
 # specific build rather than a fixed name — normalize it so callers have
 # one stable path to invoke. See the header comment above for why this
 # rename is required.
-$extracted = Get-ChildItem -Path $DestinationDir -Filter "*.exe" -Recurse | Select-Object -First 1
+$extracted = Get-ChildItem -Path $extractDir -Filter "*.exe" -Recurse | Select-Object -First 1
 if (-not $extracted) {
     Fail-Stage "no installer executable found after extracting the eSigner CKA release archive"
 }
 
 $installerPath = Join-Path $DestinationDir "eSigner_CKA_Installer.exe"
+if (Test-Path -LiteralPath $installerPath) {
+    Remove-Item -LiteralPath $installerPath -Force
+}
 if ($extracted.FullName -ne $installerPath) {
     Move-Item -Force -LiteralPath $extracted.FullName -Destination $installerPath
 }
