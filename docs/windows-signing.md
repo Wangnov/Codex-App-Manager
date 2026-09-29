@@ -10,8 +10,8 @@ CI contains a provider-agnostic Authenticode signing entry point
 `bundle.windows.signCommand`), a verification script, and a CI proof that signs
 throwaway binaries with a self-signed certificate. **SignPath Foundation is no
 longer being pursued** — the free-signing application submitted on 2026-07-11
-went unanswered for too long, so the project switched to a paid cloud-HSM
-provider instead. See [Provider plan](#provider-plan) below and the
+is no longer being waited on; the project has instead moved to a paid
+cloud-HSM provider. See [Provider plan](#provider-plan) below and the
 public [code-signing policy](code-signing-policy.md) and
 [privacy policy](privacy.md).
 
@@ -24,7 +24,7 @@ public [code-signing policy](code-signing-policy.md) and
 - Windows 应用内自更新包带有 Tauri updater 签名,用于校验下载字节没有被篡改。
 - Windows 首次手动运行安装器时可能出现 SmartScreen 提示;这是预期风险,不是更新器签名失效。
 - CI 已接入安装包冒烟(x64:`install → launch → upgrade → uninstall`)、Authenticode 探测,以及一个**不需要真实证书**的签名链路证明(用一次性自签名证书跑真实的签名脚本,断言签名者指纹匹配)。
-- **SignPath Foundation 申请已不再推进。** 该免费签名申请于 2026-07-11 提交,长期未获处理;项目改为采用按年付费的云 HSM 证书提供方案(见下文)。证书购买前,发布始终保持未签名,不得声称已获批准或已签名。公开规则见[代码签名政策](code-signing-policy.md),数据边界见[隐私政策](privacy.md)。
+- **SignPath Foundation 申请已不再推进。** 该免费签名申请于 2026-07-11 提交,项目不再等待其处理结果,改为采用按年付费的云 HSM 证书提供方案(见下文)。证书购买前,发布始终保持未签名,不得声称已获批准或已签名。公开规则见[代码签名政策](code-signing-policy.md),数据边界见[隐私政策](privacy.md)。
 
 ### 三个概念
 
@@ -74,7 +74,7 @@ public [code-signing policy](code-signing-policy.md) and
 
 `certum` 备选路径会用一个第三方组合式 GitHub Action —— 固定到单个 commit SHA 的 `jay0lee/certum-cloud-code-sign` —— 登录一个真实的 Certum SimplySign 账号(`CERTUM_USERNAME` + `CERTUM_TOTP_SECRET`,是完整账号凭据,不是限定权限的签名令牌)。和 `esigner`(SSL.com 官方维护、调用 SSL.com 自家 CLI 的 action)不同,这个 action 是社区自建的:审阅时它是一个刚创建不久、单一作者、没有历史积累的仓库,工作方式是通过自己的 `install`/`auth`/`verify` 脚本安装并 GUI 自动化操作 Certum SimplySign Desktop 客户端。SHA 固定能防止被锁定的那个 commit 内容事后被替换,但不代表项目里已经有人读过那个 commit 的脚本到底做了什么。
 
-这直接触及本项目自己的[代码签名政策](code-signing-policy.md)——其中明确写着不得“把签名能力交给无法审计的渠道”。如果没有人先审查过代码,就把真实的 Certum 账号凭据交给一个第三方 action 里未经审查的自动化脚本、并让它在有凭据权限的 `release` environment 里跑,正是这条政策要防的情形。
+这直接触及本项目的[代码签名政策](code-signing-policy.md)——政策不会把签名能力交给无法审计的渠道(要求这类供应商集成在启用前经过独立审查或改为自行 vendor)。如果没有人先审查过代码,就把真实的 Certum 账号凭据交给一个第三方 action 里未经审查的自动化脚本、并让它在有凭据权限的 `release` environment 里跑,正是这条政策要防的情形。
 
 因此 `release.yml` 给 Certum 的证书装载步骤加了第二道、独立的 repo variable 门槛:`CERTUM_ACTION_AUDITED=true`。只设置 `WINDOWS_SIGNING_PROVIDER=certum` 是不够的 —— “Require Certum action audit acknowledgment” 步骤会先失败,直到 `CERTUM_ACTION_AUDITED` 也被设置。这把“有没有人真的看过这段代码”从一段容易被忽略的文档文字,变成了一个必须单独、刻意完成的操作。设置它之前,维护者应当完成以下其中一项:
 
@@ -171,7 +171,7 @@ shasum -a 256 CodexAppManager_x86_64.dmg
 - Windows in-app update artifacts carry the Tauri updater signature, which verifies the downloaded bytes.
 - SmartScreen may warn when users manually run the Windows installer for the first time; that is the known distribution risk, not an updater-signature failure.
 - CI already runs x64 packaged lifecycle smoke (`install → launch → upgrade → uninstall`), Authenticode probes, and a **no-real-certificate-required** signing-plumbing proof (signs throwaway binaries with a self-signed certificate and asserts the signer thumbprint matches).
-- **The SignPath Foundation application is no longer being pursued.** It was submitted on 2026-07-11 and went unanswered for too long, so the project switched to a paid cloud-HSM certificate provider instead (see [Provider plan](#provider-plan) below). Releases stay unsigned until a certificate is actually configured, and must never be described as approved or signed before that. See the public [code-signing policy](code-signing-policy.md) and [privacy policy](privacy.md).
+- **The SignPath Foundation application is no longer being pursued.** It was submitted on 2026-07-11 and has not been approved; the maintainer decided on 2026-09-29 to stop waiting for it and move to a paid cloud-HSM certificate provider instead (see [Provider plan](#provider-plan) below). Releases stay unsigned until a certificate is actually configured, and must never be described as approved or signed before that. See the public [code-signing policy](code-signing-policy.md) and [privacy policy](privacy.md).
 
 ### Three separate concepts
 
@@ -221,7 +221,7 @@ Why this pairing (full research write-up kept internally): SSL.com eSigner is th
 
 The `certum` fallback path authenticates to a real Certum SimplySign account (full account credentials — `CERTUM_USERNAME` + `CERTUM_TOTP_SECRET`, not a scoped signing token) by running a third-party composite GitHub Action, `jay0lee/certum-cloud-code-sign`, pinned to a single commit SHA. Unlike `esigner` (an SSL.com-maintained action calling SSL.com's own CLI), this action is community-built: at review time it was a very recently created, single-author repository with no prior track record, and it works by installing and GUI-automating the Certum SimplySign Desktop client through its own `install`/`auth`/`verify` scripts. SHA-pinning stops the pinned commit's *content* from changing after the fact, but it does not mean anyone on this project has read what that pinned commit's scripts actually do.
 
-That directly matters here: this project's own [code-signing policy](code-signing-policy.md) says not to "hand signing capability to channels that cannot be audited." Handing real Certum account credentials to a third-party action's unreviewed automation scripts inside the credentialed `release` environment would do exactly that unless someone has actually reviewed the code first.
+That directly matters here: this project's [code-signing policy](code-signing-policy.md) does not hand signing capability to channels that cannot be audited (it requires such provider integrations to be independently reviewed or vendored before being enabled). Handing real Certum account credentials to a third-party action's unreviewed automation scripts inside the credentialed `release` environment would do exactly that unless someone has actually reviewed the code first.
 
 So `release.yml` gates the Certum provisioning step behind a second, explicit repo variable: `CERTUM_ACTION_AUDITED=true`. Setting `WINDOWS_SIGNING_PROVIDER=certum` alone is not enough — the "Require Certum action audit acknowledgment" step fails the job until `CERTUM_ACTION_AUDITED` is also set. This turns "did someone actually look at this" from an easy-to-miss doc paragraph into a required, separate, deliberate action. Before setting it, a maintainer should do one of:
 

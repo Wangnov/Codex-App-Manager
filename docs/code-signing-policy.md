@@ -5,15 +5,14 @@ Last updated / 最后更新：2026-09-29
 ## Current status · 当前状态
 
 Codex App Manager submitted an application to SignPath Foundation on
-2026-07-11. **That application is no longer being pursued** — it went
-unanswered for too long, so the project switched to a paid cloud-HSM
-Authenticode certificate instead. No certificate, secret, or repository
-variable is configured today, and no artifact has been Authenticode-signed.
+2026-07-11. **That application is no longer being pursued** — the project
+has instead moved to a paid cloud-HSM Authenticode certificate provider. No
+certificate, secret, or repository variable is configured today, and no
+artifact has been Authenticode-signed.
 
 Codex App Manager 已于 2026-07-11 提交 SignPath Foundation 申请，**该申请已不再
-推进**——长期未获处理，项目因此改为采用按年付费的云 HSM Authenticode 证书方案。
-本仓库当前未配置任何证书、secret 或 repo variable，也没有任何工件完成过
-Authenticode 签名。
+推进**——项目改为采用按年付费的云 HSM Authenticode 证书方案。本仓库当前未配置
+任何证书、secret 或 repo variable，也没有任何工件完成过 Authenticode 签名。
 
 The current Windows installers are **not Authenticode-signed**. Their Tauri
 updater signatures authenticate update bytes, but they are not Windows
@@ -85,6 +84,21 @@ real provider.
 `WINDOWS_CERTIFICATE` / `WINDOWS_CERTIFICATE_PASSWORD`）仅用于本地与 CI 测试——
 包括 CI 中一次性自签名证书的链路证明——绝不能被配置到 `release` environment 中
 用作真实供应商的替代品。
+
+This policy does not hand signing capability to channels that cannot be
+audited: a provider integration that runs unreviewed third-party automation
+against real signing credentials inside the credentialed `release`
+environment must be independently reviewed (or vendored as a reviewed copy)
+before it is enabled, and pinning its action to a commit SHA alone does not
+satisfy this requirement. See
+[Certum action audit](./windows-signing.md#certum-action-audit) for how this
+applies to the `certum` fallback.
+
+本政策不会把签名能力交给无法被审计的渠道：如果某个供应商集成需要在带凭证的
+`release` environment 中，对真实签名凭证运行未经审查的第三方自动化脚本，就必须
+先经过独立审查（或改为在仓库内自行维护一份经审查的副本）才能启用；仅仅把该
+action 固定到某个 commit SHA 并不满足这一要求。这一要求在 `certum` 备选方案上的
+具体落地，见[《Certum action 审计要求》](./windows-signing.md#certum-action-audit)。
 
 ## Scope · 适用范围
 

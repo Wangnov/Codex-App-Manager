@@ -561,11 +561,18 @@ jobs:
       #    otherwise, which is today's exact default behavior) ────────────────
       - name: Build (Tauri)
         shell: bash
+        # These are only ever read by signCommand on the Windows legs (see
+        # scripts/sign-windows-authenticode.ps1). Gate every value on
+        # matrix.os == 'windows' — not just the provider selector — so the
+        # code-signing PFX and its password never land in the macOS build
+        # process's environment, where a compromised npm/cargo build-time
+        # script (postinstall hook, build.rs, etc.) could read and exfiltrate
+        # them even though that leg never uses them.
         env:
-          WINDOWS_SIGNING_PROVIDER: ${{ vars.WINDOWS_SIGNING_PROVIDER }}
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
+          WINDOWS_SIGNING_PROVIDER: ${{ matrix.os == 'windows' && vars.WINDOWS_SIGNING_PROVIDER || '' }}
+          WINDOWS_CERTIFICATE: ${{ matrix.os == 'windows' && secrets.WINDOWS_CERTIFICATE || '' }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ matrix.os == 'windows' && secrets.WINDOWS_CERTIFICATE_PASSWORD || '' }}
+          WINDOWS_TIMESTAMP_URL: ${{ matrix.os == 'windows' && vars.WINDOWS_TIMESTAMP_URL || '' }}
         # Bundling downloads toolchains on the fly (e.g. the NSIS archive from
         # GitHub) which occasionally 504s and fails the whole release. Retry a
         # few times so a transient download hiccup doesn't sink the run — cargo
