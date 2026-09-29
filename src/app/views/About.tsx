@@ -51,14 +51,6 @@ export function About({ onBack }: { onBack: () => void }) {
     runtime.phase === "downloading" || runtime.phase === "installing";
   const runtimeDone = runtime.phase === "installed";
   const runtimeFailed = runtime.phase === "error";
-  // Keyed on `mgrBusy` (this view's own in-flight check/install), not on
-  // `pendingUpdate` being set: a manual "check for update" here can find an
-  // "available" result — e.g. this process still reports its old version
-  // because a just-installed update elsewhere is awaiting relaunch — while
-  // the runtime is still `installed`/`error` from a cycle this view never
-  // drove itself. The runtime must win, or the recovery action (relaunch/
-  // retry) gets silently replaced by a confirm dialog for the same bits.
-  const reattached = !mgrBusy && (runtimeBusy || runtimeDone || runtimeFailed);
   // The installed bits are already on disk, just awaiting relaunch — acking
   // the runtime on a plain Cancel would erase the only path back to that
   // relaunch action, and the running process still reports its old version,
@@ -67,7 +59,21 @@ export function About({ onBack }: { onBack: () => void }) {
   // the relaunch action reachable without touching the runtime.
   const installedSnoozed =
     runtimeDone && installedSnoozedAt === runtime.updatedAtMs;
-  const showReattachedSheet = reattached && !installedSnoozed;
+  // While the installed sheet is snoozed the runtime no longer owns the
+  // modal: a newer version found by a later check must get its own confirm
+  // content rather than the stale installed-update sheet.
+  // Keyed on `mgrBusy` (this view's own in-flight check/install), not on
+  // `pendingUpdate` being set: a manual "check for update" here can find an
+  // "available" result — e.g. this process still reports its old version
+  // because a just-installed update elsewhere is awaiting relaunch — while
+  // the runtime is still `installed`/`error` from a cycle this view never
+  // drove itself. The runtime must win, or the recovery action (relaunch/
+  // retry) gets silently replaced by a confirm dialog for the same bits.
+  const reattached =
+    !mgrBusy &&
+    !installedSnoozed &&
+    (runtimeBusy || runtimeDone || runtimeFailed);
+  const showReattachedSheet = reattached;
   const updateSheetOpen = Boolean(pendingUpdate) || showReattachedSheet;
 
   // The runtime is the single source of truth for "this version is already on

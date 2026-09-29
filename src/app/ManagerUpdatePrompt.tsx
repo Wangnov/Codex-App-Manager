@@ -276,15 +276,6 @@ export function ManagerUpdatePrompt({
     runtime.phase === "downloading" || runtime.phase === "installing";
   const runtimeDone = runtime.phase === "installed";
   const runtimeFailed = runtime.phase === "error";
-  // Keyed on `installing` (this mount's own in-flight install), not on
-  // `update` being set: a startup/periodic check can legitimately find an
-  // "available" result — e.g. the running process still reports its old
-  // version because the just-installed update is awaiting relaunch — while
-  // the runtime is still `installed`/`error` from a cycle this mount never
-  // locally drove (most commonly a renderer reload mid-update). The runtime
-  // must win in that case, or the recovery sheet gets silently replaced by a
-  // fresh "update available" banner offering to install the same bits again.
-  const reattached = !installing && (runtimeBusy || runtimeDone || runtimeFailed);
   // The installed bits are already on disk, just awaiting relaunch —
   // acking the runtime on a plain Cancel would erase the only path back to
   // that relaunch action, and the running process still reports its old
@@ -293,7 +284,22 @@ export function ManagerUpdatePrompt({
   // below keeps the relaunch action reachable without touching the runtime.
   const installedSnoozed =
     runtimeDone && installedSnoozedAt === runtime.updatedAtMs;
-  const showReattachedSheet = reattached && !installedSnoozed;
+  // While the installed sheet is snoozed the runtime no longer owns the
+  // modal: a newer version found by a later check must get its own confirm
+  // content rather than the stale installed-update sheet.
+  // Keyed on `installing` (this mount's own in-flight install), not on
+  // `update` being set: a startup/periodic check can legitimately find an
+  // "available" result — e.g. the running process still reports its old
+  // version because the just-installed update is awaiting relaunch — while
+  // the runtime is still `installed`/`error` from a cycle this mount never
+  // locally drove (most commonly a renderer reload mid-update). The runtime
+  // must win in that case, or the recovery sheet gets silently replaced by a
+  // fresh "update available" banner offering to install the same bits again.
+  const reattached =
+    !installing &&
+    !installedSnoozed &&
+    (runtimeBusy || runtimeDone || runtimeFailed);
+  const showReattachedSheet = reattached;
 
   useEffect(() => () => setChecksPaused(false), [setChecksPaused]);
 

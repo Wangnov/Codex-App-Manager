@@ -17,7 +17,7 @@ use crate::app::install_tx::SelfUpdatePolicyTransition;
 use crate::app::logging::redact_url;
 use crate::app::manager_update_runtime::{
     classify_updater_error, enter_commit_checkpoint, with_stall_timeout, ActivityClock,
-    EmitThrottle, ManagerUpdateRuntime, ManagerUpdateSnapshot, UpdateStage, CHECK_TIMEOUT,
+    EmitThrottle, ManagerUpdateRuntime, ManagerUpdateSnapshot, RelaunchClaim, UpdateStage, CHECK_TIMEOUT,
     DOWNLOAD_STALL_TIMEOUT, PROGRESS_EMIT_INTERVAL,
 };
 use crate::app::network;
@@ -696,13 +696,23 @@ pub fn manager_ack_update_runtime(
 
 /// Restarts the Manager process from the Rust backend rather than the
 /// renderer, so `process:allow-restart` no longer needs to be exposed to the
-/// webview at all. Single-claim: a second call while a restart is already in
-/// flight is treated as an idempotent no-op instead of an error, since the
-/// process is about to exit anyway.
+/// webview at all. Single-claim: a second call after a restart was already
+/// queued is an idempotent no-op instead of an error, since the process is
+/// about to exit anyway. A second call that overlaps the first while it is
+/// still being validated gets the busy error instead: the first can yet be
+/// refused, and reporting success then would show "relaunching" for a restart
+/// that never happens.
 #[tauri::command]
 pub fn manager_relaunch(app: AppHandle, state: State<'_, ManagerState>) -> Result<(), CommandError> {
-    if !state.manager_update.reserve_relaunch() {
-        return Ok(());
+    match state.manager_update.reserve_relaunch() {
+        RelaunchClaim::Claimed => {}
+        RelaunchClaim::AlreadyAccepted => return Ok(()),
+        RelaunchClaim::InFlight => {
+            return Err(AppError::from(crate::app::oplock::OperationError::BusySameProcess(
+                OperationKind::ManagerUpdate.as_str(),
+            ))
+            .into());
+        }
     }
     // The self-update confirm dialog already asked the user to accept a
     // restart, so this must not raise the ordinary CloseRequested/
@@ -719,6 +729,7 @@ pub fn manager_relaunch(app: AppHandle, state: State<'_, ManagerState>) -> Resul
         log::warn!("manager relaunch refused: {err}");
         return Err(AppError::from(err).into());
     }
+    state.manager_update.mark_relaunch_accepted();
     // `request_restart` only flags the intent and asks the runtime to exit;
     // it returns immediately rather than blocking, so no extra thread is
     // needed to keep this command responsive. `prepare_relaunch_for` above

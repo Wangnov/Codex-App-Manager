@@ -1225,4 +1225,56 @@ describe("ManagerUpdatePrompt", () => {
 
     expect(await screen.findByText("发现管理器新版本 0.5.9")).toBeInTheDocument();
   });
+
+  it("offers a newer version found while the installed reminder is snoozed instead of the stale installed sheet", async () => {
+    const user = userEvent.setup();
+    let emit: ((snapshot: ManagerUpdateSnapshot) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+    api.checkManagerUpdate
+      .mockResolvedValueOnce({ kind: "none" })
+      .mockResolvedValue(available({ version: "0.5.9" }));
+
+    renderPrompt(true);
+    await waitFor(() => expect(emit).toBeDefined());
+    act(() => {
+      emit?.({
+        phase: "installed",
+        version: "0.5.4",
+        downloaded: 100,
+        total: 100,
+        code: null,
+        updatedAtMs: 1,
+      });
+    });
+    const sheet = await screen.findByRole("dialog");
+    await user.click(within(sheet).getByRole("button", { name: "取消" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.getByText("更新已安装，重新启动以应用。"),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "手动刷新" }));
+    const banner = (await screen.findByText("发现管理器新版本 0.5.9")).closest(
+      ".banner",
+    ) as HTMLElement;
+    await user.click(within(banner).getByRole("button", { name: "更新" }));
+
+    // The confirm content is for the NEW version, not the stale installed
+    // recovery sheet, and it can be cancelled again.
+    const confirm = screen.getByRole("dialog", { name: "更新到 0.5.9?" });
+    expect(
+      within(confirm).queryByRole("button", { name: "立即重启" }),
+    ).toBeNull();
+    await user.click(within(confirm).getByRole("button", { name: "取消" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+  });
 });

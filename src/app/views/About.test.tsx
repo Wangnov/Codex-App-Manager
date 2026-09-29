@@ -511,4 +511,46 @@ describe("About manager update", () => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
   });
+
+  it("shows the confirm sheet for a newer version found while the installed reminder is snoozed", async () => {
+    const user = userEvent.setup();
+    let emit: ((snapshot: typeof IDLE_MANAGER_UPDATE_SNAPSHOT) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+    const newer = available("0.5.9");
+    api.checkManagerUpdate.mockResolvedValue(newer);
+
+    renderAbout();
+    await waitFor(() => expect(emit).toBeDefined());
+    act(() => {
+      emit?.({
+        phase: "installed",
+        version: "0.5.4",
+        downloaded: 100,
+        total: 100,
+        code: null,
+        updatedAtMs: 1,
+      });
+    });
+    const installed = await screen.findByRole("dialog");
+    await user.click(within(installed).getByRole("button", { name: "取消" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+
+    await user.click(screen.getByRole("button", { name: /检查管理器更新/ }));
+    const confirm = await screen.findByRole("dialog", { name: "更新到 0.5.9?" });
+    expect(
+      within(confirm).queryByRole("button", { name: "立即重启" }),
+    ).toBeNull();
+    await user.click(within(confirm).getByRole("button", { name: "取消" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(newer.discard).toHaveBeenCalled();
+  });
 });

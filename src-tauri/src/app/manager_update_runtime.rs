@@ -6,7 +6,7 @@
 //! losing progress state, and `manager_ack_update_runtime` clears a terminal
 //! (installed/error) snapshot once the renderer has shown it.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -21,6 +21,21 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+const RELAUNCH_IDLE: u8 = 0;
+const RELAUNCH_PREPARING: u8 = 1;
+const RELAUNCH_ACCEPTED: u8 = 2;
+
+/// Outcome of [`ManagerUpdateRuntime::reserve_relaunch`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelaunchClaim {
+    /// This caller owns the relaunch attempt.
+    Claimed,
+    /// Another caller owns it and has not decided yet; the outcome is unknown.
+    InFlight,
+    /// A restart was already queued by an earlier call.
+    AlreadyAccepted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -80,11 +95,12 @@ pub struct ManagerUpdateRuntime {
     /// version, because the running process still reports its old version
     /// until it is relaunched. Cleared only by the process restarting.
     installed_version: Mutex<Option<String>>,
-    /// Single-claim guard for `manager_relaunch`: the first caller wins and
-    /// actually triggers `AppHandle::request_restart`; later calls (e.g. a
-    /// duplicate click while the restart is already in flight) are treated as
-    /// idempotent no-ops rather than errors.
-    relaunch_reserved: AtomicBool,
+    /// Single-claim guard for `manager_relaunch` (`RELAUNCH_*` states): the
+    /// first caller wins and actually triggers `AppHandle::request_restart`.
+    /// A later call is an idempotent no-op only once that restart was really
+    /// queued; while the owner is still deciding (it can yet be refused as
+    /// busy) the duplicate must not claim success.
+    relaunch_state: AtomicU8,
 }
 
 impl ManagerUpdateRuntime {
@@ -191,12 +207,27 @@ impl ManagerUpdateRuntime {
         }
     }
 
-    /// Single-claim reservation for `manager_relaunch`. Returns `true` for
-    /// the caller that wins the race and should actually restart the app.
-    pub fn reserve_relaunch(&self) -> bool {
-        self.relaunch_reserved
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
+    /// Single-claim reservation for `manager_relaunch`. `Claimed` is for the
+    /// caller that wins the race and must decide (and, if it succeeds, call
+    /// [`Self::mark_relaunch_accepted`]); other callers get the current
+    /// outcome.
+    pub fn reserve_relaunch(&self) -> RelaunchClaim {
+        match self.relaunch_state.compare_exchange(
+            RELAUNCH_IDLE,
+            RELAUNCH_PREPARING,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            Ok(_) => RelaunchClaim::Claimed,
+            Err(RELAUNCH_ACCEPTED) => RelaunchClaim::AlreadyAccepted,
+            Err(_) => RelaunchClaim::InFlight,
+        }
+    }
+
+    /// The claimed relaunch was accepted (exit prepared and restart queued):
+    /// from now on duplicates are harmless no-ops.
+    pub fn mark_relaunch_accepted(&self) {
+        self.relaunch_state.store(RELAUNCH_ACCEPTED, Ordering::SeqCst);
     }
 
     /// Releases a claimed reservation without restarting — used when the
@@ -206,7 +237,7 @@ impl ManagerUpdateRuntime {
     /// `manager_relaunch` call for the rest of the process's lifetime, even
     /// after the blocking operation finishes.
     pub fn release_relaunch_reservation(&self) {
-        self.relaunch_reserved.store(false, Ordering::SeqCst);
+        self.relaunch_state.store(RELAUNCH_IDLE, Ordering::SeqCst);
     }
 }
 
@@ -485,10 +516,20 @@ mod tests {
     #[test]
     fn relaunch_reservation_is_single_claim() {
         let runtime = ManagerUpdateRuntime::default();
-        assert!(runtime.reserve_relaunch());
-        assert!(!runtime.reserve_relaunch());
+        assert_eq!(runtime.reserve_relaunch(), RelaunchClaim::Claimed);
+        // The owner has not decided yet: a duplicate must not claim success.
+        assert_eq!(runtime.reserve_relaunch(), RelaunchClaim::InFlight);
         runtime.release_relaunch_reservation();
-        assert!(runtime.reserve_relaunch());
+        assert_eq!(runtime.reserve_relaunch(), RelaunchClaim::Claimed);
+    }
+
+    #[test]
+    fn duplicates_are_no_ops_only_after_the_restart_was_accepted() {
+        let runtime = ManagerUpdateRuntime::default();
+        assert_eq!(runtime.reserve_relaunch(), RelaunchClaim::Claimed);
+        runtime.mark_relaunch_accepted();
+        assert_eq!(runtime.reserve_relaunch(), RelaunchClaim::AlreadyAccepted);
+        assert_eq!(runtime.reserve_relaunch(), RelaunchClaim::AlreadyAccepted);
     }
 
     #[test]
@@ -497,10 +538,10 @@ mod tests {
         // exit (an uninterruptible operation is active elsewhere) and giving
         // the reservation back so a later retry is not silenced forever.
         let runtime = ManagerUpdateRuntime::default();
-        assert!(runtime.reserve_relaunch());
+        assert_eq!(runtime.reserve_relaunch(), RelaunchClaim::Claimed);
         runtime.release_relaunch_reservation();
-        assert!(runtime.reserve_relaunch());
-        assert!(!runtime.reserve_relaunch());
+        assert_eq!(runtime.reserve_relaunch(), RelaunchClaim::Claimed);
+        assert_eq!(runtime.reserve_relaunch(), RelaunchClaim::InFlight);
     }
 
     #[test]
