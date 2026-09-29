@@ -598,11 +598,16 @@ jobs:
         # code-signing PFX and its password never land in the macOS build
         # process's environment, where a compromised npm/cargo build-time
         # script (postinstall hook, build.rs, etc.) could read and exfiltrate
-        # them even though that leg never uses them.
+        # them even though that leg never uses them. The PFX secrets are
+        # further limited to provider local-pfx (which signs with them) and
+        # to an unset/"none" provider (so the migration guard in the signing
+        # script can still see a leftover WINDOWS_CERTIFICATE and fail loudly);
+        # with esigner/certum a retained legacy PFX is never exposed to the
+        # build process.
         env:
           WINDOWS_SIGNING_PROVIDER: ${{ matrix.os == 'windows' && vars.WINDOWS_SIGNING_PROVIDER || '' }}
-          WINDOWS_CERTIFICATE: ${{ matrix.os == 'windows' && secrets.WINDOWS_CERTIFICATE || '' }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ matrix.os == 'windows' && secrets.WINDOWS_CERTIFICATE_PASSWORD || '' }}
+          WINDOWS_CERTIFICATE: ${{ matrix.os == 'windows' && contains(fromJSON('["","none","local-pfx"]'), vars.WINDOWS_SIGNING_PROVIDER) && secrets.WINDOWS_CERTIFICATE || '' }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ matrix.os == 'windows' && contains(fromJSON('["","none","local-pfx"]'), vars.WINDOWS_SIGNING_PROVIDER) && secrets.WINDOWS_CERTIFICATE_PASSWORD || '' }}
           WINDOWS_TIMESTAMP_URL: ${{ matrix.os == 'windows' && vars.WINDOWS_TIMESTAMP_URL || '' }}
         # Bundling downloads toolchains on the fly (e.g. the NSIS archive from
         # GitHub) which occasionally 504s and fails the whole release. Retry a
