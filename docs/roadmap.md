@@ -16,7 +16,7 @@
 | Windows 全链路（识别→侧载/便携→运行中替换→回滚） | 🟡 | α 阶段已上线且持续修复至 v0.5.10（MSIX 侧载失败自动回退便携、启动校验、日志恢复等）；文件级/块级增量（β/γ）未开始 |
 | Windows 便携直启入口（`ChatGPT.exe` 双击） | ⬜ | Codex 26.915 起需要包身份，双击官方 EXE 仍失败；[#370](https://github.com/Wangnov/Codex-App-Manager/issues/370) 跟踪 |
 | Windows 块级增量更新（γ，zsync/Range 复用） | ⬜ | 见下 §3；当前 Windows 更新是全量重下 |
-| Windows Authenticode 签名 | ⬜ | SignPath Foundation 免费签名申请已于 2026-07-11 提交，仍在审核（见 [`windows-signing.md`](./windows-signing.md)）；PR #177 已落地 SignPath 迁移的占位与 fail-closed 门禁，但需 Foundation 批准与外部账号信息核实等外部门禁才能启用；当前无 Authenticode 签名 |
+| Windows Authenticode 签名 | 🟡 | 供应商无关的签名/校验管线已落地（`scripts/sign-windows-authenticode.ps1`、`verify-windows-authenticode.ps1`，CI 用一次性自签名证书证明链路），维护者于 2026-09-29 决定不再等待 SignPath Foundation 申请（2026-07-11 提交，尚未获批），改为购买付费云 HSM 证书（首选 SSL.com eSigner）；证书配置前发布仍为未签名，见 [`windows-signing.md`](./windows-signing.md) |
 | 上游兼容性监测流水线 | ⬜ | 见下 §4；当前只有 15 分钟探测触发镜像发布，无「新版发布后自动探测功能是否被破坏」的诊断/修复闭环 |
 | Cargo workspace 整合 | ⬜ | `src-tauri` / 三个 engine crate 仍各自独立 `Cargo.lock`，未合并为单一 workspace |
 | `~/.codex` 边界 | ⬜ | 仅卸载时保留/清除，其余预留不做 |
@@ -54,12 +54,13 @@
 
 [#370](https://github.com/Wangnov/Codex-App-Manager/issues/370)：Codex 26.915 起官方 `ChatGPT.exe` 默认启动路径需要 MSIX 包身份，便携安装目录下双击该 EXE 仍会报「该进程没有程序包标识符」。当前 Manager、开始菜单快捷方式、`LaunchCodex.exe` 均可正常启动，只有直接双击上游 EXE 这一入口未覆盖。待评估方向：把官方 payload 放进子目录、启动器放在便携根目录并在更新/回滚时迁移已有安装，同时确认 `codex://` 协议处理器、Chrome 原生消息宿主等依赖 `process.execPath` 的路径在改动后仍可用。
 
-## 5. Windows Authenticode 签名 ⬜
+## 5. Windows Authenticode 签名 🟡
 
-- SignPath Foundation 免费签名申请已于 2026-07-11 提交并仍在审核，PR #180 落地了申请前置文档（政策、角色、多因素认证要求）；服务尚未批准，签名流水线也未启用。
-- PR #177（open，"prepare SignPath migration"）已在代码侧落地 SignPath 迁移的占位与 fail-closed 门禁（未获批前 Windows 发布环节按设计拒绝发布未签名或不完整的 Release），但接入本身仍需等待 Foundation 批准、organization/project/policy ID 下发，以及人工复核并提交申请中的个人/法律信息等外部门禁完成后才能合并启用。
-- 仓库现有的 PFX 签名脚手架（`scripts/sign-windows-authenticode.ps1` 等）是可选占位路径，不等于任何正式签名集成；证书未配置时签名步骤跳过、校验非阻塞。
-- 当前风险披露与核验方式（`SHA256SUMS`、Tauri updater 签名）见 [`windows-signing.md`](./windows-signing.md) 与 [`code-signing-policy.md`](./code-signing-policy.md)；若 SignPath 审核未通过或另择方案，需要单独 PR 更新这两份文档与本节。
+- SignPath Foundation 免费签名申请已于 2026-07-11 提交，尚未获批；维护者于 2026-09-29 决定不再等待，改为购买付费云 HSM 证书（首选 SSL.com eSigner，备选 Certum SimplySign，另有仅用于测试的本地 PFX 模式）。
+- 签名管线已落地：单一入口 `scripts/sign-windows-authenticode.ps1` 挂在 Tauri `bundle.windows.signCommand` 上，为主程序、NSIS uninstaller 与 installer 加 RFC 3161 时间戳签名；`scripts/verify-windows-authenticode.ps1` 提供发布前校验门禁（`Valid` + 时间戳 + 签名者指纹）；`win-installer-check.yml` 用一次性自签名证书证明整条链路。详见 [`windows-signing.md`](./windows-signing.md)。
+- 未配置任何供应商时，发布行为与此前完全一致：照常发布未签名的 Windows 安装包并保留现有警告。证书到位、试运行通过后，再设置 repo variable `AUTHENTICODE_REQUIRED=true` 打开“验证失败即阻断发布”；这一步尚未执行。
+- PR #177（open，"prepare SignPath migration"）是针对 SignPath 的另一套迁移设计，与本方案不一致，需要维护者决定关闭或改写；本节不依赖它。
+- 当前风险披露与核验方式（`SHA256SUMS`、Tauri updater 签名）见 [`windows-signing.md`](./windows-signing.md) 与 [`code-signing-policy.md`](./code-signing-policy.md)。
 
 ## 6. 上游兼容性监测流水线 ⬜
 
@@ -86,5 +87,5 @@
 - `cargo test -p codex-mac-engine` / manager `cargo test`：appcast/plan/verify/swap、full-zip 解包分支持续绿。
 - `cargo run -p codex-mac-engine --bin mac_plan / mac_fetch / mac_rehearse / mac_live_test`：appcast 出 delta 计划、真实 delta 下载 + EdDSA 验签、沙盒彩排、真实 `/Applications` gate→替换→relaunch，均已跑通。
 - `npm run build` / `cargo clippy --all-targets -- -D warnings`：manager 前端与 manager+engine 两 crate 保持干净。
-- Windows 侧：`win-installer-check.yml` 覆盖 x64 install→launch→upgrade→uninstall 冒烟 + Authenticode 探测（非阻塞）；ARM64 仅交叉构建 + PE machine 诊断，真机运行验证仍需人工清单（见 [`windows-signing.md`](./windows-signing.md)）。
+- Windows 侧：`win-installer-check.yml` 覆盖 x64 install→launch→upgrade→uninstall 冒烟 + Authenticode 探测（非阻塞）以及一次性自签名证书的签名链路证明；ARM64 仅交叉构建 + PE machine 诊断，真机运行验证仍需人工清单（见 [`windows-signing.md`](./windows-signing.md)）。
 - `codex review --base <slice>`：作为发版前收尾链路的标准步骤，迭代到无阻断意见后再开 PR/合并。
