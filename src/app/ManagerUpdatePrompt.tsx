@@ -37,24 +37,35 @@ export function useManagerUpdateRuntime(): ManagerUpdateSnapshot {
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void managerApi
-      .getManagerUpdateRuntime()
-      .then((initial) => {
-        if (!disposed) setSnapshot(initial);
-      })
-      .catch(() => undefined);
+    // A live event always wins over the one-shot fetch below: once the
+    // backend has pushed anything, a fetch that was already in flight can
+    // only be describing an earlier moment, so it must not clobber it.
+    let receivedLiveEvent = false;
+
+    // Registering the listener FIRST (and only fetching the current snapshot
+    // once that registration has actually completed) closes the gap where a
+    // phase change between "read the snapshot" and "start listening" would
+    // otherwise be missed entirely — most harmful for a terminal
+    // installed/error snapshot, which nothing would ever re-emit.
     void managerApi
       .onManagerUpdateRuntime((next) => {
+        receivedLiveEvent = true;
         if (!disposed) setSnapshot(next);
       })
       .then((fn) => {
         if (disposed) {
           fn();
-        } else {
-          unlisten = fn;
+          return undefined;
         }
+        unlisten = fn;
+        return managerApi.getManagerUpdateRuntime();
+      })
+      .then((initial) => {
+        if (!initial || disposed || receivedLiveEvent) return;
+        setSnapshot(initial);
       })
       .catch(() => undefined);
+
     return () => {
       disposed = true;
       unlisten?.();
