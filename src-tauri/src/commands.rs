@@ -496,27 +496,55 @@ pub async fn manager_install_update(
     let progress_app = app.clone();
     let install_ops = state.operations.clone();
     let install_token = op_guard.token().clone();
-    let install_result = update
-        .download_and_install(
+    // Split the plugin's own `download_and_install` so a final pre-commit
+    // checkpoint can run between the two halves — its `on_download_finish`
+    // callback fires too late to stop `install()`, which the plugin always
+    // calls right after, unconditionally.
+    let downloaded = update
+        .download(
             |chunk_len, total| {
                 runtime.add_progress(chunk_len as u64, total);
                 emit_manager_update_state(&progress_app, runtime);
             },
-            || {
-                // The updater is about to replace the running Manager's own
-                // files on disk — exactly the "destructive rename" point of
-                // no return every other install/update flow gates the same
-                // way. Advancing the lease's phase (not just the runtime
-                // snapshot) makes the quit policy actually block a confirmed
-                // quit here instead of letting it interrupt the swap.
-                let _ = install_ops.set_phase(&install_token, OperationPhase::Committing);
-                runtime.mark_installing();
-                emit_manager_update_state(&progress_app, runtime);
-            },
+            || {},
         )
         .await;
 
-    match install_result {
+    let bytes = match downloaded {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let message = format!("download manager update: {error}");
+            runtime.mark_error(message.clone());
+            emit_manager_update_state(&app, runtime);
+            return Err(AppError::Engine(message).into());
+        }
+    };
+
+    // Final pre-commit checkpoint, mirroring `mac_update`/`win_update`'s own
+    // swap flow: `set_phase` and a confirmed quit's `prepare_quit` both take
+    // the SAME operation-lock mutex, so whichever reaches it first is what
+    // the other observes. If quit won first, `force_quit` is already visible
+    // here (its store happened-before this mutex's release, which
+    // happened-before this `set_phase` call's own acquire) — bail out before
+    // ever touching the Manager's own files. If this commit won first, the
+    // quit request that follows sees phase `Committing` and is blocked, so
+    // no `app.exit()` races the install below.
+    let _ = install_ops.set_phase(&install_token, OperationPhase::Committing);
+    if progress_app
+        .state::<ManagerState>()
+        .force_quit
+        .load(Ordering::SeqCst)
+    {
+        let message = "self-update cancelled: the application is quitting".to_string();
+        runtime.mark_error(message.clone());
+        emit_manager_update_state(&app, runtime);
+        return Err(AppError::Engine(message).into());
+    }
+
+    runtime.mark_installing();
+    emit_manager_update_state(&progress_app, runtime);
+
+    match update.install(bytes) {
         Ok(()) => {
             runtime.mark_installed();
             emit_manager_update_state(&app, runtime);
