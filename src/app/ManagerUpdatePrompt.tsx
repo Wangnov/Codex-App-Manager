@@ -80,6 +80,7 @@ export interface ManagerUpdatePromptController {
   check: () => Promise<void>;
   refresh: () => Promise<void>;
   setChecksPaused: (paused: boolean) => void;
+  discardUpdate: () => void;
 }
 
 /**
@@ -188,9 +189,20 @@ export function useManagerUpdatePrompt(): ManagerUpdatePromptController {
     await check();
   }, [check, replaceUpdate]);
 
+  // Drops a cached "available" result without triggering a fresh check —
+  // used when dismissing the persistent "installed, awaiting relaunch"
+  // reminder, so the ordinary update banner does not immediately reappear
+  // offering to reinstall the exact version that is already on disk (the
+  // running process still reports its old version until it relaunches, so
+  // an immediate `refresh()`/`check()` here would just refetch the same
+  // "available" result instead of clearing it).
+  const discardUpdate = useCallback(() => {
+    replaceUpdate(null);
+  }, [replaceUpdate]);
+
   return useMemo(
-    () => ({ update, check, refresh, setChecksPaused }),
-    [check, refresh, setChecksPaused, update],
+    () => ({ update, check, refresh, setChecksPaused, discardUpdate }),
+    [check, discardUpdate, refresh, setChecksPaused, update],
   );
 }
 
@@ -203,6 +215,7 @@ export function ManagerUpdatePrompt({
   update,
   refresh,
   setChecksPaused,
+  discardUpdate,
 }: ManagerUpdatePromptController) {
   const { t } = useI18n();
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -276,11 +289,16 @@ export function ManagerUpdatePrompt({
 
   // An explicit discard of the persistent "installed" reminder (its own
   // close button, not the sheet's Cancel) really does mean "I don't want
-  // this any more" — ack the runtime for real.
+  // this any more" — ack the runtime for real. Also drop the cached
+  // "available" `update` (if any survived from before the install): once
+  // acked, `reattached` stops being true, and a stale `update` would
+  // otherwise immediately re-show the ordinary "update available" banner
+  // for the version that was just installed and is only awaiting relaunch.
   const dismissInstalledReminder = useCallback(() => {
     setInstalledSnoozedAt(null);
+    discardUpdate();
     void managerApi.ackManagerUpdateRuntime();
-  }, []);
+  }, [discardUpdate]);
 
   const relaunchNow = useCallback(async () => {
     setRelaunching(true);
