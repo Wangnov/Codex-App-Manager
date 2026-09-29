@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -9,6 +9,7 @@ import {
 } from "../../services/managerApi";
 import { I18nProvider } from "../i18n";
 import { ThemeProvider } from "../theme";
+import { RELAUNCH_GRACE_MS } from "../ManagerUpdatePrompt";
 import { About } from "./About";
 
 vi.mock("../../services/managerApi", async (importOriginal) => {
@@ -418,5 +419,96 @@ describe("About manager update", () => {
       }),
     );
     expect(api.ackManagerUpdateRuntime).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not flash the recovery sheet between an accepted relaunch and the process exiting", async () => {
+    let emit: ((snapshot: typeof IDLE_MANAGER_UPDATE_SNAPSHOT) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+    const install = vi.fn(async () => {
+      emit?.({
+        phase: "installed",
+        version: "0.5.3",
+        downloaded: 100,
+        total: 100,
+        code: null,
+        updatedAtMs: Date.now(),
+      });
+    });
+    api.checkManagerUpdate.mockResolvedValue(available("0.5.3", install));
+
+    renderAbout();
+    await waitFor(() => expect(emit).toBeDefined());
+    fireEvent.click(screen.getByRole("button", { name: /检查管理器更新/ }));
+    const dialog = await screen.findByRole("dialog", { name: "更新到 0.5.3?" });
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      fireEvent.click(within(dialog).getByRole("button", { name: "更新" }));
+      await act(async () => {});
+
+      expect(install).toHaveBeenCalledTimes(1);
+      const busy = within(screen.getByRole("dialog")).getByRole("button", {
+        name: "正在重新启动…",
+      });
+      expect(busy).toBeDisabled();
+      expect(screen.queryByText("更新已安装，重新启动以应用。")).toBeNull();
+      expect(screen.queryByRole("button", { name: "立即重启" })).toBeNull();
+
+      await act(() => vi.advanceTimersByTimeAsync(RELAUNCH_GRACE_MS));
+      const recovery = screen.getByRole("dialog");
+      expect(
+        within(recovery).getByText("更新已安装，重新启动以应用。"),
+      ).toBeInTheDocument();
+      expect(
+        within(recovery).getByRole("button", { name: "立即重启" }),
+      ).toBeEnabled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops its own cached availability once the runtime reports that version installed", async () => {
+    let emit: ((snapshot: typeof IDLE_MANAGER_UPDATE_SNAPSHOT) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+    const pending = available("0.5.3");
+    api.checkManagerUpdate.mockResolvedValue(pending);
+
+    renderAbout();
+    await waitFor(() => expect(emit).toBeDefined());
+    fireEvent.click(screen.getByRole("button", { name: /检查管理器更新/ }));
+    await screen.findByRole("dialog", { name: "更新到 0.5.3?" });
+
+    // Another view (Home) completed the install of this exact version.
+    act(() => {
+      emit?.({
+        phase: "installed",
+        version: "0.5.3",
+        downloaded: 100,
+        total: 100,
+        code: null,
+        updatedAtMs: Date.now(),
+      });
+    });
+    await waitFor(() => expect(pending.discard).toHaveBeenCalledTimes(1));
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText("更新已安装，重新启动以应用。"),
+    ).toBeInTheDocument();
+
+    // Once the runtime is acked back to idle nothing offers 0.5.3 again.
+    act(() => emit?.(IDLE_MANAGER_UPDATE_SNAPSHOT));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
   });
 });

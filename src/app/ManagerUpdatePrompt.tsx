@@ -75,6 +75,30 @@ export function useManagerUpdateRuntime(): ManagerUpdateSnapshot {
   return snapshot;
 }
 
+/**
+ * How long a view keeps showing "relaunching" after the backend accepted the
+ * relaunch request. `request_restart` only queues the exit, so the process is
+ * still alive for a moment after `manager_relaunch` returns `Ok`; clearing the
+ * busy state right away would flash the recovery UI ("Update installed. Relaunch
+ * to apply it." with Cancel / Relaunch now) just before the window closes. If
+ * the exit never happens the grace period ends and that recovery UI appears.
+ */
+export const RELAUNCH_GRACE_MS = 10_000;
+
+/**
+ * Returns `hold(clear)`: call it after a relaunch was accepted to run `clear`
+ * (which resets the caller's busy flag) only once the grace period elapsed.
+ * Cleared on unmount so a stale timer can never set state on a gone view.
+ */
+export function useRelaunchGrace(): (clear: () => void) => void {
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  return useCallback((clear: () => void) => {
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(clear, RELAUNCH_GRACE_MS);
+  }, []);
+}
+
 export interface ManagerUpdatePromptController {
   update: ManagerUpdateAvailable | null;
   check: () => Promise<void>;
@@ -220,6 +244,7 @@ export function ManagerUpdatePrompt({
   const { t } = useI18n();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [installing, setInstalling] = useState(false);
+  const holdUntilExit = useRelaunchGrace();
   const [failure, setFailure] = useState<string | null>(null);
   // Dismissing the banner ("remind me later") is tracked by the exact update
   // object rather than a boolean: `check()` hands out a brand-new object on
@@ -294,6 +319,23 @@ export function ManagerUpdatePrompt({
   // acked, `reattached` stops being true, and a stale `update` would
   // otherwise immediately re-show the ordinary "update available" banner
   // for the version that was just installed and is only awaiting relaunch.
+  // The runtime is the single source of truth for "this version is already on
+  // disk": drop a cached availability result for it, whichever view drove (or
+  // later acked) the install. Without this, About installing/dismissing while
+  // Home still holds the pre-install `update` would bring the "update
+  // available" banner back for the version that is already installed. Not
+  // while this mount is itself installing: its own sheet still reads `update`.
+  useEffect(() => {
+    if (installing) return;
+    if (
+      runtime.phase === "installed" &&
+      update &&
+      update.version === runtime.version
+    ) {
+      discardUpdate();
+    }
+  }, [discardUpdate, installing, runtime.phase, runtime.version, update]);
+
   const dismissInstalledReminder = useCallback(() => {
     setInstalledSnoozedAt(null);
     discardUpdate();
@@ -303,8 +345,10 @@ export function ManagerUpdatePrompt({
   const relaunchNow = useCallback(async () => {
     setRelaunching(true);
     setFailure(null);
+    let accepted = false;
     try {
       await managerApi.relaunchManager();
+      accepted = true;
     } catch (cause) {
       // Most commonly a genuine Block (an uninterruptible Codex operation
       // elsewhere) — the backend already released the reservation, so this
@@ -312,9 +356,11 @@ export function ManagerUpdatePrompt({
       // finishes.
       setFailure(userErrorMessage(cause, t));
     } finally {
-      setRelaunching(false);
+      // Accepted: the process is about to exit, keep the button busy.
+      if (accepted) holdUntilExit(() => setRelaunching(false));
+      else setRelaunching(false);
     }
-  }, [t]);
+  }, [holdUntilExit, t]);
 
   const retryAfterFailure = useCallback(async () => {
     // `checksPaused`/`confirmOpen` are left set by whichever confirm sheet
@@ -332,8 +378,10 @@ export function ManagerUpdatePrompt({
     if (!update || installing) return;
     setInstalling(true);
     setFailure(null);
+    let relaunchAccepted = false;
     try {
       await update.installAndRelaunch();
+      relaunchAccepted = true;
     } catch (cause) {
       if (errorCode(cause) === "stale_expectation") {
         setChecksPaused(false);
@@ -343,9 +391,13 @@ export function ManagerUpdatePrompt({
         setFailure(userErrorMessage(cause, t));
       }
     } finally {
-      setInstalling(false);
+      // Install succeeded and the relaunch was accepted: the process is about
+      // to exit, so keep this mount "installing" (not the recovery sheet)
+      // until then. A failed relaunch falls through to the recovery UI.
+      if (relaunchAccepted) holdUntilExit(() => setInstalling(false));
+      else setInstalling(false);
     }
-  }, [installing, refresh, setChecksPaused, t, update]);
+  }, [holdUntilExit, installing, refresh, setChecksPaused, t, update]);
 
   // A reattached recovery sheet always wins over the ordinary "update
   // available" banner — showing both at once would let the user re-confirm
@@ -495,7 +547,9 @@ export function ManagerUpdatePrompt({
                   onClick={() => void relaunchNow()}
                   disabled={relaunching}
                 >
-                  {t("progress.relaunchNow")}
+                  {relaunching
+                    ? t("progress.relaunching")
+                    : t("progress.relaunchNow")}
                 </button>
               </>
             ) : (
@@ -531,7 +585,9 @@ export function ManagerUpdatePrompt({
                 {installing
                   ? runtime.phase === "installing"
                     ? t("progress.installing")
-                    : t("progress.title")
+                    : runtime.phase === "installed"
+                      ? t("progress.relaunching")
+                      : t("progress.title")
                   : t("confirm.ok")}
               </button>
             </>

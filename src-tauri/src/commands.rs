@@ -16,8 +16,9 @@ use crate::app::disk::available_space;
 use crate::app::install_tx::SelfUpdatePolicyTransition;
 use crate::app::logging::redact_url;
 use crate::app::manager_update_runtime::{
-    classify_updater_error, enter_commit_checkpoint, EmitThrottle, ManagerUpdateRuntime,
-    ManagerUpdateSnapshot, UpdateStage, PROGRESS_EMIT_INTERVAL,
+    classify_updater_error, enter_commit_checkpoint, with_stall_timeout, ActivityClock,
+    EmitThrottle, ManagerUpdateRuntime, ManagerUpdateSnapshot, UpdateStage, CHECK_TIMEOUT,
+    DOWNLOAD_STALL_TIMEOUT, PROGRESS_EMIT_INTERVAL,
 };
 use crate::app::network;
 use crate::app::mac_update::{
@@ -400,7 +401,12 @@ fn manager_updater_builder(
     app: &AppHandle,
 ) -> Result<tauri_plugin_updater::UpdaterBuilder, AppError> {
     let saved = PersistedAppSettings::load();
-    let mut builder = app.updater_builder();
+    // Bounds every manifest request. The plugin applies no timeout unless one
+    // is set here, and the check runs while the shared `ManagerUpdate` lease
+    // is held (see `manager_install_update`). The artifact download is
+    // bounded separately, by inactivity (`DOWNLOAD_STALL_TIMEOUT`): the
+    // plugin does not carry this timeout over to `Update::download`.
+    let mut builder = app.updater_builder().timeout(CHECK_TIMEOUT);
     match saved.proxy_mode {
         ProxyMode::System => {}
         ProxyMode::Direct => {
@@ -443,7 +449,7 @@ pub async fn manager_check_update(
     let update = updater
         .check()
         .await
-        .map_err(|e| AppError::Engine(format!("check manager update: {e}")))?;
+        .map_err(|e| manager_check_failure("check manager update", &e))?;
     // A version this process already wrote to disk is not "available" any
     // more, even after the reminder was dismissed: the running binary still
     // reports its old version until it relaunches, so without this the next
@@ -483,9 +489,10 @@ pub async fn manager_install_update(
         // A version already written to disk by this process is not installable
         // again; only a relaunch is left.
         state.manager_update.without_installed(
-            updater.check().await.map_err(|e| {
-                AppError::Engine(format!("check manager update before install: {e}"))
-            })?,
+            updater
+                .check()
+                .await
+                .map_err(|e| manager_check_failure("check manager update before install", &e))?,
             |update| update.version.as_str(),
         ),
     )?;
@@ -510,13 +517,22 @@ pub async fn manager_install_update(
 
     let progress_app = app.clone();
     let mut throttle = EmitThrottle::new(PROGRESS_EMIT_INTERVAL);
+    let activity = ActivityClock::new();
     // Split the plugin's own `download_and_install` so a final pre-commit
     // checkpoint can run between the two halves — its `on_download_finish`
     // callback fires too late to stop `install()`, which the plugin always
     // calls right after, unconditionally.
-    let downloaded = update
-        .download(
+    //
+    // The plugin's `download` has no timeout of its own here, and this whole
+    // function holds the shared `ManagerUpdate` lease. A connection that is
+    // accepted but then stalls (captive portal, dead proxy) would therefore
+    // lock out every Codex operation and the relaunch until the app is quit;
+    // abandon the download after `DOWNLOAD_STALL_TIMEOUT` without any byte
+    // instead, which drops the request and releases the lease on return.
+    let downloaded = with_stall_timeout(
+        update.download(
             |chunk_len, total| {
+                activity.touch();
                 // The snapshot is updated per chunk; only the IPC event is
                 // rate-limited. Every phase change below emits unthrottled, so
                 // the final byte count always reaches the renderer.
@@ -526,12 +542,26 @@ pub async fn manager_install_update(
                 }
             },
             || {},
-        )
-        .await;
+        ),
+        &activity,
+        DOWNLOAD_STALL_TIMEOUT,
+    )
+    .await;
 
     let bytes = match downloaded {
-        Ok(bytes) => bytes,
-        Err(error) => {
+        Ok(Ok(bytes)) => bytes,
+        Err(_stalled) => {
+            return Err(manager_update_failure_with_kind(
+                &app,
+                runtime,
+                ErrorKind::Timeout,
+                format!(
+                    "download manager update: no data received for {}s",
+                    DOWNLOAD_STALL_TIMEOUT.as_secs()
+                ),
+            ));
+        }
+        Ok(Err(error)) => {
             return Err(manager_update_failure(
                 &app,
                 runtime,
@@ -601,11 +631,37 @@ fn manager_update_failure(
     context: &str,
     error: &tauri_plugin_updater::Error,
 ) -> CommandError {
-    let kind = classify_updater_error(stage, error);
-    let message = format!("{context}: {error}");
+    manager_update_failure_with_kind(
+        app,
+        runtime,
+        classify_updater_error(stage, error),
+        format!("{context}: {error}"),
+    )
+}
+
+fn manager_update_failure_with_kind(
+    app: &AppHandle,
+    runtime: &ManagerUpdateRuntime,
+    kind: ErrorKind,
+    message: String,
+) -> CommandError {
     log::warn!("manager update failed code={} {message}", kind.as_code());
     runtime.mark_error(kind.as_code());
     emit_manager_update_state(app, runtime);
+    CommandError {
+        code: kind.as_code().to_string(),
+        message: AppError::Engine(message).to_string(),
+    }
+}
+
+/// A failed manifest check. Unlike a download/install failure it does not
+/// enter the runtime (nothing was started, so there is no snapshot to show):
+/// it only rejects the invoke, but with the same stable code so the confirm
+/// sheet can show localized network/timeout copy instead of the generic error.
+fn manager_check_failure(context: &str, error: &tauri_plugin_updater::Error) -> CommandError {
+    let kind = classify_updater_error(UpdateStage::Check, error);
+    let message = format!("{context}: {error}");
+    log::warn!("manager update check failed code={} {message}", kind.as_code());
     CommandError {
         code: kind.as_code().to_string(),
         message: AppError::Engine(message).to_string(),

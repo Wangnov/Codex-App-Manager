@@ -248,8 +248,86 @@ impl EmitThrottle {
 /// fallback category for errors with no more specific meaning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateStage {
+    /// Reading the signed update feed (`check()`), before anything is
+    /// downloaded.
+    Check,
     Download,
     Install,
+}
+
+/// Upper bound for one manifest check. The updater plugin applies no timeout
+/// unless the builder sets one, and the check runs while the shared
+/// `ManagerUpdate` operation lease is held, so a stalled feed connection would
+/// otherwise block every Codex install/update/uninstall/adopt (and the
+/// relaunch) until the app is quit. The manifest is a few KiB, so a total
+/// request timeout is appropriate here.
+pub const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long the artifact download may go without receiving a single byte
+/// (from the request being sent until the first chunk, and between chunks)
+/// before it is abandoned. Deliberately an inactivity limit rather than a
+/// total one: the package is large, and a slow but progressing download must
+/// not be killed. Applies while the `ManagerUpdate` lease is held, for the same
+/// reason as [`CHECK_TIMEOUT`].
+pub const DOWNLOAD_STALL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Marks the last moment a download made progress, for
+/// [`with_stall_timeout`].
+pub struct ActivityClock {
+    base: Instant,
+    last_ms: std::sync::atomic::AtomicU64,
+}
+
+impl ActivityClock {
+    pub fn new() -> Self {
+        Self {
+            base: Instant::now(),
+            last_ms: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Records activity now (called per received chunk).
+    pub fn touch(&self) {
+        let ms = self.base.elapsed().as_millis() as u64;
+        self.last_ms.fetch_max(ms, Ordering::SeqCst);
+    }
+
+    /// Time elapsed since the last recorded activity (or since creation).
+    pub fn idle(&self) -> Duration {
+        let last = Duration::from_millis(self.last_ms.load(Ordering::SeqCst));
+        self.base.elapsed().saturating_sub(last)
+    }
+}
+
+impl Default for ActivityClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The wrapped future made no progress for the whole inactivity limit and was
+/// dropped (which aborts its in-flight request).
+#[derive(Debug, PartialEq, Eq)]
+pub struct Stalled;
+
+/// Drives `fut` to completion unless `clock` reports no activity for `limit`,
+/// in which case the future is dropped and `Err(Stalled)` returned. The future
+/// is expected to call `clock.touch()` whenever it makes progress.
+pub async fn with_stall_timeout<F: std::future::Future>(
+    fut: F,
+    clock: &ActivityClock,
+    limit: Duration,
+) -> Result<F::Output, Stalled> {
+    let mut fut = std::pin::pin!(fut);
+    loop {
+        let idle = clock.idle();
+        if idle >= limit {
+            return Err(Stalled);
+        }
+        if let Ok(output) = tokio::time::timeout(limit - idle, fut.as_mut()).await {
+            return Ok(output);
+        }
+    }
 }
 
 /// Maps a `tauri-plugin-updater` error to the stable failure category the
@@ -459,6 +537,56 @@ mod tests {
     }
 
     #[test]
+    fn stall_timeout_abandons_a_future_that_never_progresses() {
+        let clock = ActivityClock::new();
+        let started = Instant::now();
+        let result = tauri::async_runtime::block_on(with_stall_timeout(
+            std::future::pending::<()>(),
+            &clock,
+            Duration::from_millis(80),
+        ));
+        assert_eq!(result, Err(Stalled));
+        assert!(started.elapsed() >= Duration::from_millis(80));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn stall_timeout_lets_a_slow_but_progressing_future_finish() {
+        let clock = ActivityClock::new();
+        // Total run time (~240ms) exceeds the 100ms limit, but activity is
+        // recorded every 40ms, so it must not be cut off.
+        let work = async {
+            for _ in 0..6 {
+                tokio::time::sleep(Duration::from_millis(40)).await;
+                clock.touch();
+            }
+            7
+        };
+        let result = tauri::async_runtime::block_on(with_stall_timeout(
+            work,
+            &clock,
+            Duration::from_millis(100),
+        ));
+        assert_eq!(result, Ok(7));
+    }
+
+    #[test]
+    fn stall_timeout_fires_when_progress_stops_midway() {
+        let clock = ActivityClock::new();
+        let work = async {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            clock.touch();
+            std::future::pending::<()>().await;
+        };
+        let result = tauri::async_runtime::block_on(with_stall_timeout(
+            work,
+            &clock,
+            Duration::from_millis(80),
+        ));
+        assert_eq!(result, Err(Stalled));
+    }
+
+    #[test]
     fn emit_throttle_limits_progress_events_but_lets_the_first_through() {
         let start = Instant::now();
         let mut throttle = EmitThrottle::new(Duration::from_millis(100));
@@ -503,6 +631,91 @@ mod tests {
         assert_eq!(code(i, E::InvalidUpdaterFormat), "install");
         assert_eq!(code(d, io(std::io::ErrorKind::Other)), "engine_error");
         assert_eq!(code(d, E::EmptyEndpoints), "engine_error");
+        // The manifest check has no "install" fallback: an unclassifiable
+        // failure there stays generic.
+        assert_eq!(code(UpdateStage::Check, E::EmptyEndpoints), "engine_error");
+        assert_eq!(code(UpdateStage::Check, io(std::io::ErrorKind::Other)), "engine_error");
+    }
+
+    /// `reqwest::Error` has no public constructor, so the transport-level
+    /// branches are exercised with real requests against a loopback listener.
+    fn reqwest_error_from(
+        respond: impl FnOnce(std::net::TcpStream) + Send + 'static,
+        timeout: Duration,
+        error_for_status: bool,
+    ) -> reqwest::Error {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                respond(stream);
+            }
+        });
+        // Same provider the updater plugin installs before building a client.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let error = tauri::async_runtime::block_on(async move {
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .timeout(timeout)
+                .build()
+                .unwrap();
+            let response = client.get(format!("http://{addr}/")).send().await;
+            if error_for_status {
+                response.unwrap().error_for_status().unwrap_err()
+            } else {
+                response.unwrap_err()
+            }
+        });
+        let _ = server.join();
+        error
+    }
+
+    #[test]
+    fn reqwest_timeout_status_and_transport_errors_are_classified() {
+        use std::io::{Read, Write};
+        use tauri_plugin_updater::Error as E;
+
+        // Accepts the connection but never answers (captive portal / dead
+        // proxy): the request timeout fires.
+        let stalled = reqwest_error_from(
+            |mut stream| {
+                let mut buf = [0u8; 256];
+                let _ = stream.read(&mut buf);
+                std::thread::sleep(Duration::from_millis(400));
+            },
+            Duration::from_millis(100),
+            false,
+        );
+        assert!(stalled.is_timeout());
+        assert_eq!(
+            classify_updater_error(UpdateStage::Check, &E::Reqwest(stalled)),
+            ErrorKind::Timeout
+        );
+
+        let status = reqwest_error_from(
+            |mut stream| {
+                let mut buf = [0u8; 256];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            },
+            Duration::from_secs(5),
+            true,
+        );
+        assert!(status.is_status());
+        assert_eq!(
+            classify_updater_error(UpdateStage::Download, &E::Reqwest(status)),
+            ErrorKind::Artifact
+        );
+
+        // Connection dropped before any response: a plain transport failure.
+        let dropped = reqwest_error_from(drop, Duration::from_secs(5), false);
+        assert!(!dropped.is_timeout() && !dropped.is_status());
+        assert_eq!(
+            classify_updater_error(UpdateStage::Check, &E::Reqwest(dropped)),
+            ErrorKind::Network
+        );
     }
 
     fn checkpoint_lock_path(name: &str) -> std::path::PathBuf {

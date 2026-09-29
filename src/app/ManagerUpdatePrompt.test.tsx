@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -13,6 +13,7 @@ import { DEFAULT_SETTINGS, type ManagerUpdateSnapshot } from "../shared/types";
 import { I18nProvider } from "./i18n";
 import {
   ManagerUpdatePrompt,
+  RELAUNCH_GRACE_MS,
   useManagerUpdatePrompt,
 } from "./ManagerUpdatePrompt";
 
@@ -810,6 +811,9 @@ describe("ManagerUpdatePrompt", () => {
           code: null,
           updatedAtMs: Date.now(),
         });
+        // The install landed but the backend refused the relaunch (another
+        // operation is active), so the invoke rejects and recovery shows.
+        throw { code: "operation_busy", message: "busy" };
       }),
     });
     api.checkManagerUpdate.mockResolvedValue(update);
@@ -856,6 +860,9 @@ describe("ManagerUpdatePrompt", () => {
           code: null,
           updatedAtMs: 12345,
         });
+        // The install landed but the backend refused the relaunch (another
+        // operation is active), so the invoke rejects and recovery shows.
+        throw { code: "operation_busy", message: "busy" };
       }),
     });
     api.checkManagerUpdate.mockResolvedValue(update);
@@ -1023,6 +1030,9 @@ describe("ManagerUpdatePrompt", () => {
           code: null,
           updatedAtMs: Date.now(),
         });
+        // The install landed but the backend refused the relaunch (another
+        // operation is active), so the invoke rejects and recovery shows.
+        throw { code: "operation_busy", message: "busy" };
       }),
     });
     api.checkManagerUpdate.mockResolvedValue(update);
@@ -1056,5 +1066,163 @@ describe("ManagerUpdatePrompt", () => {
     expect(
       screen.queryByText("发现管理器新版本 0.5.3"),
     ).not.toBeInTheDocument();
+  });
+
+  it("does not flash the recovery sheet between an accepted relaunch and the process exiting", async () => {
+    // `manager_relaunch` returns Ok as soon as the restart is queued; the
+    // process is still alive for a moment. The runtime is already `installed`
+    // by then, so clearing `installing` immediately would swap the sheet to
+    // "Update installed. Relaunch to apply it." right before the window closes.
+    let emit: ((snapshot: ManagerUpdateSnapshot) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+    const update = available({
+      installAndRelaunch: vi.fn(async () => {
+        emit?.({
+          phase: "installed",
+          version: "0.5.3",
+          downloaded: 100,
+          total: 100,
+          code: null,
+          updatedAtMs: Date.now(),
+        });
+      }),
+    });
+    api.checkManagerUpdate.mockResolvedValue(update);
+
+    renderPrompt();
+    const banner = (await screen.findByText("发现管理器新版本 0.5.3")).closest(
+      ".banner",
+    ) as HTMLElement;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    fireEvent.click(within(banner).getByRole("button", { name: "更新" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "更新" }));
+    await act(async () => {});
+
+    expect(update.installAndRelaunch).toHaveBeenCalledTimes(1);
+    const busy = within(screen.getByRole("dialog")).getByRole("button", {
+      name: "正在重新启动…",
+    });
+    expect(busy).toBeDisabled();
+    expect(screen.queryByText("更新已安装，重新启动以应用。")).toBeNull();
+    expect(screen.queryByRole("button", { name: "立即重启" })).toBeNull();
+
+    // If the process somehow does not exit, the recovery path appears.
+    await act(() => vi.advanceTimersByTimeAsync(RELAUNCH_GRACE_MS));
+    const recovery = screen.getByRole("dialog");
+    expect(
+      within(recovery).getByText("更新已安装，重新启动以应用。"),
+    ).toBeInTheDocument();
+    expect(
+      within(recovery).getByRole("button", { name: "立即重启" }),
+    ).toBeEnabled();
+  });
+
+  it("keeps the relaunch button busy after the backend accepted an explicit relaunch", async () => {
+    api.checkManagerUpdate.mockResolvedValue({ kind: "none" });
+    let emit: ((snapshot: ManagerUpdateSnapshot) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+
+    renderPrompt();
+    await waitFor(() => expect(emit).toBeDefined());
+    act(() => {
+      emit?.({
+        phase: "installed",
+        version: "0.5.4",
+        downloaded: 100,
+        total: 100,
+        code: null,
+        updatedAtMs: Date.now(),
+      });
+    });
+    await screen.findByRole("dialog");
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    fireEvent.click(screen.getByRole("button", { name: "立即重启" }));
+    await act(async () => {});
+
+    expect(api.relaunchManager).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByRole("button", { name: "正在重新启动…" }),
+    ).toBeDisabled();
+
+    await act(() => vi.advanceTimersByTimeAsync(RELAUNCH_GRACE_MS));
+    expect(screen.getByRole("button", { name: "立即重启" })).toBeEnabled();
+  });
+
+  it("drops its cached availability when another view installed that version, even after it acks", async () => {
+    // Home holds the pre-install `update` while About drives the install and
+    // then dismisses its reminder (acking the runtime back to idle). Home must
+    // not bring the "update available" banner back for the installed version.
+    let emit: ((snapshot: ManagerUpdateSnapshot) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+    api.checkManagerUpdate.mockResolvedValue(available());
+
+    renderPrompt();
+    await screen.findByText("发现管理器新版本 0.5.3");
+    await waitFor(() => expect(emit).toBeDefined());
+
+    act(() => {
+      emit?.({
+        phase: "installed",
+        version: "0.5.3",
+        downloaded: 100,
+        total: 100,
+        code: null,
+        updatedAtMs: Date.now(),
+      });
+    });
+    await screen.findByRole("dialog");
+    act(() => emit?.(IDLE_MANAGER_UPDATE_SNAPSHOT));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText("发现管理器新版本 0.5.3")).toBeNull();
+    expect(api.checkManagerUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a cached update for a different version than the one installed elsewhere", async () => {
+    let emit: ((snapshot: ManagerUpdateSnapshot) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+    api.checkManagerUpdate.mockResolvedValue(available({ version: "0.5.9" }));
+
+    renderPrompt();
+    await screen.findByText("发现管理器新版本 0.5.9");
+    await waitFor(() => expect(emit).toBeDefined());
+    act(() => {
+      emit?.({
+        phase: "installed",
+        version: "0.5.3",
+        downloaded: 100,
+        total: 100,
+        code: null,
+        updatedAtMs: Date.now(),
+      });
+    });
+    await screen.findByRole("dialog");
+    act(() => emit?.(IDLE_MANAGER_UPDATE_SNAPSHOT));
+
+    expect(await screen.findByText("发现管理器新版本 0.5.9")).toBeInTheDocument();
   });
 });

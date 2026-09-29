@@ -1,4 +1,4 @@
-import { useCallback, useId, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 
 import {
   errorCode,
@@ -6,7 +6,7 @@ import {
   type ManagerUpdateAvailable,
 } from "../../services/managerApi";
 import { mib } from "../format";
-import { useManagerUpdateRuntime } from "../ManagerUpdatePrompt";
+import { useManagerUpdateRuntime, useRelaunchGrace } from "../ManagerUpdatePrompt";
 import { codeErrorMessage, userErrorMessage } from "../errorCopy";
 import { Icon, CodexMark } from "../icons";
 import { useI18n } from "../i18n";
@@ -23,6 +23,7 @@ export function About({ onBack }: { onBack: () => void }) {
   const [mgrMsg, setMgrMsg] = useState<string | null>(null);
   const [pendingUpdate, setPendingUpdate] = useState<ManagerUpdateAvailable | null>(null);
   const [relaunching, setRelaunching] = useState(false);
+  const holdUntilExit = useRelaunchGrace();
   // Separate from `mgrMsg`: that one is rendered in the (inert-while-the-
   // sheet-is-open) background row, so a relaunch failure needs its own state
   // shown inside the open sheet, next to the button the user just clicked.
@@ -69,6 +70,24 @@ export function About({ onBack }: { onBack: () => void }) {
   const showReattachedSheet = reattached && !installedSnoozed;
   const updateSheetOpen = Boolean(pendingUpdate) || showReattachedSheet;
 
+  // The runtime is the single source of truth for "this version is already on
+  // disk": drop this view's cached availability result for it whichever view
+  // drove the install, so a stale confirm for an installed version can never
+  // be offered again (Home does the same for its own cached result). Not while
+  // this view is itself mid-install: its own sheet still reads `pendingUpdate`.
+  useEffect(() => {
+    if (mgrBusy) return;
+    if (
+      runtime.phase === "installed" &&
+      pendingUpdate &&
+      pendingUpdate.version === runtime.version
+    ) {
+      void pendingUpdate.discard();
+      setPendingUpdate(null);
+      setMgrMsg(null);
+    }
+  }, [mgrBusy, pendingUpdate, runtime.phase, runtime.version]);
+
   const closeUpdateConfirm = useCallback(() => {
     if (mgrBusy || runtimeBusy) return;
     void pendingUpdate?.discard();
@@ -95,8 +114,10 @@ export function About({ onBack }: { onBack: () => void }) {
   const relaunchNow = useCallback(async () => {
     setRelaunching(true);
     setRelaunchFailure(null);
+    let accepted = false;
     try {
       await managerApi.relaunchManager();
+      accepted = true;
     } catch (cause) {
       // Most commonly a genuine Block (an uninterruptible Codex operation
       // elsewhere) — the backend already released the reservation, so this
@@ -105,9 +126,11 @@ export function About({ onBack }: { onBack: () => void }) {
       // background row that `inert` disables while this sheet is open).
       setRelaunchFailure(userErrorMessage(cause, t));
     } finally {
-      setRelaunching(false);
+      // Accepted: the process is about to exit, keep the button busy.
+      if (accepted) holdUntilExit(() => setRelaunching(false));
+      else setRelaunching(false);
     }
-  }, [t]);
+  }, [holdUntilExit, t]);
 
   const checkManager = useCallback(async () => {
     setMgrBusy(true);
@@ -148,8 +171,10 @@ export function About({ onBack }: { onBack: () => void }) {
     if (!pendingUpdate) return;
     setMgrBusy(true);
     setMgrMsg(t("progress.installing"));
+    let relaunchAccepted = false;
     try {
       await pendingUpdate.installAndRelaunch();
+      relaunchAccepted = true;
     } catch (cause) {
       if (errorCode(cause) === "stale_expectation") {
         // The feed changed after confirmation. Re-read it now so the localized
@@ -161,9 +186,13 @@ export function About({ onBack }: { onBack: () => void }) {
         setPendingUpdate(null);
       }
     } finally {
-      setMgrBusy(false);
+      // Install succeeded and the relaunch was accepted: the process is about
+      // to exit, so stay busy (not the recovery sheet) until then. A refused
+      // relaunch falls through to the recovery UI.
+      if (relaunchAccepted) holdUntilExit(() => setMgrBusy(false));
+      else setMgrBusy(false);
     }
-  }, [checkManager, pendingUpdate, t]);
+  }, [checkManager, holdUntilExit, pendingUpdate, t]);
 
   const openLogsDir = useCallback(async () => {
     setMgrMsg(null);
@@ -361,7 +390,9 @@ export function About({ onBack }: { onBack: () => void }) {
                 onClick={() => void relaunchNow()}
                 disabled={relaunching}
               >
-                {t("progress.relaunchNow")}
+                {relaunching
+                  ? t("progress.relaunching")
+                  : t("progress.relaunchNow")}
               </button>
             </div>
           ) : (
@@ -384,7 +415,11 @@ export function About({ onBack }: { onBack: () => void }) {
               {t("confirm.cancel")}
             </button>
             <button className="btn primary" onClick={installManagerUpdate} disabled={mgrBusy}>
-              {mgrBusy ? t("progress.installing") : t("confirm.ok")}
+              {mgrBusy
+                ? runtime.phase === "installed"
+                  ? t("progress.relaunching")
+                  : t("progress.installing")
+                : t("confirm.ok")}
             </button>
           </div>
         )}

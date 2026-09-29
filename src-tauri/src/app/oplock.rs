@@ -724,8 +724,6 @@ impl OperationManager {
         policy
     }
 
-    /// Snapshot of the local active operation, for frontend reattach after
-    /// renderer reload / remount. `None` when free (or only a cross-process lock).
     /// Linearizes an explicit "relaunch the Manager now" request with the
     /// operation lease. Unlike `prepare_quit`, a relaunch never counts as the
     /// user's consent to abandon other work: `prepare_exit` runs (under the
@@ -760,6 +758,8 @@ impl OperationManager {
         Ok(())
     }
 
+    /// Snapshot of the local active operation, for frontend reattach after
+    /// renderer reload / remount. `None` when free (or only a cross-process lock).
     pub fn snapshot(&self) -> Option<OperationSnapshot> {
         let Ok(inner) = self.inner.lock() else {
             return None;
