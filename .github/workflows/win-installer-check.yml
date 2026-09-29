@@ -213,15 +213,17 @@ jobs:
             -ExpectedThumbprint "${{ steps.throwaway-cert.outputs.thumbprint }}" `
             -Stage "sign-proof"
 
+      # Always `optional` here, independent of vars.AUTHENTICODE_REQUIRED: this
+      # job signs with a throwaway self-signed certificate that can never be
+      # Status=Valid, so `required` mode would fail every PR once production
+      # enforcement is switched on. Enforcement applies to release.yml only;
+      # the thumbprint assertions in this job are what prove the signing hook.
       - name: Authenticode probe (optional / non-blocking)
         shell: pwsh
-        env:
-          # Flip to "required" via repo variable once OV/EV is wired into release.
-          AUTHENTICODE_MODE: ${{ vars.AUTHENTICODE_REQUIRED == 'true' && 'required' || 'optional' }}
         run: |
           & .\scripts\verify-windows-authenticode.ps1 `
             -Path "${{ steps.artifact.outputs.installer }}" `
-            -Mode $env:AUTHENTICODE_MODE `
+            -Mode optional `
             -Stage "sign-verify"
 
       # ── Packaged lifecycle smoke, with the throwaway cert threaded through ──
@@ -233,12 +235,10 @@ jobs:
       #    (installed PE)" stage.
       - name: Packaged lifecycle smoke (install / launch / upgrade / uninstall)
         shell: pwsh
-        env:
-          AUTHENTICODE_MODE: ${{ vars.AUTHENTICODE_REQUIRED == 'true' && 'required' || 'optional' }}
         run: |
           & .\scripts\windows-packaged-smoke.ps1 `
             -Installer "${{ steps.artifact.outputs.installer }}" `
-            -AuthenticodeMode $env:AUTHENTICODE_MODE `
+            -AuthenticodeMode optional `
             -ExpectedThumbprint "${{ steps.throwaway-cert.outputs.thumbprint }}"
 
       # Upload even when smoke fails so the built installer can be inspected.
