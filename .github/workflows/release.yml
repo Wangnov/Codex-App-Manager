@@ -445,6 +445,12 @@ jobs:
       #    Flags follow SSL.com's published eSigner CKA CI/CD guide; validate
       #    against a real SSL.com account before relying on this in production
       #    (see docs/windows-signing.md).
+      #    The downloaded release archive's SHA-256 is pinned and verified
+      #    before extraction: this step runs in the credentialed `release`
+      #    environment (ESIGNER_* secrets), so a replaced/compromised GitHub
+      #    release asset must not be able to execute inside it unnoticed.
+      #    Update ESIGNER_CKA_SHA256 (and the version/URL) together in a
+      #    reviewed PR when bumping the eSigner CKA release.
       - name: Provision eSigner CKA certificate
         if: matrix.os == 'windows' && vars.WINDOWS_SIGNING_PROVIDER == 'esigner'
         shell: pwsh
@@ -458,10 +464,17 @@ jobs:
             Write-Host "::error::WINDOWS_SIGNING_PROVIDER=esigner but ESIGNER_USERNAME/ESIGNER_PASSWORD/ESIGNER_TOTP_SECRET are not fully configured on the release environment"
             exit 1
           }
+          $esignerCkaSha256 = "e4971440e4ebed94328492cf36e18999554c5c657c856f1cb14a6072c8b1c263"
           $installDir = Join-Path $env:RUNNER_TEMP "eSignerCKA"
           New-Item -ItemType Directory -Force -Path $installDir | Out-Null
           $zip = Join-Path $env:RUNNER_TEMP "eSignerCKA.zip"
           Invoke-WebRequest -OutFile $zip -Uri "https://github.com/SSLcom/eSignerCKA/releases/download/v1.0.6/SSL.COM-eSigner-CKA_1.0.6.zip"
+          $actualSha256 = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
+          if ($actualSha256 -ne $esignerCkaSha256) {
+            Write-Host "::error::eSigner CKA archive SHA-256 mismatch: expected $esignerCkaSha256, got $actualSha256 — refusing to extract/execute a possibly-tampered release asset"
+            exit 1
+          }
+          Write-Host "eSigner CKA archive SHA-256 verified: $actualSha256"
           Expand-Archive -Force -Path $zip -DestinationPath $installDir
           $installer = Get-ChildItem -Path $installDir -Filter "eSigner_CKA_Installer.exe" -Recurse | Select-Object -First 1
           if (-not $installer) {
@@ -597,9 +610,9 @@ jobs:
       #    the main binary, the generated uninstaller (via NSIS
       #    !uninstfinalize), and the final -setup.exe in one pass — see
       #    src-tauri/tauri.conf.json bundle.windows.signCommand. The
-      #    uninstaller itself only exists once actually installed, so its
-      #    signature is verified by the packaged lifecycle smoke in
-      #    win-installer-check.yml, not here. Optional until
+      #    uninstaller itself only exists once actually installed — the next
+      #    step verifies it (x64, when AUTHENTICODE_REQUIRED=true) against this
+      #    real signed release artifact. Optional until
       #    vars.AUTHENTICODE_REQUIRED=true; unsigned (NotSigned) is expected
       #    and non-blocking while no WINDOWS_SIGNING_PROVIDER is configured.
       - name: Verify Authenticode on Windows binaries
@@ -614,6 +627,31 @@ jobs:
             -Path @($main, $setup.FullName) `
             -Mode $env:AUTHENTICODE_MODE `
             -Stage "sign-verify"
+
+      # ── Windows (x64 only): uninstaller Authenticode gate on the real,
+      #    signed release artifact, once enforcement is on ──────────────────
+      #    docs/code-signing-policy.md requires all three project-owned PE
+      #    layers (main exe, uninstaller, installer) to verify Valid + a
+      #    timestamp before publication. The uninstaller only exists once
+      #    actually installed (NSIS writes it during install, it is not a
+      #    standalone build output), so this reuses the same packaged
+      #    lifecycle smoke script win-installer-check.yml already proves on
+      #    PRs (unsigned/throwaway-cert builds there) — here, against the
+      #    just-signed -setup.exe, in `required` mode, before this job
+      #    publishes anything. A failure here blocks the release: there is no
+      #    unsigned fallback once AUTHENTICODE_REQUIRED=true. windows-latest is
+      #    x64, so a cross-built ARM64 installer cannot install/run here —
+      #    see docs/windows-signing.md's ARM64 runtime-verification checklist
+      #    (item 6) for the manual uninstaller-signature check that covers
+      #    that architecture instead. Gated on AUTHENTICODE_REQUIRED so this
+      #    extra install/launch/upgrade/uninstall pass only runs once a real
+      #    provider is being enforced, not on every unsigned release.
+      - name: Uninstaller Authenticode gate (x64, enforcement on)
+        if: matrix.os == 'windows' && matrix.target == 'x86_64-pc-windows-msvc' && vars.AUTHENTICODE_REQUIRED == 'true'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe" -ErrorAction Stop
+          & .\scripts\windows-packaged-smoke.ps1 -Installer $setup.FullName -AuthenticodeMode required
 
       # ── Windows: sign the NSIS installer for the updater ──────────────────
       #    Tauri never emits an updater `.sig` on its own during build; this is

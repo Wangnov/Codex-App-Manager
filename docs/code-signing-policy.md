@@ -116,7 +116,7 @@ Current public role assignments are:
 | --- | --- | --- |
 | Committer / author | [@Wangnov](https://github.com/Wangnov) | Maintains source, build configuration, and release preparation. |
 | Reviewer | [@Wangnov](https://github.com/Wangnov) | Reviews external contributions and verifies maintainer-authored PR diffs and required checks before merge. |
-| Signing approver | [@Wangnov](https://github.com/Wangnov) | Once a provider is configured, manually authenticates to the provider (SSL.com / Certum account login + TOTP) for each production signing run — this login is the per-request manual approval this policy requires. |
+| Signing approver | [@Wangnov](https://github.com/Wangnov) | Once a provider is configured, clicks the required-reviewer approval on the `release` GitHub Environment for each production signing run (see [Source and release controls](#source-and-release-controls--源码与发布控制)) — the CI provisioning step's own automated provider login (SSL.com / Certum, with a stored TOTP secret) is not itself a human approval and does not satisfy this policy on its own. |
 
 当前项目是单维护者项目，因此同一名维护者承担多个角色。外部贡献必须经维护者审查；维护者
 自己的变更也必须通过 pull request、必需 CI 和明确的 diff/review 收尾后才可 squash 合并。
@@ -146,9 +146,18 @@ role changes must remain auditable.
   instead of real credentials).
 - Every production signing request requires a separate manual approval. No
   automatic approval, bulk pre-approval, or reuse of an old approval is
-  permitted. For a cloud-HSM provider, the account login (with TOTP) performed
-  by the CI provisioning step for that specific run is this manual approval —
-  there is no separate pre-approval queue to bypass.
+  permitted. This is enforced with a **required-reviewers protection rule on
+  the `release` GitHub Environment** (Settings → Environments → `release` →
+  Required reviewers): the `build` job that runs `tauri build` and signs all
+  platforms already runs under `environment: release`, so once that rule is
+  configured, GitHub itself pauses the job until the named reviewer approves
+  that specific run — this is the actual per-request human gate, not the
+  provider account login. The cloud-HSM provisioning step's own login to
+  SSL.com/Certum (using a stored TOTP secret so it can run unattended) is
+  automated and is **not** a substitute for this reviewer approval. A
+  production provider (`esigner` or `certum`) must not be turned on for
+  `WINDOWS_SIGNING_PROVIDER` until the required-reviewers rule is configured
+  and verified to actually pause a run.
 
 - `main` 由启用中的 GitHub ruleset 保护。所有变更通过 pull request 进入，并必须通过
   Frontend、macOS Rust 与 Windows Rust 检查。
@@ -158,9 +167,16 @@ role changes must remain auditable.
   tag 触发），绑定到经过评审的 commit / tag / workflow run。任何签名 secret 都不会
   暴露给 `pull_request` 触发的 workflow（见 `win-installer-check.yml`，它用一次性
   自签名证书证明签名链路，而不使用真实凭据）。
-- 每一次生产签名请求都必须单独人工批准，不允许自动审批、批量预批准或复用旧审批。
-  对云 HSM 供应商而言，CI 预配步骤针对这一次具体运行执行的账号登录（含 TOTP）本身
-  就是这道人工批准；不存在可以被绕过的独立预批准队列。
+- 每一次生产签名请求都必须单独人工批准，不允许自动审批、批量预批准或复用旧审批。这
+  通过在 `release` 这个 GitHub Environment 上配置**必需审批人（Required reviewers）**
+  保护规则来落实（仓库 Settings → Environments → `release` → Required reviewers）：
+  运行 `tauri build` 并为各平台签名的 `build` job 本身已经声明了
+  `environment: release`，所以一旦配置了该规则，GitHub 会在这次具体运行被指定审批人
+  批准之前自动暂停该 job——这才是真正的逐次人工关卡，而不是供应商账号登录。云 HSM
+  预配步骤对 SSL.com / Certum 的登录本身是自动化的（依赖存储的 TOTP secret 才能无人
+  值守运行），**不能**替代这道人工审批。在这条 required-reviewers 规则配置并验证能
+  真正暂停某次运行之前，不得把 `WINDOWS_SIGNING_PROVIDER` 设为生产供应商
+  （`esigner` 或 `certum`）。
 
 ## Artifact and verification requirements · 工件与验证要求
 
@@ -180,7 +196,14 @@ artifacts:
    (`Get-AuthenticodeSignature` `Status -eq "Valid"`) from the expected
    publisher and carries a valid RFC3161 timestamp
    (`TimeStamperCertificate` present) — enforced by
-   `scripts/verify-windows-authenticode.ps1` in `required` mode.
+   `scripts/verify-windows-authenticode.ps1` in `required` mode. For x64 this
+   includes the uninstaller, verified in `release.yml` by installing the
+   real, just-signed release artifact (the uninstaller only exists once
+   installed). `windows-latest` is x64-only, so a cross-built ARM64
+   installer cannot be installed/run in CI; its uninstaller must be checked
+   manually before each release using the checklist in
+   [`Windows signing and verification`](./windows-signing.md#arm64-runtime-verification-strategy)
+   until a native or trusted-virtualization ARM64 runner is available.
 5. The Tauri updater signature is generated only after Authenticode signing so
    it authenticates the final published bytes.
 6. Files uploaded to GitHub Releases and mirrors are byte-identical to the

@@ -52,17 +52,18 @@ public [code-signing policy](code-signing-policy.md) and
 **开通新供应商的步骤(以 esigner 为例,certum 同理替换变量前缀):**
 
 1. 购买 SSL.com IV 证书 + 一个 eSigner 签名额度套餐(可先用 30 天无限签名试用摸清每月实际签名次数)。
-2. 在 GitHub 仓库的 `release` environment 中新增 secrets:`ESIGNER_USERNAME`、`ESIGNER_PASSWORD`、`ESIGNER_TOTP_SECRET`。
-3. 设置 repo variable `WINDOWS_SIGNING_PROVIDER=esigner`。`release.yml` 会在 Windows job 的 `tauri build` 之前自动跑 “Provision eSigner CKA certificate” 步骤,把证书装进 runner 的证书库并导出指纹到 `WINDOWS_SIGNING_THUMBPRINT`;`tauri build` 期间 `signCommand` 会对三层 PE 依次调用 `scripts/sign-windows-authenticode.ps1` 完成签名。
-4. **先在 `AUTHENTICODE_REQUIRED` 保持未设置(即 optional 模式)的情况下跑 1–2 次真实发布**,确认 x64 / arm64 上的三层 PE 均能验出 `Get-AuthenticodeSignature` 为 `Valid` 且带 RFC3161 时间戳(`TimeStamperCertificate` 非空)。
-5. 确认无误后,把 repo variable `AUTHENTICODE_REQUIRED` 设为 `true`,`verify-windows-authenticode.ps1` 从此在 `required` 模式下运行:任何一层不是 `Valid` 或缺少时间戳都会阻断发布(不允许回退到未签名)。
-6. 只有做到第 5 步之后,才能更新面向用户的文档(README、官网)声明 Windows 安装器已签名。
+2. 在仓库 Settings → Environments → `release` 上配置**必需审批人(Required reviewers)**保护规则(如果还没配置的话)。运行 `tauri build` 并签名的 `build` job 已经声明了 `environment: release`,这条规则一旦配置,GitHub 会在每次该 job 运行时暂停,直到指定审批人点击批准 —— 这才是[代码签名政策](code-signing-policy.md)要求的逐次人工批准,供应商账号的自动登录不能替代它。
+3. 在 GitHub 仓库的 `release` environment 中新增 secrets:`ESIGNER_USERNAME`、`ESIGNER_PASSWORD`、`ESIGNER_TOTP_SECRET`。
+4. 设置 repo variable `WINDOWS_SIGNING_PROVIDER=esigner`。`release.yml` 会在 Windows job 的 `tauri build` 之前自动跑 “Provision eSigner CKA certificate” 步骤,把证书装进 runner 的证书库并导出指纹到 `WINDOWS_SIGNING_THUMBPRINT`;`tauri build` 期间 `signCommand` 会对三层 PE 依次调用 `scripts/sign-windows-authenticode.ps1` 完成签名。
+5. **先在 `AUTHENTICODE_REQUIRED` 保持未设置(即 optional 模式)的情况下跑 1–2 次真实发布**,确认 x64 / arm64 上的三层 PE 均能验出 `Get-AuthenticodeSignature` 为 `Valid` 且带 RFC3161 时间戳(`TimeStamperCertificate` 非空)。
+6. 确认无误后,把 repo variable `AUTHENTICODE_REQUIRED` 设为 `true`。此后 `verify-windows-authenticode.ps1` 在 `required` 模式下运行,x64 release job 还会多跑一步“Uninstaller Authenticode gate”(对刚签好名的 installer 做一次真实的安装/启动/升级/卸载,顺带验出 uninstaller 的签名);任何一层不是 `Valid` 或缺少时间戳都会阻断发布(不允许回退到未签名)。ARM64 在 x64 runner 上无法安装运行,uninstaller 签名需按下方 [ARM64 运行验证策略](#arm64-运行验证策略) 第 6 步人工核验。
+7. 只有做到第 6 步之后,才能更新面向用户的文档(README、官网)声明 Windows 安装器已签名。
 
 **关键约束(见[代码签名政策](code-signing-policy.md)):**
 
 - 签名只能来自受信任的 GitHub Actions 构建,绑定到经过评审的 commit / tag / workflow run。
-- 每一次生产签名请求都需要独立的人工批准 —— 云 HSM 供应商(SSL.com / Certum)的账号登录本身就是这道人工关卡,不做批量预批准。
-- installer、主程序、uninstaller 三层 PE 都必须验出 `Valid` Authenticode 签名 + 时间戳。
+- 每一次生产签名请求都需要独立的人工批准 —— 由 `release` GitHub Environment 上的 required-reviewers 规则落实(见上方第 2 步),不是云 HSM 供应商(SSL.com / Certum)的自动账号登录,也不做批量预批准。
+- installer、主程序、uninstaller 三层 PE 都必须验出 `Valid` Authenticode 签名 + 时间戳(x64 由 `release.yml` 自动验证;ARM64 uninstaller 需人工核验)。
 - 一旦 `AUTHENTICODE_REQUIRED=true` 生效,任何一层验证失败都必须阻断发布,不允许回退到未签名兜底。
 
 ### 用一次性自签名证书证明签名链路(无需真实证书)
@@ -113,7 +114,7 @@ shasum -a 256 CodexAppManager_x86_64.dmg
 |---|---|---|
 | `ci.yml` Rust | 独立跑 `codex-mac-engine` / `codex-win-engine` 测试 | 是(required) |
 | `win-installer-check.yml` | 构建 x64 NSIS → **自签名证书链路证明** → Authenticode 探测 → 安装/启动/升级/卸载冒烟 | 链路证明失败会阻塞该(非必需)workflow;Authenticode 探测本身非阻塞 |
-| `release.yml` Windows | (若配置了 provider)证书预配 → `tauri build`(`signCommand` 内联签名三层 PE) → Authenticode 校验(主程序 + installer) → Tauri updater `.sig` → 收集**最终**工件 | updater `.sig` 与工件齐全为阻塞;Authenticode 默认非阻塞,`AUTHENTICODE_REQUIRED=true` 后阻塞 |
+| `release.yml` Windows | (若配置了 provider)证书预配 → `tauri build`(`signCommand` 内联签名三层 PE) → Authenticode 校验(主程序 + installer) → **x64 且 `AUTHENTICODE_REQUIRED=true` 时**:uninstaller 签名关卡(真实安装/启动/升级/卸载) → Tauri updater `.sig` → 收集**最终**工件 | updater `.sig` 与工件齐全为阻塞;Authenticode 默认非阻塞,`AUTHENTICODE_REQUIRED=true` 后阻塞(含 uninstaller 关卡) |
 | ARM64 | 交叉构建 + PE machine=`0xAA64` 诊断;**不是**实机运行验证 | 交叉构建失败阻塞;运行验证见下 |
 
 脚本:
@@ -174,17 +175,18 @@ Why this pairing (full research write-up kept internally): SSL.com eSigner is th
 **Steps to turn on a provider (using `esigner`; substitute the `CERTUM_*` variable names for `certum`):**
 
 1. Purchase an SSL.com IV certificate plus an eSigner signing-tier subscription (use the 30-day unlimited-signing trial first to size real monthly signing volume).
-2. Add `ESIGNER_USERNAME`, `ESIGNER_PASSWORD`, and `ESIGNER_TOTP_SECRET` as secrets on the GitHub `release` environment.
-3. Set the repo variable `WINDOWS_SIGNING_PROVIDER=esigner`. `release.yml`'s Windows job then runs a "Provision eSigner CKA certificate" step before `tauri build`, installing the certificate into the runner's store and exporting its thumbprint as `WINDOWS_SIGNING_THUMBPRINT`; the `signCommand` hook signs all three PE layers with it during `tauri build`.
-4. **Run 1–2 real releases with `AUTHENTICODE_REQUIRED` left unset (optional mode) first**, and confirm all three PE layers on both x64 and arm64 verify `Get-AuthenticodeSignature` as `Valid` with an RFC3161 timestamp present (`TimeStamperCertificate` non-null).
-5. Only once that is proven, set the repo variable `AUTHENTICODE_REQUIRED=true`. `verify-windows-authenticode.ps1` then runs in `required` mode: any PE layer that is not `Valid`, or lacks a timestamp, blocks the release — there is no unsigned fallback once this is on.
-6. Only after step 5 is proven should user-facing docs (README, website) claim the Windows installers are signed.
+2. Configure a **required-reviewers** protection rule on the `release` GitHub Environment (Settings → Environments → `release` → Required reviewers) if it isn't already set. The `build` job that runs `tauri build` and signs every platform already declares `environment: release`, so once this rule exists, GitHub pauses that job on every run until the named reviewer approves it — this is the per-request human approval [the code-signing policy](code-signing-policy.md) requires; the provider's own automated account login is not a substitute for it.
+3. Add `ESIGNER_USERNAME`, `ESIGNER_PASSWORD`, and `ESIGNER_TOTP_SECRET` as secrets on the GitHub `release` environment.
+4. Set the repo variable `WINDOWS_SIGNING_PROVIDER=esigner`. `release.yml`'s Windows job then runs a "Provision eSigner CKA certificate" step before `tauri build`, installing the certificate into the runner's store and exporting its thumbprint as `WINDOWS_SIGNING_THUMBPRINT`; the `signCommand` hook signs all three PE layers with it during `tauri build`.
+5. **Run 1–2 real releases with `AUTHENTICODE_REQUIRED` left unset (optional mode) first**, and confirm all three PE layers on both x64 and arm64 verify `Get-AuthenticodeSignature` as `Valid` with an RFC3161 timestamp present (`TimeStamperCertificate` non-null).
+6. Only once that is proven, set the repo variable `AUTHENTICODE_REQUIRED=true`. `verify-windows-authenticode.ps1` then runs in `required` mode, and the x64 release job additionally runs an "Uninstaller Authenticode gate" step — a real install/launch/upgrade/uninstall pass against the just-signed installer, which also verifies the uninstaller's signature (it only exists once installed). Any PE layer that is not `Valid`, or lacks a timestamp, blocks the release — there is no unsigned fallback once this is on. ARM64 cannot install/run on an x64 runner, so its uninstaller must be checked manually — see [ARM64 runtime verification strategy](#arm64-runtime-verification-strategy) step 6.
+7. Only after step 6 is proven should user-facing docs (README, website) claim the Windows installers are signed.
 
 **Hard constraints (see the [code-signing policy](code-signing-policy.md)):**
 
 - Signing only happens from a trusted GitHub Actions build tied to a reviewed commit/tag/workflow run.
-- Every production signing request requires a separate manual approval — logging into the cloud HSM provider (SSL.com / Certum) account is itself that manual gate; no bulk pre-approval.
-- All three PE layers (installer, main executable, uninstaller) must show a `Valid` Authenticode signature plus a timestamp.
+- Every production signing request requires a separate manual approval, enforced by the `release` GitHub Environment's required-reviewers rule (see step 2 above) — the cloud HSM provider's (SSL.com / Certum) own automated account login is not that manual gate on its own; no bulk pre-approval.
+- All three PE layers (installer, main executable, uninstaller) must show a `Valid` Authenticode signature plus a timestamp — automatically verified for x64 by `release.yml`; ARM64's uninstaller is checked manually.
 - Once `AUTHENTICODE_REQUIRED=true` is on, any verification failure must block the release — no unsigned fallback.
 
 ### Proving the signing plumbing without a real certificate
@@ -241,7 +243,7 @@ a real signing provider is configured and proven.
 |---|---|---|
 | `ci.yml` Rust | Standalone `codex-mac-engine` / `codex-win-engine` tests | Yes (required) |
 | `win-installer-check.yml` | Build x64 NSIS → **self-signed signCommand proof** → Authenticode probe → install/launch/upgrade/uninstall smoke | The proof step blocks this (non-required) workflow on failure; the Authenticode probe itself stays non-blocking |
-| `release.yml` Windows | (if a provider is configured) provision certificate → `tauri build` (`signCommand` signs all three PE layers inline) → Authenticode verify (main exe + installer) → Tauri updater `.sig` → collect **final** artifacts | Updater `.sig` + artifact set block; Authenticode is non-blocking by default, blocking once `AUTHENTICODE_REQUIRED=true` |
+| `release.yml` Windows | (if a provider is configured) provision certificate → `tauri build` (`signCommand` signs all three PE layers inline) → Authenticode verify (main exe + installer) → **x64 and `AUTHENTICODE_REQUIRED=true` only:** uninstaller Authenticode gate (real install/launch/upgrade/uninstall) → Tauri updater `.sig` → collect **final** artifacts | Updater `.sig` + artifact set block; Authenticode is non-blocking by default, blocking (including the uninstaller gate) once `AUTHENTICODE_REQUIRED=true` |
 | ARM64 | Cross-build + PE machine=`0xAA64` diagnostic; **not** runtime verification | Cross-build failure blocks; runtime verification below |
 
 Scripts:
