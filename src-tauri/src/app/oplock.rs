@@ -73,6 +73,11 @@ struct Inner {
     paused: Option<OperationSnapshot>,
     completed: VecDeque<OperationCompletion>,
     lock_file: Result<File, String>,
+    /// Set once `prepare_relaunch` has armed the exit latches. From then on no
+    /// new operation may start: the exit handler only checks `force_quit`, so
+    /// an operation begun in the gap before the queued exit runs would be
+    /// killed by the restart it never agreed to.
+    relaunching: bool,
 }
 
 /// Byte-transfer progress mirrored into the active lease so a reloaded
@@ -344,6 +349,7 @@ impl OperationManager {
                 paused: None,
                 completed: VecDeque::new(),
                 lock_file,
+                relaunching: false,
             })),
             stale_after_secs,
         }
@@ -727,6 +733,8 @@ impl OperationManager {
     /// held by another Manager instance, whatever its phase. Otherwise this
     /// returns the busy error and `prepare_exit` is not called, so an
     /// interruptible Codex download/update is never cancelled as a side effect.
+    /// Once it succeeds, `begin` refuses every new operation until the process
+    /// exits, so nothing can start in the gap before the queued exit runs.
     pub fn prepare_relaunch(&self, prepare_exit: impl FnOnce()) -> Result<(), OperationError> {
         let mut inner = self
             .inner
@@ -746,6 +754,9 @@ impl OperationManager {
             }
         }
         prepare_exit();
+        // Held through process exit (there is deliberately no way back): the
+        // restart is already queued, so nothing else may take the lease.
+        inner.relaunching = true;
         Ok(())
     }
 
@@ -1037,6 +1048,9 @@ impl OperationManager {
                 kind.as_str()
             );
             return Err(OperationError::BusySameProcess(active.kind.as_str()));
+        }
+        if inner.relaunching {
+            return Err(OperationError::BusySameProcess("relaunch"));
         }
 
         let started_unix = now_unix();
@@ -1967,13 +1981,6 @@ mod tests {
         let path = lock_path("relaunch-preparation");
         let manager = OperationManager::new(path.clone());
 
-        // Idle: the relaunch may proceed and the exit preparation runs.
-        let prepared = AtomicBool::new(false);
-        manager
-            .prepare_relaunch(|| prepared.store(true, Ordering::SeqCst))
-            .unwrap();
-        assert!(prepared.load(Ordering::SeqCst));
-
         // An interruptible Codex operation is `Confirm` for a quit (and would
         // be cancelled by a confirmed one). A relaunch must instead be
         // refused as busy without running the exit preparation.
@@ -1992,15 +1999,33 @@ mod tests {
         manager
             .set_phase(guard.token(), OperationPhase::Committing)
             .unwrap();
-        assert!(manager.prepare_relaunch(|| untouched.store(true, Ordering::SeqCst)).is_err());
+        assert!(manager
+            .prepare_relaunch(|| untouched.store(true, Ordering::SeqCst))
+            .is_err());
         assert!(!untouched.load(Ordering::SeqCst));
 
-        // And once the operation ends the relaunch is possible again.
+        // A refused relaunch leaves nothing behind: once the operation ends,
+        // a new one can start and the relaunch can be refused again.
         drop(guard);
+        let next = manager.begin(OperationKind::Install).unwrap();
+        assert!(manager.prepare_relaunch(|| ()).is_err());
+        drop(next);
+
+        // Idle: the relaunch may proceed and the exit preparation runs.
+        let prepared = AtomicBool::new(false);
         manager
-            .prepare_relaunch(|| untouched.store(true, Ordering::SeqCst))
+            .prepare_relaunch(|| prepared.store(true, Ordering::SeqCst))
             .unwrap();
-        assert!(untouched.load(Ordering::SeqCst));
+        assert!(prepared.load(Ordering::SeqCst));
+
+        // From then on nothing may start before the queued exit runs: the
+        // exit handler only checks `force_quit`, so an operation begun in
+        // that gap would be killed by the restart.
+        assert!(matches!(
+            manager.begin(OperationKind::Update),
+            Err(OperationError::BusySameProcess("relaunch"))
+        ));
+        assert!(manager.begin_detached(OperationKind::Update).is_err());
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
