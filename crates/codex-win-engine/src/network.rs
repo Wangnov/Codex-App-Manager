@@ -436,6 +436,11 @@ mod tests {
             Some(35),
             "curl: (35) schannel: unrelated TLS handshake failure"
         ));
+        // A certificate that is actually revoked must never trigger the retry.
+        assert!(!is_schannel_revocation_check_failure(
+            Some(35),
+            "curl: (35) schannel: next InitializeSecurityContext failed: CRYPT_E_REVOKED (0x80092010)"
+        ));
     }
 
     #[cfg(windows)]

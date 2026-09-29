@@ -680,11 +680,18 @@ fn curl_supports_schannel_best_effort() -> bool {
         })
 }
 
+/// Schannel could not determine revocation status: the CRL/OCSP endpoint is
+/// offline (0x80092013), or the chain carries no usable revocation information,
+/// as with TLS-inspecting corporate proxies (0x80092012). The best-effort retry
+/// ignores exactly these two states; a revoked certificate still fails.
 #[cfg(any(target_os = "windows", test))]
-fn is_schannel_revocation_offline(exit_code: Option<i32>, stderr: &[u8]) -> bool {
-    let stderr = String::from_utf8_lossy(stderr);
+fn is_schannel_revocation_check_failure(exit_code: Option<i32>, stderr: &[u8]) -> bool {
+    let stderr = String::from_utf8_lossy(stderr).to_ascii_lowercase();
     exit_code == Some(35)
-        && (stderr.contains("CRYPT_E_REVOCATION_OFFLINE") || stderr.contains("0x80092013"))
+        && (stderr.contains("crypt_e_revocation_offline")
+            || stderr.contains("0x80092013")
+            || stderr.contains("crypt_e_no_revocation_check")
+            || stderr.contains("0x80092012"))
 }
 
 fn curl_fetch(url: &str, max_bytes: &str, timeout_secs: &str) -> Result<Vec<u8>, AppError> {
@@ -693,11 +700,11 @@ fn curl_fetch(url: &str, max_bytes: &str, timeout_secs: &str) -> Result<Vec<u8>,
     let output = curl_fetch_attempt(url, max_bytes, timeout_secs, false, &proxy_args)?;
     #[cfg(target_os = "windows")]
     let output = if !output.status.success()
-        && is_schannel_revocation_offline(output.status.code(), &output.stderr)
+        && is_schannel_revocation_check_failure(output.status.code(), &output.stderr)
     {
         if curl_supports_schannel_best_effort() {
             log::warn!(
-                "theme catalog Schannel revocation endpoint unavailable; retrying best-effort url={}",
+                "theme catalog Schannel revocation check unavailable; retrying best-effort url={}",
                 crate::app::logging::redact_url(url)
             );
             curl_fetch_attempt(url, max_bytes, timeout_secs, true, &proxy_args)?
@@ -1642,14 +1649,24 @@ pub async fn launch_with_active_theme(
 
 #[cfg(test)]
 mod catalog_network_tests {
-    use super::is_schannel_revocation_offline;
+    use super::is_schannel_revocation_check_failure;
 
     #[test]
-    fn detects_only_the_windows_revocation_offline_tls_error() {
-        let stderr = b"curl: (35) schannel: CRYPT_E_REVOCATION_OFFLINE (0x80092013)";
-        assert!(is_schannel_revocation_offline(Some(35), stderr));
-        assert!(!is_schannel_revocation_offline(Some(6), stderr));
-        assert!(!is_schannel_revocation_offline(
+    fn detects_only_the_windows_revocation_check_tls_errors() {
+        for stderr in [
+            &b"curl: (35) schannel: CRYPT_E_REVOCATION_OFFLINE (0x80092013)"[..],
+            &b"curl: (35) schannel: next InitializeSecurityContext failed: CRYPT_E_NO_REVOCATION_CHECK (0x80092012)"[..],
+            &b"curl: (35) schannel: failed: 0x80092012"[..],
+        ] {
+            assert!(is_schannel_revocation_check_failure(Some(35), stderr));
+            assert!(!is_schannel_revocation_check_failure(Some(6), stderr));
+        }
+        // An actually revoked certificate or an untrusted root must not retry.
+        assert!(!is_schannel_revocation_check_failure(
+            Some(35),
+            b"curl: (35) schannel: CRYPT_E_REVOKED (0x80092010)"
+        ));
+        assert!(!is_schannel_revocation_check_failure(
             Some(35),
             b"curl: (35) schannel: SEC_E_UNTRUSTED_ROOT"
         ));
