@@ -47,8 +47,14 @@ name: Release
 # scripts/sign-windows-authenticode.ps1 is wired as Tauri's
 # bundle.windows.signCommand and dispatches on vars.WINDOWS_SIGNING_PROVIDER,
 # so the main exe, the generated uninstaller, and the final installer are all
-# signed in one pass during `tauri build` (win-installer-check.yml's PR-time
-# NSIS build never sets this var, so it stays unsigned there exactly as before).
+# signed in one pass during `tauri build`. win-installer-check.yml's PR-time
+# NSIS build never sets the repo variable vars.WINDOWS_SIGNING_PROVIDER — a PR
+# cannot select or reach a real provider here — but it does hardcode
+# WINDOWS_SIGNING_PROVIDER=local-pfx with a throwaway self-signed certificate
+# generated fresh in that same job, purely to prove this signCommand hook is
+# actually wired up end to end (see docs/windows-signing.md). That throwaway
+# certificate is never trusted by anything, so it does not change whether a
+# release build here would be considered "signed" in any way that matters.
 #   vars.WINDOWS_SIGNING_PROVIDER  "" (default/unsigned) | "esigner" (recommended,
 #                                   SSL.com eSigner CKA) | "certum" (fallback,
 #                                   Certum SimplySign) | "local-pfx" (testing)
