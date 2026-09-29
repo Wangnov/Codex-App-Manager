@@ -1,0 +1,161 @@
+name: Mirror manifest contract
+
+# Proves, against the *live* mirror, the two things the offline contract
+# tests (crates/codex-win-engine/tests/mirror_manifest_contract.rs,
+# crates/codex-mac-engine/tests/live_appcast_fixtures.rs,
+# scripts/mirror-manifest-schema.test.mjs -- all run on every PR via the
+# default `ci.yml`/`npm test`/`cargo test` checks) can only prove against
+# frozen fixtures:
+#
+#   1. codexapp.agentsmirror.com is serving a release-manifest.json and two
+#      appcast feeds that crates/codex-win-engine and crates/codex-mac-engine
+#      can still actually parse, right now.
+#   2. docs/contracts/release-manifest/schema/release-manifest.schema.json
+#      (vendored from Wangnov/codex-app-mirror) has not silently drifted from
+#      that repo's own copy on its `main` branch.
+#
+# See docs/contracts/release-manifest/README.md for the full contract and
+# vendoring/refresh instructions.
+#
+# Read-only and side-effect-free: no artifacts are built or published here.
+
+on:
+  schedule:
+    - cron: "17 6 * * *" # daily, offset from the hour to avoid GitHub's peak-minute throttling
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mirror-contract-${{ github.workflow }}
+  cancel-in-progress: true
+
+env:
+  MIRROR_REPO: Wangnov/codex-app-mirror
+  MIRROR_MANIFEST_URL: https://codexapp.agentsmirror.com/latest/manifest
+  MIRROR_APPCAST_ARM64_URL: https://codexapp.agentsmirror.com/latest/appcast.xml
+  MIRROR_APPCAST_X64_URL: https://codexapp.agentsmirror.com/latest/appcast-x64.xml
+  # docs/contracts/release-manifest/README.md documents which commit/branch
+  # of codexapp-mirror this vendored schema was copied from. This is checked
+  # against that repo's main branch, independent of which branch/PR it was
+  # authored on.
+  MIRROR_SCHEMA_MAIN_URL: https://raw.githubusercontent.com/Wangnov/codex-app-mirror/main/schemas/release-manifest.schema.json
+  VENDORED_SCHEMA_PATH: docs/contracts/release-manifest/schema/release-manifest.schema.json
+
+jobs:
+  live-manifest-and-appcasts:
+    name: Live manifest + appcasts parse
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: |
+            crates/codex-win-engine -> target
+            crates/codex-mac-engine -> target
+
+      - name: Fetch live manifest and appcasts
+        id: fetch
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          echo "tmp_dir=$tmp" >> "$GITHUB_OUTPUT"
+
+          fetch() {
+            local url="$1" out="$2" label="$3"
+            echo "::group::[fetch] $label"
+            if ! curl -sSL --fail --max-time 30 -o "$out" "$url"; then
+              echo "::error::[fetch] could not fetch $label from $url"
+              exit 1
+            fi
+            if [ ! -s "$out" ]; then
+              echo "::error::[fetch] $label from $url was empty"
+              exit 1
+            fi
+            echo "fetched $(wc -c < "$out") bytes"
+            echo "::endgroup::"
+          }
+
+          fetch "$MIRROR_MANIFEST_URL" "$tmp/manifest.json" "release-manifest.json"
+          fetch "$MIRROR_APPCAST_ARM64_URL" "$tmp/appcast-arm64.xml" "appcast.xml (arm64)"
+          fetch "$MIRROR_APPCAST_X64_URL" "$tmp/appcast-x64.xml" "appcast-x64.xml (x64)"
+
+      - name: Run codex-win-engine live manifest contract test
+        shell: bash
+        env:
+          CODEX_MIRROR_LIVE_MANIFEST_PATH: ${{ steps.fetch.outputs.tmp_dir }}/manifest.json
+        run: |
+          cargo test \
+            --manifest-path crates/codex-win-engine/Cargo.toml \
+            --test live_manifest_contract \
+            -- --ignored --nocapture
+
+      - name: Run codex-mac-engine live appcast contract test
+        shell: bash
+        env:
+          CODEX_MAC_LIVE_APPCAST_ARM64_PATH: ${{ steps.fetch.outputs.tmp_dir }}/appcast-arm64.xml
+          CODEX_MAC_LIVE_APPCAST_X64_PATH: ${{ steps.fetch.outputs.tmp_dir }}/appcast-x64.xml
+        run: |
+          cargo test \
+            --manifest-path crates/codex-mac-engine/Cargo.toml \
+            --test live_appcast_drift \
+            -- --ignored --nocapture
+
+  schema-matches-mirror-main:
+    name: Vendored schema matches mirror main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compare vendored schema against ${{ env.MIRROR_REPO }}@main
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "$VENDORED_SCHEMA_PATH" ]; then
+            echo "::error::[contract] vendored schema missing at $VENDORED_SCHEMA_PATH -- see docs/contracts/release-manifest/README.md"
+            exit 1
+          fi
+
+          http_code="$(curl -sSL --max-time 30 -o /tmp/mirror-main-schema.json -w '%{http_code}' "$MIRROR_SCHEMA_MAIN_URL" || true)"
+
+          if [ "$http_code" = "404" ]; then
+            cat <<'EOF'
+          ::error::[contract] Wangnov/codex-app-mirror's main branch has no
+          schemas/release-manifest.schema.json. Either the vendored copy here
+          was refreshed from a mirror-side PR that hasn't merged to main yet
+          (docs/contracts/release-manifest/README.md records which commit
+          this copy tracks and, if so, which PR to watch), or the file was
+          removed/renamed upstream. Either way, this check cannot pass until
+          main has the file: see the README's "Refreshing this vendored
+          copy" section once it does.
+          EOF
+            exit 1
+          fi
+
+          if [ "$http_code" != "200" ]; then
+            echo "::error::[contract] unexpected HTTP $http_code fetching $MIRROR_SCHEMA_MAIN_URL"
+            exit 1
+          fi
+
+          if ! diff -u "$VENDORED_SCHEMA_PATH" /tmp/mirror-main-schema.json; then
+            cat <<'EOF'
+          ::error::[contract] docs/contracts/release-manifest/schema/release-manifest.schema.json
+          has drifted from Wangnov/codex-app-mirror's main branch copy (diff
+          printed above). Re-vendor it (and any fixtures the change affects)
+          per docs/contracts/release-manifest/README.md's "Refreshing this
+          vendored copy" section.
+          EOF
+            exit 1
+          fi
+
+          echo "[contract] vendored schema matches $MIRROR_REPO@main byte-for-byte."

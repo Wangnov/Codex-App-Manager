@@ -1,0 +1,21 @@
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Codex</title>
+        <item>
+            <title>26.924.22138</title>
+            <pubDate>Sat, 26 Sep 2026 07:14:39 +0000</pubDate>
+            <sparkle:version>11645</sparkle:version>
+            <sparkle:shortVersionString>26.924.22138</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://codexapp.agentsmirror.com/latest/mac/intel/Codex-darwin-x64-26.924.22138.zip" length="640430436" type="application/octet-stream" sparkle:edSignature="CuRtJlNt45it+R8ncccFT0SQNHFRiL3dyaerM2cZCK/DOLU+N6ELidRILHVbJ6K5IX5N8eZ27FJEypZ9nXRVBw==" />
+            <sparkle:deltas>
+                <enclosure url="https://codexapp.agentsmirror.com/latest/mac/intel/ChatGPT11645-11431-x64.delta" sparkle:deltaFrom="11431" length="21876426" type="application/octet-stream" sparkle:edSignature="hcwEnsxwrb4jxjdO4FTiyjxFx3ows/S/5QOR4N4B03vAo99Yv8nsxwzWXBR8KvNHG78l6GIgZrtmaX+6x7HQBQ==" sparkle:deltaFromSparkleExecutableSize="979904" sparkle:deltaFromSparkleLocales="de,ar,el,ja,fa,uk,zh_CN" />
+                <enclosure url="https://codexapp.agentsmirror.com/latest/mac/intel/ChatGPT11645-10954-x64.delta" sparkle:deltaFrom="10954" length="149069122" type="application/octet-stream" sparkle:edSignature="bhXcO5ZC4vEJacJx+ehb4jqz4Gr8dD8XAjgbWFx3A18oN6GAzLF/RA6wgwLDyw4UdRnObDHvrY1xmvjeFlWPAA==" sparkle:deltaFromSparkleExecutableSize="979904" sparkle:deltaFromSparkleLocales="de,ar,el,ja,fa,uk,zh_CN" />
+                <enclosure url="https://codexapp.agentsmirror.com/latest/mac/intel/ChatGPT11645-10789-x64.delta" sparkle:deltaFrom="10789" length="148972866" type="application/octet-stream" sparkle:edSignature="Nx9xPcb9oa/SmORpmGaW0/ZtPKbZOuYp76e7gNCNQ1BjElDV4A9k2Mw3dONOibjD8ZUMVNtOxHGN7ch6lyTxDA==" sparkle:deltaFromSparkleExecutableSize="979904" sparkle:deltaFromSparkleLocales="de,ar,el,ja,fa,uk,zh_CN" />
+                <enclosure url="https://codexapp.agentsmirror.com/latest/mac/intel/ChatGPT11645-10640-x64.delta" sparkle:deltaFrom="10640" length="148987070" type="application/octet-stream" sparkle:edSignature="XfuBpIFNeiKQEnHNfXrP+mUQ4U+KNk/JzNDAVCcys0i0BPaaJfZtszMV+5t5IZH34W9Bb4Nj9Tv1xRK4pU41CQ==" sparkle:deltaFromSparkleExecutableSize="979904" sparkle:deltaFromSparkleLocales="de,ar,el,ja,fa,uk,zh_CN" />
+                <enclosure url="https://codexapp.agentsmirror.com/latest/mac/intel/ChatGPT11645-10492-x64.delta" sparkle:deltaFrom="10492" length="149091630" type="application/octet-stream" sparkle:edSignature="V4Fw50bynM0M79Y4ew2n8Oz7LysXLZoSoDSRXFQWx0YH3j/bCI1YEE+XSM7iAmEXE3m6qd/m76sW5dzyz1zyDQ==" sparkle:deltaFromSparkleExecutableSize="979904" sparkle:deltaFromSparkleLocales="de,ar,el,ja,fa,uk,zh_CN" />
+            </sparkle:deltas>
+        </item>
+    </channel>
+</rss>
