@@ -725,4 +725,104 @@ describe("ManagerUpdatePrompt", () => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
   });
+
+  it("unpauses checks so retrying a locally started install actually rechecks", async () => {
+    // Regression: opening the confirm sheet from this mount's own banner
+    // pauses periodic/automatic checks. If a self-update it started then
+    // fails (the backend marks the runtime `error` and this mount reattaches
+    // to its own failure, exactly as a separate reattach would), clicking
+    // "retry" must unpause checks before refreshing — otherwise `check()`
+    // silently no-ops forever and the banner/sheet can never come back.
+    const user = userEvent.setup();
+    let emit: ((snapshot: ManagerUpdateSnapshot) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+    const update = available({
+      installAndRelaunch: vi.fn(async () => {
+        emit?.({
+          phase: "error",
+          version: "0.5.3",
+          downloaded: 20,
+          total: 100,
+          message: "install manager update: network unreachable",
+          updatedAtMs: Date.now(),
+        });
+        throw new Error("install manager update: network unreachable");
+      }),
+    });
+    api.checkManagerUpdate
+      .mockResolvedValueOnce(update)
+      .mockResolvedValue({ kind: "none" });
+
+    renderPrompt();
+    await user.click(await screen.findByRole("button", { name: "更新" }));
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "更新" }),
+    );
+
+    const dialog = await screen.findByRole("dialog");
+    const retryButton = await within(dialog).findByRole("button", {
+      name: "重试",
+    });
+    await user.click(retryButton);
+
+    expect(api.ackManagerUpdateRuntime).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(api.checkManagerUpdate).toHaveBeenCalledTimes(2),
+    );
+  });
+
+  it("does not re-offer the same version after dismissing an installed self-update", async () => {
+    // Regression: cancelling the "installed, awaiting relaunch" recovery
+    // sheet acked the runtime back to idle but left the local `update`
+    // object untouched, so the very next render re-satisfied `showBanner`
+    // and offered to install the exact bits already on disk again, with no
+    // way left to reach the relaunch action.
+    const user = userEvent.setup();
+    let emit: ((snapshot: ManagerUpdateSnapshot) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+    api.ackManagerUpdateRuntime.mockImplementation(async () => {
+      emit?.(IDLE_MANAGER_UPDATE_SNAPSHOT);
+      return IDLE_MANAGER_UPDATE_SNAPSHOT;
+    });
+    const update = available({
+      installAndRelaunch: vi.fn(async () => {
+        emit?.({
+          phase: "installed",
+          version: "0.5.3",
+          downloaded: 100,
+          total: 100,
+          message: null,
+          updatedAtMs: Date.now(),
+        });
+      }),
+    });
+    api.checkManagerUpdate.mockResolvedValue(update);
+
+    renderPrompt();
+    await user.click(await screen.findByRole("button", { name: "更新" }));
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "更新" }),
+    );
+
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText("更新已安装，重新启动以应用。");
+    await user.click(within(dialog).getByRole("button", { name: "取消" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByText("发现管理器新版本 0.5.3"),
+    ).not.toBeInTheDocument();
+  });
 });

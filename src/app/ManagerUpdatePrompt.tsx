@@ -253,7 +253,14 @@ export function ManagerUpdatePrompt({
     if (runtime.phase === "error" || runtime.phase === "installed") {
       void managerApi.ackManagerUpdateRuntime();
     }
-  }, [installing, runtime.phase, runtimeBusy, setChecksPaused]);
+    // The installed version is already on disk, just awaiting relaunch —
+    // once the ack above brings the runtime back to idle, `update` (if this
+    // mount still holds it) must not re-satisfy `showBanner` and offer to
+    // install the very same bits again with no way left to relaunch them.
+    if (runtime.phase === "installed" && update) {
+      setDismissed(update);
+    }
+  }, [installing, runtime.phase, runtimeBusy, setChecksPaused, update]);
 
   const relaunchNow = useCallback(async () => {
     setRelaunching(true);
@@ -272,9 +279,16 @@ export function ManagerUpdatePrompt({
   }, [t]);
 
   const retryAfterFailure = useCallback(async () => {
+    // `checksPaused`/`confirmOpen` are left set by whichever confirm sheet
+    // (this mount's own, or a stale one from before a reload) started the
+    // failed install — `refresh()` alone would silently no-op forever
+    // because `check()` bails out early while checks are paused.
+    setChecksPaused(false);
+    setConfirmOpen(false);
+    setFailure(null);
     await managerApi.ackManagerUpdateRuntime();
     await refresh();
-  }, [refresh]);
+  }, [refresh, setChecksPaused]);
 
   const installUpdate = useCallback(async () => {
     if (!update || installing) return;
