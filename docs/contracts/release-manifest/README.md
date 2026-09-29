@@ -66,6 +66,50 @@ parser) still agree with the shapes the mirror actually publishes.
   "Refreshing this vendored copy" below for what to do once the upstream
   change lands.
 
+## Known gaps
+
+This contract-test suite found a real mismatch between the vendored schema
+(as merged upstream) and the actual Rust parser, which is not yet fixed
+upstream:
+
+- **`architectures.x64` with `downloadable: false`, plus a top-level
+  fallback, still parses to an error.** `select_architecture()` in
+  `crates/codex-win-engine/src/manifest.rs` looks up the requested
+  architecture key ("x64" by default) in `sources.windows.architectures`
+  *before* anything consults the top-level `version`/`packageMoniker`
+  fallback. If that key is present with `downloadable: false`, it returns
+  `Err(...)` immediately -- there is no code path where a top-level fallback
+  rescues a present-but-non-downloadable per-architecture entry. The
+  vendored schema's `windowsSource.anyOf` only encodes the "not
+  `downloadable: false`" constraint on its *second* branch (the
+  `architectures`-only one, added in PR #71's second review-fix commit,
+  `2503834`); its *first* branch (top-level `packageMoniker` + `version`)
+  does not also forbid `architectures.x64.downloadable === false`. A
+  manifest satisfying only the first branch, with an explicitly
+  non-downloadable `architectures.x64`, therefore validates against the
+  schema today even though the Manager will always reject it for the
+  default x64 update-check path.
+
+  See [`known-gaps/architectures-x64-not-downloadable-with-top-level-fallback.json`](known-gaps/architectures-x64-not-downloadable-with-top-level-fallback.json)
+  (a minimal reproduction, kept outside `fixtures/invalid/` specifically
+  *because* it currently validates when it shouldn't -- putting it in
+  `fixtures/invalid/` would make `scripts/mirror-manifest-schema.test.mjs`'s
+  blind per-directory loop fail for a reason that looks like vendoring
+  breakage rather than an upstream schema gap), pinned by:
+  - `scripts/mirror-manifest-schema.test.mjs`'s dedicated "KNOWN GAP" test
+    (currently asserts the schema wrongly validates it; flip to `false` and
+    move the fixture into `fixtures/invalid/` once fixed upstream).
+  - `crates/codex-win-engine/tests/mirror_manifest_contract.rs::known_upstream_schema_gap_x64_not_downloadable_with_top_level_fallback_still_hard_fails`
+    (asserts the real parser rejects it regardless).
+
+  **The fix belongs upstream**, in `Wangnov/codex-app-mirror`: tighten the
+  first `anyOf` branch of `windowsSource` to also forbid
+  `architectures.x64.downloadable === false` when `architectures.x64` is
+  present, the same way the second branch already does. Once that lands and
+  this vendored copy is refreshed, delete both of the pinning tests above
+  (or, better, watch them start failing -- that's the point) and move the
+  fixture into `fixtures/invalid/`.
+
 ## Refreshing this vendored copy
 
 When the mirror repo's schema or fixtures change (most recently: any change

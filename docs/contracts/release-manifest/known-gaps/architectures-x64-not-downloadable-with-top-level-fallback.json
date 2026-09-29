@@ -1,0 +1,17 @@
+{
+  "_comment": "KNOWN UPSTREAM SCHEMA GAP (see docs/contracts/release-manifest/README.md's 'Known gaps' section and crates/codex-win-engine/tests/mirror_manifest_contract.rs::known_upstream_schema_gap_x64_not_downloadable_with_top_level_fallback_still_hard_fails). This file is intentionally NOT picked up by scripts/mirror-manifest-schema.test.mjs's invalid/*.json loop expectations below because, as vendored today, the schema WRONGLY VALIDATES this shape (it should reject it, matching schemas/fixtures/invalid/architectures-x64-not-downloadable-no-fallback.json's sibling case, but its first anyOf branch does not also forbid architectures.x64.downloadable === false). select_architecture() in crates/codex-win-engine/src/manifest.rs always hard-fails on it regardless of the top-level fallback present here. Do not 'fix' this file to make it pass a naive invalid-fixtures loop -- fix the upstream schema instead, then move this file into the normal invalid/ set once it correctly rejects.",
+  "schemaVersion": 5,
+  "sources": {
+    "windows": {
+      "version": "1.2.3.4",
+      "packageMoniker": "OpenAI.Codex_1.2.3.4_x64__2p2nqsd0c76g0",
+      "architectures": {
+        "x64": { "architecture": "x64", "status": "catalog-only", "downloadable": false }
+      }
+    },
+    "macos": {
+      "arm64": { "bundleShortVersion": "1.2.3", "bundleVersion": "5" },
+      "x64": { "bundleShortVersion": "1.2.3", "bundleVersion": "5" }
+    }
+  }
+}
