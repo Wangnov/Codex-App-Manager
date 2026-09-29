@@ -162,7 +162,12 @@ export function operationRiskForSnapshot(value: unknown): OperationRisk {
   ) {
     return "critical";
   }
-  if (snapshot.kind === "install" || snapshot.kind === "update" || snapshot.kind === "uninstall") {
+  if (
+    snapshot.kind === "install" ||
+    snapshot.kind === "update" ||
+    snapshot.kind === "uninstall" ||
+    snapshot.kind === "manager-update"
+  ) {
     return "active";
   }
   return "idle";

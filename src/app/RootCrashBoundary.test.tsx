@@ -155,6 +155,18 @@ describe("operationRiskForSnapshot", () => {
     expect(operationRiskForSnapshot({ kind: "install", phase: "committing" })).toBe("critical");
     expect(operationRiskForSnapshot({ kind: "install", interruptible: false })).toBe("critical");
   });
+
+  it("treats a Manager self-update the same as a Codex install/update/uninstall", () => {
+    // Regression: `manager-update` is a real `OperationKind` (the Manager's
+    // own self-update), but the crash screen used to fall back to "idle" for
+    // it — implying quitting was always safe, including mid-install.
+    expect(
+      operationRiskForSnapshot({ kind: "manager-update", phase: "downloading" }),
+    ).toBe("active");
+    expect(
+      operationRiskForSnapshot({ kind: "manager-update", phase: "committing" }),
+    ).toBe("critical");
+  });
 });
 
 describe("invokeRootBackend", () => {

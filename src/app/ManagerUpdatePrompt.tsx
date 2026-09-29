@@ -218,6 +218,14 @@ export function ManagerUpdatePrompt({
   );
   const runtime = useManagerUpdateRuntime();
   const [relaunching, setRelaunching] = useState(false);
+  // Cancelling the "installed, awaiting relaunch" recovery sheet must not
+  // lose the only path back to relaunching it — tracked by the exact
+  // snapshot's `updatedAtMs` (not a boolean) so a *later* self-update cycle
+  // reaching `installed` again naturally un-snoozes instead of staying
+  // hidden forever.
+  const [installedSnoozedAt, setInstalledSnoozedAt] = useState<number | null>(
+    null,
+  );
   const titleId = useId();
   const bodyId = useId();
 
@@ -239,6 +247,15 @@ export function ManagerUpdatePrompt({
   // must win in that case, or the recovery sheet gets silently replaced by a
   // fresh "update available" banner offering to install the same bits again.
   const reattached = !installing && (runtimeBusy || runtimeDone || runtimeFailed);
+  // The installed bits are already on disk, just awaiting relaunch —
+  // acking the runtime on a plain Cancel would erase the only path back to
+  // that relaunch action, and the running process still reports its old
+  // version, so a later check could then offer to install the exact same
+  // bits again. Snooze the *sheet* instead: the persistent reminder banner
+  // below keeps the relaunch action reachable without touching the runtime.
+  const installedSnoozed =
+    runtimeDone && installedSnoozedAt === runtime.updatedAtMs;
+  const showReattachedSheet = reattached && !installedSnoozed;
 
   useEffect(() => () => setChecksPaused(false), [setChecksPaused]);
 
@@ -247,20 +264,23 @@ export function ManagerUpdatePrompt({
     setChecksPaused(false);
     setConfirmOpen(false);
     setFailure(null);
-    // A terminal snapshot must not linger and confuse another view (e.g.
-    // About) that starts watching the runtime afresh after this one gave up
-    // or finished.
-    if (runtime.phase === "error" || runtime.phase === "installed") {
+    if (runtime.phase === "error") {
+      // A terminal error must not linger and confuse another view (e.g.
+      // About) that starts watching the runtime afresh after this one gave
+      // up.
       void managerApi.ackManagerUpdateRuntime();
+    } else if (runtime.phase === "installed") {
+      setInstalledSnoozedAt(runtime.updatedAtMs);
     }
-    // The installed version is already on disk, just awaiting relaunch —
-    // once the ack above brings the runtime back to idle, `update` (if this
-    // mount still holds it) must not re-satisfy `showBanner` and offer to
-    // install the very same bits again with no way left to relaunch them.
-    if (runtime.phase === "installed" && update) {
-      setDismissed(update);
-    }
-  }, [installing, runtime.phase, runtimeBusy, setChecksPaused, update]);
+  }, [installing, runtime.phase, runtime.updatedAtMs, runtimeBusy, setChecksPaused]);
+
+  // An explicit discard of the persistent "installed" reminder (its own
+  // close button, not the sheet's Cancel) really does mean "I don't want
+  // this any more" — ack the runtime for real.
+  const dismissInstalledReminder = useCallback(() => {
+    setInstalledSnoozedAt(null);
+    void managerApi.ackManagerUpdateRuntime();
+  }, []);
 
   const relaunchNow = useCallback(async () => {
     setRelaunching(true);
@@ -314,7 +334,7 @@ export function ManagerUpdatePrompt({
   // installing a version that (per the runtime) is already installed and
   // just awaiting relaunch, or already failed and awaiting retry.
   const showBanner = Boolean(update) && dismissed !== update && !reattached;
-  if (!showBanner && !reattached) return null;
+  if (!showBanner && !showReattachedSheet && !installedSnoozed) return null;
 
   const showProgress =
     (installing || (reattached && runtimeBusy)) &&
@@ -352,8 +372,31 @@ export function ManagerUpdatePrompt({
         </div>
       ) : null}
 
+      {installedSnoozed ? (
+        <div className="manager-update-prompt">
+          <StatusBanner
+            tone="info"
+            icon="arrowUp"
+            action={
+              <button
+                type="button"
+                className="btn primary sm"
+                onClick={() => void relaunchNow()}
+                disabled={relaunching}
+              >
+                {t("progress.relaunchNow")}
+              </button>
+            }
+            onClose={dismissInstalledReminder}
+          >
+            {t("progress.updateInstalled")}
+          </StatusBanner>
+          {failure ? <StatusBanner tone="err">{failure}</StatusBanner> : null}
+        </div>
+      ) : null}
+
       <Sheet
-        open={confirmOpen || reattached}
+        open={confirmOpen || showReattachedSheet}
         onDismiss={closeConfirm}
         dismissable={!installing && !runtimeBusy}
         labelledBy={titleId}

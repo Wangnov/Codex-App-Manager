@@ -1,7 +1,12 @@
 export type OperatingSystem = "windows" | "macos" | "linux" | "unknown";
 export type Architecture = "x64" | "arm64" | "unknown";
 export type OperationKind =
-  "install" | "update" | "uninstall" | "set-install-root" | "adopt";
+  | "install"
+  | "update"
+  | "uninstall"
+  | "set-install-root"
+  | "adopt"
+  | "manager-update";
 export type OperationToken = string;
 /** Lifecycle phase of a backend operation lease (mirrors Rust `OperationPhase`). */
 export type OperationPhase =

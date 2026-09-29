@@ -463,7 +463,7 @@ pub async fn manager_install_update(
     // Shares the single-instance operation lock with Codex install/update/
     // uninstall/adopt so a Manager self-update can never run concurrently
     // with one of those (and vice versa).
-    let _op = begin_guard(&state, OperationKind::ManagerUpdate)?;
+    let op_guard = begin_guard(&state, OperationKind::ManagerUpdate)?;
 
     let updater = manager_updater_builder(&app)?
         .build()
@@ -489,8 +489,13 @@ pub async fn manager_install_update(
     let runtime = &state.manager_update;
     runtime.start_download(&update.version);
     emit_manager_update_state(&app, runtime);
+    let _ = state
+        .operations
+        .set_phase(op_guard.token(), OperationPhase::Downloading);
 
     let progress_app = app.clone();
+    let install_ops = state.operations.clone();
+    let install_token = op_guard.token().clone();
     let install_result = update
         .download_and_install(
             |chunk_len, total| {
@@ -498,6 +503,13 @@ pub async fn manager_install_update(
                 emit_manager_update_state(&progress_app, runtime);
             },
             || {
+                // The updater is about to replace the running Manager's own
+                // files on disk — exactly the "destructive rename" point of
+                // no return every other install/update flow gates the same
+                // way. Advancing the lease's phase (not just the runtime
+                // snapshot) makes the quit policy actually block a confirmed
+                // quit here instead of letting it interrupt the swap.
+                let _ = install_ops.set_phase(&install_token, OperationPhase::Committing);
                 runtime.mark_installing();
                 emit_manager_update_state(&progress_app, runtime);
             },

@@ -31,6 +31,14 @@ export function About({ onBack }: { onBack: () => void }) {
   // started from Home and the user then opens About, both show the exact
   // same download/install progress instead of About guessing from nothing.
   const runtime = useManagerUpdateRuntime();
+  // Cancelling the "installed, awaiting relaunch" recovery sheet must not
+  // lose the only path back to relaunching it — tracked by the exact
+  // snapshot's `updatedAtMs` (not a boolean) so a *later* self-update cycle
+  // reaching `installed` again naturally un-snoozes instead of staying
+  // hidden forever. Mirrors the same fix in `ManagerUpdatePrompt`.
+  const [installedSnoozedAt, setInstalledSnoozedAt] = useState<number | null>(
+    null,
+  );
   const updateTitleId = useId();
   const updateBodyId = useId();
 
@@ -50,17 +58,39 @@ export function About({ onBack }: { onBack: () => void }) {
   // drove itself. The runtime must win, or the recovery action (relaunch/
   // retry) gets silently replaced by a confirm dialog for the same bits.
   const reattached = !mgrBusy && (runtimeBusy || runtimeDone || runtimeFailed);
-  const updateSheetOpen = Boolean(pendingUpdate) || reattached;
+  // The installed bits are already on disk, just awaiting relaunch — acking
+  // the runtime on a plain Cancel would erase the only path back to that
+  // relaunch action, and the running process still reports its old version,
+  // so a later check could then offer to install the exact same bits again.
+  // Snooze the *sheet* instead: the persistent reminder banner below keeps
+  // the relaunch action reachable without touching the runtime.
+  const installedSnoozed =
+    runtimeDone && installedSnoozedAt === runtime.updatedAtMs;
+  const showReattachedSheet = reattached && !installedSnoozed;
+  const updateSheetOpen = Boolean(pendingUpdate) || showReattachedSheet;
 
   const closeUpdateConfirm = useCallback(() => {
     if (mgrBusy || runtimeBusy) return;
     void pendingUpdate?.discard();
     setPendingUpdate(null);
     setRelaunchFailure(null);
-    if (runtime.phase === "error" || runtime.phase === "installed") {
+    if (runtime.phase === "error") {
+      // A terminal error must not linger and confuse another view (e.g.
+      // Home) that starts watching the runtime afresh after this one gave
+      // up.
       void managerApi.ackManagerUpdateRuntime();
+    } else if (runtime.phase === "installed") {
+      setInstalledSnoozedAt(runtime.updatedAtMs);
     }
-  }, [mgrBusy, pendingUpdate, runtime.phase, runtimeBusy]);
+  }, [mgrBusy, pendingUpdate, runtime.phase, runtime.updatedAtMs, runtimeBusy]);
+
+  // An explicit discard of the persistent "installed" reminder (its own
+  // close button, not the sheet's Cancel) really does mean "I don't want
+  // this any more" — ack the runtime for real.
+  const dismissInstalledReminder = useCallback(() => {
+    setInstalledSnoozedAt(null);
+    void managerApi.ackManagerUpdateRuntime();
+  }, []);
 
   const relaunchNow = useCallback(async () => {
     setRelaunching(true);
@@ -176,6 +206,31 @@ export function About({ onBack }: { onBack: () => void }) {
           <div className="sub">{t("about.version", { v: APP_VERSION })}</div>
           <div className="desc">{t("about.tagline")}</div>
         </section>
+
+        {installedSnoozed ? (
+          <div className="manager-update-prompt">
+            <StatusBanner
+              tone="info"
+              icon="arrowUp"
+              action={
+                <button
+                  type="button"
+                  className="btn primary sm"
+                  onClick={() => void relaunchNow()}
+                  disabled={relaunching}
+                >
+                  {t("progress.relaunchNow")}
+                </button>
+              }
+              onClose={dismissInstalledReminder}
+            >
+              {t("progress.updateInstalled")}
+            </StatusBanner>
+            {relaunchFailure ? (
+              <StatusBanner tone="err">{relaunchFailure}</StatusBanner>
+            ) : null}
+          </div>
+        ) : null}
 
         <div className="list">
           <button className="row" onClick={checkManager} disabled={mgrBusy}>

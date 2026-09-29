@@ -57,7 +57,11 @@ export function crashBodyForSnapshot(
   if (snap.phase === "committing" || snap.phase === "finishing" || !snap.interruptible) {
     return strings["crash.bodyCritical"];
   }
-  if (snap.kind === "install" || snap.kind === "update") {
+  if (
+    snap.kind === "install" ||
+    snap.kind === "update" ||
+    snap.kind === "manager-update"
+  ) {
     return strings["crash.bodyActive"];
   }
   return strings["crash.body"];

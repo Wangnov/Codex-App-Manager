@@ -490,4 +490,32 @@ describe("crashBodyForSnapshot", () => {
       }),
     ).toBe(en["crash.bodyPaused"]);
   });
+
+  it("treats a Manager self-update the same as a Codex install/update", () => {
+    // Regression: `manager-update` is a real `OperationKind` (the Manager's
+    // own self-update), but this used to fall through to the generic "idle"
+    // copy — implying quitting was always safe, including mid-install.
+    expect(
+      crashBodyForSnapshot(en, {
+        id: "1",
+        kind: "manager-update",
+        phase: "downloading",
+        progress: null,
+        paused: false,
+        cancellable: false,
+        interruptible: true,
+      }),
+    ).toBe(en["crash.bodyActive"]);
+    expect(
+      crashBodyForSnapshot(en, {
+        id: "1",
+        kind: "manager-update",
+        phase: "committing",
+        progress: null,
+        paused: false,
+        cancellable: false,
+        interruptible: false,
+      }),
+    ).toBe(en["crash.bodyCritical"]);
+  });
 });

@@ -825,4 +825,99 @@ describe("ManagerUpdatePrompt", () => {
       screen.queryByText("发现管理器新版本 0.5.3"),
     ).not.toBeInTheDocument();
   });
+
+  it("keeps a relaunch reminder reachable after cancelling an installed self-update", async () => {
+    // Regression: the previous fix (see above) suppressed the re-offer by
+    // acking the runtime on Cancel, but that ack itself discarded the only
+    // way left to relaunch the already-installed bits. Cancel must instead
+    // leave a persistent reminder that can still relaunch — never a plain
+    // ack that erases the recovery path entirely.
+    const user = userEvent.setup();
+    let emit: ((snapshot: ManagerUpdateSnapshot) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+    const update = available({
+      installAndRelaunch: vi.fn(async () => {
+        emit?.({
+          phase: "installed",
+          version: "0.5.3",
+          downloaded: 100,
+          total: 100,
+          message: null,
+          updatedAtMs: 12345,
+        });
+      }),
+    });
+    api.checkManagerUpdate.mockResolvedValue(update);
+
+    renderPrompt();
+    await user.click(await screen.findByRole("button", { name: "更新" }));
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "更新" }),
+    );
+
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText("更新已安装，重新启动以应用。");
+    await user.click(within(dialog).getByRole("button", { name: "取消" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+
+    // The ack must NOT have been called by a plain Cancel — only the
+    // reminder's own explicit close does that.
+    expect(api.ackManagerUpdateRuntime).not.toHaveBeenCalled();
+
+    const reminder = await screen.findByText("更新已安装，重新启动以应用。");
+    await user.click(
+      within(reminder.closest(".banner") as HTMLElement).getByRole("button", {
+        name: "立即重启",
+      }),
+    );
+    expect(api.relaunchManager).toHaveBeenCalledTimes(1);
+  });
+
+  it("acks the runtime only when the persistent reminder is explicitly dismissed", async () => {
+    const user = userEvent.setup();
+    api.checkManagerUpdate.mockResolvedValue({ kind: "none" });
+    let emit: ((snapshot: ManagerUpdateSnapshot) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+
+    renderPrompt();
+    await waitFor(() => expect(emit).toBeDefined());
+
+    act(() => {
+      emit?.({
+        phase: "installed",
+        version: "0.5.4",
+        downloaded: 100,
+        total: 100,
+        message: null,
+        updatedAtMs: 999,
+      });
+    });
+
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "取消" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(api.ackManagerUpdateRuntime).not.toHaveBeenCalled();
+
+    const reminder = await screen.findByText("更新已安装，重新启动以应用。");
+    await user.click(
+      within(reminder.closest(".banner") as HTMLElement).getByRole("button", {
+        name: "关闭",
+      }),
+    );
+    expect(api.ackManagerUpdateRuntime).toHaveBeenCalledTimes(1);
+  });
 });
