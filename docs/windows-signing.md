@@ -160,7 +160,7 @@ shasum -a 256 CodexAppManager_x86_64.dmg
 
 **Current status: no provider configured, releases stay unsigned (the default, non-blocking behavior).**
 
-The single signing entry point is [`scripts/sign-windows-authenticode.ps1`](../scripts/sign-windows-authenticode.ps1), wired as Tauri's `bundle.windows.signCommand` (see `src-tauri/tauri.conf.json`). Tauri invokes it once per PE layer during `tauri build` — the main executable, the generated NSIS uninstaller, and the final installer — and the script dispatches on the repo variable `WINDOWS_SIGNING_PROVIDER`:
+The single signing entry point is [`scripts/sign-windows-authenticode.ps1`](../scripts/sign-windows-authenticode.ps1), wired as Tauri's `bundle.windows.signCommand` (see `src-tauri/tauri.conf.json`). Tauri invokes it once per PE layer during `tauri build` — the main executable, the generated NSIS uninstaller, and the final installer — and the script dispatches on the repo variable `WINDOWS_SIGNING_PROVIDER`. `tauri build` changes its process working directory to `src-tauri/` before bundling, so `signCommand`'s `-File` path is `../scripts/sign-windows-authenticode.ps1`, relative to `src-tauri/`, not the repo root:
 
 | `WINDOWS_SIGNING_PROVIDER` | Meaning | Required secrets |
 |---|---|---|

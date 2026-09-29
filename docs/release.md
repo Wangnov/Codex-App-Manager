@@ -57,10 +57,16 @@ Post-build on the Windows matrix (see [`release.yml`](../.github/workflows/relea
 1. **PE arch diagnostic** — `scripts/windows-pe-arch.ps1` records x64 vs ARM64
    machine types. ARM64 is cross-built on x64 runners; this is **not** runtime
    verification ([`docs/windows-signing.md`](./windows-signing.md)).
-2. **Optional Authenticode** — `scripts/sign-windows-authenticode.ps1` signs the
-   final `-setup.exe` when `WINDOWS_CERTIFICATE` is present; otherwise skips.
+2. **Authenticode signing (inline, provider-agnostic)** — `tauri build` calls
+   `scripts/sign-windows-authenticode.ps1` as `bundle.windows.signCommand` for
+   the main executable, the generated uninstaller, and the final `-setup.exe`.
+   It dispatches on repo variable `WINDOWS_SIGNING_PROVIDER` (`esigner` /
+   `certum` / `local-pfx`); unset (the default) is a no-op and installers stay
+   unsigned, exactly as before this was wired up. See
+   [`docs/windows-signing.md`](./windows-signing.md#provider-plan).
 3. **Authenticode verify** — `scripts/verify-windows-authenticode.ps1` in
-   `optional` mode by default; set `AUTHENTICODE_REQUIRED=true` to gate.
+   `optional` mode by default (main exe + `-setup.exe`); set
+   `AUTHENTICODE_REQUIRED=true` to gate on `Valid` + a timestamp.
 4. **Tauri updater `.sig`** — `npx tauri signer sign` (always required for
    Windows in-app update entries in `latest.json`).
 5. **Collect final artifacts** — space-stripped names under `dist-artifacts/`,
@@ -237,12 +243,18 @@ those exact names; leaving any of them available defeats old-run isolation.
 
 ### Optional signing secrets and release variables
 
+See [`docs/code-signing-policy.md`](./code-signing-policy.md) and
+[`docs/windows-signing.md`](./windows-signing.md#provider-plan) for the full
+picture (provider comparison, rollout steps, CI proof). Summary:
+
 | Name | What |
 |---|---|
-| `WINDOWS_CERTIFICATE` | base64 of OV/EV code-signing **.pfx** (release env) |
-| `WINDOWS_CERTIFICATE_PASSWORD` | password for that .pfx |
-| `AUTHENTICODE_REQUIRED` (repo **variable**) | `true` → fail release when PE is not `Valid` |
-| `WINDOWS_TIMESTAMP_URL` (repo **variable**) | optional RFC3161 timestamp URL |
+| `WINDOWS_SIGNING_PROVIDER` (repo **variable**) | `esigner` (recommended) / `certum` (fallback) / `local-pfx` (testing) / unset (default, unsigned) |
+| `ESIGNER_USERNAME` / `ESIGNER_PASSWORD` / `ESIGNER_TOTP_SECRET` | SSL.com eSigner account credentials (provider=`esigner`) |
+| `CERTUM_USERNAME` / `CERTUM_TOTP_SECRET` | Certum SimplySign credentials (provider=`certum`) |
+| `WINDOWS_CERTIFICATE` / `WINDOWS_CERTIFICATE_PASSWORD` | base64 PFX + password (provider=`local-pfx` only; legacy scaffold, not for production) |
+| `AUTHENTICODE_REQUIRED` (repo **variable**) | `true` → fail release when a PE is not `Valid` or lacks an RFC3161 timestamp |
+| `WINDOWS_TIMESTAMP_URL` (repo **variable**) | optional RFC3161 timestamp URL override |
 | `MANAGER_R2_BUCKET` (repo **variable**) | R2 bucket; defaults to `codex-app-manager` |
 | `MANAGER_IHEP_S3_ENDPOINT` (`release` environment **variable**) | IHEP S3-compatible endpoint |
 | `MANAGER_IHEP_S3_BUCKET` (`release` environment **variable**) | IHEP bucket |

@@ -60,7 +60,10 @@
 #
 # Usage (Tauri signCommand, wired in src-tauri/tauri.conf.json):
 #   { "cmd": "pwsh", "args": ["-NoProfile", "-ExecutionPolicy", "Bypass",
-#     "-File", "scripts/sign-windows-authenticode.ps1", "-Path", "%1"] }
+#     "-File", "../scripts/sign-windows-authenticode.ps1", "-Path", "%1"] }
+#   `tauri build` sets its process working directory to src-tauri/ before
+#   bundling (see tauri-cli's `set_current_dir(dirs.tauri)`), so the -File
+#   path here is relative to src-tauri/, NOT the repo root — hence "../".
 #   Tauri substitutes %1 with the absolute path of each binary it signs
 #   (main exe, generated uninstaller, final NSIS installer) and invokes this
 #   script once per file with WINDOWS_SIGNING_PROVIDER (and the matching

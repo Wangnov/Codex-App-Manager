@@ -55,7 +55,7 @@
           "-ExecutionPolicy",
           "Bypass",
           "-File",
-          "scripts/sign-windows-authenticode.ps1",
+          "../scripts/sign-windows-authenticode.ps1",
           "-Path",
           "%1"
         ]
