@@ -185,25 +185,30 @@ jobs:
           & .\scripts\windows-pe-arch.ps1 -Path $setup.FullName
 
       # ── Prove the signCommand plumbing end-to-end without a real certificate ─
-      #    Asserts the main exe + installer this job just built for real (not
-      #    copies) carry a signature whose SignerCertificate.Thumbprint
-      #    matches the throwaway cert created above — i.e. that Tauri's own
-      #    signCommand hook actually ran during `tauri build` and actually
-      #    signed with the certificate this job supplied it, not just that
-      #    the sign script can sign something in isolation. Mode=optional
-      #    because a self-signed cert never chains to a trusted root (Status
-      #    is expected to be non-Valid); -ExpectedThumbprint is what makes
-      #    this a hard assertion regardless of Status — see
-      #    verify-windows-authenticode.ps1's header comment. The NSIS
-      #    uninstaller is also signed at this same build step (embedded in
-      #    the installer via `!uninstfinalize`), but only exists as a file on
-      #    disk once actually installed — verified below, after install.
-      - name: Assert build artifacts carry the throwaway certificate
+      #    Asserts the installer this job just built for real (not a copy)
+      #    carries a signature whose SignerCertificate.Thumbprint matches the
+      #    throwaway cert created above — i.e. that Tauri's own signCommand
+      #    hook actually ran during `tauri build` and actually signed with the
+      #    certificate this job supplied it, not just that the sign script can
+      #    sign something in isolation. Mode=optional because a self-signed
+      #    cert never chains to a trusted root (Status is expected to be
+      #    non-Valid); -ExpectedThumbprint is what makes this a hard assertion
+      #    regardless of Status — see verify-windows-authenticode.ps1's header
+      #    comment.
+      #    Deliberately NOT checked here:
+      #    src-tauri/target/.../release/codex-app-manager.exe. tauri-bundler
+      #    signs a copy of the main exe for embedding in the installer and then
+      #    restores that on-disk build output to its unsigned original (tauri-cli
+      #    2.11.5, bundle.rs "Restore unsigned and unpatched binary"), so it is
+      #    NotSigned by design. The signed main exe and the NSIS uninstaller
+      #    (embedded via `!uninstfinalize`) exist as files only after
+      #    installation, so the packaged lifecycle smoke step below asserts
+      #    them, with the same thumbprint.
+      - name: Assert installer carries the throwaway certificate
         shell: pwsh
         run: |
-          $main = "src-tauri/target/x86_64-pc-windows-msvc/release/codex-app-manager.exe"
           & .\scripts\verify-windows-authenticode.ps1 `
-            -Path @($main, "${{ steps.artifact.outputs.installer }}") `
+            -Path @("${{ steps.artifact.outputs.installer }}") `
             -Mode optional `
             -ExpectedThumbprint "${{ steps.throwaway-cert.outputs.thumbprint }}" `
             -Stage "sign-proof"
@@ -220,10 +225,12 @@ jobs:
             -Stage "sign-verify"
 
       # ── Packaged lifecycle smoke, with the throwaway cert threaded through ──
-      #    -ExpectedThumbprint here is what actually proves the NSIS
-      #    uninstaller was signed: it only exists once install writes it, so
-      #    this is the only place in this job that can check it at all — see
-      #    windows-packaged-smoke.ps1's "sign-verify (installed PE)" stage.
+      #    -ExpectedThumbprint here is what proves the INSTALLED main exe and
+      #    the NSIS uninstaller were signed with the throwaway certificate:
+      #    both exist as signed files only once install has written them (the
+      #    on-disk build-output main exe is restored to unsigned by
+      #    tauri-bundler) — see windows-packaged-smoke.ps1's "sign-verify
+      #    (installed PE)" stage.
       - name: Packaged lifecycle smoke (install / launch / upgrade / uninstall)
         shell: pwsh
         env:

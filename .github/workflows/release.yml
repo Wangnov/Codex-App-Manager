@@ -446,6 +446,40 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KC"
           security list-keychains -d user -s "$KC" $(security list-keychains -d user | sed s/\"//g)
 
+      # ── Windows: assert the manual-approval gate before any signing secret is used ─
+      #    docs/code-signing-policy.md requires per-request human approval
+      #    (a required-reviewers rule on the `release` Environment) before an
+      #    automated cloud-HSM login may sign anything. That rule is repository
+      #    configuration, not workflow code, so without this step forgetting to
+      #    configure it would silently sign with a stored credential and no
+      #    approval. Only runs when a cloud provider is selected — never in
+      #    today's unsigned default. Best effort by construction: the default
+      #    GITHUB_TOKEN cannot always read environment protection rules, so an
+      #    unreadable answer is a warning, but a readable answer that lists
+      #    protection rules with no required_reviewers rule is a hard failure.
+      - name: Assert release environment requires reviewers (cloud signing)
+        if: matrix.os == 'windows' && (vars.WINDOWS_SIGNING_PROVIDER == 'esigner' || vars.WINDOWS_SIGNING_PROVIDER == 'certum')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WINDOWS_SIGNING_PROVIDER: ${{ vars.WINDOWS_SIGNING_PROVIDER }}
+        run: |
+          $raw = & gh api "repos/$env:GITHUB_REPOSITORY/environments/release" 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::warning::Could not read the release environment's protection rules with the workflow token, so the required-reviewers gate is NOT verified by this run. Confirm it manually (docs/windows-signing.md, step 2)."
+            return
+          }
+          $rules = @((($raw | Out-String) | ConvertFrom-Json).protection_rules)
+          if ($rules.Count -eq 0) {
+            Write-Host "::warning::The workflow token sees no protection rules on the release environment (either none exist or they are hidden from this token); the required-reviewers gate is NOT verified by this run."
+            return
+          }
+          if (-not ($rules | Where-Object { $_.type -eq "required_reviewers" })) {
+            Write-Host "::error::WINDOWS_SIGNING_PROVIDER=$env:WINDOWS_SIGNING_PROVIDER but the release environment has no required-reviewers rule. docs/code-signing-policy.md requires per-request human approval before a cloud signing credential is used; add a required reviewer (Settings > Environments > release) first."
+            exit 1
+          }
+          Write-Host "release environment has a required-reviewers rule."
+
       # ── Windows: provision the eSigner CKA certificate (recommended provider) ─
       #    Only runs when vars.WINDOWS_SIGNING_PROVIDER == 'esigner'. No-op
       #    (and no secrets touched) for every other value, including the
@@ -646,63 +680,76 @@ jobs:
             Write-Host "::notice::ARM64 main PE asserted machine=0xAA64 (cross-build on x64). Full Manager installer smoke remains x64-only; native ARM64 portable MSIX extraction and cua_node module resolution run in windows-portable-msix-e2e.yml."
           }
 
-      # ── Windows: verify Authenticode on the main exe + final NSIS installer ─
+      # ── Windows: verify Authenticode on the final NSIS installer ───────────
       #    Signing itself already happened inline during `tauri build` via the
       #    signCommand hook (scripts/sign-windows-authenticode.ps1), covering
       #    the main binary, the generated uninstaller (via NSIS
-      #    !uninstfinalize), and the final -setup.exe in one pass — see
-      #    src-tauri/tauri.conf.json bundle.windows.signCommand. The
-      #    uninstaller itself only exists once actually installed — the next
-      #    step verifies it (x64, when AUTHENTICODE_REQUIRED=true) against this
-      #    real signed release artifact. Optional until
-      #    vars.AUTHENTICODE_REQUIRED=true; unsigned (NotSigned) is expected
-      #    and non-blocking while no WINDOWS_SIGNING_PROVIDER is configured.
+      #    !uninstfinalize), and the final -setup.exe — see
+      #    src-tauri/tauri.conf.json bundle.windows.signCommand.
+      #    Only the installer is checked here, deliberately NOT
+      #    src-tauri/target/<target>/release/codex-app-manager.exe: tauri-bundler
+      #    signs a copy of the main exe for embedding and then restores that
+      #    on-disk file to its unsigned, unpatched original after each bundle
+      #    type (tauri-cli 2.11.5, tauri-bundler bundle.rs, "Restore unsigned
+      #    and unpatched binary"), so that path is NotSigned even on a fully
+      #    signed release. The signed main exe and the uninstaller exist as
+      #    files only once the installer is installed — the next step verifies
+      #    them (x64). ARM64 cannot install on an x64 runner, so its main exe
+      #    and uninstaller stay on the manual checklist in
+      #    docs/windows-signing.md.
+      #    Optional until vars.AUTHENTICODE_REQUIRED=true; unsigned
+      #    (NotSigned) is expected and non-blocking while no
+      #    WINDOWS_SIGNING_PROVIDER is configured.
       #    -ExpectedThumbprint pins the check to the specific certificate the
       #    esigner/certum provisioning step loaded and exported as
       #    WINDOWS_SIGNING_THUMBPRINT (see docs/code-signing-policy.md's "from
       #    the expected publisher" requirement) — Valid + timestamp alone
       #    would still pass for a trusted certificate belonging to someone
       #    else. Empty for local-pfx/no provider, matching today's behavior.
-      - name: Verify Authenticode on Windows binaries
+      - name: Verify Authenticode on Windows installer
         if: matrix.os == 'windows'
         shell: pwsh
         env:
           AUTHENTICODE_MODE: ${{ vars.AUTHENTICODE_REQUIRED == 'true' && 'required' || 'optional' }}
         run: |
-          $main = "src-tauri/target/${{ matrix.target }}/release/codex-app-manager.exe"
           $setup = Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe" -ErrorAction Stop
           & .\scripts\verify-windows-authenticode.ps1 `
-            -Path @($main, $setup.FullName) `
+            -Path @($setup.FullName) `
             -Mode $env:AUTHENTICODE_MODE `
             -ExpectedThumbprint $env:WINDOWS_SIGNING_THUMBPRINT `
             -Stage "sign-verify"
 
-      # ── Windows (x64 only): uninstaller Authenticode gate on the real,
-      #    signed release artifact, once enforcement is on ──────────────────
+      # ── Windows (x64 only): installed main exe + uninstaller Authenticode
+      #    gate on the real, signed release artifact ──────────────────────────
       #    docs/code-signing-policy.md requires all three project-owned PE
-      #    layers (main exe, uninstaller, installer) to verify Valid + a
-      #    timestamp before publication. The uninstaller only exists once
-      #    actually installed (NSIS writes it during install, it is not a
-      #    standalone build output), so this reuses the same packaged
+      #    layers (main exe, uninstaller, installer) to verify before
+      #    publication. The signed main exe and the uninstaller only exist as
+      #    files once the installer has been installed (NSIS writes the
+      #    uninstaller during install; the on-disk build-output main exe is
+      #    restored to unsigned by tauri-bundler), so this reuses the packaged
       #    lifecycle smoke script win-installer-check.yml already proves on
-      #    PRs (unsigned/throwaway-cert builds there) — here, against the
-      #    just-signed -setup.exe, in `required` mode, before this job
-      #    publishes anything. A failure here blocks the release: there is no
-      #    unsigned fallback once AUTHENTICODE_REQUIRED=true. windows-latest is
-      #    x64, so a cross-built ARM64 installer cannot install/run here —
-      #    see docs/windows-signing.md's ARM64 runtime-verification checklist
-      #    (item 6) for the manual uninstaller-signature check that covers
-      #    that architecture instead. Gated on AUTHENTICODE_REQUIRED so this
-      #    extra install/launch/upgrade/uninstall pass only runs once a real
-      #    provider is being enforced, not on every unsigned release.
-      - name: Uninstaller Authenticode gate (x64, enforcement on)
-        if: matrix.os == 'windows' && matrix.target == 'x86_64-pc-windows-msvc' && vars.AUTHENTICODE_REQUIRED == 'true'
+      #    PRs (throwaway-cert builds there) — here against the just-built
+      #    -setup.exe, before this job publishes anything. It runs whenever a
+      #    cloud provider is selected (mode optional/required follows
+      #    AUTHENTICODE_REQUIRED), so the recommended "run 1-2 releases in
+      #    optional mode first" rollout still hard-checks that every layer
+      #    carries the provider's certificate, while a default unsigned
+      #    release (no provider, enforcement off) skips this extra
+      #    install/launch/upgrade/uninstall pass entirely, exactly as today.
+      #    A failure here blocks the release. windows-latest is x64, so a
+      #    cross-built ARM64 installer cannot install/run here — see
+      #    docs/windows-signing.md's ARM64 runtime-verification checklist
+      #    (item 6) for the manual check that covers that architecture.
+      - name: Installed main exe + uninstaller Authenticode gate (x64)
+        if: matrix.os == 'windows' && matrix.target == 'x86_64-pc-windows-msvc' && (vars.AUTHENTICODE_REQUIRED == 'true' || vars.WINDOWS_SIGNING_PROVIDER == 'esigner' || vars.WINDOWS_SIGNING_PROVIDER == 'certum')
         shell: pwsh
+        env:
+          AUTHENTICODE_MODE: ${{ vars.AUTHENTICODE_REQUIRED == 'true' && 'required' || 'optional' }}
         run: |
           $setup = Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe" -ErrorAction Stop
           & .\scripts\windows-packaged-smoke.ps1 `
             -Installer $setup.FullName `
-            -AuthenticodeMode required `
+            -AuthenticodeMode $env:AUTHENTICODE_MODE `
             -ExpectedThumbprint $env:WINDOWS_SIGNING_THUMBPRINT
 
       # ── Windows: sign the NSIS installer for the updater ──────────────────

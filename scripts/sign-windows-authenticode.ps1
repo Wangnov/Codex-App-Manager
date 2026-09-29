@@ -134,6 +134,54 @@ function Find-SignTool {
     return $null
 }
 
+# RFC 3161 timestamp servers are public best-effort services and blip
+# occasionally; a single failure must not abort a whole `tauri build` (and,
+# on PRs, turn win-installer-check red for an unrelated change). Try the
+# configured URL first, then well-known fallbacks, for a few rounds with
+# backoff. A failed signtool attempt leaves the file unmodified (the
+# signature is only written after the timestamp is obtained), so retrying
+# cannot produce a doubly-signed binary. Non-timestamp failures (missing
+# certificate, HSM login expired, ...) also retry but ultimately fail with
+# signtool's own output above.
+$TimestampFallbackUrls = @(
+    "http://timestamp.digicert.com",
+    "http://timestamp.sectigo.com",
+    "http://timestamp.globalsign.com/tsa/r6advanced1"
+)
+
+function Get-TimestampUrlCandidates {
+    $urls = New-Object System.Collections.Generic.List[string]
+    foreach ($u in @($TimestampUrl) + $TimestampFallbackUrls) {
+        if (-not [string]::IsNullOrWhiteSpace($u) -and -not $urls.Contains($u)) { $urls.Add($u) }
+    }
+    return , $urls.ToArray()
+}
+
+function Invoke-SignToolWithRetry([string]$SignTool, [string]$SignThumbprint, [string]$FilePath) {
+    $rounds = 3
+    $urls = Get-TimestampUrlCandidates
+    $lastExit = 0
+    for ($round = 1; $round -le $rounds; $round++) {
+        foreach ($url in $urls) {
+            & $SignTool sign `
+                /fd SHA256 `
+                /td SHA256 `
+                /tr $url `
+                /sha1 $SignThumbprint `
+                $FilePath
+            $lastExit = $LASTEXITCODE
+            if ($lastExit -eq 0) { return }
+            Write-Host "::warning::[$Stage] signtool failed for $(Split-Path -Leaf $FilePath) with timestamp server $url (exit=$lastExit, round $round/$rounds)"
+        }
+        if ($round -lt $rounds) {
+            $delay = 5 * $round
+            Write-Host "[$Stage] Retrying in ${delay}s..."
+            Start-Sleep -Seconds $delay
+        }
+    }
+    Fail-Stage "signtool failed for $FilePath after $rounds rounds across $($urls.Count) timestamp server(s) (last exit=$lastExit)"
+}
+
 # Signs every $Path with signtool using an already-known certificate
 # thumbprint (already imported/loaded into a certificate store the local
 # signtool.exe can see). Shared by local-pfx (after import), esigner, and
@@ -143,15 +191,7 @@ function Invoke-ThumbprintSign([string]$SignTool, [string]$SignThumbprint, [stri
         if ([string]::IsNullOrWhiteSpace($raw)) { continue }
         $item = Get-Item -LiteralPath $raw -ErrorAction Stop
         Write-Stage "Sign $($item.Name)"
-        & $SignTool sign `
-            /fd SHA256 `
-            /td SHA256 `
-            /tr $TimestampUrl `
-            /sha1 $SignThumbprint `
-            $item.FullName
-        if ($LASTEXITCODE -ne 0) {
-            Fail-Stage "signtool failed for $($item.FullName) (exit=$LASTEXITCODE)"
-        }
+        Invoke-SignToolWithRetry -SignTool $SignTool -SignThumbprint $SignThumbprint -FilePath $item.FullName
 
         # Do NOT require Status -eq Valid here: a throwaway self-signed
         # certificate (local-pfx CI proof) will never chain to a trusted

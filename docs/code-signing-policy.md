@@ -172,6 +172,16 @@ role changes must remain auditable.
   production provider (`esigner` or `certum`) must not be turned on for
   `WINDOWS_SIGNING_PROVIDER` until the required-reviewers rule is configured
   and verified to actually pause a run.
+  **Current state:** the `release` Environment is not yet configured with a
+  required-reviewers rule (it only has a branch policy), and no provider is
+  configured, so no signing is happening and releases stay unsigned; this
+  rule is a precondition the maintainer must complete before enabling a
+  provider, not something already in force. As a backstop, `release.yml`
+  reads the environment's protection rules before any signing secret is used
+  and fails the job when a cloud provider is selected and the rules it can
+  see contain no required-reviewers rule (if the workflow token cannot read
+  the rules it only warns, so the manual verification above is still
+  required).
 
 - `main` 由启用中的 GitHub ruleset 保护。所有变更通过 pull request 进入，并必须通过
   Frontend、macOS Rust 与 Windows Rust 检查。
@@ -191,6 +201,12 @@ role changes must remain auditable.
   值守运行），**不能**替代这道人工审批。在这条 required-reviewers 规则配置并验证能
   真正暂停某次运行之前，不得把 `WINDOWS_SIGNING_PROVIDER` 设为生产供应商
   （`esigner` 或 `certum`）。
+  **当前状态：** `release` Environment 目前**尚未**配置必需审批人规则（只有分支策略），
+  也没有配置任何供应商，因此当前没有任何签名发生，发布保持未签名；这条规则是维护者启用
+  供应商之前必须先完成的前置条件，而不是已经生效的控制。作为兜底，`release.yml` 会在使用
+  任何签名 secret 之前读取该 environment 的保护规则，选中云供应商而可见的规则里没有
+  required-reviewers 时直接让 job 失败（如果 workflow token 读不到这些规则则只给
+  warning，所以上述人工验证仍然必需）。
 
 ## Artifact and verification requirements · 工件与验证要求
 
@@ -216,13 +232,16 @@ artifacts:
    provisioning step just loaded (`WINDOWS_SIGNING_THUMBPRINT`) as
    `-ExpectedThumbprint`, so a signature that is `Valid` but from a
    *different*, unrelated trusted certificate still fails the check — a
-   plain `Status -eq "Valid"` check alone would not catch that. For x64 this
-   includes the uninstaller, verified in `release.yml` by installing the
-   real, just-signed release artifact (the uninstaller only exists once
-   installed) and checking it against the same expected thumbprint.
+   plain `Status -eq "Valid"` check alone would not catch that. The installer
+   is verified directly on both architectures. The installed main executable
+   and the uninstaller are only signed files once the installer has been
+   installed (the build-output `codex-app-manager.exe` is restored to its
+   unsigned original by tauri-bundler after bundling, so it is not a valid
+   check target), so for x64 `release.yml` installs the real, just-signed
+   release artifact and checks both against the same expected thumbprint.
    `windows-latest` is x64-only, so a cross-built ARM64 installer cannot be
-   installed/run in CI; its uninstaller must be checked manually before each
-   release using the checklist in
+   installed/run in CI; its main executable and uninstaller must be checked
+   manually before each release using the checklist in
    [`Windows signing and verification`](./windows-signing.md#arm64-runtime-verification-strategy)
    until a native or trusted-virtualization ARM64 runner is available.
 5. The Tauri updater signature is generated only after Authenticode signing so

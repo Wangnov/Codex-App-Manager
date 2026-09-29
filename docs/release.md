@@ -65,8 +65,15 @@ Post-build on the Windows matrix (see [`release.yml`](../.github/workflows/relea
    unsigned, exactly as before this was wired up. See
    [`docs/windows-signing.md`](./windows-signing.md#provider-plan).
 3. **Authenticode verify** — `scripts/verify-windows-authenticode.ps1` in
-   `optional` mode by default (main exe + `-setup.exe`); set
-   `AUTHENTICODE_REQUIRED=true` to gate on `Valid` + a timestamp.
+   `optional` mode by default, on the `-setup.exe` (not on the build-output
+   `codex-app-manager.exe`: tauri-bundler restores that file to unsigned after
+   bundling, so only the copies inside the installer are signed). Set
+   `AUTHENTICODE_REQUIRED=true` to gate on `Valid` + a timestamp. On x64, when a
+   cloud provider is selected or enforcement is on, the packaged smoke script
+   also installs the installer and verifies the installed main exe and the
+   uninstaller against the provider's certificate thumbprint; ARM64's main exe
+   and uninstaller stay on the manual checklist in
+   [`docs/windows-signing.md`](./windows-signing.md).
 4. **Tauri updater `.sig`** — `npx tauri signer sign` (always required for
    Windows in-app update entries in `latest.json`).
 5. **Collect final artifacts** — space-stripped names under `dist-artifacts/`,
