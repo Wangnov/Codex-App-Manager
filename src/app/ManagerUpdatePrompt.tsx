@@ -17,7 +17,7 @@ import {
 import type { AppSettings, ManagerUpdateSnapshot } from "../shared/types";
 import { mib } from "./format";
 import { StatusBanner, Ring } from "./components";
-import { userErrorMessage } from "./errorCopy";
+import { codeErrorMessage, userErrorMessage } from "./errorCopy";
 import { useI18n } from "./i18n";
 import { Sheet } from "./Sheet";
 
@@ -442,7 +442,7 @@ export function ManagerUpdatePrompt({
           ) : runtimeDone ? (
             <p id={bodyId}>{t("progress.updateInstalled")}</p>
           ) : (
-            <p id={bodyId}>{t("about.mgrUnavailable")}</p>
+            <p id={bodyId}>{t("progress.updateFailed")}</p>
           )
         ) : update ? (
           <p id={bodyId}>{t("about.mgrConfirmBody")}</p>
@@ -473,8 +473,12 @@ export function ManagerUpdatePrompt({
             ) : null}
           </div>
         ) : null}
-        {reattached && runtimeFailed && runtime.message ? (
-          <StatusBanner tone="err">{runtime.message}</StatusBanner>
+        {reattached && runtimeFailed ? (
+          // The backend snapshot carries a stable code, never raw updater
+          // text (English, may hold feed URLs/paths): localize it here.
+          <StatusBanner tone="err">
+            {codeErrorMessage(runtime.code, t)}
+          </StatusBanner>
         ) : failure ? (
           <StatusBanner tone="err">{failure}</StatusBanner>
         ) : null}

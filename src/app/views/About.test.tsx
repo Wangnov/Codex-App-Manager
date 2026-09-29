@@ -134,7 +134,7 @@ describe("About manager update", () => {
       version: "0.5.3",
       downloaded: 25,
       total: 100,
-      message: null,
+      code: null,
       updatedAtMs: Date.now(),
     });
 
@@ -170,7 +170,7 @@ describe("About manager update", () => {
         version: "0.5.4",
         downloaded: 25,
         total: 100,
-        message: null,
+        code: null,
         updatedAtMs: Date.now(),
       });
     });
@@ -202,7 +202,7 @@ describe("About manager update", () => {
         version: "0.5.4",
         downloaded: 100,
         total: 100,
-        message: null,
+        code: null,
         updatedAtMs: Date.now(),
       });
     });
@@ -237,15 +237,21 @@ describe("About manager update", () => {
         version: "0.5.4",
         downloaded: 20,
         total: 100,
-        message: "install manager update: network unreachable",
+        code: "network",
         updatedAtMs: Date.now(),
       });
     });
 
     const dialog = await screen.findByRole("dialog");
+    // The snapshot carries a stable code, which is localized; the sheet body
+    // says the update failed (not that a check failed) and no raw engine text
+    // is rendered.
     expect(within(dialog).getByRole("alert")).toHaveTextContent(
-      "install manager update: network unreachable",
+      "无法连接更新服务器。请检查网络后重试。",
     );
+    expect(within(dialog).getByText("更新未能完成。")).toBeInTheDocument();
+    expect(dialog).not.toHaveTextContent("install manager update");
+    expect(dialog).not.toHaveTextContent("暂时无法检查管理器更新");
     await user.click(within(dialog).getByRole("button", { name: "重试" }));
 
     expect(api.ackManagerUpdateRuntime).toHaveBeenCalledTimes(1);
@@ -263,9 +269,11 @@ describe("About manager update", () => {
         emit = undefined;
       };
     });
-    api.relaunchManager.mockRejectedValueOnce(
-      new Error("cannot relaunch while another operation is in progress"),
-    );
+    // What the backend sends when another operation holds the lease.
+    api.relaunchManager.mockRejectedValueOnce({
+      code: "operation_busy",
+      message: "已有操作正在进行（update），请等待完成后再试",
+    });
 
     renderAbout();
     await waitFor(() => expect(emit).toBeDefined());
@@ -276,7 +284,7 @@ describe("About manager update", () => {
         version: "0.5.4",
         downloaded: 100,
         total: 100,
-        message: null,
+        code: null,
         updatedAtMs: Date.now(),
       });
     });
@@ -286,12 +294,12 @@ describe("About manager update", () => {
       within(dialog).getByRole("button", { name: "立即重启" }),
     );
 
-    // The localized generic failure copy (a raw engine error has no more
-    // specific mapped code) — the point under test is that it renders
-    // *inside the open sheet* at all, not in the inert background row.
+    // The busy code maps to its own localized copy (not the generic
+    // "something went wrong"), and it renders *inside the open sheet*, not in
+    // the inert background row.
     expect(
       await within(dialog).findByRole("alert"),
-    ).toHaveTextContent("操作未完成");
+    ).toHaveTextContent("已有操作正在进行，请稍后再试。");
   });
 
   it("keeps the relaunch recovery sheet even when a manual check finds an available update", async () => {
@@ -314,7 +322,7 @@ describe("About manager update", () => {
         version: "0.5.4",
         downloaded: 100,
         total: 100,
-        message: null,
+        code: null,
         updatedAtMs: Date.now(),
       });
     });
@@ -351,7 +359,7 @@ describe("About manager update", () => {
         version: "0.5.4",
         downloaded: 100,
         total: 100,
-        message: null,
+        code: null,
         updatedAtMs: 12345,
       });
     });
@@ -391,7 +399,7 @@ describe("About manager update", () => {
         version: "0.5.4",
         downloaded: 100,
         total: 100,
-        message: null,
+        code: null,
         updatedAtMs: 999,
       });
     });

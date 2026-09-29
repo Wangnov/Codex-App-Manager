@@ -405,7 +405,7 @@ describe("manager self-update runtime snapshot", () => {
       version: "0.6.0",
       downloaded: 512,
       total: 2048,
-      message: null,
+      code: null,
       updatedAtMs: 1234,
     };
     invokeMock.mockResolvedValueOnce(snapshot);
@@ -423,7 +423,7 @@ describe("manager self-update runtime snapshot", () => {
       version: null,
       downloaded: 0,
       total: null,
-      message: null,
+      code: null,
       updatedAtMs: 0,
     });
 
@@ -478,7 +478,7 @@ describe("manager self-update runtime snapshot", () => {
       version: "0.6.0",
       downloaded: 2048,
       total: 2048,
-      message: null,
+      code: null,
       updatedAtMs: 5678,
     };
     handler?.({ payload });

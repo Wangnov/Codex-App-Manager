@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  codeErrorMessage,
   isConnectivityFailure,
   messageFailure,
   resolveFailure,
@@ -96,5 +97,18 @@ describe("userErrorMessage / resolveFailure", () => {
       detail: null,
       recoverable: true,
     });
+  });
+});
+
+describe("codeErrorMessage", () => {
+  it("localizes a bare stable code from a backend snapshot", () => {
+    expect(codeErrorMessage("network", t)).toBe(copy["error.network"]);
+    expect(codeErrorMessage("signature", t)).toBe(copy["error.signature"]);
+    expect(codeErrorMessage("operation_busy", t)).toBe(copy["error.busy"]);
+  });
+
+  it("falls back to the generic copy for a missing or unknown code", () => {
+    expect(codeErrorMessage(null, t)).toBe(copy["error.generic"]);
+    expect(codeErrorMessage("something_new", t)).toBe(copy["error.generic"]);
   });
 });

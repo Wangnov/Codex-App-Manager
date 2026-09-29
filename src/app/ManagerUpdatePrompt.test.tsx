@@ -525,7 +525,7 @@ describe("ManagerUpdatePrompt", () => {
         version: "0.5.3",
         downloaded: 50,
         total: 100,
-        message: null,
+        code: null,
         updatedAtMs: Date.now(),
       });
     });
@@ -581,7 +581,7 @@ describe("ManagerUpdatePrompt", () => {
         version: "0.5.4",
         downloaded: 100,
         total: 100,
-        message: null,
+        code: null,
         updatedAtMs: Date.now(),
       });
     });
@@ -626,7 +626,7 @@ describe("ManagerUpdatePrompt", () => {
         version: "0.5.4",
         downloaded: 100,
         total: 100,
-        message: null,
+        code: null,
         updatedAtMs: Date.now(),
       });
     });
@@ -667,15 +667,21 @@ describe("ManagerUpdatePrompt", () => {
         version: "0.5.4",
         downloaded: 20,
         total: 100,
-        message: "install manager update: network unreachable",
+        code: "network",
         updatedAtMs: Date.now(),
       });
     });
 
     const dialog = await screen.findByRole("dialog");
+    // The snapshot carries a stable code, which is localized; the sheet body
+    // says the update failed (not that a check failed) and no raw engine text
+    // is rendered.
     expect(within(dialog).getByRole("alert")).toHaveTextContent(
-      "install manager update: network unreachable",
+      "无法连接更新服务器。请检查网络后重试。",
     );
+    expect(within(dialog).getByText("更新未能完成。")).toBeInTheDocument();
+    expect(dialog).not.toHaveTextContent("install manager update");
+    expect(dialog).not.toHaveTextContent("暂时无法检查管理器更新");
     await user.click(within(dialog).getByRole("button", { name: "重试" }));
 
     expect(api.ackManagerUpdateRuntime).toHaveBeenCalledTimes(1);
@@ -713,7 +719,7 @@ describe("ManagerUpdatePrompt", () => {
         version: "0.5.4",
         downloaded: 20,
         total: 100,
-        message: "install manager update: network unreachable",
+        code: "network",
         updatedAtMs: Date.now(),
       });
     });
@@ -748,7 +754,7 @@ describe("ManagerUpdatePrompt", () => {
           version: "0.5.3",
           downloaded: 20,
           total: 100,
-          message: "install manager update: network unreachable",
+          code: "network",
           updatedAtMs: Date.now(),
         });
         throw new Error("install manager update: network unreachable");
@@ -801,7 +807,7 @@ describe("ManagerUpdatePrompt", () => {
           version: "0.5.3",
           downloaded: 100,
           total: 100,
-          message: null,
+          code: null,
           updatedAtMs: Date.now(),
         });
       }),
@@ -847,7 +853,7 @@ describe("ManagerUpdatePrompt", () => {
           version: "0.5.3",
           downloaded: 100,
           total: 100,
-          message: null,
+          code: null,
           updatedAtMs: 12345,
         });
       }),
@@ -880,6 +886,73 @@ describe("ManagerUpdatePrompt", () => {
     expect(api.relaunchManager).toHaveBeenCalledTimes(1);
   });
 
+  it("shows the localized busy copy when a relaunch is refused because another operation is active", async () => {
+    const user = userEvent.setup();
+    api.checkManagerUpdate.mockResolvedValue({ kind: "none" });
+    let emit: ((snapshot: ManagerUpdateSnapshot) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+    api.relaunchManager.mockRejectedValueOnce({
+      code: "operation_busy",
+      message: "已有操作正在进行（update），请等待完成后再试",
+    });
+
+    renderPrompt();
+    await waitFor(() => expect(emit).toBeDefined());
+    act(() => {
+      emit?.({
+        phase: "installed",
+        version: "0.5.4",
+        downloaded: 100,
+        total: 100,
+        code: null,
+        updatedAtMs: Date.now(),
+      });
+    });
+
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "立即重启" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "已有操作正在进行，请稍后再试。",
+    );
+    // The button stays usable so the user can retry once the other
+    // operation finishes.
+    expect(
+      within(dialog).getByRole("button", { name: "立即重启" }),
+    ).toBeEnabled();
+  });
+
+  it("falls back to the generic failure copy when an error snapshot has no code", async () => {
+    api.checkManagerUpdate.mockResolvedValue({ kind: "none" });
+    let emit: ((snapshot: ManagerUpdateSnapshot) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+
+    renderPrompt();
+    await waitFor(() => expect(emit).toBeDefined());
+    act(() => {
+      emit?.({
+        phase: "error",
+        version: "0.5.4",
+        downloaded: 0,
+        total: null,
+        code: null,
+        updatedAtMs: Date.now(),
+      });
+    });
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("alert")).toHaveTextContent("操作未完成");
+  });
+
   it("acks the runtime only when the persistent reminder is explicitly dismissed", async () => {
     const user = userEvent.setup();
     api.checkManagerUpdate.mockResolvedValue({ kind: "none" });
@@ -900,7 +973,7 @@ describe("ManagerUpdatePrompt", () => {
         version: "0.5.4",
         downloaded: 100,
         total: 100,
-        message: null,
+        code: null,
         updatedAtMs: 999,
       });
     });
@@ -947,7 +1020,7 @@ describe("ManagerUpdatePrompt", () => {
           version: "0.5.3",
           downloaded: 100,
           total: 100,
-          message: null,
+          code: null,
           updatedAtMs: Date.now(),
         });
       }),

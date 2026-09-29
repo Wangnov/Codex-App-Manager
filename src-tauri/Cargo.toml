@@ -36,7 +36,6 @@ tauri = { version = "2.11.2", features = ["tray-icon", "image-png", "macos-priva
 tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-log = "2"
-tauri-plugin-process = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 thiserror = "2.0"

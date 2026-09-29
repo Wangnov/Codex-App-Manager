@@ -74,7 +74,7 @@ export const IDLE_MANAGER_UPDATE_SNAPSHOT: ManagerUpdateSnapshot = {
   version: null,
   downloaded: 0,
   total: null,
-  message: null,
+  code: null,
   updatedAtMs: 0,
 };
 

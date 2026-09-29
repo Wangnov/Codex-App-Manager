@@ -150,7 +150,9 @@ export interface ManagerUpdateSnapshot {
   version: string | null;
   downloaded: number;
   total: number | null;
-  message: string | null;
+  /** Stable failure category while `phase` is "error" (same codes as
+   *  `CommandError.code`); localize it via `errorCopy`, never show raw text. */
+  code: string | null;
   updatedAtMs: number;
 }
 

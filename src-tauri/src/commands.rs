@@ -15,7 +15,10 @@ use crate::app::diagnostics::Diagnostics;
 use crate::app::disk::available_space;
 use crate::app::install_tx::SelfUpdatePolicyTransition;
 use crate::app::logging::redact_url;
-use crate::app::manager_update_runtime::{ManagerUpdateRuntime, ManagerUpdateSnapshot};
+use crate::app::manager_update_runtime::{
+    classify_updater_error, enter_commit_checkpoint, EmitThrottle, ManagerUpdateRuntime,
+    ManagerUpdateSnapshot, UpdateStage, PROGRESS_EMIT_INTERVAL,
+};
 use crate::app::network;
 use crate::app::mac_update::{
     cancel_macos_download, detect_existing_install_at_path as detect_macos_install_at_path,
@@ -445,8 +448,9 @@ pub async fn manager_check_update(
     // more, even after the reminder was dismissed: the running binary still
     // reports its old version until it relaunches, so without this the next
     // check would offer the same update again.
-    let update =
-        update.filter(|update| !state.manager_update.is_installed_version(&update.version));
+    let update = state
+        .manager_update
+        .without_installed(update, |update| update.version.as_str());
     Ok(update.map(|update| ManagerUpdateMetadata {
         version: update.version,
         current_version: update.current_version,
@@ -476,12 +480,14 @@ pub async fn manager_install_update(
         .build()
         .map_err(|e| AppError::Engine(format!("build manager updater: {e}")))?;
     let update = manager_update_or_stale(
-        updater
-            .check()
-            .await
-            .map_err(|e| AppError::Engine(format!("check manager update before install: {e}")))?
-            // Already written to disk by this process; only a relaunch is left.
-            .filter(|update| !state.manager_update.is_installed_version(&update.version)),
+        // A version already written to disk by this process is not installable
+        // again; only a relaunch is left.
+        state.manager_update.without_installed(
+            updater.check().await.map_err(|e| {
+                AppError::Engine(format!("check manager update before install: {e}"))
+            })?,
+            |update| update.version.as_str(),
+        ),
     )?;
     if !manager_update_matches_confirmation(
         &update.version,
@@ -503,8 +509,7 @@ pub async fn manager_install_update(
         .set_phase(op_guard.token(), OperationPhase::Downloading);
 
     let progress_app = app.clone();
-    let install_ops = state.operations.clone();
-    let install_token = op_guard.token().clone();
+    let mut throttle = EmitThrottle::new(PROGRESS_EMIT_INTERVAL);
     // Split the plugin's own `download_and_install` so a final pre-commit
     // checkpoint can run between the two halves — its `on_download_finish`
     // callback fires too late to stop `install()`, which the plugin always
@@ -512,8 +517,13 @@ pub async fn manager_install_update(
     let downloaded = update
         .download(
             |chunk_len, total| {
+                // The snapshot is updated per chunk; only the IPC event is
+                // rate-limited. Every phase change below emits unthrottled, so
+                // the final byte count always reaches the renderer.
                 runtime.add_progress(chunk_len as u64, total);
-                emit_manager_update_state(&progress_app, runtime);
+                if throttle.should_emit(std::time::Instant::now()) {
+                    emit_manager_update_state(&progress_app, runtime);
+                }
             },
             || {},
         )
@@ -522,32 +532,32 @@ pub async fn manager_install_update(
     let bytes = match downloaded {
         Ok(bytes) => bytes,
         Err(error) => {
-            let message = format!("download manager update: {error}");
-            runtime.mark_error(message.clone());
-            emit_manager_update_state(&app, runtime);
-            return Err(AppError::Engine(message).into());
+            return Err(manager_update_failure(
+                &app,
+                runtime,
+                UpdateStage::Download,
+                "download manager update",
+                &error,
+            ));
         }
     };
 
     // Final pre-commit checkpoint, mirroring `mac_update`/`win_update`'s own
-    // swap flow: `set_phase` and a confirmed quit's `prepare_quit` both take
-    // the SAME operation-lock mutex, so whichever reaches it first is what
-    // the other observes. If quit won first, `force_quit` is already visible
-    // here (its store happened-before this mutex's release, which
-    // happened-before this `set_phase` call's own acquire) — bail out before
-    // ever touching the Manager's own files. If this commit won first, the
-    // quit request that follows sees phase `Committing` and is blocked, so
-    // no `app.exit()` races the install below.
-    let _ = install_ops.set_phase(&install_token, OperationPhase::Committing);
-    if progress_app
-        .state::<ManagerState>()
-        .force_quit
-        .load(Ordering::SeqCst)
-    {
-        let message = "self-update cancelled: the application is quitting".to_string();
-        runtime.mark_error(message.clone());
+    // swap flow (see `enter_commit_checkpoint` for the race it closes).
+    if !enter_commit_checkpoint(
+        &state.operations,
+        op_guard.token(),
+        &state.force_quit,
+    ) {
+        runtime.mark_error(ErrorKind::Cancelled.as_code());
         emit_manager_update_state(&app, runtime);
-        return Err(AppError::Engine(message).into());
+        return Err(CommandError {
+            code: ErrorKind::Cancelled.as_code().to_string(),
+            message: AppError::Engine(
+                "self-update cancelled: the application is quitting".to_string(),
+            )
+            .to_string(),
+        });
     }
 
     runtime.mark_installing();
@@ -568,12 +578,37 @@ pub async fn manager_install_update(
             emit_manager_update_state(&app, runtime);
             Ok(())
         }
-        Err(error) => {
-            let message = format!("install manager update: {error}");
-            runtime.mark_error(message.clone());
-            emit_manager_update_state(&app, runtime);
-            Err(AppError::Engine(message).into())
-        }
+        Err(error) => Err(manager_update_failure(
+            &app,
+            runtime,
+            UpdateStage::Install,
+            "install manager update",
+            &error,
+        )),
+    }
+}
+
+/// Records a failed self-update in the runtime and builds the command error.
+/// The snapshot (broadcast to every view) carries only the stable category
+/// code, which the renderer localizes; the raw updater text — English, and
+/// possibly holding feed URLs or local paths — goes to the log and to the
+/// rejected invoke's `message`, where the UI keeps it for a details
+/// disclosure only.
+fn manager_update_failure(
+    app: &AppHandle,
+    runtime: &ManagerUpdateRuntime,
+    stage: UpdateStage,
+    context: &str,
+    error: &tauri_plugin_updater::Error,
+) -> CommandError {
+    let kind = classify_updater_error(stage, error);
+    let message = format!("{context}: {error}");
+    log::warn!("manager update failed code={} {message}", kind.as_code());
+    runtime.mark_error(kind.as_code());
+    emit_manager_update_state(app, runtime);
+    CommandError {
+        code: kind.as_code().to_string(),
+        message: AppError::Engine(message).to_string(),
     }
 }
 
@@ -615,26 +650,24 @@ pub fn manager_relaunch(app: AppHandle, state: State<'_, ManagerState>) -> Resul
     }
     // The self-update confirm dialog already asked the user to accept a
     // restart, so this must not raise the ordinary CloseRequested/
-    // ExitRequested handler's own "close the manager?" prompt a second time —
-    // treat it like an already-confirmed quit instead. A genuine `Block`
-    // (an uninterruptible Codex install/update/uninstall/adopt elsewhere)
-    // still wins: release the reservation so a later relaunch attempt (once
-    // that operation finishes) is not silenced forever by the single-claim
-    // guard above.
-    let policy = crate::confirmed_quit_policy_for(&app);
-    if !crate::native_confirm_allows_exit(&policy) {
+    // ExitRequested handler's own "close the manager?" prompt a second time.
+    // But a relaunch is consent only to restarting the Manager, never to
+    // abandoning other work: with ANY other operation active (a Codex
+    // download/update still in an interruptible phase as much as an
+    // uninterruptible one) `prepare_relaunch_for` refuses with the busy error
+    // instead of cancelling it. Release the reservation in that case so a
+    // later attempt, once that operation finishes, is not silenced forever by
+    // the single-claim guard above.
+    if let Err(err) = crate::prepare_relaunch_for(&app) {
         state.manager_update.release_relaunch_reservation();
-        return Err(AppError::Engine(
-            "cannot relaunch while another operation is in progress".to_string(),
-        )
-        .into());
+        log::warn!("manager relaunch refused: {err}");
+        return Err(AppError::from(err).into());
     }
     // `request_restart` only flags the intent and asks the runtime to exit;
     // it returns immediately rather than blocking, so no extra thread is
-    // needed to keep this command responsive. `confirmed_quit_policy_for`
-    // above already armed `force_quit` as a side effect (mirroring
-    // `exit_after_confirm`), so the ExitRequested handler it triggers will
-    // see `QuitPolicy::Allow` and let it through without asking again.
+    // needed to keep this command responsive. `prepare_relaunch_for` above
+    // already armed `force_quit`, so the ExitRequested handler it triggers
+    // will see `QuitPolicy::Allow` and let it through without asking again.
     app.request_restart();
     Ok(())
 }

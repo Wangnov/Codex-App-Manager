@@ -8,9 +8,13 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
+
+use crate::app::op_phase::OperationPhase;
+use crate::errors::ErrorKind;
+use crate::app::oplock::{OperationManager, OperationToken};
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -36,7 +40,11 @@ pub struct ManagerUpdateSnapshot {
     pub version: Option<String>,
     pub downloaded: u64,
     pub total: Option<u64>,
-    pub message: Option<String>,
+    /// Stable failure category (`ErrorKind::as_code`, e.g. `network`,
+    /// `signature`, `install`) while `phase` is `Error`. Deliberately not the
+    /// raw updater/engine text: that can carry feed URLs and local paths and
+    /// is never localized, so the renderer maps this code to localized copy.
+    pub code: Option<String>,
     pub updated_at_ms: u64,
 }
 
@@ -47,7 +55,7 @@ impl ManagerUpdateSnapshot {
             version: None,
             downloaded: 0,
             total: None,
-            message: None,
+            code: None,
             updated_at_ms: now_ms(),
         }
     }
@@ -91,7 +99,7 @@ impl ManagerUpdateRuntime {
             version: Some(version.to_string()),
             downloaded: 0,
             total: None,
-            message: None,
+            code: None,
             updated_at_ms: now_ms(),
         };
     }
@@ -138,7 +146,7 @@ impl ManagerUpdateRuntime {
         let mut guard = self.snapshot.lock().unwrap();
         *self.installed_version.lock().unwrap() = guard.version.clone();
         guard.phase = ManagerUpdatePhase::Installed;
-        guard.message = None;
+        guard.code = None;
         guard.updated_at_ms = now_ms();
     }
 
@@ -148,10 +156,22 @@ impl ManagerUpdateRuntime {
         self.installed_version.lock().unwrap().as_deref() == Some(version)
     }
 
-    pub fn mark_error(&self, message: impl Into<String>) {
+    /// Drops an updater result that only re-describes the version this
+    /// process already wrote to disk. Shared by `manager_check_update` and
+    /// `manager_install_update` so neither can re-offer an installed version
+    /// (the running binary keeps reporting its old version until relaunch).
+    pub fn without_installed<T>(
+        &self,
+        update: Option<T>,
+        version_of: impl Fn(&T) -> &str,
+    ) -> Option<T> {
+        update.filter(|update| !self.is_installed_version(version_of(update)))
+    }
+
+    pub fn mark_error(&self, code: impl Into<String>) {
         let mut guard = self.snapshot.lock().unwrap();
         guard.phase = ManagerUpdatePhase::Error;
-        guard.message = Some(message.into());
+        guard.code = Some(code.into());
         guard.updated_at_ms = now_ms();
     }
 
@@ -190,6 +210,97 @@ impl ManagerUpdateRuntime {
     }
 }
 
+/// Minimum gap between two `manager://update-state` progress emissions. A
+/// 50-100 MB installer arrives in thousands of 8-64 KB chunks; forwarding each
+/// one as an IPC event would re-render every mounted consumer per chunk. The
+/// runtime snapshot itself is still updated on every chunk, so anything that
+/// reads it (reattach) and every phase change (which is always emitted) sees
+/// the exact byte count.
+pub const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(150);
+
+/// Rate limiter for progress emissions: the first call always passes, later
+/// calls pass once `interval` has elapsed since the last one that did.
+pub struct EmitThrottle {
+    interval: Duration,
+    last: Option<Instant>,
+}
+
+impl EmitThrottle {
+    pub fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            last: None,
+        }
+    }
+
+    pub fn should_emit(&mut self, now: Instant) -> bool {
+        match self.last {
+            Some(last) if now.saturating_duration_since(last) < self.interval => false,
+            _ => {
+                self.last = Some(now);
+                true
+            }
+        }
+    }
+}
+
+/// Which half of the self-update an updater error came from; decides the
+/// fallback category for errors with no more specific meaning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateStage {
+    Download,
+    Install,
+}
+
+/// Maps a `tauri-plugin-updater` error to the stable failure category the
+/// renderer localizes (`ErrorKind::as_code`). Uses the typed variants rather
+/// than string-matching the message, which for transport failures is an
+/// opaque `reqwest` string that the generic engine classifier cannot read.
+pub fn classify_updater_error(
+    stage: UpdateStage,
+    error: &tauri_plugin_updater::Error,
+) -> ErrorKind {
+    use tauri_plugin_updater::Error as E;
+    match error {
+        E::Reqwest(error) if error.is_timeout() => ErrorKind::Timeout,
+        E::Reqwest(error) if error.is_status() => ErrorKind::Artifact,
+        E::Reqwest(_) => ErrorKind::Network,
+        // The plugin reports a non-success HTTP status of the artifact as this.
+        E::Network(_) | E::ReleaseNotFound => ErrorKind::Artifact,
+        E::Minisign(_)
+        | E::Base64(_)
+        | E::SignatureUtf8(_)
+        | E::SignedVersionMismatch { .. }
+        | E::MissingSignedVersion => ErrorKind::Signature,
+        E::AuthenticationFailed => ErrorKind::Permission,
+        E::Io(io) => match io.kind() {
+            std::io::ErrorKind::PermissionDenied => ErrorKind::Permission,
+            std::io::ErrorKind::StorageFull => ErrorKind::DiskSpace,
+            _ if stage == UpdateStage::Install => ErrorKind::Install,
+            _ => ErrorKind::Generic,
+        },
+        _ if stage == UpdateStage::Install => ErrorKind::Install,
+        _ => ErrorKind::Generic,
+    }
+}
+
+/// Final pre-commit checkpoint of the self-update install. Advances the lease
+/// to `Committing` and reports whether it is still safe to touch the
+/// Manager's own files (`false` when a confirmed quit already armed
+/// `force_quit`). `set_phase` and a confirmed quit's `prepare_quit` take the
+/// SAME operation-lock mutex, so whichever reaches it first is what the other
+/// observes: if the quit won, `force_quit` is visible here and the caller must
+/// bail out; if this won, the quit that follows sees `Committing` and is
+/// blocked, so no `app.exit()` can race the install.
+pub fn enter_commit_checkpoint(
+    operations: &OperationManager,
+    token: &OperationToken,
+    force_quit: &AtomicBool,
+) -> bool {
+    let _ = operations.set_phase(token, OperationPhase::Committing);
+    !force_quit.load(Ordering::SeqCst)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,7 +325,7 @@ mod tests {
         let runtime = ManagerUpdateRuntime::default();
         runtime.start_download("1.2.3");
         runtime.mark_installing();
-        runtime.mark_error("boom");
+        runtime.mark_error("install");
         assert!(runtime.ack());
         assert!(!runtime.is_installed_version("1.2.3"));
     }
@@ -226,7 +337,7 @@ mod tests {
         assert_eq!(snapshot.phase, ManagerUpdatePhase::Idle);
         assert_eq!(snapshot.downloaded, 0);
         assert!(snapshot.total.is_none());
-        assert!(snapshot.message.is_none());
+        assert!(snapshot.code.is_none());
     }
 
     #[test]
@@ -257,22 +368,22 @@ mod tests {
         runtime.mark_installed();
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.phase, ManagerUpdatePhase::Installed);
-        assert!(snapshot.message.is_none());
+        assert!(snapshot.code.is_none());
     }
 
     #[test]
-    fn error_carries_a_message_and_acks_back_to_idle() {
+    fn error_carries_a_stable_code_and_acks_back_to_idle() {
         let runtime = ManagerUpdateRuntime::default();
         runtime.start_download("1.2.3");
-        runtime.mark_error("network unreachable");
+        runtime.mark_error("network");
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.phase, ManagerUpdatePhase::Error);
-        assert_eq!(snapshot.message.as_deref(), Some("network unreachable"));
+        assert_eq!(snapshot.code.as_deref(), Some("network"));
 
         assert!(runtime.ack());
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.phase, ManagerUpdatePhase::Idle);
-        assert!(snapshot.message.is_none());
+        assert!(snapshot.code.is_none());
     }
 
     #[test]
@@ -318,7 +429,7 @@ mod tests {
     fn a_second_download_run_overwrites_a_previous_terminal_snapshot() {
         let runtime = ManagerUpdateRuntime::default();
         runtime.start_download("1.2.3");
-        runtime.mark_error("boom");
+        runtime.mark_error("network");
         // A fresh check-and-install cycle must not require an explicit ack
         // first; starting a new download always wins.
         runtime.start_download("1.2.4");
@@ -326,6 +437,127 @@ mod tests {
         assert_eq!(snapshot.phase, ManagerUpdatePhase::Downloading);
         assert_eq!(snapshot.version.as_deref(), Some("1.2.4"));
         assert_eq!(snapshot.downloaded, 0);
-        assert!(snapshot.message.is_none());
+        assert!(snapshot.code.is_none());
+    }
+
+    #[test]
+    fn without_installed_only_drops_the_installed_version() {
+        let runtime = ManagerUpdateRuntime::default();
+        let offer = |v: &'static str| Some((v, "notes"));
+        // Nothing installed yet: every result passes through untouched.
+        assert!(runtime.without_installed(offer("1.2.3"), |u| u.0).is_some());
+        assert!(runtime.without_installed(None::<(&str, &str)>, |u| u.0).is_none());
+
+        runtime.start_download("1.2.3");
+        runtime.mark_installing();
+        runtime.mark_installed();
+        // Still suppressed after the reminder was dismissed (ack)...
+        assert!(runtime.ack());
+        assert!(runtime.without_installed(offer("1.2.3"), |u| u.0).is_none());
+        // ...but a newer version is still offered.
+        assert!(runtime.without_installed(offer("1.2.4"), |u| u.0).is_some());
+    }
+
+    #[test]
+    fn emit_throttle_limits_progress_events_but_lets_the_first_through() {
+        let start = Instant::now();
+        let mut throttle = EmitThrottle::new(Duration::from_millis(100));
+        assert!(throttle.should_emit(start));
+        // A burst of chunks inside the interval is coalesced.
+        for ms in [1, 10, 50, 99] {
+            assert!(!throttle.should_emit(start + Duration::from_millis(ms)));
+        }
+        assert!(throttle.should_emit(start + Duration::from_millis(100)));
+        // The window restarts from the last emission, not from the first.
+        assert!(!throttle.should_emit(start + Duration::from_millis(150)));
+        assert!(throttle.should_emit(start + Duration::from_millis(200)));
+    }
+
+    #[test]
+    fn updater_errors_map_to_stable_localizable_codes() {
+        use tauri_plugin_updater::Error as E;
+        let code = |stage, error: E| classify_updater_error(stage, &error).as_code();
+        let d = UpdateStage::Download;
+        let i = UpdateStage::Install;
+
+        assert_eq!(code(d, E::Network("status 404".into())), "artifact");
+        assert_eq!(code(d, E::ReleaseNotFound), "artifact");
+        assert_eq!(code(i, E::MissingSignedVersion), "signature");
+        assert_eq!(
+            code(
+                i,
+                E::SignedVersionMismatch {
+                    signed: "1.0.0".into(),
+                    announced: "1.0.1".into()
+                }
+            ),
+            "signature"
+        );
+        assert_eq!(code(i, E::SignatureUtf8("x".into())), "signature");
+        assert_eq!(code(i, E::AuthenticationFailed), "permission");
+        let io = |kind| E::Io(std::io::Error::new(kind, "x"));
+        assert_eq!(code(i, io(std::io::ErrorKind::PermissionDenied)), "permission");
+        assert_eq!(code(i, io(std::io::ErrorKind::StorageFull)), "disk_space");
+        // No specific meaning: the fallback depends on which half failed.
+        assert_eq!(code(i, io(std::io::ErrorKind::Other)), "install");
+        assert_eq!(code(i, E::InvalidUpdaterFormat), "install");
+        assert_eq!(code(d, io(std::io::ErrorKind::Other)), "engine_error");
+        assert_eq!(code(d, E::EmptyEndpoints), "engine_error");
+    }
+
+    fn checkpoint_lock_path(name: &str) -> std::path::PathBuf {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("test-data")
+            .join(format!("manager-update-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("operation.lock")
+    }
+
+    #[test]
+    fn commit_checkpoint_proceeds_and_blocks_a_later_quit_when_it_wins() {
+        use crate::app::op_phase::QuitPolicy;
+        use crate::app::oplock::OperationKind;
+
+        let path = checkpoint_lock_path("wins");
+        let operations = OperationManager::new(path.clone());
+        let guard = operations.begin(OperationKind::ManagerUpdate).unwrap();
+        let force_quit = AtomicBool::new(false);
+
+        assert!(enter_commit_checkpoint(&operations, guard.token(), &force_quit));
+        assert_eq!(operations.phase(), OperationPhase::Committing);
+        // A quit request arriving after the checkpoint is refused, even when
+        // confirmed, so it cannot exit mid-install.
+        let prepared = AtomicBool::new(false);
+        let policy = operations.prepare_quit(true, true, || {
+            prepared.store(true, Ordering::SeqCst);
+        });
+        assert!(matches!(policy, QuitPolicy::Block { .. }));
+        assert!(!prepared.load(Ordering::SeqCst));
+
+        drop(guard);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn commit_checkpoint_bails_out_when_a_confirmed_quit_won_first() {
+        use crate::app::oplock::OperationKind;
+
+        let path = checkpoint_lock_path("loses");
+        let operations = OperationManager::new(path.clone());
+        let guard = operations.begin(OperationKind::ManagerUpdate).unwrap();
+        operations
+            .set_phase(guard.token(), OperationPhase::Downloading)
+            .unwrap();
+        let force_quit = AtomicBool::new(false);
+
+        // Confirmed quit during the (interruptible) download arms force_quit.
+        operations.prepare_quit(true, true, || force_quit.store(true, Ordering::SeqCst));
+        assert!(force_quit.load(Ordering::SeqCst));
+        assert!(!enter_commit_checkpoint(&operations, guard.token(), &force_quit));
+
+        drop(guard);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

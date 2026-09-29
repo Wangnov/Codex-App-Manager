@@ -75,6 +75,15 @@ export function userErrorMessage(cause: unknown, t: TFn): string {
   return resolveFailure(cause, t).message;
 }
 
+/**
+ * Localized message for a bare stable failure code, as carried by a backend
+ * snapshot (e.g. the Manager self-update runtime) rather than a rejected
+ * invoke. A missing code falls back to the generic copy.
+ */
+export function codeErrorMessage(code: string | null, t: TFn): string {
+  return userErrorMessage({ code: code ?? "unknown" }, t);
+}
+
 /** Build a FailureSurface from already-localized copy (no raw detail). */
 export function messageFailure(
   message: string,

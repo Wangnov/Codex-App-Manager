@@ -58,6 +58,21 @@ fn confirmed_quit_policy_for(app: &tauri::AppHandle) -> QuitPolicy {
     prepare_quit_policy_for(app, true)
 }
 
+/// Arms the same cancellation/force-exit latches as a confirmed quit, but only
+/// when no other operation holds the lease at all. A Manager relaunch is not
+/// consent to abandon a Codex download/update, so unlike
+/// `confirmed_quit_policy_for` an interruptible operation refuses it as busy.
+pub(crate) fn prepare_relaunch_for(
+    app: &tauri::AppHandle,
+) -> Result<(), crate::app::oplock::OperationError> {
+    let state = app.state::<state::ManagerState>();
+    state.operations.prepare_relaunch(|| {
+        let _ = crate::app::mac_update::cancel_macos_download();
+        let _ = crate::app::win_update::cancel_windows_download();
+        state.force_quit.store(true, Ordering::SeqCst);
+    })
+}
+
 /// Apply a quit policy decision for window/menu/exit paths.
 /// Returns `true` when the caller should proceed to exit.
 fn apply_quit_policy(app: &tauri::AppHandle, policy: &QuitPolicy) -> bool {
@@ -693,7 +708,6 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
         // Launch-at-login support. Off by default — the user opts in from
         // Settings; we only register the plugin so the toggle can flip it.

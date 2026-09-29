@@ -7,7 +7,7 @@ import {
 } from "../../services/managerApi";
 import { mib } from "../format";
 import { useManagerUpdateRuntime } from "../ManagerUpdatePrompt";
-import { userErrorMessage } from "../errorCopy";
+import { codeErrorMessage, userErrorMessage } from "../errorCopy";
 import { Icon, CodexMark } from "../icons";
 import { useI18n } from "../i18n";
 import { NavBar, Ring, StatusBanner } from "../components";
@@ -295,7 +295,7 @@ export function About({ onBack }: { onBack: () => void }) {
           ) : runtimeDone ? (
             <p id={updateBodyId}>{t("progress.updateInstalled")}</p>
           ) : (
-            <p id={updateBodyId}>{t("about.mgrUnavailable")}</p>
+            <p id={updateBodyId}>{t("progress.updateFailed")}</p>
           )
         ) : pendingUpdate ? (
           <p id={updateBodyId}>{t("about.mgrConfirmBody")}</p>
@@ -343,8 +343,10 @@ export function About({ onBack }: { onBack: () => void }) {
             ) : null}
           </div>
         ) : null}
-        {reattached && runtimeFailed && runtime.message ? (
-          <StatusBanner tone="err">{runtime.message}</StatusBanner>
+        {reattached && runtimeFailed ? (
+          <StatusBanner tone="err">
+            {codeErrorMessage(runtime.code, t)}
+          </StatusBanner>
         ) : reattached && runtimeDone && relaunchFailure ? (
           <StatusBanner tone="err">{relaunchFailure}</StatusBanner>
         ) : null}
