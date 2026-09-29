@@ -114,6 +114,20 @@ impl ManagerUpdateRuntime {
         guard.updated_at_ms = now_ms();
     }
 
+    /// Records that `update.install()` returned `Ok(())`.
+    ///
+    /// On macOS and Linux, `tauri-plugin-updater`'s `install_inner` swaps the
+    /// bundle in place and returns normally, so this fires and the renderer
+    /// can show the reattach/"Relaunch Now" UI.
+    ///
+    /// On Windows, `install_inner` launches the NSIS/MSI installer via
+    /// `ShellExecuteW` and then unconditionally calls `std::process::exit(0)`
+    /// on success (tauri-plugin-updater 2.12.0, `src/updater.rs`); it never
+    /// returns `Ok(())`. So on a normal successful Windows update this method
+    /// is never reached, the runtime never observes `Installed`, and the
+    /// reattach/relaunch UI this phase drives is unreachable there today —
+    /// not merely "non-durable" against a crash. See the Windows NSIS
+    /// handoff follow-up tracked in the PR that introduced this runtime.
     pub fn mark_installed(&self) {
         let mut guard = self.snapshot.lock().unwrap();
         guard.phase = ManagerUpdatePhase::Installed;

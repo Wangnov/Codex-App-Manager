@@ -544,6 +544,15 @@ pub async fn manager_install_update(
     runtime.mark_installing();
     emit_manager_update_state(&progress_app, runtime);
 
+    // NOTE(windows): on a normal successful update, tauri-plugin-updater's
+    // Windows `install_inner` launches the NSIS/MSI installer and then calls
+    // `std::process::exit(0)` before returning — this process is gone before
+    // `Ok(())` can come back here. So on Windows this `Ok` arm (and the
+    // `mark_installed`/reattach/"Relaunch Now" UI it drives) is unreachable
+    // in normal operation; it is only exercised on macOS/Linux, where
+    // `install_inner` returns normally after swapping the bundle. See
+    // `ManagerUpdateRuntime::mark_installed`'s doc comment and the Windows
+    // NSIS handoff follow-up.
     match update.install(bytes) {
         Ok(()) => {
             runtime.mark_installed();
