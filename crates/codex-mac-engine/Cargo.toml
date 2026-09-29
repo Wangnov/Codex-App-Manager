@@ -18,7 +18,7 @@ libc = "0.2"
 [target.'cfg(target_os = "macos")'.dependencies]
 # Reads the macOS system proxy (SCDynamicStoreCopyProxies) for curl's "system"
 # proxy mode. Already in the app's tree through reqwest's system-proxy feature.
-system-configuration = "0.7"
+system-configuration = "0.8"
 
 [[bin]]
 name = "mac_plan"
