@@ -178,8 +178,8 @@ role changes must remain auditable.
   rule is a precondition the maintainer must complete before enabling a
   provider, not something already in force. As a backstop, `release.yml`
   reads the environment's protection rules before any signing secret is used
-  and fails the job when a cloud provider is selected and the rules it can
-  see contain no required-reviewers rule (if the workflow token cannot read
+  and fails the job when a cloud provider is selected and the answer it gets
+  contains no required-reviewers rule (if the workflow token cannot read
   the rules it only warns, so the manual verification above is still
   required).
 
@@ -204,8 +204,8 @@ role changes must remain auditable.
   **当前状态：** `release` Environment 目前**尚未**配置必需审批人规则（只有分支策略），
   也没有配置任何供应商，因此当前没有任何签名发生，发布保持未签名；这条规则是维护者启用
   供应商之前必须先完成的前置条件，而不是已经生效的控制。作为兜底，`release.yml` 会在使用
-  任何签名 secret 之前读取该 environment 的保护规则，选中云供应商而可见的规则里没有
-  required-reviewers 时直接让 job 失败（如果 workflow token 读不到这些规则则只给
+  任何签名 secret 之前读取该 environment 的保护规则，选中云供应商而读到的答复里没有
+  required-reviewers 规则（包括完全没有保护规则）时直接让 job 失败（如果 workflow token 读不到这些规则则只给
   warning，所以上述人工验证仍然必需）。
 
 ## Artifact and verification requirements · 工件与验证要求

@@ -455,8 +455,9 @@ jobs:
       #    approval. Only runs when a cloud provider is selected — never in
       #    today's unsigned default. Best effort by construction: the default
       #    GITHUB_TOKEN cannot always read environment protection rules, so an
-      #    unreadable answer is a warning, but a readable answer that lists
-      #    protection rules with no required_reviewers rule is a hard failure.
+      #    unreadable answer is a warning, but a readable answer with no
+      #    required_reviewers rule (including no protection rules at all) is a
+      #    hard failure.
       - name: Assert release environment requires reviewers (cloud signing)
         if: matrix.os == 'windows' && (vars.WINDOWS_SIGNING_PROVIDER == 'esigner' || vars.WINDOWS_SIGNING_PROVIDER == 'certum')
         shell: pwsh
@@ -470,12 +471,8 @@ jobs:
             return
           }
           $rules = @((($raw | Out-String) | ConvertFrom-Json).protection_rules)
-          if ($rules.Count -eq 0) {
-            Write-Host "::warning::The workflow token sees no protection rules on the release environment (either none exist or they are hidden from this token); the required-reviewers gate is NOT verified by this run."
-            return
-          }
           if (-not ($rules | Where-Object { $_.type -eq "required_reviewers" })) {
-            Write-Host "::error::WINDOWS_SIGNING_PROVIDER=$env:WINDOWS_SIGNING_PROVIDER but the release environment has no required-reviewers rule. docs/code-signing-policy.md requires per-request human approval before a cloud signing credential is used; add a required reviewer (Settings > Environments > release) first."
+            Write-Host "::error::WINDOWS_SIGNING_PROVIDER=$env:WINDOWS_SIGNING_PROVIDER but the release environment has no required-reviewers rule (rules seen: $($rules.Count)). docs/code-signing-policy.md requires per-request human approval before a cloud signing credential is used; add a required reviewer (Settings > Environments > release) first."
             exit 1
           }
           Write-Host "release environment has a required-reviewers rule."
