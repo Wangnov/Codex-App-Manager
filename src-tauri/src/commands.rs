@@ -432,6 +432,7 @@ fn manager_update_or_stale<T>(update: Option<T>) -> Result<T, AppError> {
 #[tauri::command]
 pub async fn manager_check_update(
     app: AppHandle,
+    state: State<'_, ManagerState>,
 ) -> Result<Option<ManagerUpdateMetadata>, CommandError> {
     let updater = manager_updater_builder(&app)?
         .build()
@@ -440,6 +441,12 @@ pub async fn manager_check_update(
         .check()
         .await
         .map_err(|e| AppError::Engine(format!("check manager update: {e}")))?;
+    // A version this process already wrote to disk is not "available" any
+    // more, even after the reminder was dismissed: the running binary still
+    // reports its old version until it relaunches, so without this the next
+    // check would offer the same update again.
+    let update =
+        update.filter(|update| !state.manager_update.is_installed_version(&update.version));
     Ok(update.map(|update| ManagerUpdateMetadata {
         version: update.version,
         current_version: update.current_version,
@@ -472,7 +479,9 @@ pub async fn manager_install_update(
         updater
             .check()
             .await
-            .map_err(|e| AppError::Engine(format!("check manager update before install: {e}")))?,
+            .map_err(|e| AppError::Engine(format!("check manager update before install: {e}")))?
+            // Already written to disk by this process; only a relaunch is left.
+            .filter(|update| !state.manager_update.is_installed_version(&update.version)),
     )?;
     if !manager_update_matches_confirmation(
         &update.version,

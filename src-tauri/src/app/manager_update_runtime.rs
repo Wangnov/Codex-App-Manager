@@ -66,6 +66,12 @@ impl Default for ManagerUpdateSnapshot {
 #[derive(Default)]
 pub struct ManagerUpdateRuntime {
     snapshot: Mutex<ManagerUpdateSnapshot>,
+    /// Version whose bytes this process has already written to disk. Unlike
+    /// `snapshot` it survives `ack()`: dismissing the "installed, awaiting
+    /// relaunch" reminder must not make the next check re-offer that same
+    /// version, because the running process still reports its old version
+    /// until it is relaunched. Cleared only by the process restarting.
+    installed_version: Mutex<Option<String>>,
     /// Single-claim guard for `manager_relaunch`: the first caller wins and
     /// actually triggers `AppHandle::request_restart`; later calls (e.g. a
     /// duplicate click while the restart is already in flight) are treated as
@@ -130,9 +136,16 @@ impl ManagerUpdateRuntime {
     /// handoff follow-up tracked in the PR that introduced this runtime.
     pub fn mark_installed(&self) {
         let mut guard = self.snapshot.lock().unwrap();
+        *self.installed_version.lock().unwrap() = guard.version.clone();
         guard.phase = ManagerUpdatePhase::Installed;
         guard.message = None;
         guard.updated_at_ms = now_ms();
+    }
+
+    /// Whether `version` is the one this process already installed and is
+    /// only waiting to relaunch into.
+    pub fn is_installed_version(&self, version: &str) -> bool {
+        self.installed_version.lock().unwrap().as_deref() == Some(version)
     }
 
     pub fn mark_error(&self, message: impl Into<String>) {
@@ -180,6 +193,31 @@ impl ManagerUpdateRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remembers_the_installed_version_across_ack() {
+        let runtime = ManagerUpdateRuntime::default();
+        assert!(!runtime.is_installed_version("1.2.3"));
+        runtime.start_download("1.2.3");
+        assert!(!runtime.is_installed_version("1.2.3"));
+        runtime.mark_installing();
+        runtime.mark_installed();
+        assert!(runtime.is_installed_version("1.2.3"));
+        assert!(runtime.ack());
+        assert_eq!(runtime.snapshot().phase, ManagerUpdatePhase::Idle);
+        assert!(runtime.is_installed_version("1.2.3"));
+        assert!(!runtime.is_installed_version("1.2.4"));
+    }
+
+    #[test]
+    fn a_failed_install_does_not_mark_the_version_installed() {
+        let runtime = ManagerUpdateRuntime::default();
+        runtime.start_download("1.2.3");
+        runtime.mark_installing();
+        runtime.mark_error("boom");
+        assert!(runtime.ack());
+        assert!(!runtime.is_installed_version("1.2.3"));
+    }
 
     #[test]
     fn starts_idle() {
