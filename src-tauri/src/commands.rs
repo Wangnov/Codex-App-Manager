@@ -529,10 +529,19 @@ pub fn manager_get_update_runtime(state: State<'_, ManagerState>) -> ManagerUpda
 
 /// Clears a terminal (installed/error) snapshot back to idle once the
 /// renderer has shown it to the user. A no-op while a download/install is
-/// still in flight, returned as the (unchanged) current snapshot.
+/// still in flight, returned as the (unchanged) current snapshot. Also
+/// re-emits `manager://update-state` when it actually changed anything: the
+/// live listener is what `reattached` views (no local `update`/`pendingUpdate`
+/// of their own) key off of, so without this broadcast their sheet would
+/// keep showing the just-dismissed terminal snapshot forever.
 #[tauri::command]
-pub fn manager_ack_update_runtime(state: State<'_, ManagerState>) -> ManagerUpdateSnapshot {
-    state.manager_update.ack();
+pub fn manager_ack_update_runtime(
+    app: AppHandle,
+    state: State<'_, ManagerState>,
+) -> ManagerUpdateSnapshot {
+    if state.manager_update.ack() {
+        emit_manager_update_state(&app, &state.manager_update);
+    }
     state.manager_update.snapshot()
 }
 

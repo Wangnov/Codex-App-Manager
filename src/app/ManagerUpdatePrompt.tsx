@@ -230,10 +230,15 @@ export function ManagerUpdatePrompt({
     runtime.phase === "downloading" || runtime.phase === "installing";
   const runtimeDone = runtime.phase === "installed";
   const runtimeFailed = runtime.phase === "error";
-  // Only reattach when this mount has no local update/installing state of its
-  // own to drive the confirm sheet below — otherwise that flow already
-  // covers the exact same phases.
-  const reattached = !update && (runtimeBusy || runtimeDone || runtimeFailed);
+  // Keyed on `installing` (this mount's own in-flight install), not on
+  // `update` being set: a startup/periodic check can legitimately find an
+  // "available" result — e.g. the running process still reports its old
+  // version because the just-installed update is awaiting relaunch — while
+  // the runtime is still `installed`/`error` from a cycle this mount never
+  // locally drove (most commonly a renderer reload mid-update). The runtime
+  // must win in that case, or the recovery sheet gets silently replaced by a
+  // fresh "update available" banner offering to install the same bits again.
+  const reattached = !installing && (runtimeBusy || runtimeDone || runtimeFailed);
 
   useEffect(() => () => setChecksPaused(false), [setChecksPaused]);
 
@@ -290,7 +295,11 @@ export function ManagerUpdatePrompt({
     }
   }, [installing, refresh, setChecksPaused, t, update]);
 
-  const showBanner = Boolean(update) && dismissed !== update;
+  // A reattached recovery sheet always wins over the ordinary "update
+  // available" banner — showing both at once would let the user re-confirm
+  // installing a version that (per the runtime) is already installed and
+  // just awaiting relaunch, or already failed and awaiting retry.
+  const showBanner = Boolean(update) && dismissed !== update && !reattached;
   if (!showBanner && !reattached) return null;
 
   const showProgress =
@@ -338,21 +347,30 @@ export function ManagerUpdatePrompt({
         initialFocus="dismiss"
       >
         <Ring icon="arrowUp" />
+        {/* `reattached` is checked first throughout this sheet: it can be
+            true even while `update` is also set (a stale startup check found
+            an "available" result while the runtime is still installed/error
+            from a cycle this mount never locally drove), and the runtime's
+            terminal state must win so the recovery action stays reachable. */}
         <h3 id={titleId}>
-          {update
-            ? t("confirm.title", { version: update.version })
-            : reattached && runtime.version
+          {reattached
+            ? runtime.version
               ? t("confirm.title", { version: runtime.version })
-              : reattached
-                ? t("progress.title")
-                : ""}
+              : t("progress.title")
+            : update
+              ? t("confirm.title", { version: update.version })
+              : ""}
         </h3>
-        {update || (reattached && runtimeBusy) ? (
+        {reattached ? (
+          runtimeBusy ? (
+            <p id={bodyId}>{t("about.mgrConfirmBody")}</p>
+          ) : runtimeDone ? (
+            <p id={bodyId}>{t("progress.updateInstalled")}</p>
+          ) : (
+            <p id={bodyId}>{t("about.mgrUnavailable")}</p>
+          )
+        ) : update ? (
           <p id={bodyId}>{t("about.mgrConfirmBody")}</p>
-        ) : reattached && runtimeDone ? (
-          <p id={bodyId}>{t("progress.updateInstalled")}</p>
-        ) : reattached ? (
-          <p id={bodyId}>{t("about.mgrUnavailable")}</p>
         ) : null}
         {showProgress ? (
           <div className="mgr-update-progress" aria-live="polite">

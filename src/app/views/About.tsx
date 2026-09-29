@@ -23,6 +23,10 @@ export function About({ onBack }: { onBack: () => void }) {
   const [mgrMsg, setMgrMsg] = useState<string | null>(null);
   const [pendingUpdate, setPendingUpdate] = useState<ManagerUpdateAvailable | null>(null);
   const [relaunching, setRelaunching] = useState(false);
+  // Separate from `mgrMsg`: that one is rendered in the (inert-while-the-
+  // sheet-is-open) background row, so a relaunch failure needs its own state
+  // shown inside the open sheet, next to the button the user just clicked.
+  const [relaunchFailure, setRelaunchFailure] = useState<string | null>(null);
   // Same backend-owned snapshot the Home banner reads: if a self-update was
   // started from Home and the user then opens About, both show the exact
   // same download/install progress instead of About guessing from nothing.
@@ -38,16 +42,21 @@ export function About({ onBack }: { onBack: () => void }) {
     runtime.phase === "downloading" || runtime.phase === "installing";
   const runtimeDone = runtime.phase === "installed";
   const runtimeFailed = runtime.phase === "error";
-  // Only a *reattached* done/failed snapshot (no local `pendingUpdate`) needs
-  // its own sheet + actions; the normal confirm flow below already surfaces
-  // its own failure/installing copy while `pendingUpdate` is set.
-  const reattached = !pendingUpdate && (runtimeBusy || runtimeDone || runtimeFailed);
+  // Keyed on `mgrBusy` (this view's own in-flight check/install), not on
+  // `pendingUpdate` being set: a manual "check for update" here can find an
+  // "available" result — e.g. this process still reports its old version
+  // because a just-installed update elsewhere is awaiting relaunch — while
+  // the runtime is still `installed`/`error` from a cycle this view never
+  // drove itself. The runtime must win, or the recovery action (relaunch/
+  // retry) gets silently replaced by a confirm dialog for the same bits.
+  const reattached = !mgrBusy && (runtimeBusy || runtimeDone || runtimeFailed);
   const updateSheetOpen = Boolean(pendingUpdate) || reattached;
 
   const closeUpdateConfirm = useCallback(() => {
     if (mgrBusy || runtimeBusy) return;
     void pendingUpdate?.discard();
     setPendingUpdate(null);
+    setRelaunchFailure(null);
     if (runtime.phase === "error" || runtime.phase === "installed") {
       void managerApi.ackManagerUpdateRuntime();
     }
@@ -55,14 +64,16 @@ export function About({ onBack }: { onBack: () => void }) {
 
   const relaunchNow = useCallback(async () => {
     setRelaunching(true);
+    setRelaunchFailure(null);
     try {
       await managerApi.relaunchManager();
     } catch (cause) {
       // Most commonly a genuine Block (an uninterruptible Codex operation
       // elsewhere) — the backend already released the reservation, so this
       // button stays clickable and the user can just try again once it
-      // finishes.
-      setMgrMsg(userErrorMessage(cause, t));
+      // finishes. Shown inside the sheet (not `mgrMsg`, which sits in the
+      // background row that `inert` disables while this sheet is open).
+      setRelaunchFailure(userErrorMessage(cause, t));
     } finally {
       setRelaunching(false);
     }
@@ -208,22 +219,32 @@ export function About({ onBack }: { onBack: () => void }) {
         initialFocus="dismiss"
       >
         <Ring icon="arrowUp" />
+        {/* `reattached` is checked first, exactly like the Home prompt: it
+            can be true even while `pendingUpdate` is also set (a manual
+            check found an "available" result while the runtime is still
+            installed/error from a cycle this view never drove itself), and
+            the runtime's terminal state must win so the recovery action
+            stays reachable. */}
         <h3 id={updateTitleId}>
-          {pendingUpdate
-            ? t("confirm.title", { version: pendingUpdate.version })
-            : reattached && runtime.version
+          {reattached
+            ? runtime.version
               ? t("confirm.title", { version: runtime.version })
-              : reattached
-                ? t("progress.title")
-                : ""}
+              : t("progress.title")
+            : pendingUpdate
+              ? t("confirm.title", { version: pendingUpdate.version })
+              : ""}
         </h3>
-        {!reattached || runtimeBusy ? (
+        {reattached ? (
+          runtimeBusy ? (
+            <p id={updateBodyId}>{t("about.mgrConfirmBody")}</p>
+          ) : runtimeDone ? (
+            <p id={updateBodyId}>{t("progress.updateInstalled")}</p>
+          ) : (
+            <p id={updateBodyId}>{t("about.mgrUnavailable")}</p>
+          )
+        ) : pendingUpdate ? (
           <p id={updateBodyId}>{t("about.mgrConfirmBody")}</p>
-        ) : runtimeDone ? (
-          <p id={updateBodyId}>{t("progress.updateInstalled")}</p>
-        ) : (
-          <p id={updateBodyId}>{t("about.mgrUnavailable")}</p>
-        )}
+        ) : null}
         {runtimeBusy ? (
           <div className="mgr-update-progress" aria-live="polite">
             <div className="sub">
@@ -269,6 +290,8 @@ export function About({ onBack }: { onBack: () => void }) {
         ) : null}
         {reattached && runtimeFailed && runtime.message ? (
           <StatusBanner tone="err">{runtime.message}</StatusBanner>
+        ) : reattached && runtimeDone && relaunchFailure ? (
+          <StatusBanner tone="err">{relaunchFailure}</StatusBanner>
         ) : null}
         {reattached ? (
           runtimeBusy ? null : runtimeDone ? (

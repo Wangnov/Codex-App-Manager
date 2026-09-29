@@ -253,4 +253,79 @@ describe("About manager update", () => {
       expect(api.checkManagerUpdate).toHaveBeenCalledTimes(1),
     );
   });
+
+  it("shows a blocked relaunch failure inside the open sheet, not just the background row", async () => {
+    const user = userEvent.setup();
+    let emit: ((snapshot: typeof IDLE_MANAGER_UPDATE_SNAPSHOT) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+    api.relaunchManager.mockRejectedValueOnce(
+      new Error("cannot relaunch while another operation is in progress"),
+    );
+
+    renderAbout();
+    await waitFor(() => expect(emit).toBeDefined());
+
+    act(() => {
+      emit?.({
+        phase: "installed",
+        version: "0.5.4",
+        downloaded: 100,
+        total: 100,
+        message: null,
+        updatedAtMs: Date.now(),
+      });
+    });
+
+    const dialog = await screen.findByRole("dialog");
+    await user.click(
+      within(dialog).getByRole("button", { name: "立即重启" }),
+    );
+
+    // The localized generic failure copy (a raw engine error has no more
+    // specific mapped code) — the point under test is that it renders
+    // *inside the open sheet* at all, not in the inert background row.
+    expect(
+      await within(dialog).findByRole("alert"),
+    ).toHaveTextContent("操作未完成");
+  });
+
+  it("keeps the relaunch recovery sheet even when a manual check finds an available update", async () => {
+    const user = userEvent.setup();
+    let emit: ((snapshot: typeof IDLE_MANAGER_UPDATE_SNAPSHOT) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+    api.checkManagerUpdate.mockResolvedValue(available("0.5.4"));
+
+    renderAbout();
+    await waitFor(() => expect(emit).toBeDefined());
+
+    act(() => {
+      emit?.({
+        phase: "installed",
+        version: "0.5.4",
+        downloaded: 100,
+        total: 100,
+        message: null,
+        updatedAtMs: Date.now(),
+      });
+    });
+    await user.click(screen.getByRole("button", { name: /检查管理器更新/ }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText("更新已安装，重新启动以应用。"),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("button", { name: "立即重启" }),
+    ).toBeInTheDocument();
+  });
 });

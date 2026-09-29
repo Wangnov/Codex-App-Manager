@@ -596,6 +596,56 @@ describe("ManagerUpdatePrompt", () => {
     expect(api.relaunchManager).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the relaunch recovery sheet even when a startup check finds an available update", async () => {
+    // The running process still reports its old version until it actually
+    // relaunches, so a routine startup check can legitimately come back
+    // "available" for the exact version the backend already reports
+    // `installed` and awaiting relaunch. The recovery sheet must win instead
+    // of being silently replaced by a fresh "update available" banner.
+    const user = userEvent.setup();
+    api.checkManagerUpdate.mockResolvedValue(available({ version: "0.5.4" }));
+    let emit: ((snapshot: ManagerUpdateSnapshot) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+
+    renderPrompt();
+    await waitFor(() => expect(emit).toBeDefined());
+    // The startup check runs and finds "available" — in a real reload this
+    // races with (or follows) the runtime reporting `installed`.
+    await waitFor(() =>
+      expect(api.checkManagerUpdate).toHaveBeenCalledTimes(1),
+    );
+
+    act(() => {
+      emit?.({
+        phase: "installed",
+        version: "0.5.4",
+        downloaded: 100,
+        total: 100,
+        message: null,
+        updatedAtMs: Date.now(),
+      });
+    });
+
+    // No "found a new version" banner offering to install it again — just
+    // the relaunch recovery sheet.
+    expect(
+      screen.queryByText("发现管理器新版本 0.5.4"),
+    ).not.toBeInTheDocument();
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText("更新已安装，重新启动以应用。"),
+    ).toBeInTheDocument();
+    await user.click(
+      within(dialog).getByRole("button", { name: "立即重启" }),
+    );
+    expect(api.relaunchManager).toHaveBeenCalledTimes(1);
+  });
+
   it("reattaches to a self-update that failed elsewhere and lets the user retry", async () => {
     const user = userEvent.setup();
     api.checkManagerUpdate.mockResolvedValue({ kind: "none" });
@@ -631,6 +681,48 @@ describe("ManagerUpdatePrompt", () => {
     expect(api.ackManagerUpdateRuntime).toHaveBeenCalledTimes(1);
     await waitFor(() =>
       expect(api.checkManagerUpdate).toHaveBeenCalledTimes(2),
+    );
+  });
+
+  it("closes the recovery sheet once the backend broadcasts the acked idle snapshot", async () => {
+    // `retryAfterFailure` never touches `confirmOpen` — the sheet is only
+    // open because `reattached` is true. It must close via the runtime
+    // reverting to idle, which only happens if `manager_ack_update_runtime`
+    // actually re-broadcasts on `manager://update-state` after a successful
+    // ack (rather than just changing the backend's own copy silently).
+    const user = userEvent.setup();
+    api.checkManagerUpdate.mockResolvedValue({ kind: "none" });
+    let emit: ((snapshot: ManagerUpdateSnapshot) => void) | undefined;
+    api.onManagerUpdateRuntime.mockImplementation(async (onSnapshot) => {
+      emit = onSnapshot;
+      return () => {
+        emit = undefined;
+      };
+    });
+    api.ackManagerUpdateRuntime.mockImplementation(async () => {
+      emit?.(IDLE_MANAGER_UPDATE_SNAPSHOT);
+      return IDLE_MANAGER_UPDATE_SNAPSHOT;
+    });
+
+    renderPrompt();
+    await waitFor(() => expect(emit).toBeDefined());
+
+    act(() => {
+      emit?.({
+        phase: "error",
+        version: "0.5.4",
+        downloaded: 20,
+        total: 100,
+        message: "install manager update: network unreachable",
+        updatedAtMs: Date.now(),
+      });
+    });
+
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "重试" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
   });
 });
