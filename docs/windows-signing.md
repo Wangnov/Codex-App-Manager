@@ -44,14 +44,14 @@ public [code-signing policy](code-signing-policy.md) and
 |---|---|---|
 | (未设置 / `""` / `none`) | **默认。** 不签名,打印跳过信息并返回 0;与今天完全一致。 | 无 |
 | `esigner` | **推荐方案:** SSL.com eSigner(Individual Validated 证书 + eSigner CKA 云 HSM)。 | `ESIGNER_USERNAME`、`ESIGNER_PASSWORD`、`ESIGNER_TOTP_SECRET` |
-| `certum` | **备选方案:** Certum Open Source / Individual Cloud Code Signing(SimplySign 云 HSM),经社区维护的 `jay0lee/certum-cloud-code-sign` action 接入。 | `CERTUM_USERNAME`、`CERTUM_TOTP_SECRET` |
+| `certum` | **备选规划，尚未接入:** Certum Open Source / Individual Cloud Code Signing(SimplySign 云 HSM)。启用前需审核并实现本地证书预配，详见下方当前状态。 | 接入方案确定后再配置 |
 | `local-pfx` | **仅测试用**:导入一个 base64 PFX 到 `CurrentUser\My` 签名后立即删除。CI 的自签名证书链路证明就是用这个模式,不代表真实证书已配置。 | `WINDOWS_CERTIFICATE`、`WINDOWS_CERTIFICATE_PASSWORD`(均为 legacy 占位,production 场景不应使用) |
 
 **迁移防护:** 在这个 provider 概念出现之前,`release.yml` 里的旧签名步骤只要 `WINDOWS_CERTIFICATE` secret 存在就会签名安装包。为避免有人已经配置了这个 secret,却因为忘记同步设置 `WINDOWS_SIGNING_PROVIDER` 而悄悄发布未签名版本,`sign-windows-authenticode.ps1` 现在会在“未设置 provider 但 `WINDOWS_CERTIFICATE` 已配置”这一种情况下直接报错终止,而不是静默跳过签名 —— 需要显式设置 `WINDOWS_SIGNING_PROVIDER=local-pfx`(或迁移到 `esigner`/`certum`)才能继续。仓库里此前从未配置过 `WINDOWS_CERTIFICATE`,因此这条防护不会改变任何人今天看到的行为。
 
 选型依据(详见调研结论):SSL.com eSigner 是唯一同时满足“个人无需公司主体资质”“有官方维护的 GitHub Action(`SSLcom/esigner-codesign` / eSigner CKA)”“私钥全程留在云 HSM、CI 只经手证书指纹”三项要求的方案,列为推荐;Certum 的身份验证覆盖 180+ 国家且明确支持中文姓名音译,价格更低,但其 CI 自动化路径依赖社区脚本而非官方 action,稳定性稍弱,列为备选。两者都是 OV 级证书 —— 前面提到 EV 已不再有 SmartScreen 捷径,因此不建议为 EV 额外付费。
 
-**开通新供应商的步骤(以 esigner 为例,certum 同理替换变量前缀):**
+**开通新供应商的步骤(以 esigner 为例；certum 需先完成下方的审核与本地接入):**
 
 1. 购买 SSL.com IV 证书 + 一个 eSigner 签名额度套餐(可先用 30 天无限签名试用摸清每月实际签名次数)。
 2. 在仓库 Settings → Environments → `release` 上配置**必需审批人(Required reviewers)**保护规则(如果还没配置的话)。运行 `tauri build` 并签名的 `build` job 已经声明了 `environment: release`,这条规则一旦配置,GitHub 会在每次该 job 运行时暂停,直到指定审批人点击批准 —— 这才是[代码签名政策](code-signing-policy.md)要求的逐次人工批准,供应商账号的自动登录不能替代它。`release.yml` 在选中云供应商(`esigner` / `certum`)时会**尽力而为**地在使用任何签名 secret 之前,先用 workflow token 读取 `release` environment 的保护规则:能读到答复却没有 required-reviewers 规则时会失败。但默认的 `GITHUB_TOKEN` 没有读取 environment 保护规则的权限(workflow 权限里没有 `environments`),这个调用预计会失败并只给出“未验证”的 warning,此时它不强制任何东西——它只是预警,**不是**控制手段,必须人工确认这条规则。在这条规则配置好之前,这个 variable 不要设。
@@ -77,7 +77,9 @@ public [code-signing policy](code-signing-policy.md) and
 
 ### Certum action 审计要求 {#certum-action-audit}
 
-`certum` 备选路径会用一个第三方组合式 GitHub Action —— 固定到单个 commit SHA 的 `jay0lee/certum-cloud-code-sign` —— 登录一个真实的 Certum SimplySign 账号(`CERTUM_USERNAME` + `CERTUM_TOTP_SECRET`,是完整账号凭据,不是限定权限的签名令牌)。和 `esigner`(SSL.com 官方维护、调用 SSL.com 自家 CLI 的 action)不同,这个 action 是社区自建的:审阅时它是一个刚创建不久、单一作者、没有历史积累的仓库,工作方式是通过自己的 `install`/`auth`/`verify` 脚本安装并 GUI 自动化操作 Certum SimplySign Desktop 客户端。SHA 固定能防止被锁定的那个 commit 内容事后被替换,但不代表项目里已经有人读过那个 commit 的脚本到底做了什么。
+**当前状态（2026-10-01）：** Certum 仍是备选规划，尚未接入生产发布。仓库的 Actions 允许列表禁止直接引用 `jay0lee/certum-cloud-code-sign`；即使步骤的 `if` 不成立，GitHub 也会在启动前拒绝整个工作流。因此已移除直接引用。选择 `certum` 会明确失败；完成审核并接入本地证书预配实现后，才能启用该 provider。仅设置 `CERTUM_ACTION_AUDITED=true` 不会开启它。
+
+`certum` 之前规划使用一个第三方组合式 GitHub Action —— 固定到单个 commit SHA 的 `jay0lee/certum-cloud-code-sign` —— 登录一个真实的 Certum SimplySign 账号(`CERTUM_USERNAME` + `CERTUM_TOTP_SECRET`,是完整账号凭据,不是限定权限的签名令牌)。和 `esigner`(SSL.com 官方维护、调用 SSL.com 自家 CLI 的 action)不同,这个 action 是社区自建的:审阅时它是一个刚创建不久、单一作者、没有历史积累的仓库,工作方式是通过自己的 `install`/`auth`/`verify` 脚本安装并 GUI 自动化操作 Certum SimplySign Desktop 客户端。SHA 固定能防止被锁定的那个 commit 内容事后被替换,但不代表项目里已经有人读过那个 commit 的脚本到底做了什么。
 
 这直接触及本项目的[代码签名政策](code-signing-policy.md)——政策不会把签名能力交给无法审计的渠道(要求这类供应商集成在启用前经过独立审查或改为自行 vendor)。如果没有人先审查过代码,就把真实的 Certum 账号凭据交给一个第三方 action 里未经审查的自动化脚本、并让它在有凭据权限的 `release` environment 里跑,正是这条政策要防的情形。
 

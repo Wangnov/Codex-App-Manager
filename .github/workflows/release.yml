@@ -570,23 +570,15 @@ jobs:
           Write-Host "::error::WINDOWS_SIGNING_PROVIDER=certum requires vars.CERTUM_ACTION_AUDITED=true. jay0lee/certum-cloud-code-sign is a third-party action that receives real Certum account credentials; read docs/windows-signing.md#certum-action-audit and audit (or vendor) that action before setting this variable."
           exit 1
 
-      - name: Provision Certum SimplySign certificate
-        if: matrix.os == 'windows' && vars.WINDOWS_SIGNING_PROVIDER == 'certum'
-        id: certum
-        uses: jay0lee/certum-cloud-code-sign@a3324503499c49090869856eeeecfe95fb613d87 # v1
-        with:
-          username: ${{ secrets.CERTUM_USERNAME }}
-          totp_secret: ${{ secrets.CERTUM_TOTP_SECRET }}
-
-      - name: Export Certum certificate thumbprint
+      # GitHub 在执行 if 之前校验所有外部 action。尚未启用的 Certum action
+      # 不在本仓库允许列表中，直接引用也会阻止默认的未签名发布启动。
+      # 保留 provider 的明确错误，待供应商接入完成审核后再加入本地实现。
+      - name: Require reviewed local Certum provisioning
         if: matrix.os == 'windows' && vars.WINDOWS_SIGNING_PROVIDER == 'certum'
         shell: pwsh
         run: |
-          if ([string]::IsNullOrWhiteSpace("${{ steps.certum.outputs.cert-thumbprint }}")) {
-            Write-Host "::error::Certum provisioning produced no cert-thumbprint output"
-            exit 1
-          }
-          "WINDOWS_SIGNING_THUMBPRINT=${{ steps.certum.outputs.cert-thumbprint }}" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "::error::Certum 备用方案尚未接入：本仓库 action 策略禁止直接调用外部 Certum action。请先审核并接入本地证书预配实现，再启用 certum provider。"
+          exit 1
 
       # ── Build (macOS: signed inside-out after; Windows: signed inline via ──
       #    the signCommand hook — scripts/sign-windows-authenticode.ps1 — when
