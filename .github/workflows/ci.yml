@@ -63,18 +63,18 @@ jobs:
       - name: Build frontend (for tauri-build)
         run: npm run build
       - name: Clippy (deny warnings)
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets --locked -- -D warnings
       - name: Test (src-tauri)
-        run: cargo test --manifest-path src-tauri/Cargo.toml --workspace
+        run: cargo test --manifest-path src-tauri/Cargo.toml --workspace --locked
       # Path deps are not workspace members, so their unit/integration tests are
       # not covered by the step above. Run each engine crate explicitly so
       # mac/win pure-logic regressions fail required CI on every PR.
       - name: Test codex-mac-engine (standalone)
-        run: cargo test --manifest-path crates/codex-mac-engine/Cargo.toml --all-targets
+        run: cargo test --manifest-path crates/codex-mac-engine/Cargo.toml --all-targets --locked
       - name: Test codex-win-engine (standalone)
-        run: cargo test --manifest-path crates/codex-win-engine/Cargo.toml --all-targets
+        run: cargo test --manifest-path crates/codex-win-engine/Cargo.toml --all-targets --locked
       - name: Test codex-theme-engine (standalone)
-        run: cargo test --manifest-path crates/codex-theme-engine/Cargo.toml --all-targets
+        run: cargo test --manifest-path crates/codex-theme-engine/Cargo.toml --all-targets --locked
 
   audit:
     name: Audit
