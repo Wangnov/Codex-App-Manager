@@ -271,31 +271,18 @@ fn parse_logical_msix_path(name: &str) -> Result<Vec<String>, EngineError> {
     Ok(components)
 }
 
+// The XML traversal (element names, required attributes, per-block parsing)
+// lives once in `appx_blockmap` — the delta engine needs the same File/Block
+// data plus LfhSize, which this extractor has no use for. This function only
+// adapts that shared parse into the logical-path-keyed view extraction wants.
 fn parse_appx_block_map(xml: &str) -> Result<BlockMapPaths, EngineError> {
-    let document = roxmltree::Document::parse(xml)
-        .map_err(|err| EngineError::Msix(format!("AppxBlockMap.xml: {err}")))?;
+    let parsed = crate::appx_blockmap::parse_appx_block_map_xml(xml)?;
     let mut by_logical_name = HashMap::new();
     let mut windows_names = HashMap::<String, String>::new();
 
-    for file in document
-        .descendants()
-        .filter(|node| node.has_tag_name("File"))
-    {
-        let logical_name = file
-            .attribute("Name")
-            .ok_or_else(|| EngineError::Msix("AppxBlockMap File missing Name".to_string()))?
-            .to_string();
-        let size = file
-            .attribute("Size")
-            .ok_or_else(|| {
-                EngineError::Msix(format!("AppxBlockMap File missing Size: {logical_name}"))
-            })?
-            .parse::<u64>()
-            .map_err(|err| {
-                EngineError::Msix(format!(
-                    "AppxBlockMap File has invalid Size for {logical_name}: {err}"
-                ))
-            })?;
+    for file in &parsed.files {
+        let logical_name = file.name.clone();
+        let size = file.uncompressed_size;
         let components = parse_logical_msix_path(&logical_name)?;
         let windows_key = windows_path_key(&components);
         if let Some(previous) = windows_names.insert(windows_key, logical_name.clone()) {
@@ -2117,6 +2104,23 @@ mod tests {
             "unexpected error: {err}"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn accepts_block_map_files_that_omit_lfh_size() {
+        // Portable extraction only needs a File's logical path and
+        // uncompressed size; LfhSize is a delta-engine-only field on the
+        // shared `appx_blockmap` parser (see that module's doc comment).
+        // A real-world block map that omits it must still extract here,
+        // exactly as it did before the parser was shared.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<BlockMap xmlns="http://schemas.microsoft.com/appx/2010/blockmap" HashMethod="http://www.w3.org/2001/04/xmlenc#sha256">
+  <File Name="app\resources\app.asar" Size="9">
+    <Block Hash="aaaa" Size="9" />
+  </File>
+</BlockMap>"#;
+        let paths = parse_appx_block_map(xml).unwrap();
+        assert!(paths.by_logical_name.contains_key("app\\resources\\app.asar"));
     }
 
     #[test]

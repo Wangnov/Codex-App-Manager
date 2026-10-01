@@ -605,6 +605,7 @@ dependencies = [
 name = "codex-win-engine"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "libc",
  "log",
  "roxmltree",

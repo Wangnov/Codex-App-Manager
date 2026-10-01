@@ -13,9 +13,11 @@
 //!   - fall back to portable only when the MSIX route is unavailable or fails.
 
 pub mod app_version;
+mod appx_blockmap;
 pub mod authenticode;
 pub mod capability;
 pub mod checksums;
+pub mod delta;
 pub mod download;
 pub mod limits;
 pub mod manifest;
