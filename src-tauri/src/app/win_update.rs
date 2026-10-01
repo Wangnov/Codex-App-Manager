@@ -2115,18 +2115,29 @@ pub fn win_install_status(settings: &AppSettings) -> WinInstallStatus {
 }
 
 pub fn win_adopt(settings: &AppSettings) -> Result<WinInstallStatus, AppError> {
-    let installed = detect_installed_codex(PathBuf::from(&settings.install_root).as_path())
+    let mut store = ProvenanceStore::load();
+    record_windows_adoption(settings, &mut store)?;
+    store.save()?;
+    Ok(win_install_status(settings))
+}
+
+fn record_windows_adoption(
+    settings: &AppSettings,
+    store: &mut ProvenanceStore,
+) -> Result<(), AppError> {
+    // Refresh the exact install shown by status and used by launch. Raw
+    // MSIX-first detection can adopt a leftover package while the UI continues
+    // to show a portable install whose provenance build is still stale.
+    let installed = detect_managed_codex(settings, store)
         .ok_or_else(|| AppError::Internal("no Windows Codex detected to adopt".to_string()))?;
     let path = &installed.path;
     log::info!("Windows adopt external install path={path}");
-    let mut store = ProvenanceStore::load();
     store.record(
         installed.path.clone(),
         version_key(&installed.version),
         "adopted-external",
     );
-    store.save()?;
-    Ok(win_install_status(settings))
+    Ok(())
 }
 
 pub fn detect_existing_windows_install_at_path(
@@ -2499,7 +2510,8 @@ mod tests {
         bind_manifest_checksums, check_win_update_abort, detect_existing_windows_install_at_path,
         detect_managed_codex, outcome_from_portable_uninstall,
         portable_boundary_mutated_install_root, portable_fallback_needs_msix_cleanup,
-        portable_install_result_message, retry_windows_ancillary_with_detector,
+        portable_install_result_message, record_windows_adoption,
+        retry_windows_ancillary_with_detector,
         validate_historical_windows_app_version, WinAbortGuard, WinInstallStatus, WinPerformAction,
         WIN_UPDATE_ABORT,
     };
@@ -2738,6 +2750,46 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&old_dir);
         let _ = std::fs::remove_dir_all(&new_dir);
+    }
+
+    #[test]
+    fn adoption_refreshes_the_install_shown_by_managed_detection() {
+        let default_dir = temp_test_dir("adopt-default-portable");
+        let selected_dir = temp_test_dir("adopt-selected-portable");
+        write_fake_portable_install(&default_dir, "26.623.31921.0");
+        write_fake_portable_install(&selected_dir, "26.623.42026.0");
+        let settings = AppSettings::new(
+            "https://codexapp.agentsmirror.com".to_string(),
+            default_dir.to_string_lossy().into_owned(),
+        );
+        let mut store = ProvenanceStore::default();
+        // The previously managed install updated outside Manager. Its path
+        // still selects the visible install, but the stale build needs consent.
+        store.record(
+            selected_dir.to_string_lossy().into_owned(),
+            codex_win_engine::version_key("26.623.31921.0"),
+            "manager-installed",
+        );
+        let visible_before = detect_managed_codex(&settings, &store).unwrap();
+        assert_eq!(visible_before.path, selected_dir.to_string_lossy());
+        assert!(!store.is_managed_build(
+            &visible_before.path,
+            codex_win_engine::version_key(&visible_before.version),
+        ));
+
+        record_windows_adoption(&settings, &mut store).unwrap();
+
+        let visible_after = detect_managed_codex(&settings, &store).unwrap();
+        assert_eq!(visible_after.path, visible_before.path);
+        assert!(store.is_managed_build(
+            &visible_after.path,
+            codex_win_engine::version_key(&visible_after.version),
+        ));
+        assert!(!store.is_managed(&default_dir.to_string_lossy()));
+        assert_eq!(store.managed.len(), 1);
+        assert_eq!(store.managed[0].source, "adopted-external");
+        let _ = std::fs::remove_dir_all(&default_dir);
+        let _ = std::fs::remove_dir_all(&selected_dir);
     }
 
     fn release() -> WindowsRelease {
