@@ -8,7 +8,8 @@ on:
     paths:
       - ".github/workflows/windows-portable-msix-e2e.yml"
       - "crates/codex-win-engine/Cargo.toml"
-      - "crates/codex-win-engine/Cargo.lock"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - "crates/codex-win-engine/src/portable.rs"
       - "crates/codex-win-engine/src/portable_command.rs"
       - "crates/codex-win-engine/src/portable_launcher.rs"
@@ -42,7 +43,7 @@ jobs:
       - name: Run native launcher after relocating its directory
         run: >-
           cargo test
-          --manifest-path crates/codex-win-engine/Cargo.toml
+          -p codex-win-engine
           portable_launcher_survives_directory_move
           -- --nocapture
 
@@ -69,6 +70,6 @@ jobs:
       - name: Extract portable payload and resolve Computer Use modules
         run: >-
           cargo test
-          --manifest-path crates/codex-win-engine/Cargo.toml
+          -p codex-win-engine
           real_msix_uses_computer_use_logical_paths
           -- --ignored --nocapture

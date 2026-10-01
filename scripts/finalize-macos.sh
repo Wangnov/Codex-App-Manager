@@ -19,7 +19,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET="${1:-}"   # optional rust target triple, e.g. aarch64-apple-darwin
-BUNDLE="$ROOT/src-tauri/target/${TARGET:+$TARGET/}release/bundle"
+BUNDLE="$ROOT/target/${TARGET:+$TARGET/}release/bundle"
 
 APP="$(/usr/bin/find "$BUNDLE/macos" -maxdepth 1 -name '*.app' 2>/dev/null | head -1)"
 [[ -d "$APP" ]] || { echo "no .app under $BUNDLE/macos — build first" >&2; exit 1; }

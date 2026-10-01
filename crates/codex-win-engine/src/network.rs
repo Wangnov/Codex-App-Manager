@@ -308,9 +308,10 @@ fn push_schannel_no_revoke(_args: &mut Vec<String>) {}
 mod tests {
     use super::{
         is_schannel_revocation_check_failure, redact_userinfo, resolve_system_proxy,
-        system_proxy_bypass, system_proxy_url, NetworkConfig, SchannelRevocationCheck,
-        SystemProxy,
+        system_proxy_bypass, system_proxy_url, NetworkConfig, SystemProxy,
     };
+    #[cfg(windows)]
+    use super::SchannelRevocationCheck;
 
     #[test]
     fn direct_proxy_mode_disables_curl_proxy_resolution() {

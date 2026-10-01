@@ -48,6 +48,14 @@ pub(crate) fn inspect(pid: u32) -> StartupWindow {
     inspect_pids(&[pid])
 }
 
+#[cfg(not(windows))]
+pub(crate) fn inspect(_pid: u32) -> StartupWindow {
+    StartupWindow {
+        ready: true,
+        failure: None,
+    }
+}
+
 #[cfg(windows)]
 pub(crate) fn inspect_pids(pids: &[u32]) -> StartupWindow {
     use std::time::Instant;
@@ -274,13 +282,5 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-    }
-}
-
-#[cfg(not(windows))]
-pub(crate) fn inspect(_pid: u32) -> StartupWindow {
-    StartupWindow {
-        ready: true,
-        failure: None,
     }
 }

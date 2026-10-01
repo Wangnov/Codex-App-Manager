@@ -11,13 +11,13 @@
 #
 # Usage:
 #   scripts/macos-adaptive-icon.sh [path/to/App.app]
-# With no argument, it patches the release bundle under src-tauri/target.
+# With no argument, it patches the release bundle under target.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ICON_SRC="$ROOT/assets/icon.icon"
 
-APP="${1:-$ROOT/src-tauri/target/release/bundle/macos/Codex App Manager.app}"
+APP="${1:-$ROOT/target/release/bundle/macos/Codex App Manager.app}"
 
 if [ ! -d "$ICON_SRC" ]; then
   echo "error: .icon source not found: $ICON_SRC" >&2

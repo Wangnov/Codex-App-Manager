@@ -38,13 +38,13 @@ fn try_raise_nofile_limit(min_soft_limit: u64) -> Result<Option<(u64, u64)>, Str
         return Ok(None);
     }
 
-    let previous = limit.rlim_cur as u64;
+    let previous = limit.rlim_cur;
     limit.rlim_cur = target;
     let rc = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) };
     if rc != 0 {
         return Err(std::io::Error::last_os_error().to_string());
     }
-    Ok(Some((previous, target as u64)))
+    Ok(Some((previous, target)))
 }
 
 #[cfg(not(unix))]

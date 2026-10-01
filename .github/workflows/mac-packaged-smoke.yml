@@ -10,7 +10,8 @@ on:
       - "src-tauri/tauri.conf.json"
       - "src-tauri/tauri.smoke.conf.json"
       - "src-tauri/Cargo.toml"
-      - "src-tauri/Cargo.lock"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - "src-tauri/capabilities/**"
       - "src-tauri/src/**"
       - "src/**"
@@ -65,8 +66,6 @@ jobs:
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
-        with:
-          workspaces: src-tauri -> target
 
       - run: npm ci
 
@@ -82,7 +81,7 @@ jobs:
       - name: Locate app bundle
         id: artifact
         run: |
-          APP="$(find "src-tauri/target/${{ matrix.target }}/release/bundle/macos" -maxdepth 1 -name '*.app' -print -quit)"
+          APP="$(find "target/${{ matrix.target }}/release/bundle/macos" -maxdepth 1 -name '*.app' -print -quit)"
           if [ -z "$APP" ]; then
             echo "::error::[bundle] no .app bundle produced"
             exit 1

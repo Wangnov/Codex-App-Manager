@@ -54,27 +54,20 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
-        with:
-          workspaces: src-tauri -> target
       - run: npm ci
       # tauri-build (frontendDist: ../dist) reads the built frontend at compile
       # time, so produce dist before touching cargo. We deliberately do NOT run
       # `tauri build` here — no bundling, no signing, no notarization.
       - name: Build frontend (for tauri-build)
         run: npm run build
+      # Single Cargo workspace: src-tauri and all three engine crates are
+      # workspace members, so one clippy/test pass at the root now covers
+      # every member (previously the engines were only `cargo test`-ed
+      # standalone and never linted with -D warnings).
       - name: Clippy (deny warnings)
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings
-      - name: Test (src-tauri)
-        run: cargo test --manifest-path src-tauri/Cargo.toml --workspace
-      # Path deps are not workspace members, so their unit/integration tests are
-      # not covered by the step above. Run each engine crate explicitly so
-      # mac/win pure-logic regressions fail required CI on every PR.
-      - name: Test codex-mac-engine (standalone)
-        run: cargo test --manifest-path crates/codex-mac-engine/Cargo.toml --all-targets
-      - name: Test codex-win-engine (standalone)
-        run: cargo test --manifest-path crates/codex-win-engine/Cargo.toml --all-targets
-      - name: Test codex-theme-engine (standalone)
-        run: cargo test --manifest-path crates/codex-theme-engine/Cargo.toml --all-targets
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test (workspace)
+        run: cargo test --workspace
 
   audit:
     name: Audit
@@ -95,18 +88,10 @@ jobs:
         run: |
           cargo install cargo-audit --version 0.22.0 --locked
           cargo install cargo-deny --version 0.18.9 --locked
-      - name: Audit Rust lockfiles
-        run: |
-          for lockfile in \
-            src-tauri/Cargo.lock \
-            crates/codex-mac-engine/Cargo.lock \
-            crates/codex-win-engine/Cargo.lock \
-            crates/codex-theme-engine/Cargo.lock
-          do
-            cargo audit --file "$lockfile"
-          done
+      - name: Audit Rust lockfile
+        run: cargo audit --file Cargo.lock
       - name: Enforce Rust dependency policy
-        run: cargo deny --manifest-path src-tauri/Cargo.toml check
+        run: cargo deny check
 
   worker-test:
     name: Cloudflare worker tests

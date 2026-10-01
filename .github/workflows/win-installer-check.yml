@@ -22,7 +22,8 @@ on:
       - "src-tauri/installer/**"
       - "src-tauri/tauri.conf.json"
       - "src-tauri/Cargo.toml"
-      - "src-tauri/Cargo.lock"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - "src-tauri/src/**"
       - "crates/**"
       - "src/**"
@@ -146,8 +147,6 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
-        with:
-          workspaces: src-tauri -> target
 
       - run: npm ci
 
@@ -224,14 +223,14 @@ jobs:
         id: artifact
         shell: pwsh
         run: |
-          $nsis = "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis"
+          $nsis = "target/x86_64-pc-windows-msvc/release/bundle/nsis"
           $setup = Get-ChildItem -Path $nsis -Filter "*-setup.exe" -ErrorAction Stop |
             Select-Object -First 1
           if (-not $setup) {
             Write-Host "::error::[build] no *-setup.exe under $nsis"
             exit 1
           }
-          $main = "src-tauri/target/x86_64-pc-windows-msvc/release/codex-app-manager.exe"
+          $main = "target/x86_64-pc-windows-msvc/release/codex-app-manager.exe"
           if (-not (Test-Path -LiteralPath $main)) {
             Write-Host "::error::[build] missing main PE: $main"
             exit 1
@@ -256,7 +255,7 @@ jobs:
       #    regardless of Status — see verify-windows-authenticode.ps1's header
       #    comment.
       #    Deliberately NOT checked here:
-      #    src-tauri/target/.../release/codex-app-manager.exe. tauri-bundler
+      #    target/.../release/codex-app-manager.exe. tauri-bundler
       #    signs a copy of the main exe for embedding in the installer and then
       #    restores that on-disk build output to its unsigned original (tauri-cli
       #    2.11.5, bundle.rs "Restore unsigned and unpatched binary"), so it is
@@ -308,5 +307,5 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: nsis-installer
-          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+          path: target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
           if-no-files-found: error

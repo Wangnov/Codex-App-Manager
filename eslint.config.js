@@ -17,6 +17,12 @@ export default tseslint.config(
     ignores: [
       "dist/",
       "node_modules/",
+      // Single Cargo workspace: build output now lands in a root-level
+      // target/ (a sibling of src/), not nested under src-tauri/ where the
+      // src-tauri/ ignore below used to cover it implicitly. Without this,
+      // eslint recurses into target/release/build/**/out/tauri-codegen-assets/
+      // and chokes on the generated (non-JS-syntax) asset files there.
+      "target/",
       "src-tauri/",
       // Rust crates; includes the injected renderer runtime template
       // (crates/codex-theme-engine/src/runtime/), which is browser-side JS

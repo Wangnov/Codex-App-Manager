@@ -85,7 +85,7 @@ npm run tauri build -- \
   --no-sign
 
 bash scripts/macos-packaged-smoke.sh \
-  "src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Codex App Manager.app" \
+  "target/aarch64-apple-darwin/release/bundle/macos/Codex App Manager.app" \
   --expected-arch arm64 \
   --expected-lang en \
   --apple-language en
