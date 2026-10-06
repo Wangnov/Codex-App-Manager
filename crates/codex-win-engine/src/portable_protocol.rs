@@ -15,11 +15,8 @@ use windows::{
 };
 
 const PROG_ID: &str = "CodexAppManager.Portable";
-#[cfg(not(test))]
 const CLASS: &str = r"Software\Classes\CodexAppManager.Portable";
-#[cfg(not(test))]
 const CAP_ROOT: &str = r"Software\CodexAppManager\Portable";
-#[cfg(not(test))]
 const REGISTERED: &str = r"Software\RegisteredApplications";
 const OWNER: PCWSTR = w!("CodexAppManagerProtocol");
 const COMMAND_KEY: &str = r"shell\open\command";
@@ -308,7 +305,6 @@ fn unregister_at(
     Ok(removed)
 }
 
-#[cfg(not(test))]
 pub(crate) fn uninstall_script(launcher: &Path) -> String {
     uninstall_script_at(CLASS, CAP_ROOT, REGISTERED, launcher)
 }
