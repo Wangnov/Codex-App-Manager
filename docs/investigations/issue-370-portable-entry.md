@@ -108,5 +108,7 @@ the pin still needs a manual check. In-app relaunch also remains unverified.
 Installation and cleanup unit fixtures skip real shell metadata; dedicated
 registry tests use unique private subtrees and exercise both uninstall paths.
 
-Issue #370 remains open. Release is held until protocol activation, a new
-taskbar pin and a signed-in browser action have all passed actual verification.
+Issue #370 remains open for user-environment confirmation. Actual activation of
+the selected portable protocol, reopening a new taskbar pin and a signed-in
+browser action have not been confirmed by manual verification. Automated
+regression, real x64/ARM64 MSIX extraction and installer checks have passed.
