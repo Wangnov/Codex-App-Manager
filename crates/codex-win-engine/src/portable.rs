@@ -530,6 +530,67 @@ fn extract_msix(msix_path: &Path, dest: &Path) -> Result<String, EngineError> {
 /// so `ChatGPT.exe` must win when the manifest can't tell us (it normally can).
 const APP_EXE_CANDIDATES: [&str; 2] = ["ChatGPT.exe", "Codex.exe"];
 
+fn is_manager_launcher(path: &Path) -> bool {
+    // Manager launchers are small; don't read a large official Electron binary
+    // just to exclude aliases from a damaged portable root.
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if metadata.len() > 4 * 1024 * 1024 {
+        return false;
+    }
+    let Ok(bytes) = fs::read(path) else {
+        return false;
+    };
+    if bytes.get(..2) != Some(b"MZ") {
+        return false;
+    }
+    let u16_at = |offset: usize| {
+        bytes
+            .get(offset..offset.checked_add(2)?)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]) as usize)
+    };
+    let u32_at = |offset: usize| {
+        bytes
+            .get(offset..offset.checked_add(4)?)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
+    };
+    let Some(pe) = u32_at(0x3c) else {
+        return false;
+    };
+    if pe > bytes.len().saturating_sub(24) || bytes.get(pe..pe + 4) != Some(b"PE\0\0") {
+        return false;
+    }
+    let Some(count) = u16_at(pe + 6) else {
+        return false;
+    };
+    let Some(optional_size) = u16_at(pe + 20) else {
+        return false;
+    };
+    let table = pe + 24 + optional_size;
+    for index in 0..count.min(128) {
+        let offset = table + index * 40;
+        if bytes.get(offset..offset + 8) != Some(b".camlnch") {
+            continue;
+        }
+        let Some(size) = u32_at(offset + 16) else {
+            return false;
+        };
+        let Some(start) = u32_at(offset + 20) else {
+            return false;
+        };
+        return start
+            .checked_add(size)
+            .and_then(|end| bytes.get(start..end))
+            .is_some_and(|section| section.starts_with(&crate::portable_command::LAUNCHER_MARKER));
+    }
+    false
+}
+
+fn is_installed_payload_exe(root: &Path, exe: &Path) -> bool {
+    exe.is_file() && (exe.parent() != Some(root) || !is_manager_launcher(exe))
+}
+
 fn find_exe_named(root: &Path, name: &str) -> Result<Option<PathBuf>, EngineError> {
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -588,24 +649,40 @@ fn find_app_exe(root: &Path, manifest_xml: &str) -> Result<PathBuf, EngineError>
 
 /// The entry executable of an installed portable root. Reads the payload's
 /// `AppxManifest.xml` (written at install time) for the declared executable's
-/// basename — the payload root is the exe's directory, so only the basename
-/// applies. A declared-but-missing entry returns `None` (the install is
-/// broken; picking a leftover non-entry binary would mask that). The known
+/// basename. New installations keep the official files in `app/`; older
+/// installations flattened them into the root. Never select a root launcher
+/// alias for a nested installation. A declared-but-missing entry returns `None`
+/// (picking a leftover non-entry binary would mask a broken install). The known
 /// entry names are probed only for roots without a declaring manifest.
 pub fn installed_app_exe(install_root: &Path) -> Option<PathBuf> {
+    let nested = install_root.join(crate::portable_command::APP_DIR_NAME);
+    // The config also identifies a nested install whose app directory was
+    // removed/quarantined. Its remaining root aliases are not app executables.
+    let nested_target =
+        fs::read_to_string(install_root.join(crate::portable_command::LAUNCH_TARGET_NAME))
+            .ok()
+            .and_then(|config| {
+                crate::portable_command::parse_launch_config(&config)
+                    .map(|(target, _)| target.replace('\\', "/").starts_with("app/"))
+            });
+    let app_root = if nested_target.unwrap_or_else(|| nested.is_dir()) {
+        nested.as_path()
+    } else {
+        install_root
+    };
     let manifest = install_root.join("AppxManifest.xml");
     if let Ok(xml) = fs::read_to_string(&manifest) {
         if let Some(declared) = crate::msix::parse_appx_application_executable(&xml) {
             let basename = declared.replace('\\', "/");
             let name = basename.rsplit('/').next()?;
-            let exe = install_root.join(name);
-            return exe.is_file().then_some(exe);
+            let exe = app_root.join(name);
+            return is_installed_payload_exe(install_root, &exe).then_some(exe);
         }
     }
     APP_EXE_CANDIDATES
         .into_iter()
-        .map(|name| install_root.join(name))
-        .find(|exe| exe.is_file())
+        .map(|name| app_root.join(name))
+        .find(|exe| is_installed_payload_exe(install_root, exe))
 }
 
 fn prepare_portable_payload(
@@ -629,7 +706,12 @@ fn prepare_portable_payload(
         EngineError::Msix("app entry executable had no parent directory".to_string())
     })?;
 
-    copy_dir_all(exe_dir, &payload)?;
+    // Keep Electron's executable, DLLs and resources together, while the root
+    // contains only Manager launchers. The entire tree is swapped atomically.
+    copy_dir_all(
+        exe_dir,
+        &payload.join(crate::portable_command::APP_DIR_NAME),
+    )?;
     fs::write(payload.join("AppxManifest.xml"), manifest_xml)
         .map_err(|e| io_err("write portable AppxManifest.xml", e))?;
     ensure_portable_launcher(&payload)?;
@@ -654,22 +736,66 @@ pub fn ensure_portable_launcher(root: &Path) -> Result<PathBuf, EngineError> {
         use crate::portable_command::{LAUNCHER_NAME, LAUNCH_TARGET_NAME};
         const BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/LaunchCodex.exe"));
         let target = exe
-            .file_name()
+            .strip_prefix(root)
+            .ok()
             .and_then(|s| s.to_str())
             .ok_or_else(|| EngineError::Install("invalid portable executable name".into()))?;
-        let config_path = root.join(LAUNCH_TARGET_NAME);
-        if fs::read(&config_path).ok().as_deref() != Some(target.as_bytes()) {
-            fs::write(&config_path, target)
-                .map_err(|e| io_err("write portable launch target", e))?;
+        let required = crate::app_version::requires_portable_cli(exe.parent().unwrap_or(root));
+        let config = format!("{target}\nrequire-cli={}", u8::from(required));
+        if crate::portable_command::parse_launch_config(&config) != Some((target, required)) {
+            return Err(EngineError::Install(
+                "invalid portable launch target".into(),
+            ));
         }
-        let launcher = root.join(LAUNCHER_NAME);
-        if fs::read(&launcher).ok().as_deref() != Some(BYTES) {
-            fs::write(&launcher, BYTES).map_err(|e| io_err("write portable launcher", e))?;
+        let nested =
+            exe.parent() == Some(root.join(crate::portable_command::APP_DIR_NAME).as_path());
+        let names: &[&str] = if nested {
+            // Preserve existing root shortcuts and pins, including shortcuts
+            // that used to point directly at the official ChatGPT executable.
+            &["Codex.exe", "ChatGPT.exe", LAUNCHER_NAME]
+        } else {
+            &[LAUNCHER_NAME]
+        };
+        for name in names {
+            write_portable_entry_file(&root.join(name), BYTES)?;
         }
-        Ok(launcher)
+        // New launchers accept old single-line configs. Commit the new format
+        // only after every launcher is upgraded; a failed repair leaves the
+        // original config usable. Atomic replacement avoids truncated files.
+        write_portable_entry_file(&root.join(LAUNCH_TARGET_NAME), config.as_bytes())?;
+        Ok(root.join(names[0]))
     }
     #[cfg(not(windows))]
     Ok(exe)
+}
+
+#[cfg(windows)]
+fn write_portable_entry_file(path: &Path, bytes: &[u8]) -> Result<(), EngineError> {
+    if fs::read(path).ok().as_deref() == Some(bytes) {
+        return Ok(());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| EngineError::Install("missing launcher parent".into()))?;
+    let temporary = parent.join(format!(".codex-portable-write-{}", uuid::Uuid::new_v4()));
+    let mut created = false;
+    let result = (|| {
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| io_err("create portable entry file", error))?;
+        created = true;
+        file.write_all(bytes)
+            .map_err(|error| io_err("write portable entry file", error))?;
+        drop(file);
+        rename_portable_dir("replace portable entry file", &temporary, path)
+    })();
+    if created && result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 pub(crate) fn portable_launch_command(exe: &Path) -> Result<std::process::Command, EngineError> {
@@ -770,11 +896,7 @@ $shortcut.IconLocation = {icon}
 $shortcut.Save()
 "#,
         shortcut = ps_quote(&shortcut.to_string_lossy()),
-        target = ps_quote(
-            &install_root
-                .join(crate::portable_command::LAUNCHER_NAME)
-                .to_string_lossy()
-        ),
+        target = ps_quote(&ensure_portable_launcher(install_root)?.to_string_lossy()),
         workdir = ps_quote(&install_root.to_string_lossy()),
         icon = ps_quote(&format!("{},0", exe.to_string_lossy()))
     );
@@ -1479,6 +1601,74 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    #[ignore = "requires a marked disposable nested payload via CODEX_REAL_PORTABLE"]
+    fn real_portable_root_launcher_reaches_main_window() {
+        let root =
+            PathBuf::from(std::env::var_os("CODEX_REAL_PORTABLE").expect("CODEX_REAL_PORTABLE"));
+        assert!(
+            root.join(".codex-manager-smoke").is_file(),
+            "use a marked, disposable copy"
+        );
+        assert!(
+            root.join("app/ChatGPT.exe").is_file(),
+            "use the nested payload layout"
+        );
+        let profile = temp_test_dir("isolated-root-launcher");
+        let launcher = ensure_portable_launcher(&root).unwrap();
+        assert_eq!(launcher, root.join("Codex.exe"));
+        let result = (|| -> Result<(), String> {
+            let mut command = hidden_command(&launcher);
+            command
+                .env_remove("CODEX_CLI_PATH")
+                .env_remove("CODEX_WINDOWS_REGISTERED_CORE")
+                .env("CODEX_HOME", profile.join("home"))
+                .env("CODEX_ELECTRON_USER_DATA_PATH", profile.join("profile"))
+                .arg(format!(
+                    "--user-data-dir={}",
+                    profile.join("profile").display()
+                ));
+            // Do not pipe stdio: Electron inherits it from the launcher and
+            // could keep a capture reader open after the launcher exits.
+            let mut child = command
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map_err(|error| error.to_string())?;
+            let launcher_deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                match child.try_wait().map_err(|error| error.to_string())? {
+                    Some(status) if status.success() => break,
+                    Some(_) => return Err("launcher exited unsuccessfully".into()),
+                    None if Instant::now() >= launcher_deadline => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err("launcher did not exit within 10 seconds".into());
+                    }
+                    None => thread::sleep(Duration::from_millis(50)),
+                }
+            }
+            // The launcher exits after spawning Electron, so observe the scoped
+            // payload processes rather than accepting the launcher's exit=0.
+            let started = Instant::now();
+            let mut progress = crate::startup_window::StartupProgress::default();
+            while started.elapsed() < Duration::from_secs(30) {
+                let (_, window) = crate::windows_process::startup_window_for_root(&root)
+                    .map_err(|error| error.to_string())?;
+                if progress.observe(started.elapsed(), &window, PORTABLE_LIVENESS_WINDOW)? {
+                    return Ok(());
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            Err("root launcher did not open a stable main window".into())
+        })();
+        close_codex_gracefully_for_root(30, &root).unwrap();
+        assert!(result.is_ok(), "{result:?}");
+        let _ = fs::remove_dir_all(profile);
+    }
+
+    #[cfg(windows)]
+    #[test]
     #[ignore = "requires an isolated payload copy via CODEX_REAL_PORTABLE"]
     fn real_portable_bootstrap_uses_bundled_cli() {
         let root =
@@ -1605,56 +1795,256 @@ mod tests {
     #[test]
     fn portable_launcher_survives_directory_move() {
         let parent = temp_test_dir("launcher-roundtrip");
-        let original = parent.join("before");
-        fs::create_dir_all(original.join("resources")).unwrap();
-        fs::copy(
-            std::env::current_exe().unwrap(),
-            original.join("ChatGPT.exe"),
-        )
-        .unwrap();
-        fs::write(original.join("resources/codex.exe"), b"cli fixture").unwrap();
-        let launcher = ensure_portable_launcher(&original).unwrap();
-        assert!(launcher.is_file());
-        assert_launcher_has_no_vc_runtime_import(&fs::read(&launcher).unwrap());
-        assert_eq!(
-            fs::read_to_string(original.join(crate::portable_command::LAUNCH_TARGET_NAME)).unwrap(),
-            "ChatGPT.exe"
-        );
-        let moved = parent.join("便携 测试's & folder");
-        fs::rename(&original, &moved).unwrap();
-        let output = parent.join("result.json");
-        let marker = "参数 with spaces & \"quotes\"";
-        let mut command = hidden_command(moved.join(crate::portable_command::LAUNCHER_NAME));
-        command
-            .env_remove("CODEX_CLI_PATH")
-            .env("CODEX_WINDOWS_REGISTERED_CORE", "1")
-            .env("CODEX_TEST_LAUNCH_REPORT", &output)
-            .args([
-                "--exact",
-                "portable::tests::portable_launcher_child",
-                "--ignored",
-                "--skip",
-                marker,
-            ]);
-        assert!(command.status().unwrap().success());
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while !output.exists() && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(50));
+        for nested in [false, true] {
+            let original = parent.join(format!("before-{nested}"));
+            let app_root = if nested {
+                original.join("app")
+            } else {
+                original.clone()
+            };
+            fs::create_dir_all(app_root.join("resources")).unwrap();
+            fs::copy(
+                std::env::current_exe().unwrap(),
+                app_root.join("ChatGPT.exe"),
+            )
+            .unwrap();
+            fs::write(app_root.join("resources/codex.exe"), b"cli fixture").unwrap();
+            let original_exe = fs::read(app_root.join("ChatGPT.exe")).unwrap();
+            let launcher = ensure_portable_launcher(&original).unwrap();
+            assert!(
+                is_manager_launcher(&launcher),
+                "native launcher PE identity must survive linking"
+            );
+            assert!(!is_manager_launcher(&app_root.join("ChatGPT.exe")));
+            assert_launcher_has_no_vc_runtime_import(&fs::read(&launcher).unwrap());
+            assert_eq!(
+                fs::read(app_root.join("ChatGPT.exe")).unwrap(),
+                original_exe
+            );
+            assert_eq!(
+                launcher,
+                original.join(if nested {
+                    "Codex.exe"
+                } else {
+                    "LaunchCodex.exe"
+                })
+            );
+            assert_eq!(
+                fs::read_to_string(original.join(crate::portable_command::LAUNCH_TARGET_NAME))
+                    .unwrap(),
+                if nested {
+                    "app\\ChatGPT.exe\nrequire-cli=0"
+                } else {
+                    "ChatGPT.exe\nrequire-cli=0"
+                }
+            );
+            let moved = parent.join(format!("便携 测试's & folder-{nested}"));
+            fs::rename(&original, &moved).unwrap();
+            let moved_app = if nested {
+                moved.join("app")
+            } else {
+                moved.clone()
+            };
+            let names: &[&str] = if nested {
+                &["Codex.exe", "ChatGPT.exe", "LaunchCodex.exe"]
+            } else {
+                &["LaunchCodex.exe"]
+            };
+            for name in names {
+                let output = parent.join(format!("result-{nested}-{name}.json"));
+                let marker = "codex://test/参数 with spaces & \"quotes\"";
+                let mut command = hidden_command(moved.join(name));
+                command
+                    .env_remove("CODEX_CLI_PATH")
+                    .env("CODEX_WINDOWS_REGISTERED_CORE", "1")
+                    .env("CODEX_TEST_LAUNCH_REPORT", &output)
+                    .args([
+                        "--exact",
+                        "portable::tests::portable_launcher_child",
+                        "--ignored",
+                        "--skip",
+                        marker,
+                    ]);
+                assert!(command.status().unwrap().success());
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !output.exists() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                let report: serde_json::Value =
+                    serde_json::from_slice(&fs::read(output).expect("launcher child report"))
+                        .unwrap();
+                assert_eq!(
+                    report["cli"],
+                    moved_app
+                        .join("resources/codex.exe")
+                        .to_string_lossy()
+                        .as_ref()
+                );
+                assert!(report["registered"].is_null());
+                assert_eq!(report["cwd"], moved_app.to_string_lossy().as_ref());
+                assert!(report["args"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|v| v == marker));
+            }
         }
-        let report: serde_json::Value =
-            serde_json::from_slice(&fs::read(output).expect("launcher child report")).unwrap();
-        assert_eq!(
-            report["cli"],
-            moved.join("resources/codex.exe").to_string_lossy().as_ref()
-        );
-        assert!(report["registered"].is_null());
-        assert_eq!(report["cwd"], moved.to_string_lossy().as_ref());
-        assert!(report["args"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|v| v == marker));
         remove_directory_all_with_retry("remove launcher test", &parent).unwrap();
+    }
+
+    #[test]
+    fn failed_layout_upgrade_restores_the_flat_install() {
+        let parent = temp_test_dir("layout-rollback");
+        let root = parent.join("Codex");
+        fs::create_dir_all(root.join("resources")).unwrap();
+        fs::write(root.join("ChatGPT.exe"), b"old official entry").unwrap();
+        fs::write(root.join("resources/app.asar"), b"old official resources").unwrap();
+        let old_launcher = ensure_portable_launcher(&root).unwrap();
+        let old_bytes = fs::read(&old_launcher).unwrap();
+        let msix = parent.join("new.msix");
+        write_fake_rebranded_msix(&msix);
+        let mut saw_new_layout = false;
+        inject_portable_fault(Some(PortableFault::AfterMoveNew));
+        let error =
+            install_portable_from_msix_with_observer(&msix, &root, false, false, &mut |boundary| {
+                if matches!(boundary, PortableBoundary::AfterMoveNew { .. }) {
+                    saw_new_layout = root.join("app/ChatGPT.exe").is_file();
+                }
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(saw_new_layout);
+        assert!(error.to_string().contains("previous install was restored"));
+        assert!(!root.join("app").exists());
+        assert_eq!(
+            fs::read(root.join("ChatGPT.exe")).unwrap(),
+            b"old official entry"
+        );
+        assert_eq!(
+            fs::read(root.join("resources/app.asar")).unwrap(),
+            b"old official resources"
+        );
+        assert_eq!(fs::read(old_launcher).unwrap(), old_bytes);
+        #[cfg(windows)]
+        assert_eq!(
+            fs::read_to_string(root.join(crate::portable_command::LAUNCH_TARGET_NAME)).unwrap(),
+            "ChatGPT.exe\nrequire-cli=0"
+        );
+        remove_directory_all_with_retry("remove layout rollback test", &parent).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn legacy_payload_without_cli_runs_through_each_root_launcher() {
+        let parent = temp_test_dir("launcher-no-cli");
+        for nested in [false, true] {
+            let root = parent.join(format!("legacy-{nested}"));
+            let app = if nested {
+                root.join("app")
+            } else {
+                root.clone()
+            };
+            fs::create_dir_all(&app).unwrap();
+            fs::copy(std::env::current_exe().unwrap(), app.join("ChatGPT.exe")).unwrap();
+            ensure_portable_launcher(&root).unwrap();
+            let names: &[&str] = if nested {
+                &["Codex.exe", "ChatGPT.exe", "LaunchCodex.exe"]
+            } else {
+                &["LaunchCodex.exe"]
+            };
+            for name in names {
+                let output = parent.join(format!("{nested}-{name}.json"));
+                let mut command = hidden_command(root.join(name));
+                command
+                    .env_remove("CODEX_CLI_PATH")
+                    .env("CODEX_TEST_LAUNCH_REPORT", &output)
+                    .args([
+                        "--exact",
+                        "portable::tests::portable_launcher_child",
+                        "--ignored",
+                    ]);
+                assert!(command.status().unwrap().success());
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !output.exists() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                let report: serde_json::Value =
+                    serde_json::from_slice(&fs::read(output).expect("CLI-less child report"))
+                        .unwrap();
+                assert!(
+                    report["cli"].is_null(),
+                    "a legacy payload must not require or invent a CLI"
+                );
+                assert_eq!(report["cwd"], app.to_string_lossy().as_ref());
+            }
+        }
+        remove_directory_all_with_retry("remove CLI-less launcher test", &parent).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_launcher_repair_preserves_the_old_config() {
+        use crate::portable_command::{LAUNCHER_NAME, LAUNCH_TARGET_NAME};
+        use std::os::windows::fs::OpenOptionsExt;
+        let parent = temp_test_dir("launcher-repair-lock");
+        for blocked in [LAUNCHER_NAME, LAUNCH_TARGET_NAME] {
+            let root = parent.join(blocked);
+            fs::create_dir_all(&root).unwrap();
+            fs::write(root.join("ChatGPT.exe"), b"legacy official exe").unwrap();
+            fs::write(root.join(LAUNCHER_NAME), b"old launcher").unwrap();
+            fs::write(root.join(LAUNCH_TARGET_NAME), "ChatGPT.exe").unwrap();
+            let lock = fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(root.join(blocked))
+                .unwrap();
+            assert!(ensure_portable_launcher(&root).is_err());
+            drop(lock);
+            assert_eq!(
+                fs::read_to_string(root.join(LAUNCH_TARGET_NAME)).unwrap(),
+                "ChatGPT.exe"
+            );
+            if blocked == LAUNCHER_NAME {
+                assert_eq!(fs::read(root.join(LAUNCHER_NAME)).unwrap(), b"old launcher");
+            }
+            assert!(!fs::read_dir(&root).unwrap().any(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".codex-portable-write-")));
+            assert!(ensure_portable_launcher(&root).is_ok());
+            assert_eq!(
+                fs::read_to_string(root.join(LAUNCH_TARGET_NAME)).unwrap(),
+                "ChatGPT.exe\nrequire-cli=0"
+            );
+        }
+        remove_directory_all_with_retry("remove locked launcher repair test", &parent).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn lost_payload_and_config_never_adopts_root_aliases() {
+        let parent = temp_test_dir("lost-launcher-layout");
+        let msix = parent.join("codex.msix");
+        write_fake_rebranded_msix(&msix);
+        let root = parent.join("Codex");
+        install_portable_from_msix_inner(&msix, &root, false, false).unwrap();
+        assert_eq!(installed_app_exe(&root), Some(root.join("app/ChatGPT.exe")));
+        fs::remove_dir_all(root.join("app")).unwrap();
+        fs::remove_file(root.join(crate::portable_command::LAUNCH_TARGET_NAME)).unwrap();
+        assert_eq!(installed_app_exe(&root), None);
+        assert!(crate::sys::detect_portable_install(&root).is_none());
+        for config in ["", "broken", "ChatGPT.exe\nrequire-cli=0"] {
+            fs::write(
+                root.join(crate::portable_command::LAUNCH_TARGET_NAME),
+                config,
+            )
+            .unwrap();
+            assert_eq!(installed_app_exe(&root), None);
+        }
+        fs::remove_file(root.join("AppxManifest.xml")).unwrap();
+        assert_eq!(installed_app_exe(&root), None);
+        remove_directory_all_with_retry("remove lost layout test", &parent).unwrap();
     }
 
     // Inspect the PE import table, not arbitrary strings in the binary: a native
@@ -1977,7 +2367,7 @@ mod tests {
         let prepared = prepare_portable_payload(&msix, &root).unwrap();
         let modules = prepared
             .payload_dir
-            .join("resources/cua_node/bin/node_modules");
+            .join("app/resources/cua_node/bin/node_modules");
 
         assert!(modules
             .join("@oai/sky/dist/project/cua/sky_js/src/targets/windows/internal/computer_use_client_base.js")
@@ -1993,7 +2383,7 @@ mod tests {
 
         #[cfg(windows)]
         {
-            let node_bin = prepared.payload_dir.join("resources/cua_node/bin");
+            let node_bin = prepared.payload_dir.join("app/resources/cua_node/bin");
             let node = node_bin.join("node.exe");
             assert!(node.is_file(), "bundled cua_node is missing");
             let output = std::process::Command::new(&node)
@@ -2157,8 +2547,8 @@ mod tests {
 
         let report = install_portable_from_msix_inner(&msix, &install_root, false, false).unwrap();
         assert!(report.success);
-        assert!(install_root.join("Codex.exe").exists());
-        assert!(install_root.join("resources/app.asar").exists());
+        assert!(install_root.join("app/Codex.exe").exists());
+        assert!(install_root.join("app/resources/app.asar").exists());
         assert!(install_root.join("AppxManifest.xml").exists());
         assert_eq!(report.version, "26.602.3474.0");
 
@@ -2179,19 +2569,31 @@ mod tests {
 
         let report = install_portable_from_msix_inner(&msix, &install_root, false, false).unwrap();
         assert!(report.success);
-        // Payload root is the manifest entry's directory; both exes ride along.
-        assert!(install_root.join("ChatGPT.exe").exists());
-        assert!(install_root.join("Codex.exe").exists());
-        assert!(install_root.join("resources/app.asar").exists());
+        // Both official binaries and their resources remain intact in app/.
+        assert_eq!(
+            fs::read(install_root.join("app/ChatGPT.exe")).unwrap(),
+            b"fake entry exe"
+        );
+        assert_eq!(
+            fs::read(install_root.join("app/Codex.exe")).unwrap(),
+            b"legacy compat exe"
+        );
+        assert!(install_root.join("app/resources/app.asar").exists());
         assert_eq!(report.version, "26.707.3748.0");
         // The entry executable resolves to ChatGPT.exe, not the legacy binary.
         assert_eq!(
             installed_app_exe(&install_root),
-            Some(install_root.join("ChatGPT.exe"))
+            Some(install_root.join("app/ChatGPT.exe"))
         );
         assert_eq!(
             report.executable_path.as_deref(),
-            Some(install_root.join("ChatGPT.exe").to_string_lossy().as_ref())
+            Some(
+                install_root
+                    .join("app")
+                    .join("ChatGPT.exe")
+                    .to_string_lossy()
+                    .as_ref()
+            )
         );
 
         let _ = fs::remove_dir_all(&root);
@@ -2233,6 +2635,29 @@ mod tests {
 </Package>"#,
         )
         .unwrap();
+        assert_eq!(installed_app_exe(&root), None);
+
+        // An existing nested payload is authoritative, even if quarantined:
+        // a root launcher alias must never be mistaken for the real app.
+        fs::create_dir_all(root.join("app")).unwrap();
+        fs::write(root.join("app/Gone.exe"), b"nested entry").unwrap();
+        assert_eq!(installed_app_exe(&root), Some(root.join("app/Gone.exe")));
+        for config in ["", "broken", "ChatGPT.exe\nrequire-cli=broken"] {
+            fs::write(
+                root.join(crate::portable_command::LAUNCH_TARGET_NAME),
+                config,
+            )
+            .unwrap();
+            assert_eq!(installed_app_exe(&root), Some(root.join("app/Gone.exe")));
+        }
+        fs::remove_file(root.join("app/Gone.exe")).unwrap();
+        assert_eq!(installed_app_exe(&root), None);
+        fs::write(
+            root.join(crate::portable_command::LAUNCH_TARGET_NAME),
+            "app/Gone.exe",
+        )
+        .unwrap();
+        fs::remove_dir(root.join("app")).unwrap();
         assert_eq!(installed_app_exe(&root), None);
 
         let _ = fs::remove_dir_all(&root);
@@ -2304,7 +2729,7 @@ mod tests {
             .to_string_lossy()
             .starts_with("Codex.rollback")));
         assert!(!install_root.join("old-marker.txt").exists());
-        assert!(install_root.join("resources/app.asar").exists());
+        assert!(install_root.join("app/resources/app.asar").exists());
 
         let _ = fs::remove_dir_all(&root);
     }

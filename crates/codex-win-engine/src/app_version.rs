@@ -66,6 +66,7 @@ pub fn read_asar_package_name_from_install_root(root: &Path) -> Option<String> {
 
 fn app_asar_candidates(root: &Path) -> Vec<PathBuf> {
     let mut out = vec![
+        root.join("app").join("resources").join("app.asar"),
         root.join("resources").join("app.asar"),
         root.join("VFS")
             .join("ProgramFilesX64")

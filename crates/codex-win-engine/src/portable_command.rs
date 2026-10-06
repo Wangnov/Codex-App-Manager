@@ -1,10 +1,52 @@
 //! Shared by the engine and the dependency-free Windows GUI launcher.
 use std::{env, io, path::Path, process::Command};
 
-#[cfg(windows)]
+pub const APP_DIR_NAME: &str = "app";
 pub const LAUNCHER_NAME: &str = "LaunchCodex.exe";
-#[cfg(windows)]
 pub const LAUNCH_TARGET_NAME: &str = "codex-portable-launcher.txt";
+// Keep this identity stable across launcher versions. The native launcher puts
+// it in its own PE section so an engine/test binary containing it is distinct.
+pub const LAUNCHER_MARKER: [u8; 33] = *b"CAM_PORTABLE_LAUNCHER_V1_a91c7d3b";
+
+/// Both legacy root targets and the new app/<exe> layout are supported. Reject
+/// traversal, absolute paths, and root launcher aliases that would recurse.
+pub fn valid_launch_target(target: &str) -> bool {
+    use std::path::Component;
+    let normalized = target.replace('\\', "/");
+    let parts: Vec<_> = Path::new(&normalized).components().collect();
+    let normal = parts
+        .iter()
+        .all(|part| matches!(part, Component::Normal(_)));
+    normal
+        && !target.contains(':')
+        && target.to_ascii_lowercase().ends_with(".exe")
+        && match parts.as_slice() {
+            [Component::Normal(name)] => {
+                !name.to_string_lossy().eq_ignore_ascii_case(LAUNCHER_NAME)
+            }
+            [Component::Normal(dir), Component::Normal(_)] => *dir == APP_DIR_NAME,
+            _ => false,
+        }
+}
+
+/// One-line configs from older Managers required a CLI. New configs explicitly
+/// carry the upstream metadata requirement so CLI-less legacy apps still run.
+pub fn parse_launch_config(config: &str) -> Option<(&str, bool)> {
+    let mut lines = config.lines();
+    let target = lines.next()?.trim();
+    if !valid_launch_target(target) {
+        return None;
+    }
+    let required = match lines.next().map(str::trim) {
+        None | Some("require-cli=1") => true,
+        Some("require-cli=0") => false,
+        _ => return None,
+    };
+    if lines.any(|line| !line.trim().is_empty()) {
+        return None;
+    }
+    Some((target, required))
+}
 
 /// Use the payload's CLI without changing the user's or the Manager's environment.
 /// A nonempty explicit user override retains its normal upstream semantics.
@@ -44,6 +86,57 @@ fn configure_with_override(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn launcher_targets_stay_in_the_payload_or_legacy_root() {
+        for target in [
+            "ChatGPT.exe",
+            "Codex.exe",
+            "app/ChatGPT.exe",
+            r"app\Codex.exe",
+        ] {
+            assert!(valid_launch_target(target), "{target}");
+        }
+        for target in [
+            "",
+            "LaunchCodex.exe",
+            "launchcodex.EXE",
+            "app",
+            "app/file.txt",
+            "../ChatGPT.exe",
+            "app/../Codex.exe",
+            "other/ChatGPT.exe",
+            "app/sub/ChatGPT.exe",
+            r"C:\app\ChatGPT.exe",
+            r"\app\ChatGPT.exe",
+            r"\\server\app\ChatGPT.exe",
+        ] {
+            assert!(!valid_launch_target(target), "{target}");
+        }
+    }
+
+    #[test]
+    fn launch_config_preserves_legacy_defaults_and_explicit_cli_requirements() {
+        assert_eq!(
+            parse_launch_config("ChatGPT.exe"),
+            Some(("ChatGPT.exe", true))
+        );
+        assert_eq!(
+            parse_launch_config("app/ChatGPT.exe\nrequire-cli=1"),
+            Some(("app/ChatGPT.exe", true))
+        );
+        assert_eq!(
+            parse_launch_config("app/Codex.exe\r\nrequire-cli=0\r\n"),
+            Some(("app/Codex.exe", false))
+        );
+        for config in [
+            "",
+            "../app.exe\nrequire-cli=0",
+            "app/Codex.exe\nrequire-cli=2",
+            "app/Codex.exe\nrequire-cli=0\nunknown",
+        ] {
+            assert_eq!(parse_launch_config(config), None, "{config}");
+        }
+    }
     #[test]
     fn bundled_cli_configuration_handles_missing_legacy_and_explicit_overrides() {
         let root = env::temp_dir().join(format!("portable-command-{}", uuid::Uuid::new_v4()));

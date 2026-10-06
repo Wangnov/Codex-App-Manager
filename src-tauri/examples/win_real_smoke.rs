@@ -92,7 +92,12 @@ fn staged_msix_path(release: &WindowsRelease) -> PathBuf {
 }
 
 fn validate_computer_use_runtime(install_root: &Path) -> Result<ComputerUseRuntimeReport, String> {
-    let node_bin = install_root.join("resources").join("cua_node").join("bin");
+    let app_exe = codex_win_engine::installed_app_exe(install_root)
+        .ok_or_else(|| format!("portable app entry missing: {}", install_root.display()))?;
+    let app_root = app_exe
+        .parent()
+        .ok_or_else(|| "portable app entry has no parent directory".to_string())?;
+    let node_bin = app_root.join("resources").join("cua_node").join("bin");
     let node = node_bin.join("node.exe");
     let modules = node_bin.join("node_modules");
     let sky_entry = modules

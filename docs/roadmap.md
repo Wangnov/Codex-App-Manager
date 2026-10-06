@@ -14,7 +14,7 @@
 | manager 自更新 + 分发（latest.json / R2+IHEP 双活） | ✅ | `scripts/mirror-release.mjs` 做 R2 CAS 主链路 + IHEP 跟随，`release.yml` 用各更新包自身的 Tauri 签名生成 `latest.json`（清单文件本身不再单独签名）；见 [`release.md`](./release.md) |
 | macOS 纳管 / provenance UX | ✅ | managed/external/none 分类 + 显式同意纳管 |
 | Windows 全链路（识别→侧载/便携→运行中替换→回滚） | 🟡 | α 阶段已上线且持续修复至 v0.5.10（MSIX 侧载失败自动回退便携、启动校验、日志恢复等）；文件级/块级增量（β/γ）未开始 |
-| Windows 便携直启入口（`ChatGPT.exe` 双击） | ⬜ | Codex 26.915 起需要包身份，双击官方 EXE 仍失败；[#370](https://github.com/Wangnov/Codex-App-Manager/issues/370) 跟踪 |
+| Windows 便携直启入口（`ChatGPT.exe` 双击） | 🟡 | 根目录启动器与 `app/` 布局已实现，更新/重装时迁移；协议、运行中应用固定到任务栏等验收继续由 [#370](https://github.com/Wangnov/Codex-App-Manager/issues/370) 跟踪 |
 | Windows 块级增量更新（γ，zsync/Range 复用） | ⬜ | 见下 §3；当前 Windows 更新是全量重下 |
 | Windows Authenticode 签名 | 🟡 | 供应商无关的签名/校验管线已落地（`scripts/sign-windows-authenticode.ps1`、`verify-windows-authenticode.ps1`，CI 用一次性自签名证书证明链路），维护者已决定不再等待 SignPath Foundation 申请（2026-07-11 提交，尚未获批），改为购买付费云 HSM 证书（首选 SSL.com eSigner）；证书配置前发布仍为未签名，见 [`windows-signing.md`](./windows-signing.md) |
 | 上游兼容性监测流水线 | ⬜ | 见下 §4；当前只有 15 分钟探测触发镜像发布，无「新版发布后自动探测功能是否被破坏」的诊断/修复闭环 |
@@ -50,9 +50,11 @@
 - **γ（块级增量）**：对 `app.asar` 等易变大文件做块级/zsync 复用，需要 mirror 侧发布 zsync 控制数据并支持 Range 托管。
 - **验收标准**（未达成）：Windows 更新体积与耗时接近 macOS delta 的量级；文件级/块级复用在增量失败时能回退全量，不引入新的启动失败模式。
 
-## 4. Windows 便携直启入口 ⬜
+## 4. Windows 便携直启入口 🟡
 
-[#370](https://github.com/Wangnov/Codex-App-Manager/issues/370)：Codex 26.915 起官方 `ChatGPT.exe` 默认启动路径需要 MSIX 包身份，便携安装目录下双击该 EXE 仍会报「该进程没有程序包标识符」。当前 Manager、开始菜单快捷方式、`LaunchCodex.exe` 均可正常启动，只有直接双击上游 EXE 这一入口未覆盖。待评估方向：把官方 payload 放进子目录、启动器放在便携根目录并在更新/回滚时迁移已有安装，同时确认 `codex://` 协议处理器、Chrome 原生消息宿主等依赖 `process.execPath` 的路径在改动后仍可用。
+[#370](https://github.com/Wangnov/Codex-App-Manager/issues/370)：Codex 26.915 起官方 `ChatGPT.exe` 默认启动路径需要 MSIX 包身份。新的便携安装将完整官方文件保存在 `app/`，根目录的 `Codex.exe`、`ChatGPT.exe`、`LaunchCodex.exe` 均为原生启动器，开始菜单指向 `Codex.exe`。已有安装在下次更新或同版重装时迁移，失败回滚恢复原布局；普通启动只修复原有启动器，不移动正在使用的文件。
+
+目录移动、兼容入口、参数转发和迁移回滚已有自动测试。Windows 协议注册、从运行中的应用新建任务栏固定项及登录后的浏览器扩展仍需单独验收，不能把根目录入口修复等同于这些集成都已完成。上游路径检查与验证边界见 [`investigations/issue-370-portable-entry.md`](./investigations/issue-370-portable-entry.md)。
 
 ## 5. Windows Authenticode 签名 🟡
 
