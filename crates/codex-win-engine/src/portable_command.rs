@@ -4,9 +4,29 @@ use std::{env, io, path::Path, process::Command};
 pub const APP_DIR_NAME: &str = "app";
 pub const LAUNCHER_NAME: &str = "LaunchCodex.exe";
 pub const LAUNCH_TARGET_NAME: &str = "codex-portable-launcher.txt";
+pub const PROTOCOL_ARGUMENT: &str = "--codex-manager-protocol-url";
 // Keep this identity stable across launcher versions. The native launcher puts
 // it in its own PE section so an engine/test binary containing it is distinct.
 pub const LAUNCHER_MARKER: [u8; 33] = *b"CAM_PORTABLE_LAUNCHER_V1_a91c7d3b";
+
+/// Shell URI substitution can split a malicious URL into additional arguments.
+/// Only the registered protocol entry uses this restricted mode; ordinary
+/// launcher arguments keep their existing forwarding behavior.
+#[allow(dead_code)] // Used by the separately compiled native launcher and unit tests.
+pub fn launch_arguments(args: Vec<std::ffi::OsString>) -> io::Result<Vec<std::ffi::OsString>> {
+    if args.first().is_none_or(|arg| arg != PROTOCOL_ARGUMENT) {
+        return Ok(args);
+    }
+    let valid = args.len() == 2 && args[1].to_str().is_some_and(|url| {
+        url.get(..6).is_some_and(|scheme| scheme.eq_ignore_ascii_case("codex:"))
+            && url.len() > 6
+            && !url.chars().any(|ch| ch.is_control() || ch.is_whitespace() || matches!(ch, '"' | '\\'))
+    });
+    if !valid {
+        return Err(io::Error::other("Invalid Codex protocol URL."));
+    }
+    Ok(args.into_iter().skip(1).collect())
+}
 
 /// Both legacy root targets and the new app/<exe> layout are supported. Reject
 /// traversal, absolute paths, and root launcher aliases that would recurse.
@@ -86,6 +106,20 @@ fn configure_with_override(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn protocol_entry_rejects_argument_injection() {
+        let args = |url: &str| vec![PROTOCOL_ARGUMENT.into(), url.into()];
+        for url in ["codex://settings", "CODEX://threads/123?x=%22quoted%22", "codex://test/参数"] {
+            assert_eq!(launch_arguments(args(url)).unwrap(), vec![std::ffi::OsString::from(url)]);
+        }
+        for url in ["", "codex:", "https://example.com", "codex://test/\" --inspect=1", "codex://test/space here", "codex://test/\\", "codex://test/\n"] {
+            assert!(launch_arguments(args(url)).is_err(), "{url:?}");
+        }
+        assert!(launch_arguments(vec![PROTOCOL_ARGUMENT.into()]).is_err());
+        assert!(launch_arguments(vec![PROTOCOL_ARGUMENT.into(), "codex://test".into(), "--inspect=1".into()]).is_err());
+        let direct = vec!["--test-flag".into(), "codex://test/with spaces".into()];
+        assert_eq!(launch_arguments(direct.clone()).unwrap(), direct);
+    }
     #[test]
     fn launcher_targets_stay_in_the_payload_or_legacy_root() {
         for target in [

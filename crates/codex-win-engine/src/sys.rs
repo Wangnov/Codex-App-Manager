@@ -729,7 +729,7 @@ fn base64_encode(bytes: &[u8]) -> String {
 }
 
 #[cfg(windows)]
-fn encode_powershell_command(script: &str) -> String {
+pub(crate) fn encode_powershell_command(script: &str) -> String {
     let bytes = script
         .encode_utf16()
         .flat_map(|unit| unit.to_le_bytes())

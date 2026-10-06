@@ -817,8 +817,37 @@ pub(crate) fn repair_portable_launch_entry(root: &Path) -> Result<(), EngineErro
     if let Err(error) = create_start_menu_shortcut(root) {
         log::warn!("portable shortcut repair failed: {error}");
     }
+    // Legacy uninstall commands must learn protocol cleanup before its handler
+    // is added. Refreshing them is also required when repairing a flat install.
+    let version = read_codex_app_version_from_install_root(root).or_else(|| {
+        fs::read_to_string(root.join("AppxManifest.xml")).ok()
+            .and_then(|xml| parse_appx_manifest_xml(&xml).ok())
+            .map(|identity| identity.version)
+    }).unwrap_or_default();
+    match register_uninstall_entry(root, &version, None) {
+        Ok(true) => {
+            match register_portable_protocol(root) {
+                Ok(true) => {},
+                Ok(false) => log::warn!("portable protocol repair skipped: existing registration was preserved"),
+                Err(error) => log::warn!("portable protocol repair failed: {error}"),
+            }
+        }
+        Err(error) => log::warn!("portable uninstall metadata repair failed: {error}"),
+        Ok(false) => {}
+    }
     Ok(())
 }
+
+#[cfg(windows)]
+fn register_portable_protocol(root: &Path) -> Result<bool, EngineError> {
+    let launcher = ensure_portable_launcher(root)?;
+    let Some(icon) = installed_app_exe(root) else { return Ok(false); };
+    crate::portable_protocol::register(&launcher, &icon)
+        .map_err(|error| io_err("register portable protocol", error))
+}
+
+#[cfg(not(windows))]
+fn register_portable_protocol(_root: &Path) -> Result<bool, EngineError> { Ok(false) }
 
 #[cfg(windows)]
 fn ps_quote(value: &str) -> String {
@@ -872,7 +901,7 @@ pub fn codex_running_for_root(root: &Path) -> Result<bool, EngineError> {
     crate::windows_process::codex_processes_running_for_root(root)
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(test)))]
 fn create_start_menu_shortcut(install_root: &Path) -> Result<bool, EngineError> {
     let Some(exe) = installed_app_exe(install_root) else {
         return Ok(false);
@@ -901,35 +930,41 @@ $shortcut.Save()
         icon = ps_quote(&format!("{},0", exe.to_string_lossy()))
     );
     run_powershell(&script)?;
+    crate::portable_shortcut::set_app_id(&shortcut)
+        .map_err(|error| io_err("set portable shortcut application identity", error))?;
     Ok(true)
 }
 
-#[cfg(not(windows))]
+#[cfg(any(not(windows), test))]
 fn create_start_menu_shortcut(_install_root: &Path) -> Result<bool, EngineError> {
     Ok(false)
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(test)))]
 fn register_uninstall_entry(
     install_root: &Path,
     version: &str,
-    estimated_size_kb: u64,
+    estimated_size_kb: Option<u64>,
 ) -> Result<bool, EngineError> {
     // Icon only — the entry works without one, so fall back to the legacy name.
     let exe = installed_app_exe(install_root).unwrap_or_else(|| install_root.join("Codex.exe"));
     let uninstall_script = format!(
-        "if ($env:APPDATA) {{ $Shortcut = Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs\\Codex.lnk'; Remove-Item -LiteralPath $Shortcut -Force -ErrorAction SilentlyContinue }}; Remove-Item -LiteralPath '{}' -Recurse -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Codex' -Recurse -Force -ErrorAction SilentlyContinue",
+        "{}; if ($env:APPDATA) {{ $Shortcut = Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs\\Codex.lnk'; Remove-Item -LiteralPath $Shortcut -Force -ErrorAction SilentlyContinue }}; Remove-Item -LiteralPath '{}' -Recurse -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Codex' -Recurse -Force -ErrorAction SilentlyContinue",
+        crate::portable_protocol::uninstall_script(&ensure_portable_launcher(install_root)?),
         install_root.to_string_lossy().replace('\'', "''")
     );
-    // Wrap the script in DOUBLE quotes, not single, so Windows' uninstall entry
-    // actually RUNS it: `-Command '<script>'` makes PowerShell evaluate the text
-    // as one string literal and echo it back; `-Command "<script>"` executes it.
-    // The install path sits in single quotes inside, and Windows paths can't
-    // contain '"', so the outer double quotes stay unambiguous. -ExecutionPolicy
-    // Bypass keeps a restrictive machine policy from blocking the removal.
+    // The protocol cleanup compares a quoted executable command. Encode the
+    // complete script to avoid another Windows command-line quoting layer.
     let uninstall_string = format!(
-        "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"{uninstall_script}\""
+        "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {}",
+        crate::sys::encode_powershell_command(&uninstall_script)
     );
+    // Launch repair preserves the existing size (or leaves it unknown). Only
+    // an actual install/update traverses the payload to refresh this estimate.
+    let estimated_size_update = estimated_size_kb.map(|size| format!(
+        "New-ItemProperty -Path $key -Name EstimatedSize -Value {} -PropertyType DWord -Force | Out-Null",
+        size.min(u32::MAX as u64)
+    )).unwrap_or_default();
     let script = format!(
         r#"
 $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex'
@@ -943,28 +978,28 @@ New-ItemProperty -Path $key -Name UninstallString -Value {uninstall_string} -Pro
 New-ItemProperty -Path $key -Name QuietUninstallString -Value {uninstall_string} -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $key -Name NoModify -Value 1 -PropertyType DWord -Force | Out-Null
 New-ItemProperty -Path $key -Name NoRepair -Value 1 -PropertyType DWord -Force | Out-Null
-New-ItemProperty -Path $key -Name EstimatedSize -Value {estimated_size_kb} -PropertyType DWord -Force | Out-Null
+{estimated_size_update}
 "#,
         version = ps_quote(version),
         install_root = ps_quote(&install_root.to_string_lossy()),
         icon = ps_quote(&format!("{},0", exe.to_string_lossy())),
         uninstall_string = ps_quote(&uninstall_string),
-        estimated_size_kb = estimated_size_kb.min(u32::MAX as u64)
+        estimated_size_update = estimated_size_update
     );
     run_powershell(&script)?;
     Ok(true)
 }
 
-#[cfg(not(windows))]
+#[cfg(any(not(windows), test))]
 fn register_uninstall_entry(
     _install_root: &Path,
     _version: &str,
-    _estimated_size_kb: u64,
+    _estimated_size_kb: Option<u64>,
 ) -> Result<bool, EngineError> {
     Ok(false)
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(test)))]
 fn remove_start_menu_shortcut() -> Result<bool, EngineError> {
     let Some(appdata) = std::env::var_os("APPDATA") else {
         return Ok(false);
@@ -983,12 +1018,12 @@ fn remove_start_menu_shortcut() -> Result<bool, EngineError> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(any(not(windows), test))]
 fn remove_start_menu_shortcut() -> Result<bool, EngineError> {
     Ok(false)
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(test)))]
 fn remove_uninstall_entry() -> Result<bool, EngineError> {
     let script = r#"
 $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex'
@@ -1002,7 +1037,7 @@ if (Test-Path $key) {
     Ok(run_powershell(script)?.trim().ends_with("removed"))
 }
 
-#[cfg(not(windows))]
+#[cfg(any(not(windows), test))]
 fn remove_uninstall_entry() -> Result<bool, EngineError> {
     Ok(false)
 }
@@ -1420,7 +1455,7 @@ pub fn install_portable_from_msix_with_observer(
     let uninstall_entry_created = match register_uninstall_entry(
         install_root,
         &prepared.identity.version,
-        dir_size_kb(install_root),
+        Some(dir_size_kb(install_root)),
     ) {
         Ok(created) => created,
         Err(err) => {
@@ -1430,6 +1465,13 @@ pub fn install_portable_from_msix_with_observer(
             false
         }
     };
+    if uninstall_entry_created {
+        match register_portable_protocol(install_root) {
+            Ok(true) => {},
+            Ok(false) => notes.push("Codex protocol registration was skipped: existing registration was preserved.".to_string()),
+            Err(err) => notes.push(format!("Codex protocol registration failed: {err}")),
+        }
+    }
 
     let installed_exe = installed_app_exe(install_root);
     let mut backup_path = None;
@@ -1492,6 +1534,10 @@ pub fn cleanup_portable_metadata(
     purge_user_data: bool,
 ) -> Result<PortableUninstallReport, EngineError> {
     let mut notes = Vec::new();
+    #[cfg(windows)]
+    if let Err(error) = crate::portable_protocol::unregister() {
+        notes.push(format!("Codex protocol cleanup failed: {error}"));
+    }
     let removed_shortcut = match remove_start_menu_shortcut() {
         Ok(removed) => removed,
         Err(err) => {
@@ -1577,6 +1623,29 @@ mod tests {
     use zip::write::SimpleFileOptions;
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+    #[cfg(windows)]
+    #[test]
+    fn portable_shortcut_identity_preserves_its_launcher_target() {
+        let parent = temp_test_dir("shortcut-identity");
+        let root = parent.join("便携 O'Neil & 子目录");
+        fs::create_dir_all(&root).unwrap();
+        let exe = root.join("Codex.exe");
+        fs::write(&exe, b"launcher fixture").unwrap();
+        let shortcut = root.join("Codex.lnk");
+        run_powershell(&format!(
+            "$shell = New-Object -ComObject WScript.Shell; $link = $shell.CreateShortcut({}); $link.TargetPath = {}; $link.Save()",
+            ps_quote(&shortcut.to_string_lossy()), ps_quote(&exe.to_string_lossy())
+        )).unwrap();
+        crate::portable_shortcut::set_app_id(&shortcut).unwrap();
+        let properties = run_powershell(&format!(
+            "$shell = New-Object -ComObject WScript.Shell; $link = $shell.CreateShortcut({}); $link.TargetPath; $explorer = New-Object -ComObject Shell.Application; $folder = $explorer.NameSpace({}); $item = $folder.ParseName('Codex.lnk'); $item.ExtendedProperty('System.AppUserModel.ID')",
+            ps_quote(&shortcut.to_string_lossy()), ps_quote(&root.to_string_lossy())
+        )).unwrap();
+        let lines: Vec<_> = properties.lines().collect();
+        assert_eq!(lines, [exe.to_string_lossy().as_ref(), crate::portable_shortcut::APP_ID]);
+        fs::remove_dir_all(parent).unwrap();
+    }
 
     #[test]
     fn packaged_core_requires_cli_before_install_is_committed() {

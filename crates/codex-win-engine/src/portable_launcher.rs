@@ -26,7 +26,7 @@ fn run() -> io::Result<()> {
     let mut command = Command::new(&exe);
     portable_command::configure(&mut command, &exe, required)?;
     command.env("CODEX_SPARKLE_ENABLED", "false");
-    command.args(env::args_os().skip(1));
+    command.args(portable_command::launch_arguments(env::args_os().skip(1).collect())?);
     command.spawn()?;
     Ok(())
 }
