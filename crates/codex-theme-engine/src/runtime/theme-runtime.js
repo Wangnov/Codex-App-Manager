@@ -771,7 +771,7 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
       "data-composer-layout", "data-composer-surface-overflow",
       "data-composer-surface-variant", "data-composer-radius-variant",
       "data-composer-utility-bar-variant", "data-sidebar-destination",
-      "aria-label", "title", "type", "hidden", "inert", "aria-hidden",
+      "aria-label", "title", "data-testid", "type", "hidden", "inert", "aria-hidden",
     ],
   });
   const timer = setInterval(() => {

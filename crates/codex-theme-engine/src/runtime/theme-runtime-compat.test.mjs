@@ -299,3 +299,37 @@ test("composer actions distinguish send, stop, and voice without size guesses", 
     cleanupDom(dom);
   }
 });
+
+test("composer action observer reclassifies a reused data-testid", async () => {
+  const dom = domFor(`
+    <aside class="app-shell-left-panel"></aside>
+    <main id="main" data-app-shell-main-surface>
+      <div data-codex-composer-root>
+        <div id="composer" data-composer-layout="multiline" data-composer-surface-variant="default">
+          <div data-composer-layout="multiline"><div class="overflow-y-auto">
+            <div data-codex-composer contenteditable="true"></div>
+          </div></div>
+          <button id="action" data-testid="send-message"><svg></svg></button>
+        </div>
+      </div>
+    </main>
+  `);
+  try {
+    const document = dom.window.document;
+    const action = document.getElementById("action");
+    mutableRect(document.getElementById("main"), { x: 200, y: 40, width: 800, height: 640 });
+    mutableRect(document.getElementById("composer"), { x: 300, y: 500, width: 600, height: 100 });
+    dom.window.eval(runtimeExpression());
+    assert.equal(action.getAttribute("data-cts-composer-action"), "send");
+
+    action.setAttribute("data-testid", "stop-generating");
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 260));
+    assert.equal(action.getAttribute("data-cts-composer-action"), "stop");
+
+    action.setAttribute("data-testid", "voice-mode");
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 260));
+    assert.equal(action.getAttribute("data-cts-composer-action"), "voice");
+  } finally {
+    cleanupDom(dom);
+  }
+});
