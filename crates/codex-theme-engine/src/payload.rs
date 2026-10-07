@@ -224,7 +224,8 @@ pub fn verify_expression(expected_version: &str) -> Result<String> {
     const hiddenByAncestor = (node) => {{
       for (let current = node; current; current = current.parentElement) {{
         if (current.hidden || current.hasAttribute?.('inert') ||
-            current.getAttribute?.('aria-hidden') === 'true') return true;
+            current.getAttribute?.('aria-hidden') === 'true' ||
+            current.getAttribute?.('data-app-shell-active-page') === 'false') return true;
         const style = getComputedStyle(current);
         const contentVisibility = style.contentVisibility || style.getPropertyValue?.('content-visibility');
         if (style.display === 'none' || style.visibility === 'hidden' ||
@@ -272,12 +273,8 @@ pub fn verify_expression(expected_version: &str) -> Result<String> {
           ? {{ audited: true, profile: 'composer-current-multiline', composerLanePolicy: 'required' }}
           : {{ audited: false, profile: 'capability-adaptive', composerLanePolicy: 'optional' }};
     const {{ selectComposerSurfaces }} = {composer_helpers};
-    const composerNodes = selectComposerSurfaces(document);
-    const composerNode = composerNodes.find((node) => {{
-      const r = node.getBoundingClientRect();
-      const style = getComputedStyle(node);
-      return r.width > 0 && r.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
-    }}) ?? composerNodes[0] ?? null;
+    const composerNodes = mainSurfaceNode ? selectComposerSurfaces(mainSurfaceNode) : [];
+    const composerNode = composerNodes.find((node) => visibleSurfaceScore(node) >= 0) ?? null;
     const composer = box(composerNode);
     const composerEditor = composerNode?.querySelector('[data-cts-composer-overflow="editor"]') ?? null;
     const composerLanes = composerNode
@@ -633,8 +630,13 @@ mod tests {
         assert!(expr.contains("mainSurfaceCompatible"));
         assert!(expr.contains("stageAttachedToMainSurface"));
         assert!(expr.contains("visibleSurfaceScore"));
+        assert!(expr.contains("data-app-shell-active-page"));
         assert!(expr.contains("currentMainSurfaces"));
         assert!(expr.contains("legacyMainSurfaces"));
+        assert!(expr.contains("mainSurfaceNode ? selectComposerSurfaces(mainSurfaceNode) : []"));
+        assert!(expr.contains("composerNodes.find((node) => visibleSurfaceScore(node) >= 0)"));
+        assert!(!expr.contains("selectComposerSurfaces(document)"));
+        assert!(!expr.contains("composerNodes[0]"));
         assert!(expr.contains("composerOverflow"));
         assert!(expr.contains("composerSurfaceMode"));
         assert!(expr.contains("composerSurfaceCompatible"));

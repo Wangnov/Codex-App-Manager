@@ -162,6 +162,39 @@ test("observer follows ancestor-only cached main switches without a composer", a
   }
 });
 
+test("observer follows active-page-only cached main switches", async () => {
+  const dom = domFor(`
+    <aside class="app-shell-left-panel"></aside>
+    <div id="first-wrapper" data-app-shell-active-page="true">
+      <main id="first" data-app-shell-main-surface><div role="main">space</div></main>
+    </div>
+    <div id="second-wrapper" data-app-shell-active-page="false">
+      <main id="second" data-app-shell-main-surface><div role="main">review</div></main>
+    </div>
+  `);
+  try {
+    const document = dom.window.document;
+    const first = document.getElementById("first");
+    const second = document.getElementById("second");
+    mutableRect(first, { x: 280, y: 40, width: 680, height: 600 });
+    mutableRect(second, { x: 260, y: 30, width: 740, height: 640 });
+    dom.window.eval(runtimeExpression({
+      chrome: '<div data-cts-layer="stage"><b>stage</b></div>',
+    }));
+    assert.equal(document.getElementById("cts-stage").parentElement, first);
+
+    document.getElementById("first-wrapper").setAttribute("data-app-shell-active-page", "false");
+    document.getElementById("second-wrapper").setAttribute("data-app-shell-active-page", "true");
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 260));
+
+    assert.equal(document.getElementById("cts-stage").parentElement, second);
+    assert.equal(first.hasAttribute("data-cts-main-surface-compat"), false);
+    assert.equal(second.getAttribute("data-cts-main-surface-compat"), "true");
+  } finally {
+    cleanupDom(dom);
+  }
+});
+
 test("a visible legacy main remains supported without becoming runtime-owned", () => {
   const dom = domFor(`
     <aside class="app-shell-left-panel"></aside>
@@ -251,6 +284,9 @@ test("composer actions distinguish send, stop, and voice without size guesses", 
           <button id="dictation" aria-label="听写"><svg></svg></button>
           <button id="english-dictation" aria-label="Start dictation"><svg></svg></button>
           <button id="english-dictate" title="Dictate"><svg></svg></button>
+          <button id="spanish-send" type="submit" aria-label="Enviar mensaje"><svg></svg></button>
+          <button id="spanish-stop" class="size-token-button-composer" type="button" aria-label="Detener la generación"><svg></svg></button>
+          <button id="spanish-voice" class="size-token-button-composer" type="button" aria-label="Iniciar un nuevo chat de voz"><svg></svg></button>
           <button id="labeled-primary" class="size-token-button-composer" aria-label="Más acciones"><svg></svg></button>
           <button id="lookalike" class="size-token-button-composer-extra"><svg></svg></button>
           <button id="plain" data-size="composer"><svg></svg></button>
@@ -274,12 +310,18 @@ test("composer actions distinguish send, stop, and voice without size guesses", 
     assert.equal(action("dictation"), "voice");
     assert.equal(action("english-dictation"), "voice");
     assert.equal(action("english-dictate"), "voice");
+    assert.equal(action("spanish-send"), "send", "submit remains a locale-independent send signal");
+    assert.equal(action("spanish-stop"), null, "foreign stop labels must keep their native control");
+    assert.equal(action("spanish-voice"), null, "foreign voice labels must keep their native control");
     assert.equal(action("labeled-primary"), null, "an unknown labeled action must keep its native appearance");
     assert.equal(action("lookalike"), null);
     assert.equal(action("plain"), null);
     assert.match(dom.window.getComputedStyle(document.getElementById("send")).backgroundImage, /starship/);
     assert.doesNotMatch(dom.window.getComputedStyle(document.getElementById("stop")).backgroundImage, /starship/);
     assert.doesNotMatch(dom.window.getComputedStyle(document.getElementById("voice")).backgroundImage, /starship/);
+    assert.match(dom.window.getComputedStyle(document.getElementById("spanish-send")).backgroundImage, /starship/);
+    assert.doesNotMatch(dom.window.getComputedStyle(document.getElementById("spanish-stop")).backgroundImage, /starship/);
+    assert.doesNotMatch(dom.window.getComputedStyle(document.getElementById("spanish-voice")).backgroundImage, /starship/);
 
     document.getElementById("send").setAttribute("aria-label", "Stop generating");
     document.getElementById("voice").setAttribute("aria-label", "More actions");

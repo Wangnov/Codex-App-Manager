@@ -140,7 +140,8 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
   const hiddenByAncestor = (node) => {
     for (let current = node; current; current = current.parentElement) {
       if (current.hidden || current.hasAttribute?.("inert") ||
-          current.getAttribute?.("aria-hidden") === "true") return true;
+          current.getAttribute?.("aria-hidden") === "true" ||
+          current.getAttribute?.("data-app-shell-active-page") === "false") return true;
       const style = getComputedStyle(current);
       const contentVisibility = style.contentVisibility || style.getPropertyValue?.("content-visibility");
       if (style.display === "none" || style.visibility === "hidden" ||
@@ -426,8 +427,8 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
     // Audited legacy Codex builds expose the primary send control through this
     // exact design-token class but omit an accessible label. Stop/voice labels
     // are checked above, and exact-token matching avoids size-based guesses.
-    if (!semantic && (button.getAttribute("type") === "submit" ||
-        button.classList.contains("size-token-button-composer")) &&
+    if (button.getAttribute("type") === "submit" && button.querySelector("svg")) return "send";
+    if (!semantic && button.classList.contains("size-token-button-composer") &&
         button.querySelector("svg")) return "send";
     return null;
   };
@@ -772,6 +773,7 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
       "data-composer-surface-variant", "data-composer-radius-variant",
       "data-composer-utility-bar-variant", "data-sidebar-destination",
       "aria-label", "title", "data-testid", "type", "hidden", "inert", "aria-hidden",
+      "data-app-shell-active-page",
     ],
   });
   const timer = setInterval(() => {
