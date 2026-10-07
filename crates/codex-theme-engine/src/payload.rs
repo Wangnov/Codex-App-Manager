@@ -223,8 +223,7 @@ pub fn verify_expression(expected_version: &str) -> Result<String> {
     }};
     const hiddenByAncestor = (node) => {{
       for (let current = node; current; current = current.parentElement) {{
-        if (current.hidden || current.hasAttribute?.('inert') ||
-            current.getAttribute?.('aria-hidden') === 'true' ||
+        if (current.hidden ||
             current.getAttribute?.('data-app-shell-active-page') === 'false') return true;
         const style = getComputedStyle(current);
         const contentVisibility = style.contentVisibility || style.getPropertyValue?.('content-visibility');
@@ -631,6 +630,8 @@ mod tests {
         assert!(expr.contains("stageAttachedToMainSurface"));
         assert!(expr.contains("visibleSurfaceScore"));
         assert!(expr.contains("data-app-shell-active-page"));
+        assert!(!expr.contains("hasAttribute?.('inert')"));
+        assert!(!expr.contains("getAttribute?.('aria-hidden')"));
         assert!(expr.contains("currentMainSurfaces"));
         assert!(expr.contains("legacyMainSurfaces"));
         assert!(expr.contains("mainSurfaceNode ? selectComposerSurfaces(mainSurfaceNode) : []"));

@@ -130,7 +130,9 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
   // the visible semantic surface with the largest viewport intersection,
   // falling back to a visible legacy surface only when no current one exists.
   // Hidden ancestors matter: cached pages can keep their own display/visibility
-  // while an ancestor suppresses them with content-visibility, inert or aria.
+  // while an ancestor suppresses them with CSS or marks them inactive. Do not
+  // treat inert/aria-hidden as visual hiding: modal accessibility isolation can
+  // apply both to a still-visible active page behind the dialog.
   const releaseShellMainCompat = (node) => {
     if (!node?.hasAttribute(SHELL_MAIN_COMPAT_ATTR)) return;
     node.classList.remove(LEGACY_SHELL_MAIN_CLASS);
@@ -139,8 +141,7 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
 
   const hiddenByAncestor = (node) => {
     for (let current = node; current; current = current.parentElement) {
-      if (current.hidden || current.hasAttribute?.("inert") ||
-          current.getAttribute?.("aria-hidden") === "true" ||
+      if (current.hidden ||
           current.getAttribute?.("data-app-shell-active-page") === "false") return true;
       const style = getComputedStyle(current);
       const contentVisibility = style.contentVisibility || style.getPropertyValue?.("content-visibility");
@@ -424,9 +425,12 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
     if (/(?:^|\b)(?:stop|cancel response)(?:\b|$)|停止|中止/i.test(semantic)) return "stop";
     if (/(?:^|\b)(?:voice|dictate|dictation|microphone)(?:\b|$)|语音|聽寫|听写|麦克风/i.test(semantic)) return "voice";
     if (/(?:^|\b)(?:send|submit)(?:\b|$)|发送|傳送|提交/i.test(semantic)) return "send";
-    // Audited legacy Codex builds expose the primary send control through this
-    // exact design-token class but omit an accessible label. Stop/voice labels
-    // are checked above, and exact-token matching avoids size-based guesses.
+    // Current native send/stop/voice controls share this exact class and use
+    // type=button, so neither signal distinguishes their action. Keep unknown
+    // non-empty (including untranslated) labels native instead of covering the
+    // wrong control. An explicit send semantic above or a real type=submit is
+    // safe to skin; the exact-class fallback is retained only for unlabeled
+    // primary controls in audited legacy builds.
     if (button.getAttribute("type") === "submit" && button.querySelector("svg")) return "send";
     if (!semantic && button.classList.contains("size-token-button-composer") &&
         button.querySelector("svg")) return "send";

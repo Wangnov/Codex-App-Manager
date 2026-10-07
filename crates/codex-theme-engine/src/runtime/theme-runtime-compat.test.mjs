@@ -195,6 +195,37 @@ test("observer follows active-page-only cached main switches", async () => {
   }
 });
 
+test("modal accessibility isolation keeps a visually present active main mounted", async () => {
+  const dom = domFor(`
+    <aside class="app-shell-left-panel"></aside>
+    <div id="page-wrapper" data-app-shell-active-page="true">
+      <main id="main" data-app-shell-main-surface><div role="main">thread</div></main>
+    </div>
+  `);
+  try {
+    const document = dom.window.document;
+    const wrapper = document.getElementById("page-wrapper");
+    const main = document.getElementById("main");
+    mutableRect(main, { x: 280, y: 40, width: 720, height: 620 });
+    dom.window.eval(runtimeExpression({
+      chrome: '<div data-cts-layer="stage"><b>stage</b></div>',
+    }));
+    assert.equal(document.getElementById("cts-stage").parentElement, main);
+    assert.equal(main.getAttribute("data-cts-main-surface-compat"), "true");
+
+    // Dialog frameworks commonly isolate the background page from keyboard
+    // and accessibility traversal without visually hiding it.
+    wrapper.setAttribute("inert", "");
+    wrapper.setAttribute("aria-hidden", "true");
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 260));
+
+    assert.equal(document.getElementById("cts-stage").parentElement, main);
+    assert.equal(main.getAttribute("data-cts-main-surface-compat"), "true");
+  } finally {
+    cleanupDom(dom);
+  }
+});
+
 test("a visible legacy main remains supported without becoming runtime-owned", () => {
   const dom = domFor(`
     <aside class="app-shell-left-panel"></aside>
