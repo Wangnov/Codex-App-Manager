@@ -24,6 +24,7 @@ vi.mock("../services/managerApi", () => ({
   },
   managerApi: {
     getDiagnostics: vi.fn(),
+    writeClipboardText: vi.fn((text: string) => navigator.clipboard.writeText(text)),
     reportFrontendError: vi.fn(() => Promise.resolve()),
     getOperationSnapshot: vi.fn(() => Promise.resolve(null)),
     confirmQuit: vi.fn(() => Promise.resolve()),

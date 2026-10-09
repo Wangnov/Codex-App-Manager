@@ -15,12 +15,6 @@ use crate::app::diagnostics::Diagnostics;
 use crate::app::disk::available_space;
 use crate::app::install_tx::SelfUpdatePolicyTransition;
 use crate::app::logging::redact_url;
-use crate::app::manager_update_runtime::{
-    classify_updater_error, enter_commit_checkpoint, with_stall_timeout, ActivityClock,
-    EmitThrottle, ManagerUpdateRuntime, ManagerUpdateSnapshot, RelaunchClaim, UpdateStage, CHECK_TIMEOUT,
-    DOWNLOAD_STALL_TIMEOUT, PROGRESS_EMIT_INTERVAL,
-};
-use crate::app::network;
 use crate::app::mac_update::{
     cancel_macos_download, detect_existing_install_at_path as detect_macos_install_at_path,
     discard_macos_download, install_macos_historical_release,
@@ -31,6 +25,12 @@ use crate::app::mac_update::{
     HistoricalMacEvidence, HistoricalMacExpectation, InstalledCodex, MacInstallStatus,
     MacPerformReport, MacStageReport, MacUninstallReport, MacUpdateReport, PerformExpectation,
 };
+use crate::app::manager_update_runtime::{
+    classify_updater_error, enter_commit_checkpoint, with_stall_timeout, ActivityClock,
+    EmitThrottle, ManagerUpdateRuntime, ManagerUpdateSnapshot, RelaunchClaim, UpdateStage,
+    CHECK_TIMEOUT, DOWNLOAD_STALL_TIMEOUT, PROGRESS_EMIT_INTERVAL,
+};
+use crate::app::network;
 use crate::app::op_phase::{OperationPhase, QuitPolicy};
 use crate::app::operation_outcome::{AncillaryRetryReport, AncillaryRetryRequest};
 use crate::app::oplock::{
@@ -744,6 +744,7 @@ fn windows_domain_settings_for_persisted(state: &ManagerState) -> DomainAppSetti
     let mut settings = state.settings.clone();
     settings.install_root = saved.install_root;
     settings.disable_codex_self_updates = saved.disable_codex_self_updates;
+    settings.codex_launch_arguments = saved.codex_launch_arguments;
     settings
 }
 
@@ -1957,8 +1958,19 @@ pub fn get_settings_strict(
 
 /// Persist app settings. `signed_only` is forced on regardless of input.
 #[tauri::command]
-pub fn set_settings(
-    state: State<'_, ManagerState>,
+pub async fn set_settings(
+    app: tauri::AppHandle,
+    settings: PersistedAppSettings,
+) -> Result<PersistedAppSettings, CommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        save_settings(&app.state::<ManagerState>(), settings)
+    })
+    .await
+    .map_err(|error| AppError::Internal(error.to_string()))?
+}
+
+fn save_settings(
+    state: &ManagerState,
     settings: PersistedAppSettings,
 ) -> Result<PersistedAppSettings, CommandError> {
     let mut s = settings;
@@ -1976,13 +1988,23 @@ pub fn set_settings(
     if s.proxy_mode == ProxyMode::Custom {
         s.custom_proxy_url = network::validated_custom_proxy(&s.custom_proxy_url, "settings")?;
     }
+    codex_win_engine::sys::validate_launch_arguments(&s.codex_launch_arguments)
+        .map_err(|error| AppError::Engine(error.to_string()))?;
     let previous = PersistedAppSettings::load();
-    let _op = begin_guard(&state, OperationKind::SetInstallRoot)?;
+    let _op = begin_guard(state, OperationKind::SetInstallRoot)?;
+    if matches!(state.target.os, OperatingSystem::Windows)
+        && previous.codex_launch_arguments != s.codex_launch_arguments
+    {
+        let mut launch_settings = state.settings.clone();
+        launch_settings.install_root = s.install_root.clone();
+        launch_settings.codex_launch_arguments = s.codex_launch_arguments.clone();
+        crate::app::win_update::sync_launch_shortcut(&launch_settings)?;
+    }
     if previous.disable_codex_self_updates != s.disable_codex_self_updates {
         crate::app::codex_self_update::sync_setting(s.disable_codex_self_updates)?;
     }
     s.save()?;
-    refresh_config_health(&state);
+    refresh_config_health(state);
     log::info!(
         "saved settings source={} windows_install_mode={} proxy_mode={} disable_codex_self_updates={}",
         s.source.as_str(),
@@ -2848,6 +2870,14 @@ pub fn get_diagnostics(app: tauri::AppHandle, state: State<'_, ManagerState>) ->
     crate::app::diagnostics::collect_diagnostics(&app, &state)
 }
 
+#[tauri::command]
+pub async fn write_clipboard_text(app: tauri::AppHandle, text: String) -> Result<(), CommandError> {
+    tauri::async_runtime::spawn_blocking(move || crate::app::clipboard::write_text(&app, &text))
+        .await
+        .map_err(|error| AppError::Internal(error.to_string()))?
+        .map_err(|error| AppError::Internal(format!("复制到剪贴板失败: {error}")).into())
+}
+
 /// Lightweight native host architecture for package selection. Unlike full
 /// diagnostics this performs no install, PowerShell, config, or log probes.
 #[tauri::command]
@@ -3484,8 +3514,8 @@ mod tests {
         HistoricalPolicyInstallState, INSTALL_LOCATION_PROBE_PREFIX,
     };
     use crate::app::config_health::StoreLoadHealth;
-    use crate::app::network;
     use crate::app::mac_update::HistoricalMacEvidence;
+    use crate::app::network;
     use crate::app::op_phase::OperationPhase;
     use crate::app::oplock::{OperationKind, OperationManager};
     use crate::app::release_install::ReleaseArchitecture;

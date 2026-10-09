@@ -6,6 +6,7 @@
 //! plist with the `plist` crate. Keeping IO behind these functions means the
 //! pure parsing/planning logic stays trivially testable.
 
+use std::io::Read;
 use std::path::Path;
 use std::process::Command;
 
@@ -14,7 +15,6 @@ use crate::network::{is_connectivity_exit, NetworkConfig};
 use crate::EngineError;
 
 const CURL: &str = "/usr/bin/curl";
-const LIPO: &str = "/usr/bin/lipo";
 
 fn text_from_curl(
     url: &str,
@@ -204,10 +204,10 @@ fn candidate_app_paths() -> Vec<String> {
         .collect()
 }
 
-/// Best-effort architecture of an installed Codex.app, read from its Mach-O
-/// executable via `lipo`. Returns the host arch when the bundle is universal,
-/// otherwise the bundle's single arch (e.g. an Intel/Rosetta install on Apple
-/// Silicon reports `x86_64`). Values match `lipo` naming: `arm64` / `x86_64`.
+/// Read architecture directly from Mach-O headers. This also works on older
+/// macOS installations whose CommandLineTools can no longer run `lipo`.
+/// Universal bundles prefer the host architecture; Intel/Rosetta bundles on
+/// Apple Silicon still report `x86_64`.
 pub fn app_arch(app: &str) -> Option<String> {
     let plist = format!("{app}/Contents/Info.plist");
     let exe = Command::new("/usr/libexec/PlistBuddy")
@@ -221,30 +221,81 @@ pub fn app_arch(app: &str) -> Option<String> {
     if exe_name.is_empty() {
         return None;
     }
-    let output = Command::new(LIPO)
-        .args(["-archs", &format!("{app}/Contents/MacOS/{exe_name}")])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let archs: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .split_whitespace()
-        .map(|s| s.to_string())
-        .collect();
-    if archs.is_empty() {
-        return None;
-    }
-    let host = if std::env::consts::ARCH == "aarch64" {
-        "arm64"
-    } else {
-        "x86_64"
+    let path = Path::new(app).join("Contents/MacOS").join(exe_name);
+    let mut file = std::fs::File::open(&path).ok()?;
+    let archs = macho_architectures(&mut file).or_else(|| {
+        log::warn!(
+            "cannot read Codex Mach-O architecture path={}",
+            path.display()
+        );
+        None
+    })?;
+    preferred_macho_arch(&archs, std::env::consts::ARCH).map(str::to_string)
+}
+
+fn preferred_macho_arch<'a>(archs: &'a [&str], host: &str) -> Option<&'a str> {
+    let host = if host == "aarch64" { "arm64" } else { "x86_64" };
+    archs
+        .iter()
+        .copied()
+        .find(|arch| *arch == host)
+        .or_else(|| archs.first().copied())
+}
+
+/// Only read the header/table, never the potentially large executable payload.
+/// Layout: Apple's mach-o/{loader,fat}.h; CPU types from mach/machine.h.
+fn macho_architectures(reader: &mut impl Read) -> Option<Vec<&'static str>> {
+    let mut header = [0u8; 8];
+    reader.read_exact(&mut header).ok()?;
+    let (little_endian, fat_stride) = match header[..4] {
+        [0xce, 0xfa, 0xed, 0xfe] | [0xcf, 0xfa, 0xed, 0xfe] => (true, None),
+        [0xfe, 0xed, 0xfa, 0xce] | [0xfe, 0xed, 0xfa, 0xcf] => (false, None),
+        [0xca, 0xfe, 0xba, 0xbe] => (false, Some(20)),
+        [0xbe, 0xba, 0xfe, 0xca] => (true, Some(20)),
+        [0xca, 0xfe, 0xba, 0xbf] => (false, Some(32)),
+        [0xbf, 0xba, 0xfe, 0xca] => (true, Some(32)),
+        _ => return None,
     };
-    if archs.iter().any(|a| a == host) {
-        Some(host.to_string())
+    let read_u32 = |bytes: &[u8]| {
+        let bytes: [u8; 4] = bytes.try_into().ok()?;
+        Some(if little_endian {
+            u32::from_le_bytes(bytes)
+        } else {
+            u32::from_be_bytes(bytes)
+        })
+    };
+    let cpu_arch = |cpu| match cpu {
+        0x0100_0007 => Some("x86_64"),
+        0x0100_000c => Some("arm64"),
+        _ => None,
+    };
+    let mut archs = Vec::new();
+    if let Some(stride) = fat_stride {
+        let count = read_u32(&header[4..])?;
+        if count == 0 || count > 64 {
+            return None;
+        }
+        let mut entry = [0u8; 32];
+        for _ in 0..count {
+            reader.read_exact(&mut entry[..stride]).ok()?;
+            if let Some(arch) = cpu_arch(read_u32(&entry[..4])?) {
+                if !archs.contains(&arch) {
+                    archs.push(arch);
+                }
+            }
+        }
     } else {
-        Some(archs[0].clone())
+        // Verify the remainder of the thin header exists, too.
+        let header_size = if matches!(header[0], 0xcf) || header[3] == 0xcf {
+            32
+        } else {
+            28
+        };
+        let mut rest = [0u8; 24];
+        reader.read_exact(&mut rest[..header_size - 8]).ok()?;
+        archs.push(cpu_arch(read_u32(&header[4..])?)?);
     }
+    (!archs.is_empty()).then_some(archs)
 }
 
 fn read_bundle_build(app: &str) -> Option<u64> {
@@ -500,5 +551,68 @@ mod tests {
         assert_eq!(installed_codex_build_at_path(&impostor), None);
 
         let _ = fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod macho_tests {
+    use super::{macho_architectures, preferred_macho_arch};
+
+    fn thin(cpu: u32, little: bool) -> Vec<u8> {
+        let mut bytes = if little {
+            vec![0xcf, 0xfa, 0xed, 0xfe]
+        } else {
+            vec![0xfe, 0xed, 0xfa, 0xcf]
+        };
+        bytes.extend(if little {
+            cpu.to_le_bytes()
+        } else {
+            cpu.to_be_bytes()
+        });
+        bytes.resize(32, 0);
+        bytes
+    }
+
+    #[test]
+    fn reads_intel_and_arm64_without_developer_tools() {
+        for little in [true, false] {
+            for (cpu, arch) in [(0x0100_0007, "x86_64"), (0x0100_000c, "arm64")] {
+                assert_eq!(
+                    macho_architectures(&mut thin(cpu, little).as_slice()),
+                    Some(vec![arch])
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reads_universal_32_and_64_bit_tables_and_prefers_host() {
+        for (magic, stride) in [(0xcafebabe_u32, 20), (0xcafebabf, 32)] {
+            let mut bytes = magic.to_be_bytes().to_vec();
+            bytes.extend(2u32.to_be_bytes());
+            for cpu in [0x0100_0007_u32, 0x0100_000c] {
+                bytes.extend(cpu.to_be_bytes());
+                bytes.resize(bytes.len() + stride - 4, 0);
+            }
+            let archs = macho_architectures(&mut bytes.as_slice()).unwrap();
+            assert_eq!(preferred_macho_arch(&archs, "aarch64"), Some("arm64"));
+            assert_eq!(preferred_macho_arch(&archs, "x86_64"), Some("x86_64"));
+        }
+        assert_eq!(preferred_macho_arch(&["x86_64"], "aarch64"), Some("x86_64"));
+    }
+
+    #[test]
+    fn rejects_unknown_truncated_or_unbounded_headers() {
+        assert!(macho_architectures(&mut b"not-macho".as_slice()).is_none());
+        assert!(macho_architectures(&mut thin(0x0100_0007, true)[..8].as_ref()).is_none());
+        assert!(macho_architectures(&mut thin(7, true).as_slice()).is_none());
+        for count in [0u32, 65, u32::MAX] {
+            let mut bytes = 0xcafebabe_u32.to_be_bytes().to_vec();
+            bytes.extend(count.to_be_bytes());
+            assert!(macho_architectures(&mut bytes.as_slice()).is_none());
+        }
+        let mut truncated = 0xcafebabe_u32.to_be_bytes().to_vec();
+        truncated.extend(2u32.to_be_bytes());
+        assert!(macho_architectures(&mut truncated.as_slice()).is_none());
     }
 }

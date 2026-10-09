@@ -157,6 +157,7 @@ function normalizeSettings(raw: Partial<AppSettings>): AppSettings {
     signedOnly: true,
     proxyMode,
     customProxyUrl,
+    codexLaunchArguments: typeof raw.codexLaunchArguments === "string" ? raw.codexLaunchArguments : "",
     disableCodexSelfUpdates:
       typeof raw.disableCodexSelfUpdates === "boolean"
         ? raw.disableCodexSelfUpdates
@@ -1122,6 +1123,10 @@ export const managerApi = {
       return Promise.resolve();
     }
     return invoke<void>("open_url", { url });
+  },
+  writeClipboardText(text: string): Promise<void> {
+    if (!hasTauriRuntime()) return navigator.clipboard.writeText(text);
+    return invoke<void>("write_clipboard_text", { text });
   },
   getDiagnostics(): Promise<Diagnostics> {
     if (!hasTauriRuntime()) {
