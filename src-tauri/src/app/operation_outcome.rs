@@ -13,6 +13,7 @@ pub mod recovery {
     pub const RECORD_PROVENANCE: &str = "record_provenance";
     pub const CLEAR_PROVENANCE: &str = "clear_provenance";
     pub const CLEANUP_METADATA: &str = "cleanup_metadata";
+    pub const CLEANUP_LAUNCH_SHORTCUT: &str = "cleanup_launch_shortcut";
     pub const PURGE_USER_DATA: &str = "purge_user_data";
 }
 

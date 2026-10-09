@@ -213,7 +213,7 @@ export function About({ onBack }: { onBack: () => void }) {
     setMgrMsg(null);
     try {
       const diagnostics = await managerApi.getDiagnostics();
-      await navigator.clipboard.writeText(formatDiagnostics(diagnostics));
+      await managerApi.writeClipboardText(formatDiagnostics(diagnostics));
       setMgrMsg(t("about.diagnosticsCopied"));
     } catch {
       setMgrMsg(t("about.diagnosticsFailed"));

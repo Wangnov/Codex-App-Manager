@@ -903,6 +903,65 @@ pub fn codex_running_for_root(root: &Path) -> Result<bool, EngineError> {
     crate::windows_process::codex_processes_running_for_root(root)
 }
 
+/// Only remove the independently created Manager shortcut, preserving links
+/// which the user or the Windows package created at the same location.
+#[cfg(windows)]
+pub fn remove_manager_launch_shortcut() -> Result<(), EngineError> {
+    let Some(appdata) = std::env::var_os("APPDATA") else {
+        return Ok(());
+    };
+    let shortcut = PathBuf::from(appdata).join("Microsoft/Windows/Start Menu/Programs/Codex.lnk");
+    if !shortcut.exists() {
+        return Ok(());
+    }
+    let manager = std::env::current_exe().map_err(|error| io_err("locate Manager", error))?;
+    if crate::portable_shortcut::is_manager_launcher(&shortcut, &manager)
+        .map_err(|error| io_err("inspect Codex shortcut", error))?
+    {
+        fs::remove_file(shortcut).map_err(|error| io_err("remove Codex shortcut", error))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn remove_manager_launch_shortcut() -> Result<(), EngineError> {
+    Ok(())
+}
+
+/// A stable Manager entry activates MSIX with package identity, or launches a
+/// portable build, using the saved arguments. It also works while Manager is closed.
+#[cfg(windows)]
+pub fn create_manager_launch_shortcut(
+    manager_exe: &Path,
+    installed: &Path,
+) -> Result<(), EngineError> {
+    let appdata = std::env::var_os("APPDATA")
+        .ok_or_else(|| EngineError::Io("APPDATA is unavailable".into()))?;
+    let shortcut = PathBuf::from(appdata).join("Microsoft/Windows/Start Menu/Programs/Codex.lnk");
+    if let Some(parent) = shortcut.parent() {
+        fs::create_dir_all(parent).map_err(|error| io_err("create shortcut directory", error))?;
+    }
+    let icon = installed_app_exe(installed).unwrap_or_else(|| manager_exe.to_path_buf());
+    let workdir = manager_exe.parent()
+        .ok_or_else(|| EngineError::Io("Manager executable has no parent directory".into()))?;
+    crate::portable_shortcut::create_with_arguments(
+        &shortcut,
+        manager_exe,
+        workdir,
+        &icon,
+        "--launch-codex",
+    )
+    .map_err(|error| io_err("update Codex shortcut", error))
+}
+
+#[cfg(not(windows))]
+pub fn create_manager_launch_shortcut(
+    _manager_exe: &Path,
+    _installed: &Path,
+) -> Result<(), EngineError> {
+    Ok(())
+}
+
 #[cfg(all(windows, not(test)))]
 fn create_start_menu_shortcut(install_root: &Path) -> Result<bool, EngineError> {
     let Some(exe) = installed_app_exe(install_root) else {
@@ -917,6 +976,16 @@ fn create_start_menu_shortcut(install_root: &Path) -> Result<bool, EngineError> 
         .join("Start Menu")
         .join("Programs")
         .join("Codex.lnk");
+    // Repair must not replace the saved-arguments entry, including when the
+    // subsequent launch fails and the user retries from the Start Menu.
+    if shortcut.exists() {
+        let manager = std::env::current_exe().map_err(|error| io_err("locate Manager", error))?;
+        if crate::portable_shortcut::is_manager_launcher(&shortcut, &manager)
+            .map_err(|error| io_err("inspect Codex shortcut", error))?
+        {
+            return Ok(true);
+        }
+    }
     if let Some(parent) = shortcut.parent() {
         fs::create_dir_all(parent).map_err(|error| io_err("create shortcut directory", error))?;
     }
@@ -1127,6 +1196,7 @@ fn health_check_portable_install(
     install_root: &Path,
     launch: bool,
     keep_running: bool,
+    arguments: &str,
 ) -> Result<bool, EngineError> {
     let exe = installed_app_exe(install_root).ok_or_else(|| {
         EngineError::Install(format!(
@@ -1140,8 +1210,10 @@ fn health_check_portable_install(
     // Spawn alone is not enough: a broken payload can exit immediately after
     // CreateProcess succeeds. Require a short liveness window, then leave the
     // process running (this path is the post-install relaunch).
+    let mut command = portable_launch_command(&exe)?;
+    crate::sys::apply_launch_arguments(&mut command, arguments)?;
     match crate::process::spawn_and_check_startup(
-        portable_launch_command(&exe)?, PORTABLE_LIVENESS_WINDOW,
+        command, PORTABLE_LIVENESS_WINDOW,
         crate::app_version::requires_portable_cli(install_root),
     ) {
         Ok(LivenessResult::Survived { child }) => {
@@ -1309,6 +1381,30 @@ pub fn install_portable_from_msix_with_observer(
     relaunch: bool,
     observer: &mut PortableObserver<'_>,
 ) -> Result<PortableInstallReport, EngineError> {
+    install_portable_from_msix_with_launch_arguments(
+        msix_path,
+        install_root,
+        manage_process,
+        relaunch,
+        "",
+        observer,
+    )
+}
+
+pub fn install_portable_from_msix_with_launch_arguments(
+    msix_path: &Path,
+    install_root: &Path,
+    manage_process: bool,
+    relaunch: bool,
+    arguments: &str,
+    observer: &mut PortableObserver<'_>,
+) -> Result<PortableInstallReport, EngineError> {
+    crate::sys::validate_launch_arguments(arguments)?;
+    if crate::sys::is_msix_package_path(install_root) {
+        return Err(EngineError::Io(
+            "Portable install location cannot be inside WindowsApps; choose a writable folder in Settings".to_string(),
+        ));
+    }
     let install_parent = install_root.parent().unwrap_or(install_root);
     fs::create_dir_all(install_parent).map_err(|e| io_err("create install parent", e))?;
     let operation_id = uuid::Uuid::new_v4();
@@ -1423,6 +1519,7 @@ pub fn install_portable_from_msix_with_observer(
         install_root,
         manage_process,
         manage_process && relaunch,
+        arguments,
     ) {
         Ok(relaunched) => relaunched,
         Err(err) => {
@@ -2840,7 +2937,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = health_check_portable_install(&root, true, true).unwrap_err();
+        let err = health_check_portable_install(&root, true, true, "").unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("exited immediately"),

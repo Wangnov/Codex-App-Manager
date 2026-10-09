@@ -677,6 +677,41 @@ fn schedule_frontend_ready_fallback(app: tauri::AppHandle, generation: u64) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "windows")]
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|argument| argument == "--launch-codex")
+    {
+        let saved = app::settings_store::AppSettings::load();
+        let mut settings = domain::settings::AppSettings::new(String::new(), saved.install_root);
+        settings.disable_codex_self_updates = saved.disable_codex_self_updates;
+        settings.codex_launch_arguments = saved.codex_launch_arguments;
+        let result = (|| -> Result<(), errors::AppError> {
+            let lock_path = app::paths::data_dir()
+                .ok_or_else(|| errors::AppError::Internal("无法定位管理器数据目录".into()))?
+                .join("operation.lock");
+            let operations = app::oplock::OperationManager::new(lock_path);
+            let _guard = operations.begin(app::oplock::OperationKind::Adopt)?;
+            app::win_update::launch_codex(&settings)
+        })();
+        if let Err(error) = result {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR};
+            let text: Vec<u16> = format!("Codex 启动失败：{error}")
+                .encode_utf16()
+                .chain([0])
+                .collect();
+            let caption: Vec<u16> = "Codex App Manager".encode_utf16().chain([0]).collect();
+            unsafe {
+                MessageBoxW(
+                    std::ptr::null_mut(),
+                    text.as_ptr(),
+                    caption.as_ptr(),
+                    MB_ICONERROR,
+                );
+            }
+        }
+        return;
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
             log::info!(
@@ -795,6 +830,7 @@ pub fn run() {
             commands::win_uninstall,
             commands::get_host_architecture,
             commands::get_diagnostics,
+            commands::write_clipboard_text,
             commands::open_logs_dir,
             commands::open_codex_home,
             commands::log_frontend_error,

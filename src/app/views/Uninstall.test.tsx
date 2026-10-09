@@ -138,7 +138,7 @@ describe("Uninstall", () => {
     expect(screen.getByRole("button", { name: "Uninstall" })).toBeDisabled();
   });
 
-  it("offers ancillary-only cleanup retry after partial uninstall", async () => {
+  it.each(["cleanup_metadata", "cleanup_launch_shortcut"])("offers ancillary-only %s retry after partial uninstall", async (action) => {
     const user = userEvent.setup();
     setPlatform("Win32");
     winUninstall.mockResolvedValue({
@@ -165,7 +165,7 @@ describe("Uninstall", () => {
         appState: "absent",
         installClass: "none",
         cleanup: { state: "failed", detail: "shortcut cleanup failed" },
-        recoveryActions: ["cleanup_metadata"],
+        recoveryActions: [action],
         warnings: ["Start Menu shortcut cleanup failed: access denied"],
       }),
     });
@@ -183,7 +183,7 @@ describe("Uninstall", () => {
     );
     await waitFor(() =>
       expect(retryAncillary).toHaveBeenCalledWith(
-        expect.objectContaining({ actions: ["cleanup_metadata"] }),
+        expect.objectContaining({ actions: [action] }),
       ),
     );
   });

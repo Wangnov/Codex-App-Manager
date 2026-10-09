@@ -19,7 +19,8 @@ function hasTauriRuntime(): boolean {
 }
 
 const PROVENANCE_RECOVERY_ACTIONS = new Set(["record_provenance", "clear_provenance"]);
-const CLEANUP_RECOVERY_ACTIONS = new Set(["cleanup_metadata", "purge_user_data"]);
+const METADATA_RECOVERY_ACTIONS = new Set(["cleanup_metadata", "cleanup_launch_shortcut"]);
+const CLEANUP_RECOVERY_ACTIONS = new Set([...METADATA_RECOVERY_ACTIONS, "purge_user_data"]);
 
 /** Merge a scoped ancillary retry back into the original partial outcome.
  * The backend reports only the actions attempted in this request; actions the
@@ -220,11 +221,11 @@ export function Uninstall({ onBack }: { onBack: () => void }) {
               <>
                 <StatusBanner tone="warn">{t("uninstall.partial.title")}</StatusBanner>
                 <div className="actions">
-                  {partialOutcome.recoveryActions.includes("cleanup_metadata") ? (
+                  {partialOutcome.recoveryActions.some((action) => METADATA_RECOVERY_ACTIONS.has(action)) ? (
                     <button
                       className="btn big"
                       disabled={retryBusy}
-                      onClick={() => void retryActions(["cleanup_metadata"])}
+                      onClick={() => void retryActions(partialOutcome.recoveryActions.filter((action) => METADATA_RECOVERY_ACTIONS.has(action)))}
                     >
                       {t("uninstall.partial.retryCleanup")}
                     </button>

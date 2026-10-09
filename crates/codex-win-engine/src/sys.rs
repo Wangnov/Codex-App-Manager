@@ -35,11 +35,46 @@ pub struct InstalledWindowsCodex {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub struct LaunchOptions {
+pub struct LaunchOptions<'a> {
     pub disable_codex_self_updates: bool,
     /// Start Electron's loopback DevTools endpoint for renderer theme injection.
     /// `None` preserves the ordinary launch path.
     pub remote_debugging_port: Option<u16>,
+    pub additional_arguments: &'a str,
+}
+
+pub fn validate_launch_arguments(arguments: &str) -> Result<(), EngineError> {
+    // No shell is involved. Keep quoting and backslashes verbatim for Windows.
+    if arguments.encode_utf16().count() > 16_384 || arguments.chars().any(|ch| ch.is_control()) {
+        return Err(EngineError::Io(
+            "Codex 启动参数不能包含换行或控制字符，且不能超过 16384 个字符".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn apply_launch_arguments(
+    command: &mut std::process::Command,
+    arguments: &str,
+) -> Result<(), EngineError> {
+    validate_launch_arguments(arguments)?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        if !arguments.is_empty() {
+            command.raw_arg(arguments);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = command;
+        if !arguments.is_empty() {
+            return Err(EngineError::Io(
+                "Windows launch arguments are unavailable on this platform".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 const CODEX_SELF_UPDATE_ENV_KEY: &str = "CODEX_SPARKLE_ENABLED";
@@ -1594,6 +1629,11 @@ fn wait_for_msix_startup(root: &Path) -> Result<(), MsixStartupFailure> {
 
 #[cfg(windows)]
 fn msix_health_script() -> String {
+    msix_health_script_with_activation(true)
+}
+
+#[cfg(windows)]
+fn msix_health_script_with_activation(activate: bool) -> String {
     format!(
         r#"
 $ErrorActionPreference = 'SilentlyContinue'
@@ -1686,7 +1726,7 @@ if ($statusOk -and $aumidResolved -and $missing.Count -eq 0) {{
   $aumid = [string]$pkg.PackageFamilyName + '!' + $appId
   $installLoc = [string]$pkg.InstallLocation
   try {{
-    Start-Process ("shell:AppsFolder\" + $aumid) -ErrorAction Stop | Out-Null
+    if ({activate}) {{ Start-Process ("shell:AppsFolder\" + $aumid) -ErrorAction Stop | Out-Null }}
     $activationOk = $true
   }} catch {{
     $msg = [string]$_.Exception.Message
@@ -1711,17 +1751,30 @@ if ($statusOk -and $aumidResolved -and $missing.Count -eq 0) {{
   installLocation = $installLoc
 }} | ConvertTo-Json -Compress
 "#,
-        name = ps_quote(crate::OPENAI_PACKAGE_IDENTITY)
+        name = ps_quote(crate::OPENAI_PACKAGE_IDENTITY),
+        activate = if activate { "$true" } else { "$false" },
     )
 }
 
 #[cfg(windows)]
 pub fn verify_msix_health_with_options(keep_running: bool) -> MsixHealthReport {
+    verify_msix_health_with_launch_arguments(keep_running, "")
+}
+
+#[cfg(windows)]
+pub fn verify_msix_health_with_launch_arguments(
+    keep_running: bool,
+    arguments: &str,
+) -> MsixHealthReport {
     log::info!("MSIX health check start");
     // Package queries and shell activation are bounded separately from native
     // window observation. A live error dialog must never count as readiness.
     let limits = RunLimits::probe();
-    let script = msix_health_script();
+    let script = if arguments.is_empty() {
+        msix_health_script()
+    } else {
+        msix_health_script_with_activation(false)
+    };
 
     let run_result = run_powershell_json_with_limits(&script, limits);
     let parsed = match &run_result {
@@ -1767,6 +1820,18 @@ pub fn verify_msix_health_with_options(keep_running: bool) -> MsixHealthReport {
         };
     };
 
+    if !arguments.is_empty() && value.get("activationOk").and_then(|v| v.as_bool()) == Some(true) {
+        let activation = validate_launch_arguments(arguments).and_then(|_| {
+            let installed = detect_msix_install()
+                .ok_or_else(|| EngineError::Io("registered Codex package not found".into()))?;
+            launch_msix_app_with_arguments(&installed, arguments)
+        });
+        if let Err(error) = activation {
+            value["activationOk"] = false.into();
+            value["failureKind"] = msix_failure::ACTIVATION_FAILED.into();
+            value["activationDetail"] = error.to_string().into();
+        }
+    }
     if value.get("activationOk").and_then(|v| v.as_bool()) == Some(true) {
         let root = value
             .get("installLocation")
@@ -1914,6 +1979,14 @@ fn msix_health_from_probe(value: &serde_json::Value) -> MsixHealthReport {
 }
 
 #[cfg(not(windows))]
+pub fn verify_msix_health_with_launch_arguments(
+    keep_running: bool,
+    _arguments: &str,
+) -> MsixHealthReport {
+    verify_msix_health_with_options(keep_running)
+}
+
+#[cfg(not(windows))]
 pub fn verify_msix_health_with_options(_keep_running: bool) -> MsixHealthReport {
     // Non-Windows builds never sideload, so there is nothing to verify; report
     // healthy so this can never be the thing that blocks a (non-existent) path,
@@ -1967,7 +2040,24 @@ fn detect_msix_install() -> Option<InstalledWindowsCodex> {
     None
 }
 
+/// Registered MSIX payloads are read-only package storage, even when they have
+/// the same executable/manifest layout as an extracted portable installation.
+pub fn is_msix_package_path(path: &Path) -> bool {
+    fn contains_windows_apps(path: &Path) -> bool {
+        path.to_string_lossy()
+            .split(['\\', '/'])
+            .any(|component| component.eq_ignore_ascii_case("WindowsApps"))
+    }
+    contains_windows_apps(path)
+        || path
+            .canonicalize()
+            .is_ok_and(|resolved| contains_windows_apps(&resolved))
+}
+
 pub fn detect_portable_install(portable_root: &Path) -> Option<InstalledWindowsCodex> {
+    if is_msix_package_path(portable_root) {
+        return None;
+    }
     // Entry-exe aware (manifest-declared, ChatGPT.exe/Codex.exe fallback) so
     // both pre- and post-rebrand portable payloads are recognized.
     let exe = crate::portable::installed_app_exe(portable_root)?;
@@ -2045,10 +2135,16 @@ pub fn launch_codex(installed: &InstalledWindowsCodex) -> Result<(), EngineError
 
 pub fn launch_codex_with_options(
     installed: &InstalledWindowsCodex,
-    options: LaunchOptions,
+    options: LaunchOptions<'_>,
 ) -> Result<(), EngineError> {
+    validate_launch_arguments(options.additional_arguments)?;
     if installed.source == "portable" {
         let root = Path::new(&installed.path);
+        if is_msix_package_path(root) {
+            return Err(EngineError::Io(
+                "MSIX package storage cannot be launched as a portable installation; re-check the installed Codex".to_string(),
+            ));
+        }
         let exe = crate::portable::installed_app_exe(root).ok_or_else(|| {
             EngineError::Io(format!(
                 "no app entry executable (ChatGPT.exe / Codex.exe) in {}",
@@ -2066,6 +2162,9 @@ pub fn launch_codex_with_options(
         if let Some(port) = options.remote_debugging_port {
             command.args(remote_debugging_arguments(port));
         }
+        apply_launch_arguments(&mut command, options.additional_arguments)?;
+        let was_running = crate::windows_process::codex_processes_running_for_root(root)
+            .unwrap_or(false);
         match crate::process::spawn_and_check_startup(
             command,
             PORTABLE_LIVENESS_WINDOW,
@@ -2075,6 +2174,8 @@ pub fn launch_codex_with_options(
                 std::mem::forget(child);
                 Ok(())
             }
+            Ok(LivenessResult::ExitedEarly { code })
+                if portable_activation_succeeded(root, was_running, code) => Ok(()),
             Ok(LivenessResult::ExitedEarly { code }) => Err(EngineError::Io(format!(
                 "Codex exited immediately after launch (exit={})",
                 code.map(|c| c.to_string())
@@ -2088,12 +2189,32 @@ pub fn launch_codex_with_options(
                 "launching MSIX Codex with updater disabled via persisted user environment"
             );
         }
-        if let Some(port) = options.remote_debugging_port {
-            let arguments = remote_debugging_arguments(port).join(" ");
-            launch_msix_app_with_arguments(installed, &arguments)
-        } else {
-            launch_msix_app_with_arguments(installed, "")
-        }
+        let arguments = match options.remote_debugging_port {
+            Some(port) => format!(
+                "{} {}",
+                remote_debugging_arguments(port).join(" "),
+                options.additional_arguments
+            ),
+            None => options.additional_arguments.to_string(),
+        };
+        launch_msix_app_with_arguments(installed, &arguments)
+    }
+}
+
+fn portable_activation_succeeded(root: &Path, was_running: bool, code: Option<i32>) -> bool {
+    if !was_running || code != Some(0) {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        // A worker alone or a startup error dialog does not prove activation.
+        crate::windows_process::startup_window_for_root(root)
+            .is_ok_and(|(_, window)| window.ready && window.failure.is_none())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = root;
+        false
     }
 }
 
@@ -3105,6 +3226,96 @@ mod portable_identity_tests {
 
     fn cleanup(root: &Path) {
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn normal_second_activation_keeps_existing_gui_but_first_launch_still_checks_liveness() {
+        use std::time::{Duration, Instant};
+        let root = write_root("second-activation", "ChatGPT.exe", Some("OpenAI.Codex"));
+        let exe = root.join("ChatGPT.exe");
+        std::fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
+        let fixture = "startup_window::tests::native_window_fixture";
+        let mut child = std::process::Command::new(&exe)
+            .args(["--ignored", "--exact", fixture])
+            .env("CODEX_STARTUP_WINDOW_FIXTURE", "ready")
+            .spawn().unwrap();
+        let ready = {
+            let deadline = Instant::now() + Duration::from_secs(8);
+            loop {
+                if crate::windows_process::startup_window_for_root(&root)
+                    .is_ok_and(|(_, window)| window.ready && window.failure.is_none()) {
+                    break true;
+                }
+                if Instant::now() >= deadline { break false; }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        };
+        let installed = detect_portable_install(&root).unwrap();
+        let arguments = format!("--ignored --exact {fixture}");
+        let options = super::LaunchOptions {
+            additional_arguments: &arguments,
+            ..Default::default()
+        };
+        let result = if ready { super::launch_codex_with_options(&installed, options) }
+            else { Err(crate::EngineError::Io("fixture window did not become ready".into())) };
+        let _ = child.kill();
+        let _ = child.wait();
+        let first_launch = super::launch_codex_with_options(&installed, options);
+        cleanup(&root);
+        result.unwrap();
+        assert!(first_launch.unwrap_err().to_string().contains("exited immediately"));
+    }
+
+    #[test]
+    fn launch_arguments_accept_proxy_quotes_and_reject_control_characters() {
+        assert!(super::validate_launch_arguments(
+            r#"--proxy-server=http://127.0.0.1:7890 --proxy-pac-url="http://localhost/my pac""#
+        )
+        .is_ok());
+        for arguments in ["--flag\nother", "--flag\0other", "--flag\r"] {
+            assert!(super::validate_launch_arguments(arguments).is_err());
+        }
+        assert!(super::validate_launch_arguments(&"x".repeat(16385)).is_err());
+    }
+
+    #[test]
+    fn registered_package_payload_is_not_a_portable_install() {
+        let parent =
+            std::env::temp_dir().join(format!("codex-package-store-{}", std::process::id()));
+        let root = parent.join("WindowsApps").join("OpenAI.Codex");
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        std::fs::write(root.join("app/ChatGPT.exe"), b"fake exe").unwrap();
+        std::fs::write(root.join("AppxManifest.xml"), r#"<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"><Identity Name="OpenAI.Codex" Publisher="CN=OpenAI OpCo, LLC" Version="26.930.7945.0" ProcessorArchitecture="x64" /><Applications><Application Id="App" Executable="app/ChatGPT.exe" /></Applications></Package>"#).unwrap();
+        assert!(detect_portable_install(&root).is_none());
+        let result = crate::portable::install_portable_from_msix_with_observer(
+            &parent.join("missing.msix"),
+            &root,
+            false,
+            false,
+            &mut |_| Ok(()),
+        );
+        assert!(result.unwrap_err().to_string().contains("WindowsApps"));
+        assert!(!root
+            .parent()
+            .unwrap()
+            .join(".codex-app-manager-staging")
+            .exists());
+        cleanup(&parent);
+    }
+
+    #[test]
+    fn package_path_detection_handles_windows_spelling() {
+        for path in [
+            r"C:\Program Files\WindowsApps\OpenAI.Codex",
+            r"\\?\C:\Program Files\windowsapps\OpenAI.Codex\app",
+            "C:/Program Files/WindowsApps/OpenAI.Codex",
+        ] {
+            assert!(super::is_msix_package_path(Path::new(path)));
+        }
+        assert!(!super::is_msix_package_path(Path::new(
+            r"C:\Users\user\Programs\Codex"
+        )));
     }
 
     #[test]

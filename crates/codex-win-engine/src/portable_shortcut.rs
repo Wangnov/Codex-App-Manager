@@ -49,7 +49,18 @@ pub(crate) fn create(
     workdir: &Path,
     icon: &Path,
 ) -> windows::core::Result<()> {
+    create_with_arguments(shortcut, target, workdir, icon, "")
+}
+
+pub(crate) fn create_with_arguments(
+    shortcut: &Path,
+    target: &Path,
+    workdir: &Path,
+    icon: &Path,
+    arguments: &str,
+) -> windows::core::Result<()> {
     let _apartment = Apartment::initialize()?;
+    let arguments: Vec<u16> = arguments.encode_utf16().chain([0]).collect();
     let (shortcut, target, workdir, icon) =
         (wide(shortcut), wide(target), wide(workdir), wide(icon));
     let value = PROPVARIANT::from(APP_ID);
@@ -58,6 +69,7 @@ pub(crate) fn create(
     unsafe {
         let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
         link.SetPath(PCWSTR(target.as_ptr()))?;
+        link.SetArguments(PCWSTR(arguments.as_ptr()))?;
         link.SetWorkingDirectory(PCWSTR(workdir.as_ptr()))?;
         link.SetIconLocation(PCWSTR(icon.as_ptr()), 0)?;
         let store: IPropertyStore = link.cast()?;
@@ -92,5 +104,52 @@ pub(crate) fn inspect(shortcut: &Path) -> windows::core::Result<(std::path::Path
             OsString::from_wide(&target[..end]).into(),
             BSTR::try_from(&id)?.to_string(),
         ))
+    }
+}
+
+pub(crate) fn is_manager_launcher(
+    shortcut: &Path,
+    manager_exe: &Path,
+) -> windows::core::Result<bool> {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+    use windows::Win32::System::Com::STGM_READ;
+    let _apartment = Apartment::initialize()?;
+    let shortcut = wide(shortcut);
+    unsafe {
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
+        let persist: IPersistFile = link.cast()?;
+        persist.Load(PCWSTR(shortcut.as_ptr()), STGM_READ)?;
+        let mut target = vec![0u16; 32768];
+        let mut arguments = vec![0u16; 32768];
+        link.GetPath(&mut target, std::ptr::null_mut(), 0)?;
+        link.GetArguments(&mut arguments)?;
+        let target_end = target
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(target.len());
+        let arguments_end = arguments
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(arguments.len());
+        let target: std::path::PathBuf = OsString::from_wide(&target[..target_end]).into();
+        Ok(crate::same_windows_path(&target, manager_exe)
+            && String::from_utf16_lossy(&arguments[..arguments_end]) == "--launch-codex")
+    }
+}
+
+#[cfg(test)]
+mod launch_shortcut_tests {
+    use super::*;
+    #[test]
+    fn identifies_only_manager_owned_launch_shortcuts() {
+        let root = std::env::temp_dir().join(format!("codex-launch-link-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let manager = std::env::current_exe().unwrap();
+        let shortcut = root.join("Codex.lnk");
+        create_with_arguments(&shortcut, &manager, &root, &manager, "--launch-codex").unwrap();
+        assert!(is_manager_launcher(&shortcut, &manager).unwrap());
+        create_with_arguments(&shortcut, &manager, &root, &manager, "--other").unwrap();
+        assert!(!is_manager_launcher(&shortcut, &manager).unwrap());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

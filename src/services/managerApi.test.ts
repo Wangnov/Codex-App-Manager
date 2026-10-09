@@ -191,6 +191,13 @@ describe("diagnostics API", () => {
     });
   });
 
+  it("copies text through native IPC inside Tauri", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    invokeMock.mockResolvedValue(undefined);
+    await managerApi.writeClipboardText("诊断信息\nCodex");
+    expect(invokeMock).toHaveBeenCalledWith("write_clipboard_text", { text: "诊断信息\nCodex" });
+  });
+
   it("invokes diagnostics commands inside Tauri", async () => {
     window.__TAURI_INTERNALS__ = {};
     const diagnostics = {

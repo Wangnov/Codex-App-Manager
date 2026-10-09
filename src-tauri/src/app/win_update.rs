@@ -16,11 +16,10 @@ use codex_win_engine::{
     close_codex_gracefully_for_root, close_msix_codex_processes, codex_running_for_root,
     detect_installed_codex, detect_portable_install,
     download_to_with_progress_bounded_with_network, fetch_text_with_network, find_msix_sha256,
-    install_msix_sideload_with_observer, install_portable_from_msix_with_observer,
-    limits::MAX_PACKAGE_BYTES, parse_manifest, pause_active_download, plan_update,
-    precheck_msix_dependencies, probe_capabilities, purge_codex_user_data,
-    read_codex_app_version_from_msix, read_msix_identity, remove_msix_package, sha256_file,
-    uninstall_portable, validate_codex_identity, verify_msix_health_with_options,
+    install_msix_sideload_with_observer, limits::MAX_PACKAGE_BYTES, parse_manifest,
+    pause_active_download, plan_update, precheck_msix_dependencies, probe_capabilities,
+    purge_codex_user_data, read_codex_app_version_from_msix, read_msix_identity,
+    remove_msix_package, sha256_file, uninstall_portable, validate_codex_identity,
     verify_openai_authenticode, version_key, AuthenticodeReport, CapabilityState, EngineError,
     InstalledWindowsCodex, MsixHealthReport, MsixIdentity, MsixRemoveReport, MsixSideloadReport,
     NetworkConfig, PortableBoundary, PortableInstallReport, PortableUninstallReport,
@@ -1661,7 +1660,10 @@ fn perform_verified_windows_stage_tail(
         // stripped Windows it can register yet fail to launch. If it's unhealthy,
         // first install the portable fallback so the user is never left without
         // a runnable build, then clean up the bad MSIX best-effort.
-        let health = verify_msix_health_with_options(was_running);
+        let health = codex_win_engine::sys::verify_msix_health_with_launch_arguments(
+            was_running,
+            &settings.codex_launch_arguments,
+        );
         if !health.healthy {
             log::warn!("Windows route changed to portable fallback from_route=msix-sideload to_route=portable-fallback");
             // Preserve selected app-level runtime evidence before uninstalling
@@ -1747,6 +1749,13 @@ fn perform_verified_windows_stage_tail(
             outcome.push_warning(warning.clone());
         }
         notes.extend(msix_policy_warnings);
+        if !settings.codex_launch_arguments.is_empty() {
+            if let Err(error) = sync_launch_shortcut(settings) {
+                let warning = format!("Codex 已安装，但启动参数快捷方式未能更新：{error}");
+                notes.push(warning.clone());
+                outcome.push_warning(warning);
+            }
+        }
 
         let report = WinPerformReport {
             success: true,
@@ -1823,9 +1832,22 @@ fn install_portable_after_stage(
         .ok_or_else(|| AppError::Engine("staged MSIX path missing".to_string()))?;
     let install_root = previous_installed
         .as_ref()
-        .filter(|installed| installed.source == "portable")
+        .filter(|installed| {
+            installed.source == "portable"
+                && !codex_win_engine::sys::is_msix_package_path(
+                    PathBuf::from(&installed.path).as_path(),
+                )
+        })
         .map(|installed| installed.path.clone())
-        .unwrap_or_else(|| settings.install_root.clone());
+        .unwrap_or_else(|| {
+            if codex_win_engine::sys::is_msix_package_path(
+                PathBuf::from(&settings.install_root).as_path(),
+            ) {
+                super::settings_store::default_install_root()
+            } else {
+                settings.install_root.clone()
+            }
+        });
     let install_root_path = PathBuf::from(&install_root);
     let msix_path = PathBuf::from(staged_path);
     // Persist the transaction log before the first possible rename using the
@@ -1915,11 +1937,12 @@ fn install_portable_after_stage(
             | PortableBoundary::RollbackCompleted { .. } => unreachable!("handled above"),
         }
     };
-    let portable = install_portable_from_msix_with_observer(
+    let portable = codex_win_engine::portable::install_portable_from_msix_with_launch_arguments(
         msix_path.as_path(),
         install_root_path.as_path(),
         true,
         relaunch,
+        &settings.codex_launch_arguments,
         &mut observer,
     )
     .map_err(|err| {
@@ -2025,6 +2048,11 @@ fn install_portable_after_stage(
                     "{detail}；开始菜单仍可能启动旧 MSIX，请在 Windows 应用设置中移除 Codex MSIX"
                 ));
             }
+        }
+    }
+    if !settings.codex_launch_arguments.is_empty() {
+        if let Err(error) = sync_launch_shortcut(settings) {
+            outcome.push_warning(format!("Codex 已安装，但启动参数快捷方式未能更新：{error}"));
         }
     }
     notes.extend(outcome.warnings.iter().cloned());
@@ -2201,12 +2229,28 @@ pub fn launch_codex(settings: &AppSettings) -> Result<(), AppError> {
         codex_win_engine::LaunchOptions {
             disable_codex_self_updates: settings.disable_codex_self_updates,
             remote_debugging_port: None,
+            additional_arguments: &settings.codex_launch_arguments,
         },
     )
     .map_err(|e| {
         crate::app::diagnostics::record_windows_runtime_failure(Some(&installed));
         AppError::Engine(e.to_string())
-    })
+    })?;
+    if !settings.codex_launch_arguments.is_empty() {
+        if let Err(error) = sync_launch_shortcut(settings) {
+            log::warn!("Codex launched but shortcut refresh failed: {error}");
+        }
+    }
+    Ok(())
+}
+
+pub fn sync_launch_shortcut(settings: &AppSettings) -> Result<(), AppError> {
+    let Some(installed) = detect_managed_codex(settings, &ProvenanceStore::load()) else {
+        return Ok(());
+    };
+    let manager = std::env::current_exe().map_err(|error| AppError::Internal(error.to_string()))?;
+    codex_win_engine::portable::create_manager_launch_shortcut(&manager, Path::new(&installed.path))
+        .map_err(engine_err)
 }
 
 pub fn uninstall_windows_codex(
@@ -2306,6 +2350,14 @@ pub fn uninstall_windows_codex(
             } else {
                 notes.push("User data was preserved.".to_string());
                 outcome.cleanup = StepOutcome::skipped("user data preserved");
+            }
+        }
+        if msix.success {
+            if let Err(error) = codex_win_engine::portable::remove_manager_launch_shortcut() {
+                let detail = format!("Codex 已卸载，但开始菜单快捷方式清理失败：{error}");
+                outcome.cleanup = StepOutcome::failed(detail.clone());
+                outcome.push_recovery(recovery::CLEANUP_LAUNCH_SHORTCUT);
+                outcome.push_warning(detail);
             }
         }
         notes.extend(outcome.warnings.iter().cloned());
@@ -2475,6 +2527,20 @@ where
         }
     }
 
+    if actions.iter().any(|a| a == recovery::CLEANUP_LAUNCH_SHORTCUT) {
+        match codex_win_engine::portable::remove_manager_launch_shortcut().map_err(engine_err) {
+            Ok(()) => {
+                outcome.cleanup = StepOutcome::ok();
+                messages.push("管理器创建的 Codex 快捷方式已清理".to_string());
+            }
+            Err(error) => {
+                outcome.cleanup = StepOutcome::failed(error.to_string());
+                outcome.push_recovery(recovery::CLEANUP_LAUNCH_SHORTCUT);
+                messages.push(format!("Codex 快捷方式清理仍失败: {error}"));
+            }
+        }
+    }
+
     if actions.iter().any(|a| a == recovery::PURGE_USER_DATA) && purge_user_data {
         let mut notes = Vec::new();
         match purge_codex_user_data(&mut notes).map_err(engine_err) {
@@ -2493,7 +2559,7 @@ where
 
     if messages.is_empty() {
         return Err(AppError::Internal(
-            "没有可执行的恢复步骤（请传入 record_provenance / clear_provenance / cleanup_metadata / purge_user_data）"
+            "没有可执行的恢复步骤（请传入 record_provenance / clear_provenance / cleanup_metadata / cleanup_launch_shortcut / purge_user_data）"
                 .to_string(),
         ));
     }

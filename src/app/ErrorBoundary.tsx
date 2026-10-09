@@ -143,7 +143,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
   private copy = async () => {
     try {
       const diagnostics = await managerApi.getDiagnostics();
-      await navigator.clipboard.writeText(formatDiagnostics(diagnostics, this.state.error));
+      await managerApi.writeClipboardText(formatDiagnostics(diagnostics, this.state.error));
       this.setState({ copied: true });
     } catch {
       // The crash screen must never throw while trying to help.
