@@ -58,4 +58,4 @@ libc.workspace = true
 # Keep these pinned to Tauri/Wry's WebView2 ABI: the platform handle returned
 # by `WebviewWindow::with_webview` exposes these exact COM interfaces.
 webview2-com = "=0.39.1"
-windows-core = "0.62.2"
+windows-core = "0.100.0"
