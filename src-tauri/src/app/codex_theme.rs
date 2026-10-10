@@ -1524,9 +1524,9 @@ fn launch_codex_plain() -> Result<(), AppError> {
 #[cfg(target_os = "windows")]
 fn windows_domain_settings() -> crate::domain::settings::AppSettings {
     let saved = AppSettings::load();
-    let mut settings =
-        crate::domain::settings::AppSettings::new(String::new(), saved.install_root);
+    let mut settings = crate::domain::settings::AppSettings::new(String::new(), saved.install_root);
     settings.disable_codex_self_updates = saved.disable_codex_self_updates;
+    settings.codex_launch_arguments = saved.codex_launch_arguments;
     settings
 }
 
@@ -1584,9 +1584,17 @@ fn launch_codex_with_cdp(
         codex_win_engine::LaunchOptions {
             disable_codex_self_updates: disable_self_updates,
             remote_debugging_port: Some(port),
+            additional_arguments: &AppSettings::load().codex_launch_arguments,
         },
     )
-    .map_err(|e| AppError::Engine(format!("以调试模式打开 Codex 失败: {e}")))
+    .map_err(|e| AppError::Engine(format!("以调试模式打开 Codex 失败: {e}")))?;
+    let settings = windows_domain_settings();
+    if !settings.codex_launch_arguments.is_empty() {
+        if let Err(error) = crate::app::win_update::sync_launch_shortcut(&settings) {
+            log::warn!("Themed Codex launched but shortcut refresh failed: {error}");
+        }
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]

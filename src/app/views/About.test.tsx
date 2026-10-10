@@ -22,6 +22,7 @@ vi.mock("../../services/managerApi", async (importOriginal) => {
       openUrl: vi.fn(),
       openLogsDir: vi.fn(),
       getDiagnostics: vi.fn(),
+      writeClipboardText: vi.fn((text: string) => navigator.clipboard.writeText(text)),
       getManagerUpdateRuntime: vi
         .fn()
         .mockResolvedValue(actual.IDLE_MANAGER_UPDATE_SNAPSHOT),

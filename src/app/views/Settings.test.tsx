@@ -97,6 +97,28 @@ describe("Settings runtime contract", () => {
     api.resetConfig.mockResolvedValue(HEALTHY_CONFIG);
   });
 
+  it("persists Windows launch arguments on blur and can clear them", async () => {
+    const platform = vi.spyOn(navigator, "platform", "get").mockReturnValue("Win32");
+    try {
+      const user = userEvent.setup();
+      api.getSettings.mockResolvedValue(settings());
+      api.winDefaultInstallRoot.mockResolvedValue(DEFAULT_SETTINGS.installRoot);
+      renderSettings();
+      const input = await screen.findByRole("textbox", { name: "Codex 启动参数" });
+      await user.type(input, '--proxy-pac-url="http://127.0.0.1:7890/my pac"');
+      expect(api.setSettings).not.toHaveBeenCalled();
+      await user.tab();
+      await waitFor(() => expect(api.setSettings).toHaveBeenLastCalledWith(
+        expect.objectContaining({ codexLaunchArguments: '--proxy-pac-url="http://127.0.0.1:7890/my pac"' }),
+      ));
+      await user.clear(input);
+      await user.tab();
+      await waitFor(() => expect(api.setSettings).toHaveBeenLastCalledWith(
+        expect.objectContaining({ codexLaunchArguments: "" }),
+      ));
+    } finally { platform.mockRestore(); }
+  });
+
   it("keeps the form non-editable until settings hydrate", async () => {
     const load = deferred<AppSettings>();
     api.getSettings.mockReturnValueOnce(load.promise);

@@ -25,6 +25,8 @@ export type Lang =
 
 // Canonical copy lives here. zh-CN is the source of truth; en mirrors it.
 const ZH = {
+  "settings.windows.launchArguments": "Codex 启动参数",
+  "settings.windows.launchArgumentsDesc": "用于管理器启动及开始菜单快捷方式。留空使用默认设置；修改后在下次启动生效。支持 --proxy-server 和 --proxy-pac-url。",
   "app.name": "Codex App 管理器",
 
   "nav.back": "返回",
@@ -460,6 +462,8 @@ type Key = keyof typeof ZH;
 export type TKey = Key;
 
 const EN: Record<Key, string> = {
+  "settings.windows.launchArguments": "Codex launch arguments",
+  "settings.windows.launchArgumentsDesc": "Used by Manager launches and the Start menu shortcut. Leave empty for defaults; changes apply on the next launch. Supports --proxy-server and --proxy-pac-url.",
   "app.name": "Codex App Manager",
 
   "nav.back": "Back",
@@ -892,6 +896,8 @@ const EN: Record<Key, string> = {
 };
 
 const FR: Record<Key, string> = {
+  "settings.windows.launchArguments": "Arguments de lancement de Codex",
+  "settings.windows.launchArgumentsDesc": "Utilisés par le gestionnaire et le raccourci du menu Démarrer. Laissez vide pour les valeurs par défaut ; les modifications prennent effet au prochain lancement. Prend en charge --proxy-server et --proxy-pac-url.",
   "app.name": "Gestionnaire Codex",
 
   "nav.back": "Retour",
@@ -1324,6 +1330,8 @@ const FR: Record<Key, string> = {
 };
 
 const ZH_TW: Record<Key, string> = {
+  "settings.windows.launchArguments": "Codex 啟動參數",
+  "settings.windows.launchArgumentsDesc": "用於管理器啟動及開始功能表捷徑。留空使用預設設定；修改後於下次啟動生效。支援 --proxy-server 與 --proxy-pac-url。",
   "app.name": "Codex App 管理員",
 
   "nav.back": "返回",
@@ -1767,6 +1775,8 @@ const ZH_TW: Record<Key, string> = {
 };
 
 const DE: Record<Key, string> = {
+  "settings.windows.launchArguments": "Codex-Startparameter",
+  "settings.windows.launchArgumentsDesc": "Gelten für Starts über den Manager und die Startmenüverknüpfung. Leer lassen für Standardwerte; Änderungen gelten beim nächsten Start. Unterstützt --proxy-server und --proxy-pac-url.",
   "app.name": "Codex App Manager",
 
   "nav.back": "Zurück",
@@ -2210,6 +2220,8 @@ const DE: Record<Key, string> = {
 };
 
 const KO: Record<Key, string> = {
+  "settings.windows.launchArguments": "Codex 실행 인수",
+  "settings.windows.launchArgumentsDesc": "관리자 실행과 시작 메뉴 바로 가기에 적용됩니다. 기본값을 사용하려면 비워 두세요. 변경은 다음 실행부터 적용됩니다. --proxy-server 및 --proxy-pac-url을 지원합니다.",
   "app.name": "Codex App 관리자",
 
   "nav.back": "뒤로",
@@ -2652,6 +2664,8 @@ const KO: Record<Key, string> = {
 };
 
 const JA: Record<Key, string> = {
+  "settings.windows.launchArguments": "Codex 起動引数",
+  "settings.windows.launchArgumentsDesc": "管理アプリからの起動とスタートメニューのショートカットに適用されます。空欄で既定値を使用し、変更は次回起動時に反映されます。--proxy-server と --proxy-pac-url に対応。",
   "app.name": "Codex App マネージャー",
   "nav.back": "戻る",
   "nav.settings": "設定",
@@ -3075,6 +3089,8 @@ const JA: Record<Key, string> = {
 };
 
 const RU: Record<Key, string> = {
+  "settings.windows.launchArguments": "Аргументы запуска Codex",
+  "settings.windows.launchArgumentsDesc": "Используются при запуске из менеджера и через ярлык в меню «Пуск». Оставьте пустым для настроек по умолчанию; изменения действуют со следующего запуска. Поддерживаются --proxy-server и --proxy-pac-url.",
   "app.name": "Менеджер Codex App",
   "nav.back": "Назад",
   "nav.settings": "Настройки",
@@ -3498,6 +3514,8 @@ const RU: Record<Key, string> = {
 };
 
 const AR: Record<Key, string> = {
+  "settings.windows.launchArguments": "وسائط تشغيل Codex",
+  "settings.windows.launchArgumentsDesc": "تُستخدم عند التشغيل من المدير واختصار قائمة ابدأ. اتركها فارغة لاستخدام الإعدادات الافتراضية؛ تسري التغييرات عند التشغيل التالي. تدعم --proxy-server و --proxy-pac-url.",
   "app.name": "مدير تطبيق Codex",
   "nav.back": "رجوع",
   "nav.settings": "الإعدادات",
@@ -3921,6 +3939,8 @@ const AR: Record<Key, string> = {
 };
 
 const ES: Record<Key, string> = {
+  "settings.windows.launchArguments": "Argumentos de inicio de Codex",
+  "settings.windows.launchArgumentsDesc": "Se usan al iniciar desde el gestor y el acceso directo del menú Inicio. Deja vacío para usar los valores predeterminados; los cambios se aplican al próximo inicio. Admite --proxy-server y --proxy-pac-url.",
   "app.name": "Codex App Manager",
   "nav.back": "Atrás",
   "nav.settings": "Ajustes",
@@ -4344,6 +4364,8 @@ const ES: Record<Key, string> = {
 };
 
 const PT_BR: Record<Key, string> = {
+  "settings.windows.launchArguments": "Argumentos de inicialização do Codex",
+  "settings.windows.launchArgumentsDesc": "Usados ao iniciar pelo gerenciador e pelo atalho do menu Iniciar. Deixe vazio para usar os padrões; as alterações valem na próxima inicialização. Suporta --proxy-server e --proxy-pac-url.",
   "app.name": "Gerenciador do Codex App",
   "nav.back": "Voltar",
   "nav.settings": "Configurações",

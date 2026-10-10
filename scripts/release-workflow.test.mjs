@@ -48,6 +48,14 @@ const mirrorRelease = await readFile(
 const releaseJob = workflow.slice(workflow.indexOf("  release:\n"));
 
 describe("release workflow recovery invariants", () => {
+  it("发布引用的 actions 符合仓库允许列表且固定完整 SHA", () => {
+    // 与当前仓库 Actions 策略一致；GitHub 会在执行步骤 if 之前校验 uses。
+    const refs = [...workflow.matchAll(/^\s*(?:-\s*)?uses:\s*(\S+)/gm)].map((match) => match[1]);
+    expect(refs.length).toBeGreaterThan(0);
+    const allowed = /^(?:actions\/[^@]+|github\/[^@]+|Wangnov\/[^@]+|Swatinem\/rust-cache|dtolnay\/rust-toolchain|softprops\/action-gh-release|vedantmgoyal9\/winget-releaser)@[0-9a-f]{40}$/;
+    expect(refs.filter((ref) => !allowed.test(ref))).toEqual([]);
+  });
+
   it("queues every release run instead of replacing an older pending tag", () => {
     expect(workflow).toMatch(
       /concurrency:\n\s+group: release-latest-\$\{\{ github\.repository \}\}\n\s+cancel-in-progress: false\n\s+queue: max/,

@@ -19,9 +19,9 @@
     "@fontsource/monaspace-neon": "^5.3.0",
     "@phosphor-icons/core": "^2.1.1",
     "fontkit": "^2.0.4",
-    "sharp": "^0.35.4",
-    "subset-font": "^2.7.0",
+    "sharp": "^0.35.5",
+    "subset-font": "^2.9.0",
     "typescript": "^7.0.2",
-    "vite": "^8.3.0"
+    "vite": "^8.3.2"
   }
 }

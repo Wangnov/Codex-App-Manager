@@ -708,6 +708,8 @@ describe("WinHome state machine", () => {
     ).not.toBeInTheDocument();
     await user.click(adopt);
     await waitFor(() => expect(api.winAdopt).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole("button", { name: /选择安装版本/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /开始管理/ })).not.toBeInTheDocument();
   });
 
   it.each([false, true])("keeps fallback diagnostics collapsed and cleanup guidance visible (cleanup failed: %s)", async (cleanupFailed) => {

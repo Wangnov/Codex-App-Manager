@@ -1,4 +1,5 @@
 pub mod atomic_file;
+pub mod clipboard;
 pub mod codex_self_update;
 pub mod codex_theme;
 pub mod config_health;

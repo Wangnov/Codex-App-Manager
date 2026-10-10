@@ -6,7 +6,7 @@ name = "codex-app-manager"
 # would otherwise ride along in the production app. default-run is kept
 # defensively to pin `cargo run` to the app should another src/bin/* be added.
 default-run = "codex-app-manager"
-version = "0.5.10"
+version = "0.5.14"
 description = "A cross-platform manager for installing and updating mirrored official Codex desktop app packages."
 authors = ["Wangnov"]
 edition.workspace = true
@@ -42,7 +42,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
 url.workspace = true
 uuid.workspace = true
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_SystemInformation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_SystemInformation", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 zip.workspace = true
 
 [dev-dependencies]
@@ -57,5 +57,5 @@ libc.workspace = true
 [target.'cfg(windows)'.dependencies]
 # Keep these pinned to Tauri/Wry's WebView2 ABI: the platform handle returned
 # by `WebviewWindow::with_webview` exposes these exact COM interfaces.
-webview2-com = "=0.38.2"
-windows-core = "0.61.2"
+webview2-com = "=0.39.1"
+windows-core = "0.62.2"

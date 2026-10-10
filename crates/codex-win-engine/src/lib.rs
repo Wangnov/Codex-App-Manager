@@ -24,6 +24,10 @@ pub mod network;
 pub mod plan;
 pub mod portable;
 mod portable_command;
+#[cfg(windows)]
+mod portable_shortcut;
+#[cfg(windows)]
+mod portable_protocol;
 mod process;
 mod startup_window;
 pub mod sys;

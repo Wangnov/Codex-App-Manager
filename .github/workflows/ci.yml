@@ -65,9 +65,9 @@ jobs:
       # every member (previously the engines were only `cargo test`-ed
       # standalone and never linted with -D warnings).
       - name: Clippy (deny warnings)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test (workspace)
-        run: cargo test --workspace
+        run: cargo test --workspace --all-targets --locked
 
   audit:
     name: Audit

@@ -194,11 +194,14 @@ test("fallback removal expression clears only runtime-owned surface aliases", ()
   const dom = domFor(current + `<div class="${LEGACY}" id="native">${editor}</div>`);
   try {
     reconcileComposerSurfaces(dom.window.document);
+    dom.window.document.getElementById("surface").querySelector("button")
+      .setAttribute("data-cts-composer-action", "send");
     const source = fs.readFileSync(path.join(runtimeDir, "../payload.rs"), "utf8");
     const expression = source.match(/pub const REMOVE_EXPRESSION: &str = r#"([\s\S]*?)"#;/)?.[1];
     assert.ok(expression);
     assert.equal(dom.window.eval(expression), true);
     assert.equal(dom.window.document.getElementById("surface").classList.contains(LEGACY), false);
+    assert.equal(dom.window.document.querySelector("[data-cts-composer-action]"), null);
     assert.equal(dom.window.document.getElementById("native").classList.contains(LEGACY), true);
   } finally { dom.window.close(); }
 });

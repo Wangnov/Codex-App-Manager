@@ -357,6 +357,7 @@ export interface AppSettings {
   customProxyUrl: string;
   /** Disable Codex App's own embedded update checks and silent downloads. */
   disableCodexSelfUpdates: boolean;
+  codexLaunchArguments: string;
   /** One exact Codex app update the user chose not to be reminded about. */
   skippedCodexUpdate: SkippedCodexUpdate | null;
   /** Persistent Codex UI theme selection (theme id); null = stock. */
@@ -412,6 +413,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   proxyMode: "system",
   customProxyUrl: "",
   disableCodexSelfUpdates: false,
+  codexLaunchArguments: "",
   skippedCodexUpdate: null,
   codexTheme: null,
   codexThemeDir: null,

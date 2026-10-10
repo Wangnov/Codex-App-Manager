@@ -147,6 +147,9 @@ pub struct AppSettings {
     /// Disable Codex App's own embedded updater checks/downloads.
     #[serde(default)]
     pub disable_codex_self_updates: bool,
+    /// Raw Windows command-line arguments for Codex launches and its shortcut.
+    #[serde(default)]
+    pub codex_launch_arguments: String,
     /// One exact Codex app update the user chose not to be reminded about.
     #[serde(default)]
     pub skipped_codex_update: Option<SkippedCodexUpdate>,
@@ -211,6 +214,8 @@ struct RawAppSettings {
     #[serde(default)]
     disable_codex_self_updates: bool,
     #[serde(default)]
+    codex_launch_arguments: String,
+    #[serde(default)]
     skipped_codex_update: Option<SkippedCodexUpdate>,
     #[serde(default)]
     codex_theme: Option<String>,
@@ -256,6 +261,7 @@ impl Default for AppSettings {
             proxy_mode: ProxyMode::System,
             custom_proxy_url: String::new(),
             disable_codex_self_updates: false,
+            codex_launch_arguments: String::new(),
             skipped_codex_update: None,
             codex_theme: None,
             codex_theme_dir: None,
@@ -305,6 +311,7 @@ impl RawAppSettings {
                 proxy_mode,
                 custom_proxy_url: self.custom_proxy_url,
                 disable_codex_self_updates: self.disable_codex_self_updates,
+                codex_launch_arguments: self.codex_launch_arguments,
                 skipped_codex_update: self.skipped_codex_update,
                 codex_theme: self.codex_theme,
                 codex_theme_dir: self.codex_theme_dir,
@@ -341,6 +348,9 @@ impl AppSettings {
         }
         if self.install_root.trim().is_empty()
             || !PathBuf::from(self.install_root.trim()).is_absolute()
+            || codex_win_engine::sys::is_msix_package_path(
+                PathBuf::from(self.install_root.trim()).as_path(),
+            )
         {
             self.install_root = default_install_root();
         } else {
@@ -439,6 +449,27 @@ mod tests {
         DEFAULT_PERIODIC_CHECK_INTERVAL_SECONDS, MAX_PERIODIC_CHECK_INTERVAL_SECONDS,
         MIN_PERIODIC_CHECK_INTERVAL_SECONDS,
     };
+
+    #[test]
+    fn repairs_package_storage_root_and_preserves_launch_argument_quotes() {
+        let raw: RawAppSettings = serde_json::from_value(serde_json::json!({
+            "installRoot": "C:/Program Files/WindowsApps/OpenAI.Codex",
+            "codexLaunchArguments": "--proxy-pac-url=\"http://localhost/my pac\""
+        }))
+        .unwrap();
+        let (mut settings, _, _) = raw.into_settings();
+        settings.normalize();
+        assert_eq!(settings.install_root, super::default_install_root());
+        assert_eq!(
+            settings.codex_launch_arguments,
+            "--proxy-pac-url=\"http://localhost/my pac\""
+        );
+        let value = serde_json::to_value(settings).unwrap();
+        assert_eq!(
+            value["codexLaunchArguments"],
+            "--proxy-pac-url=\"http://localhost/my pac\""
+        );
+    }
 
     #[test]
     fn old_schema_defaults_schema_version() {

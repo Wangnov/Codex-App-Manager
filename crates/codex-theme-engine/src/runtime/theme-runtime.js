@@ -21,6 +21,7 @@
   const WINDOWS_MENU_REGION_ATTR = "data-cts-menu-region";
   const COMPOSER_OVERFLOW_ATTR = "data-cts-composer-overflow";
   const COMPOSER_MODE_ATTR = "data-cts-composer-mode";
+  const COMPOSER_ACTION_ATTR = "data-cts-composer-action";
   const {
     clearComposerSurfaceCompat,
     createComposerOverflowAnnotator,
@@ -88,6 +89,8 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
     .forEach((node) => node.removeAttribute(COMPOSER_OVERFLOW_ATTR));
   document.querySelectorAll(`[${COMPOSER_MODE_ATTR}]`)
     .forEach((node) => node.removeAttribute(COMPOSER_MODE_ATTR));
+  document.querySelectorAll(`[${COMPOSER_ACTION_ATTR}]`)
+    .forEach((node) => node.removeAttribute(COMPOSER_ACTION_ATTR));
   clearComposerSurfaceCompat(document);
 
   // Split the chrome fragment into its layers: "overlay" floats above the UI
@@ -122,18 +125,65 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
   // Codex <= 26.715 exposed the content surface as `main.main-surface`.
   // Codex 26.727 replaced that class with the stable
   // `data-app-shell-main-surface` attribute and also introduced an unrelated
-  // full-window <main> before it. Prefer the current semantic marker, keep the
-  // legacy selector for old clients, and add the legacy class only as a
-  // runtime-owned compatibility shim so existing theme packages keep working.
+  // full-window <main> before it. Current builds retain zero-sized history
+  // pages in the DOM, so query order no longer identifies the live page. Pick
+  // the visible semantic surface with the largest viewport intersection,
+  // falling back to a visible legacy surface only when no current one exists.
+  // Hidden ancestors matter: cached pages can keep their own display/visibility
+  // while an ancestor suppresses them with CSS or marks them inactive. Do not
+  // treat inert/aria-hidden as visual hiding: modal accessibility isolation can
+  // apply both to a still-visible active page behind the dialog.
   const releaseShellMainCompat = (node) => {
     if (!node?.hasAttribute(SHELL_MAIN_COMPAT_ATTR)) return;
     node.classList.remove(LEGACY_SHELL_MAIN_CLASS);
     node.removeAttribute(SHELL_MAIN_COMPAT_ATTR);
   };
 
+  const hiddenByAncestor = (node) => {
+    for (let current = node; current; current = current.parentElement) {
+      if (current.hidden ||
+          current.getAttribute?.("data-app-shell-active-page") === "false") return true;
+      const style = getComputedStyle(current);
+      const contentVisibility = style.contentVisibility || style.getPropertyValue?.("content-visibility");
+      if (style.display === "none" || style.visibility === "hidden" ||
+          style.visibility === "collapse" || contentVisibility === "hidden" ||
+          Number.parseFloat(style.opacity) === 0) return true;
+    }
+    return false;
+  };
+
+  const visibleSurfaceScore = (node) => {
+    if (!node?.isConnected || hiddenByAncestor(node)) return -1;
+    const rect = node.getBoundingClientRect();
+    if (!(rect.width > 0 && rect.height > 0)) return -1;
+    const viewportWidth = Math.max(document.documentElement?.clientWidth || 0, innerWidth || 0);
+    const viewportHeight = Math.max(document.documentElement?.clientHeight || 0, innerHeight || 0);
+    const visibleWidth = Math.max(0, Math.min(rect.right, viewportWidth) - Math.max(rect.left, 0));
+    const visibleHeight = Math.max(0, Math.min(rect.bottom, viewportHeight) - Math.max(rect.top, 0));
+    const area = visibleWidth * visibleHeight;
+    return area > 0 ? area : -1;
+  };
+
+  const bestVisibleSurface = (candidates) => {
+    let best = null;
+    let bestScore = -1;
+    for (const candidate of candidates) {
+      const score = visibleSurfaceScore(candidate);
+      // During a history swipe two pages can briefly have the same visible
+      // area. The newly mounted page is later in DOM order, so let it win ties.
+      if (score >= 0 && score >= bestScore) {
+        best = candidate;
+        bestScore = score;
+      }
+    }
+    return best;
+  };
+
   const resolveShellMain = () => {
-    const shellMain = document.querySelector("main[data-app-shell-main-surface]") ||
-      document.querySelector(`main.${LEGACY_SHELL_MAIN_CLASS}`);
+    const current = [...document.querySelectorAll("main[data-app-shell-main-surface]")];
+    const legacy = [...document.querySelectorAll(`main.${LEGACY_SHELL_MAIN_CLASS}`)]
+      .filter((node) => !node.hasAttribute("data-app-shell-main-surface"));
+    const shellMain = bestVisibleSurface(current) || bestVisibleSurface(legacy);
     for (const candidate of document.querySelectorAll(`[${SHELL_MAIN_COMPAT_ATTR}]`)) {
       if (candidate !== shellMain) releaseShellMainCompat(candidate);
     }
@@ -161,15 +211,22 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
     return "light";
   };
 
-  // Sticky route detection: only flip home-state on positive signals, so
-  // transient DOM (dropdown portals, dialogs) never toggles theme classes.
-  const findHome = (sticky) => {
-    const indicator = document.querySelector('[data-testid="home-icon"]');
+  // Sticky route detection is scoped to the active shell page. Current Codex
+  // retains old home/chat trees, so a document-wide home signal can decorate a
+  // newly active chat page. The signal itself may be hidden by theme CSS; the
+  // containing role=main is the route surface whose visibility matters.
+  const findHome = (shellMain, sticky) => {
+    if (!shellMain) return null;
+    const isLiveHome = (candidate) => Boolean(
+      candidate && shellMain.contains(candidate) && visibleSurfaceScore(candidate) >= 0
+    );
+    const indicator = [...shellMain.querySelectorAll('[data-testid="home-icon"]')]
+      .find((node) => isLiveHome(node.closest('[role="main"]')));
     if (indicator) return indicator.closest('[role="main"]');
-    const bySuggestions = [...document.querySelectorAll('[role="main"]')]
-      .find((candidate) => candidate.querySelector('.group\\/home-suggestions'));
+    const bySuggestions = [...shellMain.querySelectorAll('[role="main"]')]
+      .find((candidate) => isLiveHome(candidate) && candidate.querySelector('.group\\/home-suggestions'));
     if (bySuggestions) return bySuggestions;
-    if (sticky?.isConnected) return sticky; // keep last known while it lives
+    if (isLiveHome(sticky)) return sticky; // keep last known while it remains visible here
     return null;
   };
 
@@ -187,19 +244,27 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
 
   // Semantic icon annotation: CSS cannot match by text, so tag well-known
   // controls with data-cts-icon and let theme CSS attach bitmap icons.
-  // Idempotent — tagged nodes are skipped, and the attribute is not in the
-  // observer's attributeFilter, so tagging never re-triggers ensure().
+  // Idempotent — every control is reclassified for React node reuse, but the
+  // compare-before-write helpers leave healthy annotations untouched.
   const SIDEBAR_ICONS = [
-    { icon: "new-task", texts: ["新建任务", "New task"] },
-    { icon: "scheduled", texts: ["已安排", "Scheduled"] },
+    { icon: "new-task", texts: ["新建任务", "New task", "新聊天", "New chat"] },
+    { icon: "scheduled", texts: ["已安排", "Scheduled", "定时任务", "Automations"] },
     { icon: "plugins", texts: ["插件", "Plugins", "技能", "Skills"] },
     { icon: "sites", texts: ["站点", "Sites"] },
-    { icon: "pull-request", texts: ["拉取请求", "Pull request"] },
+    { icon: "pull-request", texts: ["拉取请求", "Pull request", "代码审查", "Code review"] },
+    { icon: "explore", texts: ["探索", "Explore"] },
     { icon: "chat", texts: ["聊天", "Chat"] },
     { icon: "settings", texts: ["设置", "Settings"] },
   ];
+  const SIDEBAR_DESTINATION_ICONS = new Map([
+    ["builtin:home", "home"],
+    ["builtin:space", "space"],
+    ["builtin:automations", "scheduled"],
+    ["builtin:customize", "plugins"],
+    ["builtin:pull-requests", "pull-request"],
+  ]);
   const CARD_ICONS = ["explore", "build", "review", "fix"];
-  const EXTENDED_ICONS = new Set(["settings", "folder"]);
+  const GATED_ICONS = new Set(["settings", "folder", "home", "space"]);
   const PROJECT_ROW_SELECTOR = "[data-project-row], [data-app-action-sidebar-project-row]";
 
   // ── Workspace wordmark → logo variant ─────────────────────────────────────
@@ -248,15 +313,16 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
   };
   const isWorkspaceTitle = (text) => workspaceLogo(text) !== null;
 
-  // settings/folder annotation was added after the original 14-glyph runtime.
-  // Gate those two on an explicit theme rule so older themes that hide native
-  // paths without mapping the new glyphs never render blank controls.
+  // settings/folder and the current navigation rail's home/space annotation
+  // were added after the original glyph contract. Gate them on an explicit
+  // theme rule so an older theme's generic path-hiding selector never blanks a
+  // native icon for which that package has no artwork.
   const hasExplicitGlyphStyle = (icon) => {
     const escaped = icon.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     return new RegExp(`data-cts-glyph\\s*=\\s*["']${escaped}["']`).test(cssText);
   };
-  const SUPPORTED_EXTENDED_ICONS = new Set(
-    [...EXTENDED_ICONS].filter((icon) => hasExplicitGlyphStyle(icon))
+  const SUPPORTED_GATED_ICONS = new Set(
+    [...GATED_ICONS].filter((icon) => hasExplicitGlyphStyle(icon))
   );
 
   const glyphTarget = (container, icon) => {
@@ -275,11 +341,25 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
   // React may replace the svg inside an otherwise-stable control (project
   // expand/collapse does exactly this). Treat the container annotation as a
   // cache, not proof: repair it whenever the current glyph lost its marker.
+  const clearGlyph = (container) => {
+    if (!container) return;
+    if (container.dataset.ctsIcon) delete container.dataset.ctsIcon;
+    for (const svg of container.querySelectorAll("svg[data-cts-glyph]")) {
+      svg.removeAttribute("data-cts-glyph");
+    }
+  };
+
   const tagGlyph = (container, icon) => {
     if (!container) return;
-    if (EXTENDED_ICONS.has(icon) && !SUPPORTED_EXTENDED_ICONS.has(icon)) return;
+    if (GATED_ICONS.has(icon) && !SUPPORTED_GATED_ICONS.has(icon)) {
+      clearGlyph(container);
+      return;
+    }
     const svg = glyphTarget(container, icon);
-    if (!svg) return;
+    if (!svg) {
+      clearGlyph(container);
+      return;
+    }
     const tagged = [...container.querySelectorAll("svg[data-cts-glyph]")];
     const healthy = container.dataset.ctsIcon === icon
       && svg.dataset.ctsGlyph === icon
@@ -290,14 +370,6 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
     }
     if (container.dataset.ctsIcon !== icon) container.dataset.ctsIcon = icon;
     if (svg.dataset.ctsGlyph !== icon) svg.dataset.ctsGlyph = icon;
-  };
-
-  const clearGlyph = (container) => {
-    if (!container) return;
-    if (container.dataset.ctsIcon) delete container.dataset.ctsIcon;
-    for (const svg of container.querySelectorAll("svg[data-cts-glyph]")) {
-      svg.removeAttribute("data-cts-glyph");
-    }
   };
 
   const projectSemantic = (control) => {
@@ -331,41 +403,68 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
     for (const row of rows) tagGlyph(row, "folder");
   };
 
-  const annotateIcons = () => {
+  const sidebarIconFor = (control, text) => {
+    const destination = control.getAttribute("data-sidebar-destination") || "";
+    if (SIDEBAR_DESTINATION_ICONS.has(destination)) {
+      return SIDEBAR_DESTINATION_ICONS.get(destination);
+    }
+    const aria = (control.getAttribute("aria-label") || "").trim();
+    if (/^(搜索|Search)$/i.test(aria)) return "search";
+    if (/^(设置|Settings)$/i.test(aria)) return "settings";
+    return SIDEBAR_ICONS.find((entry) => entry.texts.some((candidate) =>
+      text === candidate || text.startsWith(`${candidate} `) || text.startsWith(`${candidate}⌘`)
+    ))?.icon ?? null;
+  };
+
+  const composerActionFor = (button) => {
+    const semantic = [
+      button.getAttribute("aria-label") || "",
+      button.getAttribute("title") || "",
+      button.getAttribute("data-testid") || "",
+    ].join(" ").trim();
+    if (/(?:^|\b)(?:stop|cancel response)(?:\b|$)|停止|中止/i.test(semantic)) return "stop";
+    if (/(?:^|\b)(?:voice|dictate|dictation|microphone)(?:\b|$)|语音|聽寫|听写|麦克风/i.test(semantic)) return "voice";
+    if (/(?:^|\b)(?:send|submit)(?:\b|$)|发送|傳送|提交/i.test(semantic)) return "send";
+    // Current native send/stop/voice controls share this exact class and use
+    // type=button, so neither signal distinguishes their action. Keep unknown
+    // non-empty (including untranslated) labels native instead of covering the
+    // wrong control. An explicit send semantic above or a real type=submit is
+    // safe to skin; the exact-class fallback is retained only for unlabeled
+    // primary controls in audited legacy builds.
+    if (button.getAttribute("type") === "submit" && button.querySelector("svg")) return "send";
+    if (!semantic && button.classList.contains("size-token-button-composer") &&
+        button.querySelector("svg")) return "send";
+    return null;
+  };
+
+  const composerIconFor = (button) => {
+    const aria = button.getAttribute("aria-label") || "";
+    const text = button.textContent || "";
+    if (aria.includes("添加文件") || aria.toLowerCase().includes("add file")) return "attach";
+    if (aria.includes("听写") || aria.includes("聽寫") || /dictat/i.test(aria)) return "mic";
+    if (button.querySelector("svg") && /sol|spark|codex|gpt/i.test(text)) return "model";
+    return null;
+  };
+
+  const annotateIcons = (composers) => {
     const aside = document.querySelector(".app-shell-left-panel");
     if (aside) {
-      for (const button of aside.querySelectorAll("button:not([data-cts-icon])")) {
-        const text = (button.textContent || "").replace(/\s+/g, " ").trim();
-        if (isWorkspaceTitle(text)) {
-          clearGlyph(button);
-          continue;
-        }
-        if (isProjectControl(button)) continue;
-        const rule = SIDEBAR_ICONS.find((entry) => entry.texts.some((t) =>
-          text === t || text.startsWith(`${t} `) || text.startsWith(`${t}⌘`)
-        ));
-        if (rule) tagGlyph(button, rule.icon);
-      }
-      const search = [...aside.querySelectorAll(
-        '[aria-label="搜索"]:not([data-cts-icon]), [aria-label="Search"]:not([data-cts-icon])'
-      )].find((control) => !isProjectControl(control));
-      if (search) tagGlyph(search, "search");
-      const settings = [...aside.querySelectorAll(
-        '[aria-label="设置"]:not([data-cts-icon]), [aria-label="Settings"]:not([data-cts-icon])'
-      )].find((control) => !isProjectControl(control));
-      if (settings) tagGlyph(settings, "settings");
       // Project rows have changed element type across Codex releases (button,
-      // anchor and role=button have all shipped). Match their stable semantic
-      // attributes instead of project names or SVG path data, then decorate
-      // only the first glyph so disclosure chevrons remain native.
+      // anchor and role=button have all shipped). Re-evaluate every control on
+      // each pass because React reuses nodes while changing text/destination.
       for (const control of aside.querySelectorAll(
         'button, a, [role="button"], [data-project-row], [data-app-action-sidebar-project-row]'
       )) {
-        const controlText = (control.textContent || "").replace(/\s+/g, " ").trim();
-        if (isWorkspaceTitle(controlText)) continue;
+        const text = (control.textContent || "").replace(/\s+/g, " ").trim();
+        if (isWorkspaceTitle(text)) {
+          clearGlyph(control);
+          continue;
+        }
         const row = control.closest(PROJECT_ROW_SELECTOR);
         if (row && row !== control) continue;
-        if (isProjectControl(control)) tagGlyph(control, "folder");
+        const icon = isProjectControl(control) ? "folder" : sidebarIconFor(control, text);
+        if (icon) tagGlyph(control, icon);
+        else clearGlyph(control);
       }
       // Workspace title → theme-specific logo. Text can be split across child
       // spans and swaps on workspace switch, so match the whole button every
@@ -382,18 +481,29 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
         if (button.dataset.ctsLogo !== want) button.dataset.ctsLogo = want;
       }
     }
-    for (const composer of selectComposerSurfaces(document)) {
-      for (const button of composer.querySelectorAll("button:not([data-cts-icon])")) {
-        const aria = button.getAttribute("aria-label") || "";
-        const text = button.textContent || "";
-        if (aria.includes("添加文件") || aria.toLowerCase().includes("add file")) tagGlyph(button, "attach");
-        else if (aria.includes("听写") || /dictat/i.test(aria)) tagGlyph(button, "mic");
-        else if (button.querySelector("svg") && /sol|spark|codex|gpt/i.test(text)) tagGlyph(button, "model");
+    const liveActionControls = new Set();
+    for (const composer of composers) {
+      for (const button of composer.querySelectorAll("button")) {
+        const action = composerActionFor(button);
+        if (action) {
+          liveActionControls.add(button);
+          setAttr(button, COMPOSER_ACTION_ATTR, action);
+        } else if (button.hasAttribute(COMPOSER_ACTION_ATTR)) {
+          button.removeAttribute(COMPOSER_ACTION_ATTR);
+        }
+        const icon = composerIconFor(button);
+        if (icon) tagGlyph(button, icon);
+        else clearGlyph(button);
       }
     }
+    for (const stale of document.querySelectorAll(`[${COMPOSER_ACTION_ATTR}]`)) {
+      if (!liveActionControls.has(stale)) stale.removeAttribute(COMPOSER_ACTION_ATTR);
+    }
     document.querySelectorAll('.cts-home .group\\/home-suggestions .grid > div').forEach((cell, index) => {
-      const button = cell.querySelector("button:not([data-cts-icon])");
-      if (button && CARD_ICONS[index]) tagGlyph(button, CARD_ICONS[index]);
+      const button = cell.querySelector("button");
+      if (!button) return;
+      if (CARD_ICONS[index]) tagGlyph(button, CARD_ICONS[index]);
+      else clearGlyph(button);
     });
   };
 
@@ -472,16 +582,19 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
 
     const shellMain = resolveShellMain();
     integrateWindowsMenu(shellMain);
-    const home = findHome(state?.homeSticky);
+    const home = findHome(shellMain, state?.homeSticky);
     if (state) state.homeSticky = home;
     for (const candidate of document.querySelectorAll('[role="main"].cts-home')) {
       if (candidate !== home) candidate.classList.remove("cts-home");
     }
     if (home) setClass(home, "cts-home", true);
+    for (const candidate of document.querySelectorAll("main.cts-home-shell")) {
+      if (candidate !== shellMain) candidate.classList.remove("cts-home-shell");
+    }
     if (shellMain) setClass(shellMain, "cts-home-shell", Boolean(home));
 
     const composers = reconcileComposerSurfaces(document);
-    annotateIcons();
+    annotateIcons(composers);
     annotateComposerOverflow(composers);
 
     const fillTexts = (rootNode) => {
@@ -515,7 +628,7 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
       }
       fillTexts(stage);
       setClass(stage, "cts-home-shell", Boolean(home));
-    } else if (!layers.stageHtml) {
+    } else {
       document.getElementById(STAGE_ID)?.remove();
     }
 
@@ -526,6 +639,7 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
       const wantVisible = Boolean(layers.overlayHtml && shellMain);
       const visibleNow = existingChrome.style.display !== "none";
       if (visibleNow !== wantVisible) existingChrome.style.display = wantVisible ? "" : "none";
+      if (!wantVisible) setClass(existingChrome, "cts-home-shell", false);
     }
     if (layers.overlayHtml && shellMain) {
       let chrome = document.getElementById(CHROME_ID);
@@ -585,6 +699,8 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
       .forEach((node) => node.removeAttribute(COMPOSER_OVERFLOW_ATTR));
     document.querySelectorAll(`[${COMPOSER_MODE_ATTR}]`)
       .forEach((node) => node.removeAttribute(COMPOSER_MODE_ATTR));
+    document.querySelectorAll(`[${COMPOSER_ACTION_ATTR}]`)
+      .forEach((node) => node.removeAttribute(COMPOSER_ACTION_ATTR));
     clearComposerSurfaceCompat(document);
     document.getElementById(STYLE_ID)?.remove();
     document.getElementById(CHROME_ID)?.remove();
@@ -620,12 +736,14 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
     .map((name) => `${name}:${document.documentElement.style.getPropertyValue(name)}!${
       document.documentElement.style.getPropertyPriority(name)}`)
     .join(";");
-  const styleMutationTouchesComposer = (target) => Boolean(
+  const styleMutationTouchesRuntimeSurface = (target) => Boolean(
     target.closest?.(".composer-surface-chrome, [data-composer-surface-variant][data-composer-layout]") ||
     target.querySelector?.(
       '[data-codex-composer], .ProseMirror[contenteditable="true"], ' +
       '[contenteditable="true"], textarea',
-    )
+    ) ||
+    target.matches?.("main[data-app-shell-main-surface], main.main-surface") ||
+    target.querySelector?.("main[data-app-shell-main-surface], main.main-surface")
   );
   let rootStyleSignature = externalRootStyleSignature();
   const observer = new MutationObserver((mutations) => {
@@ -639,7 +757,7 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
         rootStyleSignature = nextRootStyleSignature;
       }
       if (mutation.type === "attributes" && mutation.attributeName === "style" &&
-        target !== document.documentElement && !styleMutationTouchesComposer(target)) continue;
+        target !== document.documentElement && !styleMutationTouchesRuntimeSurface(target)) continue;
       if (mutation.type === "childList") {
         repairProjectGlyphs(target);
         for (const added of mutation.addedNodes) repairProjectGlyphs(added);
@@ -657,7 +775,9 @@ html.codex-theme-studio .cts-windows-menu-bar [data-cts-menu-region="main"] {
       "class", "style", "data-theme", "data-appearance", "data-color-mode",
       "data-composer-layout", "data-composer-surface-overflow",
       "data-composer-surface-variant", "data-composer-radius-variant",
-      "data-composer-utility-bar-variant",
+      "data-composer-utility-bar-variant", "data-sidebar-destination",
+      "aria-label", "title", "data-testid", "type", "hidden", "inert", "aria-hidden",
+      "data-app-shell-active-page",
     ],
   });
   const timer = setInterval(() => {

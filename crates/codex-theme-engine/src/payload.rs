@@ -161,6 +161,7 @@ pub const REMOVE_EXPRESSION: &str = r#"(() => {
   document.querySelectorAll('[data-cts-menu-region]').forEach((node) => node.removeAttribute('data-cts-menu-region'));
   document.querySelectorAll('[data-cts-composer-overflow]').forEach((node) => node.removeAttribute('data-cts-composer-overflow'));
   document.querySelectorAll('[data-cts-composer-mode]').forEach((node) => node.removeAttribute('data-cts-composer-mode'));
+  document.querySelectorAll('[data-cts-composer-action]').forEach((node) => node.removeAttribute('data-cts-composer-action'));
   document.querySelectorAll('[data-cts-composer-surface-compat]').forEach((node) => {
     node.classList.remove('composer-surface-chrome');
     node.removeAttribute('data-cts-composer-surface-compat');
@@ -184,6 +185,7 @@ pub const VERIFY_REMOVED_EXPRESSION: &str = r#"(() =>
   !document.querySelector('[data-cts-menu-region]') &&
   !document.querySelector('[data-cts-composer-overflow]') &&
   !document.querySelector('[data-cts-composer-mode]') &&
+  !document.querySelector('[data-cts-composer-action]') &&
   !document.querySelector('[data-cts-composer-surface-compat]') &&
   !document.documentElement.style.getPropertyValue('--cts-windows-menu-height') &&
   !document.documentElement.style.getPropertyValue('--cts-windows-sidebar-padding-top') &&
@@ -219,9 +221,39 @@ pub fn verify_expression(expected_version: &str) -> Result<String> {
         visible: r.width > 0 && r.height > 0 && style.display !== 'none' && style.visibility !== 'hidden',
       }};
     }};
+    const hiddenByAncestor = (node) => {{
+      for (let current = node; current; current = current.parentElement) {{
+        if (current.hidden ||
+            current.getAttribute?.('data-app-shell-active-page') === 'false') return true;
+        const style = getComputedStyle(current);
+        const contentVisibility = style.contentVisibility || style.getPropertyValue?.('content-visibility');
+        if (style.display === 'none' || style.visibility === 'hidden' ||
+            style.visibility === 'collapse' || contentVisibility === 'hidden' ||
+            Number.parseFloat(style.opacity) === 0) return true;
+      }}
+      return false;
+    }};
+    const visibleSurfaceScore = (node) => {{
+      if (!node?.isConnected || hiddenByAncestor(node)) return -1;
+      const r = node.getBoundingClientRect();
+      if (!(r.width > 0 && r.height > 0)) return -1;
+      const viewportWidth = Math.max(document.documentElement?.clientWidth || 0, innerWidth || 0);
+      const viewportHeight = Math.max(document.documentElement?.clientHeight || 0, innerHeight || 0);
+      const width = Math.max(0, Math.min(r.right, viewportWidth) - Math.max(r.left, 0));
+      const height = Math.max(0, Math.min(r.bottom, viewportHeight) - Math.max(r.top, 0));
+      return width > 0 && height > 0 ? width * height : -1;
+    }};
+    const bestVisibleSurface = (nodes) => nodes.reduce((best, node) => {{
+      const score = visibleSurfaceScore(node);
+      return score >= 0 && score >= best.score ? {{ node, score }} : best;
+    }}, {{ node: null, score: -1 }}).node;
     const chrome = document.getElementById('cts-chrome');
     const stage = document.getElementById('cts-stage');
-    const mainSurfaceNode = document.querySelector('main[data-app-shell-main-surface], main.main-surface');
+    const currentMainSurfaces = [...document.querySelectorAll('main[data-app-shell-main-surface]')];
+    const legacyMainSurfaces = [...document.querySelectorAll('main.main-surface')]
+      .filter((node) => !node.hasAttribute('data-app-shell-main-surface'));
+    const mainSurfaceNode = bestVisibleSurface(currentMainSurfaces) ||
+      bestVisibleSurface(legacyMainSurfaces);
     const mainSurface = box(mainSurfaceNode);
     const state = window.__CODEX_THEME_STUDIO__;
     const hostVersion = (() => {{
@@ -240,12 +272,8 @@ pub fn verify_expression(expected_version: &str) -> Result<String> {
           ? {{ audited: true, profile: 'composer-current-multiline', composerLanePolicy: 'required' }}
           : {{ audited: false, profile: 'capability-adaptive', composerLanePolicy: 'optional' }};
     const {{ selectComposerSurfaces }} = {composer_helpers};
-    const composerNodes = selectComposerSurfaces(document);
-    const composerNode = composerNodes.find((node) => {{
-      const r = node.getBoundingClientRect();
-      const style = getComputedStyle(node);
-      return r.width > 0 && r.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
-    }}) ?? composerNodes[0] ?? null;
+    const composerNodes = mainSurfaceNode ? selectComposerSurfaces(mainSurfaceNode) : [];
+    const composerNode = composerNodes.find((node) => visibleSurfaceScore(node) >= 0) ?? null;
     const composer = box(composerNode);
     const composerEditor = composerNode?.querySelector('[data-cts-composer-overflow="editor"]') ?? null;
     const composerLanes = composerNode
@@ -547,6 +575,7 @@ mod tests {
             "data-cts-menu-region",
             "data-cts-composer-overflow",
             "data-cts-composer-mode",
+            "data-cts-composer-action",
             "data-cts-composer-surface-compat",
             "--cts-windows-menu-height",
             "--cts-windows-sidebar-padding-top",
@@ -599,6 +628,16 @@ mod tests {
         assert!(expr.contains("mainSurfaceMode"));
         assert!(expr.contains("mainSurfaceCompatible"));
         assert!(expr.contains("stageAttachedToMainSurface"));
+        assert!(expr.contains("visibleSurfaceScore"));
+        assert!(expr.contains("data-app-shell-active-page"));
+        assert!(!expr.contains("hasAttribute?.('inert')"));
+        assert!(!expr.contains("getAttribute?.('aria-hidden')"));
+        assert!(expr.contains("currentMainSurfaces"));
+        assert!(expr.contains("legacyMainSurfaces"));
+        assert!(expr.contains("mainSurfaceNode ? selectComposerSurfaces(mainSurfaceNode) : []"));
+        assert!(expr.contains("composerNodes.find((node) => visibleSurfaceScore(node) >= 0)"));
+        assert!(!expr.contains("selectComposerSurfaces(document)"));
+        assert!(!expr.contains("composerNodes[0]"));
         assert!(expr.contains("composerOverflow"));
         assert!(expr.contains("composerSurfaceMode"));
         assert!(expr.contains("composerSurfaceCompatible"));

@@ -2,31 +2,31 @@
 #![windows_subsystem = "windows"]
 mod portable_command;
 
-use portable_command::{LAUNCHER_NAME, LAUNCH_TARGET_NAME};
-use std::{env, fs, io, path::Component, process::Command};
+use portable_command::LAUNCH_TARGET_NAME;
+use std::{env, fs, io, process::Command};
+
+#[used]
+#[link_section = ".camlnch"]
+static LAUNCHER_ID: [u8; 33] = portable_command::LAUNCHER_MARKER;
 
 fn run() -> io::Result<()> {
+    std::hint::black_box(&LAUNCHER_ID);
     let own = env::current_exe()?;
     let root = own
         .parent()
         .ok_or_else(|| io::Error::other("missing launcher directory"))?;
-    let target = fs::read_to_string(root.join(LAUNCH_TARGET_NAME))?;
-    let target = target.trim();
-    let mut components = std::path::Path::new(target).components();
-    if !matches!(components.next(), Some(Component::Normal(_)))
-        || components.next().is_some()
-        || target.eq_ignore_ascii_case(LAUNCHER_NAME)
-        || !target.to_ascii_lowercase().ends_with(".exe")
-    {
-        return Err(io::Error::other(
-            "Invalid portable launch target. Reinstall with Codex App Manager.",
-        ));
-    }
+    let config = fs::read_to_string(root.join(LAUNCH_TARGET_NAME))?;
+    let (target, required) = portable_command::parse_launch_config(&config).ok_or_else(|| {
+        io::Error::other("Invalid portable launch target. Reinstall with Codex App Manager.")
+    })?;
     let exe = root.join(target);
+    if fs::canonicalize(&exe)? == fs::canonicalize(&own)? {
+        return Err(io::Error::other("Portable launcher cannot launch itself."));
+    }
     let mut command = Command::new(&exe);
-    portable_command::configure(&mut command, &exe, true)?;
+    portable_command::configure(&mut command, &exe, required)?;
     command.env("CODEX_SPARKLE_ENABLED", "false");
-    command.args(env::args_os().skip(1));
+    command.args(portable_command::launch_arguments(env::args_os().skip(1).collect())?);
     command.spawn()?;
     Ok(())
 }
