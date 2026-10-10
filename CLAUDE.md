@@ -5,7 +5,7 @@ Codex App Manager:官方 OpenAI Codex 桌面应用的安装/更新/卸载管理�
 
 ## 质量门与合并
 
-- main 受保护:禁 force push、必须走 PR,必需检查 = Frontend + Rust (macos/windows)。
+- main 受保护:禁 force push、必须走 PR,必需检查 = Frontend + Rust (macos/windows) + Audit。
 - 实质代码改动的收尾链路:`codex review --uncommitted`(或 `--base main`)**迭代到无意见** → PR → `gh pr merge --squash`。
 - 提交信息用英文 conventional 风格(`feat:` / `fix:` / `docs:` / `chore(release):`)。
 
