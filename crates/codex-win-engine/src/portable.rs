@@ -928,6 +928,35 @@ pub fn remove_manager_launch_shortcut() -> Result<(), EngineError> {
     Ok(())
 }
 
+/// Icon for shortcuts that start Codex: the official icon file when shipped,
+/// then the official executable's own icon, then the Manager launcher stub
+/// (which embeds an icon). Never the Manager executable.
+#[cfg(any(windows, test))]
+pub(crate) fn pick_shortcut_icon(
+    app_exe: Option<&Path>,
+    launcher: &Path,
+    exists: impl Fn(&Path) -> bool,
+) -> PathBuf {
+    if let Some(exe) = app_exe {
+        if let Some(dir) = exe.parent() {
+            let ico = dir.join("resources").join("icon-chatgpt.ico");
+            if exists(&ico) {
+                return ico;
+            }
+        }
+        return exe.to_path_buf();
+    }
+    launcher.to_path_buf()
+}
+
+#[cfg(windows)]
+fn shortcut_icon(install_root: &Path) -> PathBuf {
+    let launcher = install_root.join(crate::portable_command::LAUNCHER_NAME);
+    pick_shortcut_icon(installed_app_exe(install_root).as_deref(), &launcher, |p| {
+        p.is_file()
+    })
+}
+
 /// A stable Manager entry activates MSIX with package identity, or launches a
 /// portable build, using the saved arguments. It also works while Manager is closed.
 #[cfg(windows)]
@@ -941,17 +970,19 @@ pub fn create_manager_launch_shortcut(
     if let Some(parent) = shortcut.parent() {
         fs::create_dir_all(parent).map_err(|error| io_err("create shortcut directory", error))?;
     }
-    let icon = installed_app_exe(installed).unwrap_or_else(|| manager_exe.to_path_buf());
+    let icon = shortcut_icon(installed);
     let workdir = manager_exe.parent()
         .ok_or_else(|| EngineError::Io("Manager executable has no parent directory".into()))?;
-    crate::portable_shortcut::create_with_arguments(
-        &shortcut,
+    let spec = crate::portable_shortcut::ShortcutSpec::new(
         manager_exe,
         workdir,
         &icon,
         "--launch-codex",
-    )
-    .map_err(|error| io_err("update Codex shortcut", error))
+    );
+    // Read-compare-write: an unchanged shortcut is not rewritten on every launch.
+    crate::portable_shortcut::ensure(&shortcut, &spec)
+        .map(|_| ())
+        .map_err(|error| io_err("update Codex shortcut", error))
 }
 
 #[cfg(not(windows))]
@@ -983,13 +1014,23 @@ fn create_start_menu_shortcut(install_root: &Path) -> Result<bool, EngineError> 
         if crate::portable_shortcut::is_manager_launcher(&shortcut, &manager)
             .map_err(|error| io_err("inspect Codex shortcut", error))?
         {
+            // Keep the user's arguments; only repair a blank/stale icon.
+            crate::portable_shortcut::ensure_icon(&shortcut, &shortcut_icon(install_root))
+                .map_err(|error| io_err("repair Codex shortcut icon", error))?;
             return Ok(true);
         }
     }
     if let Some(parent) = shortcut.parent() {
         fs::create_dir_all(parent).map_err(|error| io_err("create shortcut directory", error))?;
     }
-    crate::portable_shortcut::create(&shortcut, &ensure_portable_launcher(install_root)?, install_root, &exe)
+    let launcher = ensure_portable_launcher(install_root)?;
+    let spec = crate::portable_shortcut::ShortcutSpec::new(
+        &launcher,
+        install_root,
+        &pick_shortcut_icon(Some(&exe), &launcher, |p| p.is_file()),
+        "",
+    );
+    crate::portable_shortcut::ensure(&shortcut, &spec)
         .map_err(|error| io_err("create portable shortcut", error))?;
     Ok(true)
 }
@@ -1713,6 +1754,21 @@ mod tests {
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+    #[test]
+    fn shortcut_icon_prefers_official_ico_then_app_exe_then_launcher() {
+        let root = Path::new(r"C:\Codex");
+        let launcher = root.join("LaunchCodex.exe");
+        let exe = root.join("app").join("ChatGPT.exe");
+        let ico = root.join("app").join("resources").join("icon-chatgpt.ico");
+        assert_eq!(
+            pick_shortcut_icon(Some(&exe), &launcher, |p| p == ico.as_path()),
+            ico
+        );
+        // Nested layout without the ico: the real executable, never the stub.
+        assert_eq!(pick_shortcut_icon(Some(&exe), &launcher, |_| false), exe);
+        assert_eq!(pick_shortcut_icon(None, &launcher, |_| false), launcher);
+    }
+
     #[cfg(windows)]
     #[test]
     fn portable_shortcut_identity_preserves_its_launcher_target() {
@@ -1995,6 +2051,7 @@ mod tests {
             );
             assert!(!is_manager_launcher(&app_root.join("ChatGPT.exe")));
             assert_launcher_has_no_vc_runtime_import(&fs::read(&launcher).unwrap());
+            assert_launcher_embeds_icon(&fs::read(&launcher).unwrap());
             assert_eq!(
                 fs::read(app_root.join("ChatGPT.exe")).unwrap(),
                 original_exe
@@ -2227,6 +2284,25 @@ mod tests {
 
     // Inspect the PE import table, not arbitrary strings in the binary: a native
     // runner already has VC++ installed and would otherwise hide this regression.
+    #[cfg(windows)]
+    fn assert_launcher_embeds_icon(bytes: &[u8]) {
+        let u16_at = |p| u16::from_le_bytes(bytes[p..p + 2].try_into().unwrap()) as usize;
+        let u32_at = |p| u32::from_le_bytes(bytes[p..p + 4].try_into().unwrap()) as usize;
+        let coff = u32_at(0x3c) + 4;
+        let section_table = coff + 20 + u16_at(coff + 16);
+        let rsrc = (0..u16_at(coff + 2))
+            .map(|i| section_table + i * 40)
+            .find(|s| &bytes[*s..*s + 5] == b".rsrc")
+            .expect("launcher must have a .rsrc section");
+        let dir = u32_at(rsrc + 20);
+        let entries = u16_at(dir + 12) + u16_at(dir + 14);
+        let ids: Vec<usize> = (0..entries)
+            .map(|i| u32_at(dir + 16 + i * 8))
+            .collect();
+        assert!(ids.contains(&3), "RT_ICON missing: {ids:?}");
+        assert!(ids.contains(&14), "RT_GROUP_ICON missing: {ids:?}");
+    }
+
     #[cfg(windows)]
     fn assert_launcher_has_no_vc_runtime_import(bytes: &[u8]) {
         let u16_at = |p| u16::from_le_bytes(bytes[p..p + 2].try_into().unwrap()) as usize;
