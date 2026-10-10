@@ -33,6 +33,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 name = "codex-win-engine"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "libc",
  "log",
  "roxmltree",
@@ -102,6 +103,7 @@ version = "1.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
+ "crc32fast",
  "miniz_oxide",
  "zlib-rs",
 ]

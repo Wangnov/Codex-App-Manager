@@ -6,6 +6,11 @@ license = "MIT"
 description = "Pure-logic engine for planning and staging Codex Windows MSIX updates."
 
 [dependencies]
+# Pure-Rust (miniz_oxide) backend: `zip`'s own "deflate" feature already
+# resolves flate2 with this backend, so pinning the same backend here keeps
+# a single implementation in the dependency graph and needs no C toolchain
+# when cross-checking `--target x86_64-pc-windows-msvc`.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 roxmltree = "0.21"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
