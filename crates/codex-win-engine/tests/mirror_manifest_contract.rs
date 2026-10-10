@@ -67,6 +67,9 @@ const INVALID_ARCH_X64_MISSING: &str = include_str!(
 const INVALID_X64_NOT_DOWNLOADABLE: &str = include_str!(
     "../../../docs/contracts/release-manifest/fixtures/invalid/architectures-x64-not-downloadable-no-fallback.json"
 );
+const INVALID_X64_NOT_DOWNLOADABLE_WITH_FALLBACK: &str = include_str!(
+    "../../../docs/contracts/release-manifest/fixtures/invalid/architectures-x64-not-downloadable-with-top-level-fallback.json"
+);
 const INVALID_CONTENT_LENGTH_STRING: &str = include_str!(
     "../../../docs/contracts/release-manifest/fixtures/invalid/content-length-as-string.json"
 );
@@ -278,6 +281,11 @@ fn invalid_fixtures_that_the_parser_also_rejects() {
             "Windows x64 package is not available",
         ),
         (
+            "architectures-x64-not-downloadable-with-top-level-fallback",
+            INVALID_X64_NOT_DOWNLOADABLE_WITH_FALLBACK,
+            "Windows x64 package is not available",
+        ),
+        (
             "no-package-moniker-anywhere",
             INVALID_NO_PACKAGE_MONIKER,
             "missing Windows packageMoniker",
@@ -338,75 +346,4 @@ fn invalid_fixtures_where_the_schema_is_deliberately_stricter_than_the_parser() 
     let release = parse_manifest_for_arch(INVALID_PACKAGE_MONIKER_BAD_CHARS, Some("x64"))
         .expect("parser does not validate packageMoniker's character set");
     assert_eq!(release.package_moniker, "not a valid moniker!!");
-}
-
-/// KNOWN UPSTREAM SCHEMA GAP (tracked, not yet fixed in
-/// `Wangnov/codex-app-mirror`; see
-/// `docs/contracts/release-manifest/README.md`'s "Known gaps" section).
-///
-/// Unlike the two cases above, this is the *dangerous* direction: the
-/// vendored schema currently **validates** a manifest that
-/// `select_architecture()` will **always** hard-reject for the default x64
-/// update-check path, regardless of any top-level fallback.
-///
-/// `select_architecture()` looks up the requested key ("x64" by default) in
-/// `architectures` *before* anything ever consults the top-level
-/// `version`/`packageMoniker` fallback. If that key exists with
-/// `downloadable: false`, it returns `Err(...)` immediately -- there is no
-/// code path where a present-but-non-downloadable `architectures.x64` entry
-/// is rescued by a top-level fallback. The schema's `windowsSource.anyOf`
-/// only encodes this `not downloadable:false` constraint on its *second*
-/// branch (the `architectures`-only one); its *first* branch (top-level
-/// `packageMoniker` + `version`) does not also forbid
-/// `architectures.x64.downloadable === false`, so a manifest satisfying
-/// the first branch alone still validates even though the real parser
-/// rejects it outright.
-///
-/// This was NOT introduced by this vendoring pass -- it reproduces against
-/// the schema exactly as merged upstream (`Wangnov/codex-app-mirror` main
-/// commit `83273c9`, the tip of PR #71) -- but it is exactly the class of
-/// bug this contract-test suite exists to catch, so it is pinned here
-/// rather than silently left for the next person to rediscover. The
-/// upstream fix is to also forbid `downloadable: false` on
-/// `architectures.x64` (when present) in the first `anyOf` branch, the same
-/// way the second branch already does.
-#[test]
-fn known_upstream_schema_gap_x64_not_downloadable_with_top_level_fallback_still_hard_fails() {
-    // Equivalent in shape to `fixtures/invalid/architectures-x64-not-downloadable-no-fallback.json`
-    // (which correctly fails schema validation) except this ALSO carries a
-    // fully-populated top-level `version` + `packageMoniker` fallback. Per
-    // the upstream schema's first anyOf branch, this currently validates;
-    // per `select_architecture()`, it always fails to parse anyway.
-    const MANIFEST_WITH_TOP_LEVEL_FALLBACK_AND_NON_DOWNLOADABLE_X64: &str = r#"{
-        "schemaVersion": 5,
-        "sources": {
-            "windows": {
-                "version": "1.2.3.4",
-                "packageMoniker": "OpenAI.Codex_1.2.3.4_x64__2p2nqsd0c76g0",
-                "architectures": {
-                    "x64": { "architecture": "x64", "status": "catalog-only", "downloadable": false }
-                }
-            },
-            "macos": {
-                "arm64": { "bundleShortVersion": "1.2.3", "bundleVersion": "5" },
-                "x64": { "bundleShortVersion": "1.2.3", "bundleVersion": "5" }
-            }
-        }
-    }"#;
-
-    let err = parse_manifest_for_arch(
-        MANIFEST_WITH_TOP_LEVEL_FALLBACK_AND_NON_DOWNLOADABLE_X64,
-        Some("x64"),
-    )
-    .expect_err(
-        "select_architecture() always errors on a present, non-downloadable \
-         x64 entry -- it never falls back to the top-level fields, so this \
-         must stay an Err even though a schema-valid-today manifest of this \
-         exact shape exists",
-    );
-    assert!(
-        err.to_string()
-            .contains("Windows x64 package is not available"),
-        "unexpected error: {err}"
-    );
 }
