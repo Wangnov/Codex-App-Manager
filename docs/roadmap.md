@@ -72,9 +72,9 @@
 - 失败时自动收集诊断（安装日志、启动失败弹窗文案、PE/包签名状态等）并归档，而不是等用户报 issue。
 - 形成"探测到破坏 → 收集诊断 → 定位修复 → 发布"闭环，缩短从上游变更到用户可见修复之间的时间。
 
-## 7. Cargo workspace 整合 ⬜
+## 7. Cargo workspace 整合 ✅
 
-`src-tauri/Cargo.toml`、`crates/codex-mac-engine`、`crates/codex-win-engine`、`crates/codex-theme-engine` 目前各自维护独立 `Cargo.lock`，不是同一个 workspace。合并为单一 workspace（共享 lockfile、统一依赖版本、减少 CI 里重复编译）尚未开始，需要评估对发版流程第 1 步"改 5 个文件 6 处版本号"（含 `src-tauri/Cargo.lock` 的定向编辑限制）的影响。
+`src-tauri` 与 `crates/codex-{mac,win,theme}-engine` 已合并为单一 Cargo workspace，共享仓库根目录的 `Cargo.lock`。CI 对所有成员统一执行 Clippy 和 locked 测试，Dependabot 的 Cargo 更新也统一从根目录分组。构建产物迁移到根目录 `target/`，发版仍修改 5 个文件 6 处版本号，只定向更新根 `Cargo.lock` 中 `codex-app-manager` 的版本；源版本检查同时兼容迁移前标签的旧锁文件位置。
 
 ## 8. 横切事项
 

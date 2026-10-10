@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "src-tauri",
+    "crates/codex-mac-engine",
+    "crates/codex-theme-engine",
+    "crates/codex-win-engine",
+]
+
+# resolver = "2": every member is edition 2021, which already assumes v2
+# feature resolution (build/dev-dependencies and per-target deps no longer
+# unify features into normal builds). Resolver "3" only changes behavior for
+# edition-2024 crates (MSRV-aware resolution) and none of our members use
+# edition 2024, so "2" is the correct, minimal choice — it matches what each
+# member already got implicitly as a standalone package and avoids opting
+# into resolver "3" semantics nothing here needs.
+[workspace.package]
+edition = "2021"
+license = "MIT"
+
+# Only dependencies that are pinned to the *same* requirement in two or more
+# members are hoisted here. Anything used by a single member, or pinned to
+# different requirements per member on purpose, stays local to that member's
+# own [dependencies] table.
+[workspace.dependencies]
+base64 = "0.23"
+libc = "0.2"
+log = "0.4"
+roxmltree = "0.21"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.11"
+thiserror = "2.0"
+tokio = "1"
+url = "2.5"
+uuid = { version = "1", features = ["v4"] }
+windows-sys = "0.61.2"
+zip = { version = "8", default-features = false, features = ["deflate"] }

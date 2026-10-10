@@ -51,7 +51,7 @@
 
 - Rule ID：REACT-SUPPLY-001
 - Severity：Low
-- Location：`package-lock.json:1707-1715, 4535-4568, 4858-4862`；`.github/dependabot.yml:1-14`；`src-tauri/Cargo.lock`
+- Location：`package-lock.json:1707-1715, 4535-4568, 4858-4862`；`.github/dependabot.yml:1-14`；`src-tauri/Cargo.lock`（注：本报告审查时该锁文件位于 `src-tauri/`，此后仓库转换为单一 Cargo workspace，锁文件已迁移至仓库根目录 `Cargo.lock`）
 - Evidence：根工程 `npm audit` 报告 `brace-expansion` 与 `nanoid` 两个 High advisory，均为开发依赖；生产依赖审计为 0。RustSec 另报告 `event-listener 5.4.1` 的 unsound 告警（修复版 `>=5.4.2`），与 `glib 0.18.5` 一样只出现在 Linux 条件依赖树。Dependabot 仅覆盖根 npm 与 `src-tauri` Cargo，未覆盖 `website`、Cloudflare Worker 与三个独立 engine lockfile。
 - Impact：当前发布平台的直接风险较低，但构建工具可遭遇 DoS/异常行为；新增子工程依赖问题也可能不被自动发现。
 - Fix：更新 lockfile 中可修复版本；扩展 Dependabot 到 `website/`、`cloudflare/manager-download-router/` 和三个 engine crate；CI 分别执行各 lockfile 的审计。

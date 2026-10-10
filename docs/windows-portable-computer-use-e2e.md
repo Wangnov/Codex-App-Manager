@@ -39,7 +39,7 @@ first, and fully quit Codex before replacing it.
    ```powershell
    npm ci
    npm run build
-   cargo run --manifest-path src-tauri/Cargo.toml `
+   cargo run -p codex-app-manager `
      --example win_real_smoke -- validate-portable-runtime
    ```
 
@@ -67,7 +67,7 @@ installation:
 ```powershell
 npm ci
 npm run build
-cargo run --manifest-path src-tauri/Cargo.toml `
+cargo run -p codex-app-manager `
   --example win_real_smoke -- force-portable-cycle
 ```
 

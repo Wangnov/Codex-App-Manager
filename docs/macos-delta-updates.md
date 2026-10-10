@@ -56,7 +56,7 @@ and notarization rejects an adhoc nested binary inside a Developer ID app.
 
 ```sh
 # Local / dev (adhoc) — verifies --deep --strict passes with the helper present:
-./scripts/sign-macos-app.sh "src-tauri/target/release/bundle/macos/Codex App Manager.app"
+./scripts/sign-macos-app.sh "target/release/bundle/macos/Codex App Manager.app"
 
 # Distribution — Developer ID + hardened runtime + entitlements, then notarize:
 CAM_SIGN_IDENTITY="Developer ID Application: <NAME> (2DC432GLL2)" \

@@ -9,8 +9,8 @@ default-run = "codex-app-manager"
 version = "0.5.14"
 description = "A cross-platform manager for installing and updating mirrored official Codex desktop app packages."
 authors = ["Wangnov"]
-edition = "2021"
-license = "MIT"
+edition.workspace = true
+license.workspace = true
 repository = "https://github.com/Wangnov/Codex-App-Manager"
 
 [lib]
@@ -21,29 +21,29 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.6.2", features = [] }
 
 [dependencies]
-base64 = "0.23"
+base64.workspace = true
 codex-mac-engine = { path = "../crates/codex-mac-engine" }
 codex-theme-engine = { path = "../crates/codex-theme-engine" }
 codex-win-engine = { path = "../crates/codex-win-engine" }
 directories = "6.0.0"
 fs4 = "1.1"
-log = "0.4"
+log.workspace = true
 reqwest = { version = "0.13.4", default-features = false, features = ["socks", "system-proxy"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-sha2 = "0.11"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 tauri = { version = "2.11.2", features = ["tray-icon", "image-png", "macos-private-api"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-log = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
-thiserror = "2.0"
-tokio = { version = "1", features = ["sync", "time"] }
-url = "2.5"
-uuid = { version = "1", features = ["v4"] }
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_SystemInformation", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
-zip = { version = "8", default-features = false, features = ["deflate"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+url.workspace = true
+uuid.workspace = true
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_SystemInformation", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+zip.workspace = true
 
 [dev-dependencies]
 # Only for the loopback reqwest-error classification test: reqwest is built
@@ -52,7 +52,7 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # Keep these pinned to Tauri/Wry's WebView2 ABI: the platform handle returned

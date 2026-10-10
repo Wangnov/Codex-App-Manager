@@ -16,11 +16,21 @@ use std::time::{Duration, Instant};
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Default wall-clock budget for a short PowerShell / curl-text probe.
+///
+/// Only real production callers are Windows-only PowerShell/AppX probes, but
+/// this crate's own cross-platform test suite (`RunLimits::probe`) also
+/// exercises the shared `run_capturing` runner with it, so it must stay
+/// available under `cfg(test)` on every platform, not just `cfg(windows)`.
+#[cfg(any(windows, test))]
 pub const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(45);
-/// Longer budget for Add-AppxPackage / Remove-AppxPackage.
+/// Longer budget for Add-AppxPackage / Remove-AppxPackage. Windows-only: every
+/// caller lives behind `cfg(windows)` PowerShell/AppX code paths.
+#[cfg(windows)]
 pub const INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
 /// Upper bound for the one-shot UAC recovery used only when Windows Update owns
 /// an active deployment of the exact package we already downloaded locally.
+/// Windows-only: every caller lives behind `cfg(windows)` AppX recovery code.
+#[cfg(windows)]
 pub const APPX_RECOVERY_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// Default no-progress budget for streaming package downloads.
 pub const DEFAULT_STALL_TIMEOUT: Duration = Duration::from_secs(120);
@@ -31,6 +41,10 @@ pub const DEFAULT_DOWNLOAD_TOTAL_TIMEOUT: Duration = Duration::from_secs(2 * 60 
 pub const PORTABLE_LIVENESS_WINDOW: Duration = Duration::from_secs(3);
 /// Continuous survival required after MSIX shell activation — aligned with the
 /// portable liveness window so both routes reject the same class of crash-loops.
+/// MSIX shell activation only runs on Windows, but a cross-platform test
+/// (`msix_liveness_window_matches_portable`) pins this invariant on every
+/// platform, so it must also stay available under `cfg(test)`.
+#[cfg(any(windows, test))]
 pub const MSIX_LIVENESS_WINDOW_SECS: u64 = PORTABLE_LIVENESS_WINDOW.as_secs();
 /// Outer budget to wait for a cold-started MSIX process to *appear* after
 /// `Start-Process shell:AppsFolder\…`. Cold machines / AppX service warm-up can
@@ -60,14 +74,17 @@ impl RunLimits {
         }
     }
 
+    #[cfg(any(windows, test))]
     pub fn probe() -> Self {
         Self::total(DEFAULT_PROBE_TIMEOUT)
     }
 
+    #[cfg(windows)]
     pub fn install() -> Self {
         Self::total(INSTALL_TIMEOUT)
     }
 
+    #[cfg(windows)]
     pub fn appx_recovery() -> Self {
         Self::total(APPX_RECOVERY_TIMEOUT)
     }
@@ -153,9 +170,9 @@ pub(crate) fn curl_exe() -> PathBuf {
 
 /// Terminate a child and, on Windows, its process tree (PowerShell nests work).
 fn terminate_tree(child: &mut Child) {
-    let pid = child.id();
     #[cfg(windows)]
     {
+        let pid = child.id();
         use std::os::windows::process::CommandExt;
         // Best-effort: kill may race with natural exit. `/T` covers grandchildren
         // that PowerShell or curl may have spawned under the same tree.

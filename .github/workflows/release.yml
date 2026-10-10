@@ -416,7 +416,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: release-source/src-tauri -> target
+          workspaces: release-source -> target
 
       - run: npm ci
 
@@ -639,7 +639,7 @@ jobs:
       - name: Assert BinaryDelta inside the bundle
         if: matrix.os == 'macos'
         run: |
-          APP="$(find "src-tauri/target/${{ matrix.target }}/release/bundle/macos" -maxdepth 1 -name '*.app' | head -1)"
+          APP="$(find "target/${{ matrix.target }}/release/bundle/macos" -maxdepth 1 -name '*.app' | head -1)"
           BD="$APP/Contents/Resources/resources/BinaryDelta"
           [ -x "$BD" ] || { echo "::error::BinaryDelta missing or not executable at $BD — macOS delta updates would silently fall back to full downloads"; exit 1; }
           arches="$(lipo -archs "$BD")"
@@ -676,8 +676,8 @@ jobs:
         shell: pwsh
         run: |
           $target = "${{ matrix.target }}"
-          $main = "src-tauri/target/$target/release/codex-app-manager.exe"
-          $setup = @(Get-ChildItem "src-tauri/target/$target/release/bundle/nsis/*-setup.exe" -ErrorAction SilentlyContinue)
+          $main = "target/$target/release/codex-app-manager.exe"
+          $setup = @(Get-ChildItem "target/$target/release/bundle/nsis/*-setup.exe" -ErrorAction SilentlyContinue)
           if (-not (Test-Path -LiteralPath $main)) {
             Write-Host "::error::[build] missing main PE: $main"
             exit 1
@@ -700,7 +700,7 @@ jobs:
       #    !uninstfinalize), and the final -setup.exe — see
       #    src-tauri/tauri.conf.json bundle.windows.signCommand.
       #    Only the installer is checked here, deliberately NOT
-      #    src-tauri/target/<target>/release/codex-app-manager.exe: tauri-bundler
+      #    target/<target>/release/codex-app-manager.exe: tauri-bundler
       #    signs a copy of the main exe for embedding and then restores that
       #    on-disk file to its unsigned, unpatched original after each bundle
       #    type (tauri-cli 2.11.5, tauri-bundler bundle.rs, "Restore unsigned
@@ -725,7 +725,7 @@ jobs:
         env:
           AUTHENTICODE_MODE: ${{ vars.AUTHENTICODE_REQUIRED == 'true' && 'required' || 'optional' }}
         run: |
-          $setup = Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe" -ErrorAction Stop
+          $setup = Get-ChildItem "target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe" -ErrorAction Stop
           & .\scripts\verify-windows-authenticode.ps1 `
             -Path @($setup.FullName) `
             -Mode $env:AUTHENTICODE_MODE `
@@ -759,7 +759,7 @@ jobs:
         env:
           AUTHENTICODE_MODE: ${{ vars.AUTHENTICODE_REQUIRED == 'true' && 'required' || 'optional' }}
         run: |
-          $setup = Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe" -ErrorAction Stop
+          $setup = Get-ChildItem "target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe" -ErrorAction Stop
           & .\scripts\windows-packaged-smoke.ps1 `
             -Installer $setup.FullName `
             -AuthenticodeMode $env:AUTHENTICODE_MODE `
@@ -783,7 +783,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           echo "::group::[sign] Tauri updater signature (.sig)"
-          B="src-tauri/target/${{ matrix.target }}/release/bundle"
+          B="target/${{ matrix.target }}/release/bundle"
           shopt -s nullglob
           signed=0
           for exe in "$B"/nsis/*-setup.exe; do
@@ -803,7 +803,7 @@ jobs:
         run: |
           echo "::group::[build] collect final publishable artifacts"
           DST="$GITHUB_WORKSPACE/dist-artifacts"; mkdir -p "$DST"
-          B="src-tauri/target/${{ matrix.target }}/release/bundle"
+          B="target/${{ matrix.target }}/release/bundle"
           ARCH="${{ matrix.target }}"; ARCH="${ARCH%%-*}"
           shopt -s nullglob
           if [ "${{ matrix.os }}" = "macos" ]; then

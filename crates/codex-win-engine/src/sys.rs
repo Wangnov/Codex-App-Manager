@@ -12,9 +12,10 @@ use crate::limits::MAX_TEXT_BYTES;
 use crate::msix::parse_appx_manifest_xml;
 use crate::network::{is_schannel_revocation_check_failure, NetworkConfig, SchannelRevocationCheck};
 use crate::process::{
-    curl_exe, hidden_command, run_capturing, LivenessResult, RunError, RunLimits, TimeoutKind,
-    MSIX_ACTIVATION_WINDOW_SECS, MSIX_LIVENESS_WINDOW_SECS, PORTABLE_LIVENESS_WINDOW,
+    curl_exe, hidden_command, run_capturing, LivenessResult, RunLimits, PORTABLE_LIVENESS_WINDOW,
 };
+#[cfg(windows)]
+use crate::process::{RunError, TimeoutKind, MSIX_ACTIVATION_WINDOW_SECS, MSIX_LIVENESS_WINDOW_SECS};
 use crate::EngineError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -393,6 +394,7 @@ pub fn detect_installed_codex(portable_root: &Path) -> Option<InstalledWindowsCo
     detect_msix_install().or_else(|| detect_portable_install(portable_root))
 }
 
+#[cfg(any(windows, test))]
 fn parse_registered_msix_package_full_name(output: &str) -> Result<Option<String>, EngineError> {
     let trimmed = output.trim();
     if trimmed.is_empty() || trimmed == "null" {

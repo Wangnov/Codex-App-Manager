@@ -4,6 +4,17 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    groups:
+      # Actions updates are low-risk (pinned by commit SHA, reviewed via diff);
+      # bundle routine minor/patch bumps into one PR. A major version bump
+      # still opens on its own so it gets a dedicated look.
+      actions-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
   - package-ecosystem: npm
     directory: "/"
     schedule:
@@ -29,6 +40,23 @@ updates:
           - "@eslint/js"
           - "eslint-plugin-*"
           - "typescript-eslint"
+      # Everything else: bundle minor/patch together, leave majors separate
+      # (same pattern as the cargo entry below).
+      npm-minor-patch:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+          - "eslint"
+          - "@eslint/js"
+          - "eslint-plugin-*"
+          - "typescript-eslint"
+        update-types:
+          - "minor"
+          - "patch"
     # Remove these 10.x holds when jsx-a11y publishes ESLint 10 support:
     # https://github.com/jsx-eslint/eslint-plugin-jsx-a11y/issues/1075
     # ESLint 9 updates and jsx-a11y updates remain enabled.
@@ -37,27 +65,52 @@ updates:
         versions: ["10.x"]
       - dependency-name: "@eslint/js"
         versions: ["10.x"]
+
   - package-ecosystem: npm
     directory: "/website"
     schedule:
       interval: weekly
+    groups:
+      npm-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
   - package-ecosystem: npm
     directory: "/cloudflare/manager-download-router"
     schedule:
       interval: weekly
+    groups:
+      npm-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Single Cargo workspace (src-tauri + crates/codex-{mac,win,theme}-engine
+  # share one root Cargo.lock) — one entry instead of one per member lockfile,
+  # so a shared dependency (e.g. uuid) opens one PR, not up to four.
   - package-ecosystem: cargo
-    directory: "/src-tauri"
+    directory: "/"
     schedule:
       interval: weekly
-  - package-ecosystem: cargo
-    directory: "/crates/codex-mac-engine"
-    schedule:
-      interval: weekly
-  - package-ecosystem: cargo
-    directory: "/crates/codex-win-engine"
-    schedule:
-      interval: weekly
-  - package-ecosystem: cargo
-    directory: "/crates/codex-theme-engine"
-    schedule:
-      interval: weekly
+    groups:
+      # The tauri crate family should version-bump together.
+      tauri:
+        patterns:
+          - "tauri"
+          - "tauri-*"
+      # Everything else: bundle minor/patch together, leave majors separate
+      # so a breaking bump gets its own PR and review.
+      cargo-minor-patch:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "tauri"
+          - "tauri-*"
+        update-types:
+          - "minor"
+          - "patch"

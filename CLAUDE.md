@@ -5,14 +5,15 @@ Codex App Manager:官方 OpenAI Codex 桌面应用的安装/更新/卸载管理�
 
 ## 质量门与合并
 
-- main 受保护:禁 force push、必须走 PR,必需检查 = Frontend + Rust (macos/windows)。
+- main 受保护:禁 force push、必须走 PR,必需检查 = Frontend + Rust (macos/windows) + Audit。
 - 实质代码改动的收尾链路:`codex review --uncommitted`(或 `--base main`)**迭代到无意见** → PR → `gh pr merge --squash`。
 - 提交信息用英文 conventional 风格(`feat:` / `fix:` / `docs:` / `chore(release):`)。
 
 ## 发版流程(tag 驱动)
 
 1. **bump 版本号,5 个文件 6 处**:`package.json`、`package-lock.json`(顶层 + `packages[""]` 两处)、
-   `src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`(只改
+   `src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、根目录 `Cargo.lock`(单一 Cargo
+   workspace 后 lockfile 已从 `src-tauri/Cargo.lock` 移到仓库根;只改
    `codex-app-manager` 那个 `[[package]]` 块——⚠️ lock 里 `winapi-util` 等依赖也是 `0.1.x`,
    **严禁全局替换**)。
 2. **同一个发版 PR 里写 release note**:新增 `docs/releases/v<X.Y.Z>.md`。

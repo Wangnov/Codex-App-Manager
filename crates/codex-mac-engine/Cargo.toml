@@ -1,19 +1,19 @@
 [package]
 name = "codex-mac-engine"
 version = "0.1.0"
-edition = "2021"
-license = "MIT"
+edition.workspace = true
+license.workspace = true
 description = "Pure-logic engine for planning Codex macOS updates from a Sparkle appcast (delta-aware)."
 
 [dependencies]
-roxmltree = "0.21"
-thiserror = "2.0"
-serde = { version = "1.0", features = ["derive"] }
+roxmltree.workspace = true
+thiserror.workspace = true
+serde.workspace = true
 ed25519-dalek = "3"
-base64 = "0.23"
-log = "0.4"
-uuid = { version = "1", features = ["v4"] }
-libc = "0.2"
+base64.workspace = true
+log.workspace = true
+uuid.workspace = true
+libc.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Reads the macOS system proxy (SCDynamicStoreCopyProxies) for curl's "system"

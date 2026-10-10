@@ -93,7 +93,7 @@ jobs:
           CODEX_MIRROR_LIVE_MANIFEST_PATH: ${{ steps.fetch.outputs.tmp_dir }}/manifest.json
         run: |
           cargo test \
-            --manifest-path crates/codex-win-engine/Cargo.toml \
+            -p codex-win-engine \
             --test live_manifest_contract \
             -- --ignored --nocapture
 
@@ -104,7 +104,7 @@ jobs:
           CODEX_MAC_LIVE_APPCAST_X64_PATH: ${{ steps.fetch.outputs.tmp_dir }}/appcast-x64.xml
         run: |
           cargo test \
-            --manifest-path crates/codex-mac-engine/Cargo.toml \
+            -p codex-mac-engine \
             --test live_appcast_drift \
             -- --ignored --nocapture
 

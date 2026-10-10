@@ -530,7 +530,8 @@ mod tests {
 
     #[test]
     fn rejects_each_contract_violation() {
-        let cases: Vec<(&str, Box<dyn Fn(&mut Value)>)> = vec![
+        type ContractViolationCase = (&'static str, Box<dyn Fn(&mut Value)>);
+        let cases: Vec<ContractViolationCase> = vec![
             ("missing dark", Box::new(|v| { v.as_object_mut().unwrap().remove("dark"); })),
             ("missing light", Box::new(|v| { v.as_object_mut().unwrap().remove("light"); })),
             ("bad hex", Box::new(|v| v["dark"]["accent"] = "#zzz".into())),

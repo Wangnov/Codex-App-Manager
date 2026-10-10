@@ -380,6 +380,14 @@ pub fn is_translocation_risk(_app: &str) -> bool {
 /// Verified empirically against `SecTranslocateURLShouldRunTranslocated` for
 /// nine flag combinations (0083/00c3/0080 → translocate; 0381/0181/0143/0100/
 /// 0043/0001 → not). Unparseable values fail closed (risky, with guidance).
+///
+/// Its only production caller lives behind `cfg(target_os = "macos")`, but
+/// the cross-platform pure-logic test suite (`quarantine_tests`) also
+/// exercises it directly, so it must stay available under `cfg(test)` on
+/// every target — otherwise a workspace-wide `-D warnings` clippy pass on a
+/// non-macOS host (e.g. this crate compiled as part of the Windows CI leg of
+/// the single Cargo workspace) flags it as dead code.
+#[cfg(any(target_os = "macos", test))]
 fn quarantine_flags_indicate_translocation(value: &str) -> bool {
     const QTN_FLAG_TRANSLOCATE: u32 = 0x0080;
     const QTN_FLAG_DO_NOT_TRANSLOCATE: u32 = 0x0100;

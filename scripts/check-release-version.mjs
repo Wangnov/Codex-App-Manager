@@ -69,7 +69,19 @@ export function readReleaseSourceVersions(sourceRoot) {
     "src-tauri/tauri.conf.json",
   );
   const cargoTomlPath = join(root, "src-tauri", "Cargo.toml");
-  const cargoLockPath = join(root, "src-tauri", "Cargo.lock");
+  // Single Cargo workspace: the lockfile lives at the repo root now, not
+  // under src-tauri/ (which only kept its own Cargo.toml). A manual
+  // "workflow_dispatch" release recovery can check out a tag predating the
+  // workspace conversion, whose source tree never had a root Cargo.lock —
+  // fall back to the old per-crate location so that historical tag stays
+  // republishable.
+  const rootCargoLockPath = join(root, "Cargo.lock");
+  const legacyCargoLockPath = join(root, "src-tauri", "Cargo.lock");
+  const cargoLockPath = existsSync(rootCargoLockPath)
+    ? rootCargoLockPath
+    : legacyCargoLockPath;
+  const cargoLockLabel =
+    cargoLockPath === rootCargoLockPath ? "Cargo.lock" : "src-tauri/Cargo.lock";
   const cargoToml = readFileSync(cargoTomlPath, "utf8");
   const cargoLock = readFileSync(cargoLockPath, "utf8");
 
@@ -87,7 +99,7 @@ export function readReleaseSourceVersions(sourceRoot) {
       ),
     ],
     [
-      'src-tauri/Cargo.lock#[[package]] name="codex-app-manager".version',
+      `${cargoLockLabel}#[[package]] name="codex-app-manager".version`,
       cargoLockPackageVersion(cargoLock, "codex-app-manager"),
     ],
   ];

@@ -216,6 +216,7 @@ fn redact_userinfo(url: &str) -> String {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 /// The macOS proxy settings that matter to curl, as plain data so the
 /// translation is testable on any host.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -227,12 +228,14 @@ pub(crate) struct SystemProxySettings {
     pub auto_config: bool,
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProxyEndpoint {
     pub host: String,
     pub port: Option<u16>,
 }
 
+#[cfg(any(target_os = "macos", test))]
 /// Downloads are HTTPS-only, so the HTTPS proxy wins, then the HTTP proxy
 /// (both are plain HTTP proxies reached with CONNECT), then SOCKS. SOCKS uses
 /// `socks5h` so the proxy resolves names, as browsers do.
@@ -258,6 +261,7 @@ pub(crate) fn translate_system_proxy(settings: &SystemProxySettings) -> SystemPr
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 /// macOS stores a bare host plus a separate port; tolerate hosts that already
 /// carry a scheme or a port, and bracket bare IPv6 literals for curl.
 fn proxy_url(scheme: &str, endpoint: &ProxyEndpoint) -> Option<String> {
@@ -282,6 +286,7 @@ fn proxy_url(scheme: &str, endpoint: &ProxyEndpoint) -> Option<String> {
     })
 }
 
+#[cfg(any(target_os = "macos", test))]
 /// macOS bypass entries use `*.domain`, `a.b.*` and short CIDR (`169.254/16`)
 /// forms; curl's `--noproxy` takes a comma-separated list of domain suffixes,
 /// hosts and full CIDR blocks. Entries curl cannot express are dropped.
@@ -293,6 +298,7 @@ fn curl_noproxy_list(exceptions: &[String]) -> String {
         .join(",")
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn curl_noproxy_entry(entry: &str) -> Option<String> {
     if entry.is_empty() {
         return None;
@@ -312,6 +318,7 @@ fn curl_noproxy_entry(entry: &str) -> Option<String> {
     (!entry.contains('*')).then(|| entry.to_string())
 }
 
+#[cfg(any(target_os = "macos", test))]
 /// `10` / `172.16` / `192.168.1` (from `a.b.*`) → the covering IPv4 CIDR.
 fn ipv4_prefix_cidr(prefix: &str) -> Option<String> {
     let octets = parse_ipv4_octets(prefix)?;
@@ -322,6 +329,7 @@ fn ipv4_prefix_cidr(prefix: &str) -> Option<String> {
     Some(format!("{}/{bits}", pad_ipv4(&octets)))
 }
 
+#[cfg(any(target_os = "macos", test))]
 /// `169.254/16` → `169.254.0.0/16`.
 fn ipv4_short_cidr(address: &str, bits: &str) -> Option<String> {
     let octets = parse_ipv4_octets(address)?;
@@ -332,10 +340,12 @@ fn ipv4_short_cidr(address: &str, bits: &str) -> Option<String> {
     Some(format!("{}/{bits}", pad_ipv4(&octets)))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn parse_ipv4_octets(text: &str) -> Option<Vec<u8>> {
     text.split('.').map(|part| part.parse::<u8>().ok()).collect()
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn pad_ipv4(octets: &[u8]) -> String {
     let mut padded = octets.to_vec();
     padded.resize(4, 0);
