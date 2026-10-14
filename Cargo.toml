@@ -35,4 +35,4 @@ tokio = "1"
 url = "2.5"
 uuid = { version = "1", features = ["v4"] }
 windows-sys = "0.61.2"
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
