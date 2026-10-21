@@ -817,6 +817,14 @@ pub(crate) fn repair_portable_launch_entry(root: &Path) -> Result<(), EngineErro
     if let Err(error) = create_start_menu_shortcut(root) {
         log::warn!("portable shortcut repair failed: {error}");
     }
+    #[cfg(windows)]
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        let shortcut =
+            PathBuf::from(appdata).join("Microsoft/Windows/Start Menu/Programs/ChatGPT.lnk");
+        if let Err(error) = repair_legacy_shortcut_icon(root, &shortcut) {
+            log::warn!("legacy portable shortcut icon repair failed: {error}");
+        }
+    }
     // Legacy uninstall commands must learn protocol cleanup before its handler
     // is added. Refreshing them is also required when repairing a flat install.
     let version = read_codex_app_version_from_install_root(root).or_else(|| {
@@ -991,6 +999,37 @@ pub fn create_manager_launch_shortcut(
     _installed: &Path,
 ) -> Result<(), EngineError> {
     Ok(())
+}
+
+/// Repair an existing legacy-named link only when it targets an entry point of
+/// this installation. Other ChatGPT products and arbitrary executables under the
+/// install root are not ours to change. Never create or retarget a legacy link.
+#[cfg(windows)]
+fn repair_legacy_shortcut_icon(install_root: &Path, shortcut: &Path) -> Result<bool, EngineError> {
+    if !shortcut.exists() {
+        return Ok(false);
+    }
+    let Some(exe) = installed_app_exe(install_root) else {
+        return Ok(false);
+    };
+    let current = crate::portable_shortcut::read_spec(shortcut)
+        .map_err(|error| io_err("inspect legacy portable shortcut", error))?;
+    let nested =
+        exe.parent() == Some(install_root.join(crate::portable_command::APP_DIR_NAME).as_path());
+    let is_entry = crate::same_windows_path(&current.target, &exe)
+        || crate::same_windows_path(
+            &current.target,
+            &install_root.join(crate::portable_command::LAUNCHER_NAME),
+        )
+        || (nested
+            && ["Codex.exe", "ChatGPT.exe"]
+                .iter()
+                .any(|name| crate::same_windows_path(&current.target, &install_root.join(name))));
+    if !is_entry {
+        return Ok(false);
+    }
+    crate::portable_shortcut::ensure_icon(shortcut, &shortcut_icon(install_root))
+        .map_err(|error| io_err("repair legacy portable shortcut icon", error))
 }
 
 #[cfg(all(windows, not(test)))]
@@ -1767,6 +1806,95 @@ mod tests {
         // Nested layout without the ico: the real executable, never the stub.
         assert_eq!(pick_shortcut_icon(Some(&exe), &launcher, |_| false), exe);
         assert_eq!(pick_shortcut_icon(None, &launcher, |_| false), launcher);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn legacy_shortcut_icon_repairs_only_this_installs_entry_points() {
+        let parent = temp_test_dir("legacy-shortcut-icon");
+        let root = parent.join("便携 O'Neil & 子目录");
+        let app = root.join("app");
+        fs::create_dir_all(app.join("resources")).unwrap();
+        let exe = app.join("ChatGPT.exe");
+        fs::write(&exe, b"payload fixture").unwrap();
+        let icon = app.join("resources/icon-chatgpt.ico");
+        fs::write(&icon, b"icon fixture").unwrap();
+        let shortcut = parent.join("ChatGPT.lnk");
+        assert!(!repair_legacy_shortcut_icon(&root, &shortcut).unwrap());
+        assert!(!shortcut.exists());
+
+        for target in [
+            root.join("ChatGPT.exe"),
+            root.join("Codex.exe"),
+            root.join(crate::portable_command::LAUNCHER_NAME),
+            exe.clone(),
+        ] {
+            if !target.exists() {
+                fs::write(&target, b"launcher fixture").unwrap();
+            }
+            crate::portable_shortcut::create_with_arguments(
+                &shortcut,
+                &target,
+                &app,
+                &target,
+                "--user-flag codex://threads/example",
+            )
+            .unwrap();
+            let before = crate::portable_shortcut::read_spec(&shortcut).unwrap();
+            assert!(repair_legacy_shortcut_icon(&root, &shortcut).unwrap());
+            let mut expected = before;
+            expected.icon = icon.clone();
+            expected.icon_index = 0;
+            assert_eq!(
+                crate::portable_shortcut::read_spec(&shortcut).unwrap(),
+                expected
+            );
+            let saved = fs::read(&shortcut).unwrap();
+            let modified = fs::metadata(&shortcut).unwrap().modified().unwrap();
+            assert!(!repair_legacy_shortcut_icon(&root, &shortcut).unwrap());
+            assert_eq!(fs::read(&shortcut).unwrap(), saved);
+            assert_eq!(
+                fs::metadata(&shortcut).unwrap().modified().unwrap(),
+                modified
+            );
+        }
+
+        for target in [
+            parent.join("ChatGPT.exe"),
+            parent.join("other-install/app/ChatGPT.exe"),
+            root.join("tools/helper.exe"),
+            app.join("resources/codex.exe"),
+        ] {
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(&target, b"unrelated fixture").unwrap();
+            crate::portable_shortcut::create(&shortcut, &target, &app, &target).unwrap();
+            let saved = fs::read(&shortcut).unwrap();
+            assert!(!repair_legacy_shortcut_icon(&root, &shortcut).unwrap());
+            assert_eq!(fs::read(&shortcut).unwrap(), saved);
+        }
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn legacy_shortcut_icon_supports_flat_installs_and_missing_payloads() {
+        let root = temp_test_dir("legacy-shortcut-flat");
+        let exe = root.join("ChatGPT.exe");
+        fs::write(&exe, b"legacy payload fixture").unwrap();
+        let shortcut = root.join("ChatGPT.lnk");
+        let stale = root.join("stale.ico");
+        crate::portable_shortcut::create(&shortcut, &exe, &root, &stale).unwrap();
+        assert!(repair_legacy_shortcut_icon(&root, &shortcut).unwrap());
+        assert!(crate::same_windows_path(
+            &crate::portable_shortcut::read_spec(&shortcut).unwrap().icon,
+            &exe,
+        ));
+        crate::portable_shortcut::create(&shortcut, &exe, &root, &stale).unwrap();
+        fs::remove_file(&exe).unwrap();
+        let saved = fs::read(&shortcut).unwrap();
+        assert!(!repair_legacy_shortcut_icon(&root, &shortcut).unwrap());
+        assert_eq!(fs::read(&shortcut).unwrap(), saved);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(windows)]

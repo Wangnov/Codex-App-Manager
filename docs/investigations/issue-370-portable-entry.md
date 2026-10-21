@@ -98,8 +98,14 @@ been signed in through ChatGPT, and its browser runtime registry points to the
 nested payload's Node/resources and the isolated plugin host. A browser action
 through the signed-in window is still pending.
 
-Existing shortcuts or pins aimed at a root EXE retain their target paths. New
-Start-menu shortcuts also carry the official stable process AppUserModelID,
+Existing shortcuts or pins aimed at a root EXE retain their target paths. When
+Manager launches a portable install, an existing per-user Start-menu `ChatGPT.lnk`
+also gets its icon repaired if its target matches this installation's payload or
+a supported root launcher. Other targets are left alone. Icon repair updates the loaded Shell link
+in place, retaining arguments, working directory, AppUserModelID and other Shell
+metadata; an already-correct icon does not cause a write.
+
+New Start-menu shortcuts also carry the official stable process AppUserModelID,
 `com.openai.codex`, so Windows can match the running GUI to the launcher shortcut.
 A native Shell property-store test confirms this ID and the unchanged shortcut
 target, including Chinese text, spaces, apostrophes and `&` in the path. The user
