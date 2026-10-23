@@ -3446,6 +3446,10 @@ mod github_rate_limit_tests {
         }).unwrap_err();
         assert!(second.to_string().contains("GitHub API rate limit exceeded"));
         assert_eq!(calls.get(), 1);
+        let mirror = fetch_text_with_output("https://codexapp.agentsmirror.com/latest/manifest", &network, |_,_,_| {
+            Ok(output(true, b"{}"))
+        }).unwrap();
+        assert_eq!(mirror, "{}");
     }
 
     #[test]

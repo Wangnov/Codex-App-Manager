@@ -183,6 +183,8 @@ mod tests {
             blocked_until(&["--proxy".into(), "http://other.invalid:18442".into()]),
             None
         );
+        remember(route.clone(), unix_now().saturating_sub(1));
+        assert_eq!(blocked_until(&route), None);
         assert!(!is_github_api(
             "https://api.github.com.evil.invalid/repos/foo"
         ));
