@@ -29,7 +29,8 @@ describe("renderStaticCrashFallback", () => {
     expect(surface.dataset.staticCrash).toBe("true");
     expect(surface).toHaveTextContent("createRoot failed");
     expect(document.getElementById("root")).toContainElement(surface);
-    expect(surface).toHaveStyle({ background: "#17171d", color: "#f7f6fa" });
+    // CSSOM may expand the background shorthand; assert the opaque color itself.
+    expect(surface).toHaveStyle({ backgroundColor: "#17171d", color: "#f7f6fa" });
     expect(surface.querySelectorAll("button")).toHaveLength(2);
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith(
