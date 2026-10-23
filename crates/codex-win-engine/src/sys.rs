@@ -253,6 +253,9 @@ fn fetch_text_output(
     let max_text = MAX_TEXT_BYTES.to_string();
     let mut command = hidden_command(curl_exe());
     network.apply_to_command_with_schannel_revocation(&mut command, revocation_check);
+    if crate::github_rate_limit::is_github_api(url) {
+        command.arg("--include");
+    }
     command.args([
         "-fsSL",
         "--proto",
@@ -278,9 +281,22 @@ fn fetch_text_output(
 }
 
 pub fn fetch_text_with_network(url: &str, network: &NetworkConfig) -> Result<String, EngineError> {
+    fetch_text_with_output(url, network, fetch_text_output)
+}
+
+fn fetch_text_with_output(
+    url: &str,
+    network: &NetworkConfig,
+    mut fetch_output: impl FnMut(&str, &NetworkConfig, SchannelRevocationCheck) -> Result<std::process::Output, EngineError>,
+) -> Result<String, EngineError> {
+    let github_api = crate::github_rate_limit::is_github_api(url);
+    let route = github_api.then(|| network.curl_proxy_args());
+    if let Some(deadline) = route.as_ref().and_then(|args| crate::github_rate_limit::blocked_until(args)) {
+        return Err(EngineError::Io(crate::github_rate_limit::message(deadline)));
+    }
     let source = url_host(url);
     log::debug!("fetch Windows text source={source}");
-    let mut output = fetch_text_output(url, network, SchannelRevocationCheck::Strict)?;
+    let mut output = fetch_output(url, network, SchannelRevocationCheck::Strict)?;
     let should_retry_without_revocation = {
         let stderr = String::from_utf8_lossy(&output.stderr);
         !output.status.success()
@@ -290,7 +306,19 @@ pub fn fetch_text_with_network(url: &str, network: &NetworkConfig) -> Result<Str
         log::warn!(
             "Windows curl Schannel revocation check failed; retrying with --ssl-no-revoke source={source}"
         );
-        output = fetch_text_output(url, network, SchannelRevocationCheck::Disabled)?;
+        output = fetch_output(url, network, SchannelRevocationCheck::Disabled)?;
+    }
+
+    if github_api {
+        if let Some(response) = crate::github_rate_limit::response(&output.stdout) {
+            if let Some(deadline) = response.retry_at(crate::github_rate_limit::unix_now()) {
+                crate::github_rate_limit::remember(route.unwrap_or_default(), deadline);
+                return Err(EngineError::Io(crate::github_rate_limit::message(deadline)));
+            }
+            output.stdout = response.body.to_vec();
+        } else if output.status.success() {
+            return Err(EngineError::Io("invalid GitHub API response headers".to_string()));
+        }
     }
 
     if !output.status.success() {
@@ -3377,5 +3405,68 @@ mod portable_identity_tests {
         );
         assert!(detect_portable_install(&root).is_none());
         cleanup(&root);
+    }
+}
+
+
+#[cfg(test)]
+mod github_rate_limit_tests {
+    use super::*;
+    use std::{cell::Cell, process::{ExitStatus, Output}};
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt;
+    #[cfg(windows)]
+    use std::os::windows::process::ExitStatusExt;
+
+    fn output(success: bool, headers: &[u8]) -> Output {
+        #[cfg(unix)]
+        let status = ExitStatus::from_raw(if success { 0 } else { 22 << 8 });
+        #[cfg(windows)]
+        let status = ExitStatus::from_raw(if success { 0 } else { 22 });
+        Output { status, stdout: headers.to_vec(), stderr: b"curl HTTP failure".to_vec() }
+    }
+
+    fn route() -> NetworkConfig {
+        NetworkConfig::custom(format!("http://{}.invalid:18441", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn a_confirmed_limit_prevents_another_transport_request_until_reset() {
+        let network = route();
+        let calls = Cell::new(0);
+        let reset = crate::github_rate_limit::unix_now() + 300;
+        let headers = format!("HTTP/2 403\r\nx-ratelimit-remaining: 0\r\nx-ratelimit-reset: {reset}\r\n\r\n");
+        let first = fetch_text_with_output("https://api.github.com/repos/test/repo/releases", &network, |_,_,_| {
+            calls.set(calls.get()+1);
+            Ok(output(false, headers.as_bytes()))
+        }).unwrap_err();
+        assert!(first.to_string().contains(&format!("retry_after_unix={reset}")));
+        let second = fetch_text_with_output("https://api.github.com/repos/test/repo/releases?page=2", &network, |_,_,_| {
+            panic!("cooldown must stop the transport request")
+        }).unwrap_err();
+        assert!(second.to_string().contains("GitHub API rate limit exceeded"));
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn successful_api_json_has_no_header_prefix() {
+        let text = fetch_text_with_output("https://api.github.com/repos/test/repo/releases", &route(), |_,_,_| {
+            Ok(output(true, b"HTTP/2 200\r\nx-ratelimit-remaining: 12\r\n\r\n[]"))
+        }).unwrap();
+        assert_eq!(text, "[]");
+    }
+
+    #[test]
+    fn ordinary_forbidden_does_not_start_a_rate_limit_cooldown() {
+        let network = route();
+        let calls = Cell::new(0);
+        for _ in 0..2 {
+            let error = fetch_text_with_output("https://api.github.com/repos/test/repo/releases", &network, |_,_,_| {
+                calls.set(calls.get()+1);
+                Ok(output(false, b"HTTP/2 403\r\nx-ratelimit-remaining: 20\r\n\r\n"))
+            }).unwrap_err();
+            assert!(!error.to_string().contains("rate limit exceeded"));
+        }
+        assert_eq!(calls.get(), 2);
     }
 }

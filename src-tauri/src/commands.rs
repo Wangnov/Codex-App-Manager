@@ -582,6 +582,7 @@ pub async fn manager_install_update(
         runtime.mark_error(ErrorKind::Cancelled.as_code());
         emit_manager_update_state(&app, runtime);
         return Err(CommandError {
+            retry_after_unix: None,
             code: ErrorKind::Cancelled.as_code().to_string(),
             message: AppError::Engine(
                 "self-update cancelled: the application is quitting".to_string(),
@@ -649,6 +650,7 @@ fn manager_update_failure_with_kind(
     runtime.mark_error(kind.as_code());
     emit_manager_update_state(app, runtime);
     CommandError {
+        retry_after_unix: None,
         code: kind.as_code().to_string(),
         message: AppError::Engine(message).to_string(),
     }
@@ -663,6 +665,7 @@ fn manager_check_failure(context: &str, error: &tauri_plugin_updater::Error) -> 
     let message = format!("{context}: {error}");
     log::warn!("manager update check failed code={} {message}", kind.as_code());
     CommandError {
+        retry_after_unix: None,
         code: kind.as_code().to_string(),
         message: AppError::Engine(message).to_string(),
     }

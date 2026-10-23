@@ -17,6 +17,7 @@ pub mod authenticode;
 pub mod capability;
 pub mod checksums;
 pub mod download;
+mod github_rate_limit;
 pub mod limits;
 pub mod manifest;
 pub mod msix;

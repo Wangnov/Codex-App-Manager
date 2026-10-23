@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   codeErrorMessage,
@@ -12,6 +12,7 @@ import type { TKey } from "./i18n";
 const copy: Partial<Record<TKey, string>> = {
   "error.install": "安装未完成。已保留现有 Codex，请关闭 Codex 后重试。",
   "error.busy": "已有操作正在进行，请稍后再试。",
+  "error.rate_limit": "GitHub API 请求额度已用完，请等待额度恢复后重试。",
   "error.network": "无法连接更新服务器。请检查网络后重试。",
   "error.timeout": "连接超时。请检查网络后重试。",
   "error.disk_space": "磁盘空间不足，请清理后重试。",
@@ -54,6 +55,7 @@ describe("userErrorMessage / resolveFailure", () => {
 
   it("maps every classified backend kind to localized copy", () => {
     const cases: Array<[string, string]> = [
+      ["rate_limit", "GitHub API 请求额度已用完，请等待额度恢复后重试。"],
       ["network", "无法连接更新服务器。请检查网络后重试。"],
       ["timeout", "连接超时。请检查网络后重试。"],
       ["disk_space", "磁盘空间不足，请清理后重试。"],
@@ -82,6 +84,14 @@ describe("userErrorMessage / resolveFailure", () => {
     );
     expect(failure.detail).toBe("boom from render");
     expect(failure.recoverable).toBe(true);
+  });
+
+  it("formats the backend reset timestamp separately from raw diagnostics", () => {
+    const translate = vi.fn().mockReturnValue("等待重置后重试");
+    const failure = resolveFailure({ code: "rate_limit", message: "raw diagnostic", retryAfterUnix: 1800000000 }, translate);
+    expect(translate).toHaveBeenLastCalledWith("error.rate_limit_reset", { time: expect.any(String) });
+    expect(failure.recoverable).toBe(true);
+    expect(failure.detail).toBe("raw diagnostic");
   });
 
   it("classifies connectivity codes for hero presentation", () => {
