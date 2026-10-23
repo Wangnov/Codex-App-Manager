@@ -6,6 +6,7 @@ license.workspace = true
 description = "Pure-logic engine for planning and staging Codex Windows MSIX updates."
 
 [dependencies]
+codex-archive = { path = "../codex-archive" }
 roxmltree.workspace = true
 serde.workspace = true
 serde_json.workspace = true

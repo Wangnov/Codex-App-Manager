@@ -86,15 +86,22 @@ fn buffer_to_path(buffer: &[u16]) -> PathBuf {
 }
 
 pub(crate) fn read_spec(shortcut: &Path) -> windows::core::Result<ShortcutSpec> {
-    use windows::{core::BSTR, Win32::System::Com::STGM_READ};
+    use windows::Win32::System::Com::STGM_READ;
     let _apartment = Apartment::initialize()?;
     let shortcut = wide(shortcut);
-    // SAFETY: load the saved link into a new object and read into initialized,
-    // sized UTF-16 buffers. Interfaces drop before the COM apartment.
+    // SAFETY: the terminated path outlives Load. Interfaces drop before COM.
     unsafe {
         let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
         let persist: IPersistFile = link.cast()?;
         persist.Load(PCWSTR(shortcut.as_ptr()), STGM_READ)?;
+        read_loaded_spec(&link)
+    }
+}
+
+fn read_loaded_spec(link: &IShellLinkW) -> windows::core::Result<ShortcutSpec> {
+    use windows::core::BSTR;
+    // SAFETY: read into initialized, sized UTF-16 buffers while the link is alive.
+    unsafe {
         let mut target = vec![0u16; 32768];
         let mut workdir = vec![0u16; 32768];
         let mut icon = vec![0u16; 32768];
@@ -165,13 +172,39 @@ pub(crate) fn ensure(shortcut: &Path, desired: &ShortcutSpec) -> windows::core::
     Ok(true)
 }
 
-/// Point an existing link at `icon` while keeping its target, working
-/// directory and the user's arguments. Returns whether anything was written.
+/// Point an existing link at `icon` while preserving its other Shell metadata.
+/// Returns whether anything was written; an identical icon leaves the file alone.
 pub(crate) fn ensure_icon(shortcut: &Path, icon: &Path) -> windows::core::Result<bool> {
-    let mut spec = read_spec(shortcut)?;
-    spec.icon = icon.to_path_buf();
-    spec.icon_index = 0;
-    ensure(shortcut, &spec)
+    ensure_icon_if(shortcut, icon, |_| true)
+}
+
+/// Evaluate the repair policy on the same loaded link that will be saved.
+pub(crate) fn ensure_icon_if(
+    shortcut: &Path,
+    icon: &Path,
+    should_repair: impl FnOnce(&ShortcutSpec) -> bool,
+) -> windows::core::Result<bool> {
+    use windows::Win32::System::Com::STGM_READ;
+    let _apartment = Apartment::initialize()?;
+    let shortcut = wide(shortcut);
+    // SAFETY: load the existing link, read into an initialized UTF-16 buffer,
+    // and change only its icon on the same object. Interfaces drop before COM.
+    unsafe {
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
+        let persist: IPersistFile = link.cast()?;
+        persist.Load(PCWSTR(shortcut.as_ptr()), STGM_READ)?;
+        let current = read_loaded_spec(&link)?;
+        if current.icon_index == 0 && crate::same_windows_path(&current.icon, icon) {
+            return Ok(false);
+        }
+        if !should_repair(&current) {
+            return Ok(false);
+        }
+        let icon = wide(icon);
+        link.SetIconLocation(PCWSTR(icon.as_ptr()), 0)?;
+        persist.Save(PCWSTR(shortcut.as_ptr()), true)?;
+    }
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -289,6 +322,147 @@ mod launch_shortcut_tests {
         other.arguments = "--other".into();
         assert!(ensure(&shortcut, &other).unwrap());
         assert!(!ensure(&shortcut, &other).unwrap());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ensure_icon_repairs_the_index_without_changing_other_fields() {
+        let root = temp_root("ensure-icon-index");
+        let exe = std::env::current_exe().unwrap();
+        let shortcut = root.join("Codex.lnk");
+        let mut spec = ShortcutSpec::new(&exe, &root, &exe, "--user-flag");
+        spec.icon_index = 7;
+        write_spec(&shortcut, &spec).unwrap();
+        assert!(ensure_icon(&shortcut, &exe).unwrap());
+        spec.icon_index = 0;
+        assert!(read_spec(&shortcut).unwrap().matches(&spec));
+        assert!(!ensure_icon(&shortcut, &exe).unwrap());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ensure_icon_does_not_create_missing_or_replace_invalid_links() {
+        let root = temp_root("ensure-icon-invalid");
+        let exe = std::env::current_exe().unwrap();
+        let shortcut = root.join("Codex.lnk");
+        assert!(ensure_icon(&shortcut, &exe).is_err());
+        assert!(!shortcut.exists());
+        let invalid = b"not a Shell Link";
+        std::fs::write(&shortcut, invalid).unwrap();
+        assert!(ensure_icon(&shortcut, &exe).is_err());
+        assert_eq!(std::fs::read(&shortcut).unwrap(), invalid);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ensure_icon_does_not_add_an_app_id_to_unidentified_links() {
+        use windows::Win32::System::{Com::STGM_READ, Variant::VT_EMPTY};
+
+        let root = temp_root("ensure-icon-no-app-id");
+        let exe = std::env::current_exe().unwrap();
+        let shortcut = root.join("Codex.lnk");
+        let shortcut_wide = wide(&shortcut);
+        let exe_wide = wide(&exe);
+        {
+            let _apartment = Apartment::initialize().unwrap();
+            // SAFETY: save a link without an AppUserModelID. Terminated buffers
+            // outlive these calls and interfaces drop before the COM apartment.
+            unsafe {
+                let link: IShellLinkW =
+                    CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).unwrap();
+                link.SetPath(PCWSTR(exe_wide.as_ptr())).unwrap();
+                let persist: IPersistFile = link.cast().unwrap();
+                persist.Save(PCWSTR(shortcut_wide.as_ptr()), true).unwrap();
+            }
+        }
+        assert!(ensure_icon(&shortcut, &exe).unwrap());
+        {
+            let _apartment = Apartment::initialize().unwrap();
+            // SAFETY: load the saved link and inspect the variant's type tag;
+            // no union payload is interpreted. Interfaces drop before COM.
+            unsafe {
+                let link: IShellLinkW =
+                    CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).unwrap();
+                let persist: IPersistFile = link.cast().unwrap();
+                persist
+                    .Load(PCWSTR(shortcut_wide.as_ptr()), STGM_READ)
+                    .unwrap();
+                let store: IPropertyStore = link.cast().unwrap();
+                let value = store.GetValue(&APP_ID_KEY).unwrap();
+                assert_eq!(value.Anonymous.Anonymous.vt, VT_EMPTY);
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ensure_icon_preserves_existing_shell_metadata() {
+        use windows::Win32::System::Com::STGM_READ;
+
+        let root = temp_root("ensure-icon-metadata");
+        let workdir = root.join("便携 O'Neil & 子目录");
+        std::fs::create_dir_all(&workdir).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let target = workdir.join("Missing.exe");
+        let shortcut = workdir.join("Codex.lnk");
+        let mut original = ShortcutSpec::new(
+            &target,
+            &workdir,
+            &root.join("stale.ico"),
+            "--user-flag \"参数 with spaces\" codex://threads/example",
+        );
+        original.app_id = "custom.codex.identity".into();
+        write_spec(&shortcut, &original).unwrap();
+        let description: Vec<u16> = "My Codex shortcut 快捷方式"
+            .encode_utf16()
+            .chain([0])
+            .collect();
+        let shortcut_wide = wide(&shortcut);
+        {
+            let _apartment = Apartment::initialize().unwrap();
+            // SAFETY: the link and description buffers are terminated and live
+            // through the COM calls; interfaces drop before the apartment.
+            unsafe {
+                let link: IShellLinkW =
+                    CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).unwrap();
+                let persist: IPersistFile = link.cast().unwrap();
+                persist
+                    .Load(PCWSTR(shortcut_wide.as_ptr()), STGM_READ)
+                    .unwrap();
+                link.SetDescription(PCWSTR(description.as_ptr())).unwrap();
+                link.SetHotkey(0x0643).unwrap();
+                persist.Save(PCWSTR(shortcut_wide.as_ptr()), true).unwrap();
+            }
+        }
+
+        assert!(ensure_icon(&shortcut, &exe).unwrap());
+        let mut expected = original;
+        expected.icon = exe.clone();
+        assert!(read_spec(&shortcut).unwrap().matches(&expected));
+        {
+            let _apartment = Apartment::initialize().unwrap();
+            // SAFETY: load the existing link and read into an initialized buffer.
+            unsafe {
+                let link: IShellLinkW =
+                    CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).unwrap();
+                let persist: IPersistFile = link.cast().unwrap();
+                persist
+                    .Load(PCWSTR(shortcut_wide.as_ptr()), STGM_READ)
+                    .unwrap();
+                let mut saved_description = vec![0u16; description.len()];
+                link.GetDescription(&mut saved_description).unwrap();
+                assert_eq!(saved_description, description);
+                assert_eq!(link.GetHotkey().unwrap(), 0x0643);
+            }
+        }
+        let first = std::fs::read(&shortcut).unwrap();
+        let modified = std::fs::metadata(&shortcut).unwrap().modified().unwrap();
+        assert!(!ensure_icon(&shortcut, &exe).unwrap());
+        assert_eq!(std::fs::read(&shortcut).unwrap(), first);
+        assert_eq!(
+            std::fs::metadata(&shortcut).unwrap().modified().unwrap(),
+            modified
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

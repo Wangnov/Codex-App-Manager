@@ -129,7 +129,10 @@ pub fn read_codex_app_version_from_msix(path: &Path) -> Option<String> {
         let Ok(mut entry) = archive.by_index(index) else {
             continue;
         };
-        let normalized = entry.name().replace('\\', "/").to_ascii_lowercase();
+        let normalized = match codex_archive::entry_name(&entry) {
+            Ok(name) => name.replace('\\', "/").to_ascii_lowercase(),
+            Err(_) => continue,
+        };
         if normalized != "resources/app.asar" && !normalized.ends_with("/resources/app.asar") {
             continue;
         }
