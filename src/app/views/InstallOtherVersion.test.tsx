@@ -99,6 +99,7 @@ function renderPicker(
   architecture: string | null = "x64",
   onInstall = vi.fn<(selection: HistoricalInstallSelection, blockUpdates: boolean) => void>(),
   allowCurrentVersionInstall = false,
+  recommendedVersion?: string | null,
 ) {
   const view = render(
     <I18nProvider>
@@ -106,6 +107,7 @@ function renderPicker(
         open
         platform={platform}
         currentVersion={currentVersion}
+        recommendedVersion={recommendedVersion}
         allowCurrentVersionInstall={allowCurrentVersionInstall}
         architecture={architecture}
         onDismiss={vi.fn()}
@@ -167,6 +169,19 @@ describe("InstallOtherVersionSheet", () => {
         true,
       ),
     );
+  });
+
+  it("recommends the compatible release instead of a newer incompatible release", async () => {
+    renderPicker("macos", null, "x64", vi.fn(), false, "26.727.51351");
+    const compatible = await screen.findByRole("button", { name: /26\.727\.51351.*GitHub Releases/ });
+    expect(compatible).toHaveTextContent("Recommended");
+    expect(screen.getByRole("button", { name: /26\.806\.12001.*GitHub Releases/ })).not.toHaveTextContent("Recommended");
+  });
+
+  it("does not label a release recommended when compatibility is unknown", async () => {
+    renderPicker("macos", null, "x64", vi.fn(), false, null);
+    await screen.findByRole("button", { name: /26\.806\.12001.*GitHub Releases/ });
+    expect(screen.queryByText("Recommended")).not.toBeInTheDocument();
   });
 
   it("accepts a locally selected GitHub Release DMG without a Sparkle path", async () => {

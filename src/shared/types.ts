@@ -232,6 +232,11 @@ export interface MacUpdateReport {
   installedPubDate?: string | null;
   /** Sparkle <pubDate> of the latest appcast item, used for update metadata. */
   latestPubDate?: string | null;
+  compatibility?: {
+    hostVersion: string;
+    minimumSystemVersion: string;
+    latestCompatibleVersion: string | null;
+  } | null;
 }
 
 export interface MacPerformReport {

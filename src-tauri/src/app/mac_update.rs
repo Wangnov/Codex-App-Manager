@@ -91,6 +91,7 @@ pub struct MacUpdateReport {
     /// `<pubDate>` of the latest appcast item — the release date of the update
     /// target, when the feed publishes it.
     pub latest_pub_date: Option<String>,
+    pub compatibility: Option<codex_mac_engine::compatibility::MacOsCompatibility>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -393,7 +394,7 @@ fn parse_macos_version(s: &str) -> Option<(u32, u32)> {
     Some((major, minor))
 }
 
-fn host_macos_version() -> Option<(u32, u32)> {
+fn host_macos_version_string() -> Option<String> {
     let out = std::process::Command::new("sw_vers")
         .arg("-productVersion")
         .output()
@@ -401,7 +402,13 @@ fn host_macos_version() -> Option<(u32, u32)> {
     if !out.status.success() {
         return None;
     }
-    parse_macos_version(&String::from_utf8_lossy(&out.stdout))
+    Some(String::from_utf8(out.stdout).ok()?.trim().to_string())
+}
+
+fn host_macos_version() -> Option<(u32, u32)> {
+    host_macos_version_string()
+        .as_deref()
+        .and_then(parse_macos_version)
 }
 
 /// Reject staging/installing an update the host macOS is too old to run. If the
@@ -552,9 +559,11 @@ pub fn plan_macos_update_with_network(
     let plan = plan_update(&appcast, effective_build(simulated_build, &installed));
 
     let latest = appcast.latest();
-    if let Some(latest) = latest {
-        require_os_supported(latest.minimum_system_version.as_deref())?;
-    }
+    // Checking remains read-only and successful even when the update cannot run.
+    // Staging and install paths still enforce their existing OS guards.
+    let compatibility = host_macos_version_string()
+        .as_deref()
+        .and_then(|host| codex_mac_engine::compatibility::update_compatibility(&appcast, host));
     let latest_pub_date = latest.and_then(|latest| latest.pub_date.clone());
 
     // Release date of the *installed* build (its own appcast item), so it stays
@@ -575,6 +584,7 @@ pub fn plan_macos_update_with_network(
         plan,
         installed_pub_date,
         latest_pub_date,
+        compatibility,
     };
     let installed_build = report.installed.as_ref().map(|installed| installed.build);
     let latest_build = report.plan.as_ref().map(|plan| plan.latest_build);

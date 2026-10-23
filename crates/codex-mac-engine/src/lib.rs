@@ -15,6 +15,7 @@
 pub mod appcast;
 pub mod apply;
 pub mod codesign;
+pub mod compatibility;
 pub mod download;
 pub mod limits;
 pub mod network;

@@ -67,7 +67,7 @@ import {
 } from "./InstallOtherVersion";
 
 type Kind =
-  "loading" | "error" | "none" | "idle" | "update" | "external" | "uptodate";
+  "loading" | "error" | "none" | "idle" | "update" | "incompatible" | "external" | "uptodate";
 type MacBusy = "plan" | "perform" | "adopt" | "install" | null;
 type HomeNotice = { title: string; detail?: string };
 type MacHistoricalExpectation = Extract<
@@ -772,6 +772,7 @@ function MacHome({
   );
   const updateAvailable = Boolean(plan) && !plan?.upToDate && !updateSuppressed;
 
+  const compatibility = report?.compatibility;
   const kind: Kind = useMemo(() => {
     if (!installed) {
       if (busy === "plan" || !statusLoaded) return "loading";
@@ -779,6 +780,7 @@ function MacHome({
       // appcast unreachable) → error, never an install entry that would just
       // fail again.
       if (statusFailed || checkError) return "error";
+      if (compatibility) return "incompatible";
       return "none";
     }
     // Don't classify (update / idle / uptodate) until the local adoption status
@@ -792,12 +794,14 @@ function MacHome({
     if (busy === "plan" && !report) return "loading";
     if (checkError && !report) return "error";
     if (!report) return "idle";
+    if (compatibility) return "incompatible";
     if (updateSuppressed) return "idle";
     if (updateAvailable) return "update";
     return "uptodate";
   }, [
     busy,
     report,
+    compatibility,
     checkError,
     installed,
     updateSuppressed,
@@ -1105,6 +1109,21 @@ function MacHome({
             </>
           ) : kind === "error" ? (
             <ErrorHero failure={checkError} />
+          ) : kind === "incompatible" && compatibility ? (
+            <>
+              <Ring icon="shield" variant="amber" />
+              <div className="headline">{t("home.incompatible.title")}</div>
+              <div className="desc">{t("home.incompatible.desc", {
+                current: compatibility.hostVersion,
+                required: compatibility.minimumSystemVersion,
+              })}</div>
+              <div className="desc">{compatibility.latestCompatibleVersion
+                ? t("home.incompatible.recommended", { version: compatibility.latestCompatibleVersion })
+                : t("home.incompatible.unknown")}</div>
+              <button className="linkbtn subtle" onClick={onOpenSettings}>
+                {t("home.incompatible.blockUpdates")}
+              </button>
+            </>
           ) : kind === "none" ? (
             <>
               <Ring icon="download" variant="muted" />
@@ -1300,6 +1319,19 @@ function MacHome({
               </button>
             </>
           ) : null}
+          {!rechecking && kind === "incompatible" ? (
+            <>
+              <button className="btn primary big" onClick={() => setOtherVersionOpen(true)} disabled={busy !== null}>
+                <Icon name="list" />{t("home.incompatible.choose")}
+              </button>
+              {installed ? <button className="btn ghost" onClick={onLaunch} disabled={busy !== null}>
+                <CodexGlyph />{t("home.launch")}
+              </button> : null}
+              <button className="btn ghost" onClick={checkAllUpdates} disabled={busy !== null}>
+                <Icon name="refresh" />{t("home.recheck")}
+              </button>
+            </>
+          ) : null}
           {!rechecking && kind === "none" ? (
             <button
               className="btn primary big"
@@ -1369,7 +1401,7 @@ function MacHome({
         !statusFailed &&
         (kind === "none" ||
           kind === "error" ||
-          (installed && kind !== "external")) ? (
+          (installed && kind !== "external" && kind !== "incompatible")) ? (
           <InstallOtherVersionEntry
             disabled={busy !== null}
             onOpen={() => setOtherVersionOpen(true)}
@@ -1446,6 +1478,7 @@ function MacHome({
         open={otherVersionOpen}
         platform="macos"
         currentVersion={installedVersion}
+        recommendedVersion={compatibility ? compatibility.latestCompatibleVersion : undefined}
         architecture={hostArchitecture ?? installed?.arch ?? null}
         onDismiss={() => setOtherVersionOpen(false)}
         onInstall={runHistoricalInstall}

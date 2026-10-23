@@ -217,6 +217,36 @@ describe("MacHome state machine", () => {
     expect(screen.getByRole("button", { name: /立即更新/ })).toBeEnabled();
   });
 
+  it("shows unsupported macOS as a successful check with a compatible-version entry", async () => {
+    const user = userEvent.setup();
+    api.macPlanUpdate.mockResolvedValue({ ...REPORT_UPDATE, compatibility: {
+      hostVersion: "12.7.6", minimumSystemVersion: "13", latestCompatibleVersion: "1.5.0",
+    } });
+    renderHome();
+    expect(await screen.findByText("有更新，但当前系统不兼容")).toBeInTheDocument();
+    expect(screen.getByText(/当前 macOS 12.7.6/)).toBeInTheDocument();
+    expect(screen.getByText(/最新的兼容版本：1.5.0/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /立即更新/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("检查失败")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /启动 Codex/ })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "选择兼容版本" }));
+    expect(await screen.findByRole("dialog", { name: "选择安装版本" })).toBeInTheDocument();
+    expect(api.macPerformUpdate).not.toHaveBeenCalled();
+  });
+
+  it("does not offer an incompatible fresh install or invent an older recommendation", async () => {
+    api.macStatus.mockResolvedValue(STATUS_NONE);
+    api.macPlanUpdate.mockResolvedValue({ ...REPORT_UPDATE, installed: null, compatibility: {
+      hostVersion: "12.7.6", minimumSystemVersion: "13", latestCompatibleVersion: null,
+    } });
+    renderHome();
+    expect(await screen.findByText("有更新，但当前系统不兼容")).toBeInTheDocument();
+    expect(screen.getByText(/没有提供已确认兼容的旧版本/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^安装 Codex$/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "选择兼容版本" })).toBeEnabled();
+    expect(api.macInstall).not.toHaveBeenCalled();
+  });
+
   it("manually checks Codex and Manager with automatic checks disabled", async () => {
     const user = userEvent.setup();
     const manualOnly = settings({ checkOnStartup: false, periodicCheck: false });

@@ -86,6 +86,7 @@ export function InstallOtherVersionSheet({
   open,
   platform,
   currentVersion,
+  recommendedVersion,
   allowCurrentVersionInstall = false,
   architecture,
   onDismiss,
@@ -94,6 +95,8 @@ export function InstallOtherVersionSheet({
   open: boolean;
   platform: Platform;
   currentVersion?: string | null;
+  /** null means the feed has not established a compatible recommendation. */
+  recommendedVersion?: string | null;
   allowCurrentVersionInstall?: boolean;
   architecture?: string | null;
   onDismiss: () => void;
@@ -130,15 +133,18 @@ export function InstallOtherVersionSheet({
   const canRepairCurrent = platform === "windows" && allowCurrentVersionInstall;
 
   const releases = useMemo(() => {
-    const source = catalog?.releases ?? [];
+    const catalogReleases = catalog?.releases ?? [];
+    const source = recommendedVersion
+      ? [...catalogReleases.filter((r) => r.version === recommendedVersion), ...catalogReleases.filter((r) => r.version !== recommendedVersion)]
+      : catalogReleases;
     const current = source.find((release) => isCurrentRelease(release, currentVersion, platform));
     return current
       ? [current, ...source.filter((release) => release !== current)]
       : source;
-  }, [catalog, currentVersion, platform]);
-  const recommendedTag = releases.find(
-    (release) => !isCurrentRelease(release, currentVersion, platform),
-  )?.tag;
+  }, [catalog, currentVersion, platform, recommendedVersion]);
+  const recommendedTag = recommendedVersion !== undefined
+    ? releases.find((release) => release.version === recommendedVersion)?.tag
+    : releases.find((release) => !isCurrentRelease(release, currentVersion, platform))?.tag;
   const firstSelectableIndex = releases.findIndex(
     (release) =>
       (!isCurrentRelease(release, currentVersion, platform) || canRepairCurrent) &&
