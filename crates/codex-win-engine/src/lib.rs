@@ -34,6 +34,10 @@ pub mod sys;
 pub mod version;
 mod windows_process;
 
+#[cfg(test)]
+#[path = "../../test-support/zip.rs"]
+mod zip_test;
+
 pub use app_version::{
     read_codex_app_version_from_asar, read_codex_app_version_from_install_root,
     read_codex_app_version_from_msix,
