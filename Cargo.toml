@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "src-tauri",
+    "crates/codex-archive",
     "crates/codex-mac-engine",
     "crates/codex-theme-engine",
     "crates/codex-win-engine",
@@ -35,4 +36,4 @@ tokio = "1"
 url = "2.5"
 uuid = { version = "1", features = ["v4"] }
 windows-sys = "0.61.2"
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }

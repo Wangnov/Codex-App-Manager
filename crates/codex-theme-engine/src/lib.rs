@@ -34,6 +34,10 @@ pub mod payload;
 pub mod theme;
 pub mod transaction;
 
+#[cfg(test)]
+#[path = "../../test-support/zip.rs"]
+mod zip_test;
+
 /// Engine version stamped into every payload; the renderer's verify pass
 /// checks it, so an engine upgrade re-injects on the next daemon tick.
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");

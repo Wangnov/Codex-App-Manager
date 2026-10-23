@@ -22,6 +22,7 @@ tauri-build = { version = "2.6.2", features = [] }
 
 [dependencies]
 base64.workspace = true
+codex-archive = { path = "../crates/codex-archive" }
 codex-mac-engine = { path = "../crates/codex-mac-engine" }
 codex-theme-engine = { path = "../crates/codex-theme-engine" }
 codex-win-engine = { path = "../crates/codex-win-engine" }
@@ -37,7 +38,10 @@ tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-log = "2"
 tauri-plugin-single-instance = "2"
-tauri-plugin-updater = "2"
+# Releases use raw signed NSIS executables on Windows. Keep TLS and proxy
+# support without the legacy ZIP installer parser; macOS tar.gz support is
+# unconditional in the updater's macOS dependencies.
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls", "system-proxy"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
 url.workspace = true

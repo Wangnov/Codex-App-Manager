@@ -7,6 +7,7 @@ description = "Asset-based UI theme engine for the Codex desktop app: loopback C
 
 [dependencies]
 base64.workspace = true
+codex-archive = { path = "../codex-archive" }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 log.workspace = true
 serde.workspace = true

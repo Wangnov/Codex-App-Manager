@@ -6,6 +6,10 @@ pub mod errors;
 
 mod state;
 
+#[cfg(test)]
+#[path = "../../crates/test-support/zip.rs"]
+mod zip_test;
+
 use std::sync::atomic::Ordering;
 
 use tauri::webview::PageLoadEvent;
