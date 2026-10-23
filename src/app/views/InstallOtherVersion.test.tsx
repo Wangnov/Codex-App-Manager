@@ -277,7 +277,7 @@ describe("InstallOtherVersionSheet", () => {
     const current = await screen.findByRole("button", { name: /26\.727\.51351/ });
     expect(current).toBeEnabled();
     expect(current).toHaveTextContent("Repair by reinstalling");
-    expect(current).toHaveFocus();
+    await waitFor(() => expect(current).toHaveFocus());
 
     await user.click(current);
     expect(screen.getByRole("heading", { name: "Repair 26.727.51351?" })).toBeInTheDocument();
