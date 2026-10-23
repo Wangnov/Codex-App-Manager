@@ -87,6 +87,7 @@ export function InstallOtherVersionSheet({
   platform,
   currentVersion,
   recommendedVersion,
+  unsupportedVersions = [],
   allowCurrentVersionInstall = false,
   architecture,
   onDismiss,
@@ -97,6 +98,7 @@ export function InstallOtherVersionSheet({
   currentVersion?: string | null;
   /** null means the feed has not established a compatible recommendation. */
   recommendedVersion?: string | null;
+  unsupportedVersions?: string[];
   allowCurrentVersionInstall?: boolean;
   architecture?: string | null;
   onDismiss: () => void;
@@ -148,7 +150,7 @@ export function InstallOtherVersionSheet({
   const firstSelectableIndex = releases.findIndex(
     (release) =>
       (!isCurrentRelease(release, currentVersion, platform) || canRepairCurrent) &&
-      release.assets.length > 0,
+      release.assets.length > 0 && !unsupportedVersions.includes(release.version),
   );
 
   const loadCatalog = useCallback(
@@ -377,6 +379,7 @@ export function InstallOtherVersionSheet({
               {!catalogBusy
                 ? releases.map((release, index) => {
                     const current = isCurrentRelease(release, currentVersion, platform);
+                    const unsupported = unsupportedVersions.includes(release.version);
                     const repairableCurrent = current && canRepairCurrent;
                     const recommended = release.tag === recommendedTag;
                     const assets = sortedAssets(release.assets);
@@ -389,7 +392,7 @@ export function InstallOtherVersionSheet({
                           current ? " current" : ""
                         }`}
                         onClick={() => chooseRelease(release)}
-                        disabled={(current && !repairableCurrent) || !resolvedArchitecture}
+                        disabled={unsupported || (current && !repairableCurrent) || !resolvedArchitecture}
                       >
                         <span className="version-rail" aria-hidden="true">
                           <span />
@@ -420,9 +423,9 @@ export function InstallOtherVersionSheet({
                           </span>
                           {!current || repairableCurrent ? (
                             <span className="version-compatible">
-                              <Icon name="check" />
+                              <Icon name={unsupported ? "shield" : "check"} />
                               {t(
-                                repairableCurrent
+                                unsupported ? "versionPicker.unsupportedOs" : repairableCurrent
                                   ? "versionPicker.repair"
                                   : "versionPicker.compatible",
                               )}

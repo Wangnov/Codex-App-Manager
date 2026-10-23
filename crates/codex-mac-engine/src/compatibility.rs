@@ -12,6 +12,7 @@ pub struct MacOsCompatibility {
     /// Highest-build item with an explicit, supported minimum OS requirement.
     /// None means the current feed does not establish a compatible release.
     pub latest_compatible_version: Option<String>,
+    pub unsupported_versions: Vec<String>,
 }
 
 fn version(value: &str) -> Option<[u32; 3]> {
@@ -46,6 +47,17 @@ pub fn update_compatibility(appcast: &Appcast, host_version: &str) -> Option<Mac
         host_version: host_version.trim().to_string(),
         minimum_system_version: required.to_string(),
         latest_compatible_version: compatible.map(|item| item.short_version.clone()),
+        unsupported_versions: appcast
+            .items
+            .iter()
+            .filter(|item| {
+                item.minimum_system_version
+                    .as_deref()
+                    .and_then(version)
+                    .is_some_and(|minimum| host < minimum)
+            })
+            .map(|item| item.short_version.clone())
+            .collect(),
     })
 }
 
@@ -80,6 +92,7 @@ mod tests {
         };
         let result = update_compatibility(&appcast, "12.7.6").unwrap();
         assert_eq!(result.host_version, "12.7.6");
+        assert_eq!(result.unsupported_versions, ["v30"]);
         assert_eq!(result.minimum_system_version, "13");
         assert_eq!(result.latest_compatible_version.as_deref(), Some("v20"));
         assert!(update_compatibility(&appcast, "13.0").is_none());

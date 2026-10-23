@@ -236,6 +236,7 @@ export interface MacUpdateReport {
     hostVersion: string;
     minimumSystemVersion: string;
     latestCompatibleVersion: string | null;
+    unsupportedVersions?: string[];
   } | null;
 }
 

@@ -1479,6 +1479,7 @@ function MacHome({
         platform="macos"
         currentVersion={installedVersion}
         recommendedVersion={compatibility ? compatibility.latestCompatibleVersion : undefined}
+        unsupportedVersions={compatibility?.unsupportedVersions ?? (compatibility && latestVersion ? [latestVersion] : [])}
         architecture={hostArchitecture ?? installed?.arch ?? null}
         onDismiss={() => setOtherVersionOpen(false)}
         onInstall={runHistoricalInstall}
