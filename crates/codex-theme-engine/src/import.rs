@@ -21,7 +21,7 @@ fn err(message: impl Into<String>) -> ThemeEngineError {
 }
 
 /// A zip entry name is accepted only as a plain relative path — no roots, no
-/// parent hops, no drive prefixes (`ZipFile::enclosed_name` plus belt and
+/// parent hops, no drive prefixes (decoded archive path plus belt and
 /// braces for portability).
 fn safe_entry_path(name: &str) -> Option<PathBuf> {
     let path = Path::new(name);
@@ -80,11 +80,12 @@ fn extract_and_place(
         let entry = archive
             .by_index(index)
             .map_err(|e| err(format!("读取压缩包条目失败: {e}")))?;
-        let Some(relative) = entry
-            .enclosed_name()
+        let entry_name = codex_archive::entry_name(&entry)
+            .map_err(|e| err(format!("读取压缩包条目名称失败: {e}")))?;
+        let Some(relative) = codex_archive::enclosed_path(&entry_name)
             .and_then(|p| safe_entry_path(p.to_string_lossy().as_ref()))
         else {
-            return Err(err(format!("主题包含非法路径条目: {}", entry.name())));
+            return Err(err(format!("主题包含非法路径条目: {entry_name}")));
         };
         if entry.is_dir() {
             std::fs::create_dir_all(staging.join(&relative))
@@ -219,6 +220,125 @@ mod tests {
         write_zip(&hollow, &[("readme.md", b"hi" as &[u8])]);
         let error = import_codexskin(&hollow, &root).unwrap_err().to_string();
         assert!(error.contains("theme.json"), "{error}");
+    }
+
+    #[test]
+    fn imports_legacy_cp437_entry_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("themes");
+        let skin = tmp.path().join("cp437-name.codexskin");
+        let mut entries = minimal_entries("cp437-name");
+        entries.push(("cafe.bin".to_string(), b"legacy filename".to_vec()));
+        let refs: Vec<(&str, &[u8])> =
+            entries.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
+        write_zip(&skin, &refs);
+        let mut bytes = std::fs::read(&skin).unwrap();
+        let name = b"cafe.bin";
+        let mut replaced = 0;
+        for index in 0..=bytes.len() - name.len() {
+            if bytes[index..index + name.len()] == *name {
+                bytes[index + 3] = 0x82; // CP437 encodes é as one byte.
+                replaced += 1;
+            }
+        }
+        assert_eq!(replaced, 2, "update local and central directory names");
+        std::fs::write(&skin, bytes).unwrap();
+        assert_eq!(import_codexskin(&skin, &root).unwrap().id, "cp437-name");
+        assert_eq!(
+            std::fs::read(root.join("cp437-name/café.bin")).unwrap(),
+            b"legacy filename"
+        );
+    }
+
+    #[test]
+    fn imports_cp437_names_that_are_also_valid_utf8() {
+        use crate::zip_test::{archive, Entry};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let skin = tmp.path().join("ambiguous.codexskin");
+        let root = tmp.path().join("themes");
+        let manifest = r#"{"schemaVersion":2,"id":"cp437","name":"T",
+            "assets":{"intro":"assets/├⌐.webp"}}"#;
+        let bytes = archive(&[
+            Entry::new(b"theme.json", manifest.as_bytes()),
+            Entry::new(b"theme.css", b"html.codex-theme-studio {}"),
+            Entry::new(b"assets/\xc3\xa9.webp", b"RIFF\x01\x02"),
+        ]);
+        std::fs::write(&skin, bytes).unwrap();
+        import_codexskin(&skin, &root).unwrap();
+        assert_eq!(
+            std::fs::read(root.join("cp437/assets/├⌐.webp")).unwrap(),
+            b"RIFF\x01\x02"
+        );
+        assert!(!root.join("cp437/assets/é.webp").exists());
+    }
+
+    #[test]
+    fn imports_utf8_and_unicode_path_asset_names() {
+        use crate::zip_test::{archive, unicode_path_extra, Entry};
+
+        let raw = b"assets/\xc3\xa9.webp";
+        let unicode = unicode_path_extra(raw, "assets/资源.webp".as_bytes(), true);
+        let bad_crc = unicode_path_extra(raw, "assets/资源.webp".as_bytes(), false);
+        for (flags, extra, expected) in [
+            (1 << 11, &[][..], "assets/é.webp"),
+            (0, unicode.as_slice(), "assets/资源.webp"),
+            (0, bad_crc.as_slice(), "assets/├⌐.webp"),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let skin = tmp.path().join("names.codexskin");
+            let root = tmp.path().join("themes");
+            let manifest = format!(
+                r#"{{"schemaVersion":2,"id":"names","name":"T",
+                "assets":{{"intro":"{expected}"}}}}"#
+            );
+            let mut asset = Entry::new(raw, b"RIFF\x01\x02");
+            asset.flags = flags;
+            asset.extra = extra;
+            std::fs::write(
+                &skin,
+                archive(&[
+                    Entry::new(b"theme.json", manifest.as_bytes()),
+                    Entry::new(b"theme.css", b"html.codex-theme-studio {}"),
+                    asset,
+                ]),
+            )
+            .unwrap();
+            import_codexskin(&skin, &root).unwrap();
+            assert_eq!(
+                std::fs::read(root.join("names").join(expected)).unwrap(),
+                b"RIFF\x01\x02"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unsafe_unicode_path_before_writing_assets() {
+        use crate::zip_test::{archive, unicode_path_extra, Entry};
+
+        let raw = b"assets/safe.webp";
+        for unsafe_name in [
+            "../escape.webp", r"..\escape.webp", "/absolute", r"C:\escape", "nul\0path",
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let skin = tmp.path().join("unsafe.codexskin");
+            let root = tmp.path().join("themes");
+            let extra = unicode_path_extra(raw, unsafe_name.as_bytes(), true);
+            let mut asset = Entry::new(raw, b"RIFF\x01\x02");
+            asset.extra = &extra;
+            std::fs::write(
+                &skin,
+                archive(&[
+                    Entry::new(b"theme.json", br#"{"schemaVersion":2,"id":"unsafe","name":"T"}"#),
+                    asset,
+                ]),
+            )
+            .unwrap();
+            let error = import_codexskin(&skin, &root).unwrap_err().to_string();
+            assert!(error.contains("非法路径"), "{unsafe_name:?}: {error}");
+            assert!(!root.join("unsafe").exists());
+            assert!(!root.join("escape.webp").exists());
+        }
     }
 
     #[test]
