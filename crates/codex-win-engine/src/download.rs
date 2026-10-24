@@ -188,13 +188,12 @@ fn curl_args(
         ProgressMode::NoProgressMeter => args.push("--no-progress-meter".to_string()),
         ProgressMode::SilentWithErrors => args.push("-sS".to_string()),
     }
+    // Avoid --retry: curl 8.14.x can report success after a failed transfer (curl/curl#17554).
     args.extend([
         "--connect-timeout".to_string(),
         "20".to_string(),
         "--max-filesize".to_string(),
         max_bytes.to_string(),
-        "--retry".to_string(),
-        "2".to_string(),
     ]);
     if resume {
         args.extend(["-C".to_string(), "-".to_string()]);
@@ -266,7 +265,15 @@ fn run_curl_once(
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         });
     }
-    let downloaded = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+    let metadata = std::fs::metadata(dest).map_err(|error| {
+        CurlAttemptError::Other(format!("curl reported success but download output is unavailable: {error}"))
+    })?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err(CurlAttemptError::Other(
+            "curl reported success but download output is not a nonempty file".to_string(),
+        ));
+    }
+    let downloaded = metadata.len();
     on_progress(downloaded);
     log::info!("Windows curl download completed source={source} bytes={downloaded}");
     Ok(())
