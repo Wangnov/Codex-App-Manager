@@ -150,8 +150,8 @@ const ENSURE_API_JS_TEMPLATE: &str = r#"(async () => {
   const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   // Resolve the real exported functions, not hard-coded/minified export names.
   // Inspect but never invoke candidates during discovery. The two wrappers
-  // must use their own key/value parameters and the same RPC fallback. Native
-  // bridge branches, guards and whitespace around that contract may vary.
+  // must use their own key/value parameters and the same RPC fallback or native
+  // settings bridge. Guards and whitespace around that contract may vary.
   const exportedSettingsWrappers = (mod) => {
     const id = "[$A-Za-z_][$A-Za-z0-9_]*";
     const paramsRe = new RegExp(
@@ -177,6 +177,15 @@ const ENSURE_API_JS_TEMPLATE: &str = r#"(async () => {
         );
         const match = source.match(readRe);
         if (match) reads.push({ fn, rpc: match[1] });
+        else if (!source.includes("get-setting") && !source.includes("set-setting")) {
+          const nativeReadRe = new RegExp(
+            "\\breturn\\s*\\(\\s*await\\s+(?:" + id + "\\s*\\(\\s*)?(" + id +
+            ")\\s*\\.\\s*settings\\s*\\.\\s*read\\s*\\(\\s*" + key +
+            "\\s*\\)\\s*\\)\\s*\\)?\\s*\\.\\s*effective"
+          );
+          const nativeMatch = source.match(nativeReadRe);
+          if (nativeMatch) reads.push({ fn, rpc: "native:" + nativeMatch[1] });
+        }
       } else {
         const writeRe = new RegExp(
           "\\bawait\\s+(" + id + ")\\s*\\(\\s*[`'\"]set-setting[`'\"]\\s*,\\s*" +
@@ -185,6 +194,15 @@ const ENSURE_API_JS_TEMPLATE: &str = r#"(async () => {
         );
         const match = source.match(writeRe);
         if (match) writes.push({ fn, rpc: match[1] });
+        else if (!source.includes("get-setting") && !source.includes("set-setting")) {
+          const nativeWriteRe = new RegExp(
+            "\\bawait\\s+(?:" + id + "\\s*\\(\\s*)?(" + id +
+            ")\\s*\\.\\s*settings\\s*\\.\\s*write\\s*\\(\\s*" + key +
+            "\\s*,\\s*" + escapeRegExp(params[2]) + "\\s*\\)"
+          );
+          const nativeMatch = source.match(nativeWriteRe);
+          if (nativeMatch) writes.push({ fn, rpc: "native:" + nativeMatch[1] });
+        }
       }
     }
     // Do not guess when a module exposes several different settings APIs.
@@ -228,10 +246,13 @@ const ENSURE_API_JS_TEMPLATE: &str = r#"(async () => {
     const exportIdentifier = modern ? "[$A-Za-z_][$A-Za-z0-9_]*" : "\\w+";
     for (const url of candidates) {
       const text = await fetchText(url);
-      if (text == null || !text.includes("set-setting")) continue;
+      if (text == null) continue;
+      const nativeSettings = /\.\s*settings\s*\.\s*read\s*\(/.test(text) &&
+        /\.\s*settings\s*\.\s*write\s*\(/.test(text);
+      if (!text.includes("set-setting") && !nativeSettings) continue;
       if (adapter === "26.901.20858+") {
         // Only import an app settings candidate, never every loaded chunk.
-        if (!text.includes("get-setting") || !text.includes("async function")) continue;
+        if ((!text.includes("get-setting") && !nativeSettings) || !text.includes("async function")) continue;
         let mod;
         try { mod = await import(url); } catch { continue; }
         const api = exportedSettingsWrappers(mod);

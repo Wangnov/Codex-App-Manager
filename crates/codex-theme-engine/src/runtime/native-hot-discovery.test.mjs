@@ -29,18 +29,20 @@ const wrappers = {
   "26.831.21537": 'async function QD(e){return(await KD(`get-setting`,{params:{key:e.key}})).value??e.default}\nasync function $D(e,t){await KD(`set-setting`,{params:{key:e.key,value:t}})}\nexport {QD as JRt,$D as ezt};',
   "26.901.20858": 'async function xO(e){return bX?.settings==null?(await DD(`get-setting`,{params:{key:e.key}})).value??e.default:(await bX.settings.read(e.key)).effective}\nasync function SO(e,t){if(bX?.settings!=null){await bX.settings.write(e.key,t);return}await DD(`set-setting`,{params:{key:e.key,value:t}})}\nexport {xO as r,SO as w};',
   "26.901.22334": 'async function bO(e){return bX?.settings==null?(await ED(`get-setting`,{params:{key:e.key}})).value??e.default:(await bX.settings.read(e.key)).effective}\nasync function xO(e,t){if(bX?.settings!=null){await bX.settings.write(e.key,t);return}await ED(`set-setting`,{params:{key:e.key,value:t}})}\nexport {bO as fUt,xO as vUt};',
+  "26.1021.31345": 'async function rN(e){return(await bX.settings.read(e.key)).effective}\nasync function wN(e,t){await bX.settings.write(e.key,t)}\nexport {rN as readNative,wN as writeNative};',
+  nativeHelper: 'const w$=p=>p,l$=bX;\nasync function iDt(e){if(l$?.settings!=null)return(await w$(l$.settings.read(e.key))).effective;throw Error(`Settings are unavailable on this host`)}\nasync function aDt(e,t){if(l$?.settings!=null){await w$(l$.settings.write(e.key,t));return}throw Error(`Settings are unavailable on this host`)}\nexport {iDt as readNative,aDt as writeNative};',
 };
 
-function moduleSource(shape, native = true) {
+function moduleSource(shape, native = true, legacyRpc = true) {
   return `
 export const calls = [];
 const values = new Map([["appearanceTheme", "dark"]]);
-async function rpc(method, {params}) {
+${legacyRpc ? `async function rpc(method, {params}) {
   calls.push([method, params.key, params.value]);
   if (method === "get-setting") return {value: values.get(params.key)};
   values.set(params.key, params.value);
 }
-const KD = rpc, DD = rpc, ED = rpc, $rpc = rpc;
+const KD = rpc, DD = rpc, ED = rpc, $rpc = rpc;` : ""}
 const bX = ${native ? `{
   settings: {
     async read(key) {calls.push(["native-read", key]); return {effective: values.get(key)};},
@@ -159,6 +161,51 @@ describe("native hot settings discovery executes across Codex versions", () => {
     }, { loaded: ["index-new.js"] });
     await assertRoundTrip(page, "26.901.20858+", "native");
   });
+
+  for (const shape of ["26.1021.31345", "nativeHelper"]) {
+    it(`discovers ${shape} wrappers without any legacy RPC markers`, async () => {
+      const source = moduleSource(wrappers[shape], true, false);
+      expect(source).not.toContain("get-setting");
+      expect(source).not.toContain("set-setting");
+      const page = await renderer({ "app-shared-native.js": source });
+      await assertRoundTrip(page, "26.901.20858+", "native");
+    });
+  }
+
+  it("finds native-only wrappers with an old version hint and a lazy manifest", async () => {
+    const page = await renderer({
+      "index-native.js": 'const deps = ["setting-storage-native.js"];',
+      "setting-storage-native.js": moduleSource(wrappers["26.1021.31345"], true, false),
+    }, { loaded: ["index-native.js"], adapters: ["26.831.21537+", "26.715", "26.707", "26.901.20858+"] });
+    await assertRoundTrip(page, "26.901.20858+", "native");
+  });
+
+  it("accepts formatting and renamed parameters in native-only wrappers", async () => {
+    const page = await renderer({ "app-shared-formatted.js": moduleSource(`
+async function $read ( $setting ) { return ( await bX . settings . read ( $setting . key ) ) . effective; }
+async function $write ( $setting, $value ) { await bX . settings . write ( $setting . key, $value ); }
+export { $read as $r, $write as $w };
+`, true, false) });
+    await assertRoundTrip(page, "26.901.20858+", "native");
+  });
+
+  for (const [name, change] of [
+    ["wrong key parameter", (source) => source.replace("write(e.key,t)", "write(other.key,t)")],
+    ["wrong value parameter", (source) => source.replace("write(e.key,t)", "write(e.key,other)")],
+    ["different native bridges", (source) => source.replace("bX.settings.write", "other.settings.write")],
+    ["raw read response", (source) => source.replace(".effective", ".value")],
+    ["discarded read response", (source) => source.replace("return(await", "(await")],
+    ["unexported wrappers", (source) => source.replace("export {rN as readNative,wN as writeNative};", "")],
+    ["ambiguous readers", (source) => source + '\nexport async function extra(e){return(await bX.settings.read(e.key)).effective}'],
+    ["ambiguous writers", (source) => source + '\nexport async function extra(e,t){await bX.settings.write(e.key,t)}'],
+  ]) {
+    it(`rejects native-only ${name} without calling candidates`, async () => {
+      const page = await renderer({ "app-shared-invalid.js": moduleSource(change(wrappers["26.1021.31345"]), true, false) });
+      expect(await page.run()).toMatchObject({ ok: false, error: expect.stringContaining("settings module not found") });
+      expect(page.window.__camThemeSettingsV1).toBeUndefined();
+      expect((await page.module("app-shared-invalid.js")).calls).toEqual([]);
+    });
+  }
 
   it("tolerates renamed parameters, formatting, guards and duplicate export aliases", async () => {
     const page = await renderer({ "app-initial-formatted.js": moduleSource(`

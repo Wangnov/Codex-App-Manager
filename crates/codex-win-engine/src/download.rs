@@ -188,13 +188,12 @@ fn curl_args(
         ProgressMode::NoProgressMeter => args.push("--no-progress-meter".to_string()),
         ProgressMode::SilentWithErrors => args.push("-sS".to_string()),
     }
+    // Avoid --retry: curl 8.14.x can report success after a failed transfer (curl/curl#17554).
     args.extend([
         "--connect-timeout".to_string(),
         "20".to_string(),
         "--max-filesize".to_string(),
         max_bytes.to_string(),
-        "--retry".to_string(),
-        "2".to_string(),
     ]);
     if resume {
         args.extend(["-C".to_string(), "-".to_string()]);
@@ -266,7 +265,15 @@ fn run_curl_once(
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         });
     }
-    let downloaded = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+    let metadata = std::fs::metadata(dest).map_err(|error| {
+        CurlAttemptError::Other(format!("curl reported success but download output is unavailable: {error}"))
+    })?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err(CurlAttemptError::Other(
+            "curl reported success but download output is not a nonempty file".to_string(),
+        ));
+    }
+    let downloaded = metadata.len();
     on_progress(downloaded);
     log::info!("Windows curl download completed source={source} bytes={downloaded}");
     Ok(())
@@ -697,6 +704,37 @@ mod tests {
         .unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), bytes);
         assert_eq!(seen.lock().unwrap().last(), Some(&(bytes.len() as u64)));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn curl_success_without_a_nonempty_output_is_rejected() {
+        let _lock = DOWNLOAD_TEST_LOCK.lock().unwrap();
+        if !curl_available() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "codex-win-engine-missing-output-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let missing = root.join("missing.part");
+        let empty = root.join("empty.part");
+        std::fs::write(&empty, []).unwrap();
+
+        for dest in [&missing, &empty, &root] {
+            // curl --version exits successfully without producing an output
+            // file, reproducing the misleading exit status from curl 8.14.x.
+            let error = run_curl_once(
+                "missing output fixture",
+                &dest.to_string_lossy(),
+                vec!["--disable".into(), "--version".into()],
+                &|_| {},
+            )
+            .unwrap_err();
+            assert!(matches!(error, CurlAttemptError::Other(_)), "{error:?}");
+        }
+        assert!(!missing.exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 }
