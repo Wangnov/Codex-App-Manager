@@ -18,6 +18,7 @@ const copy: Partial<Record<TKey, string>> = {
   "error.disk_space": "磁盘空间不足，请清理后重试。",
   "error.disk_write": "无法写入磁盘。请检查磁盘权限与可用空间后重试。",
   "error.permission": "权限不足。请以合适的权限重试，或更换安装位置。",
+  "error.install_directory_unavailable": "安装目录暂时无法替换。请完全退出 Codex（含托盘），确认目录可写后重试。具体路径见详情。",
   "error.signature": "更新包签名校验失败。已保留现有 Codex，请稍后重试或更换更新源。",
   "error.artifact": "更新包无效或已过期。请稍后重试，或在设置中更换更新源。",
   "error.incompatible": "当前系统环境不支持此安装方式。请尝试其他安装选项。",
@@ -50,6 +51,15 @@ describe("userErrorMessage / resolveFailure", () => {
     );
     expect(failure.detail).toBe("raw detail");
     expect(failure.code).toBe("engine_error");
+    expect(failure.recoverable).toBe(true);
+  });
+
+  it("shows portable-directory recovery while keeping both paths in the details", () => {
+    const detail = 'portable install directory unavailable: source="C:\\Codex"; destination="C:\\Codex.rollback"; os error 5';
+    const failure = resolveFailure({ code: "install_directory_unavailable", message: detail }, t);
+    expect(failure.message).toBe(copy["error.install_directory_unavailable"]);
+    expect(failure.message).not.toContain("C:\\Codex");
+    expect(failure.detail).toBe(detail);
     expect(failure.recoverable).toBe(true);
   });
 

@@ -37,6 +37,7 @@ pub enum ErrorKind {
     DiskSpace,
     DiskWrite,
     Permission,
+    InstallDirectoryUnavailable,
     Signature,
     Artifact,
     Incompatible,
@@ -57,6 +58,7 @@ impl ErrorKind {
             Self::DiskSpace => "disk_space",
             Self::DiskWrite => "disk_write",
             Self::Permission => "permission",
+            Self::InstallDirectoryUnavailable => "install_directory_unavailable",
             Self::Signature => "signature",
             Self::Artifact => "artifact",
             Self::Incompatible => "incompatible",
@@ -103,6 +105,9 @@ pub fn classify(message: &str) -> ErrorKind {
         || m.contains("磁盘空间")
     {
         return ErrorKind::DiskSpace;
+    }
+    if m.contains("portable install directory unavailable") {
+        return ErrorKind::InstallDirectoryUnavailable;
     }
     if m.contains("access is denied")
         || m.contains("permission denied")
@@ -295,6 +300,18 @@ mod tests {
             ),
             ErrorKind::Permission
         );
+    }
+
+    #[test]
+    fn portable_directory_failure_has_specific_recovery_even_for_access_denied() {
+        for detail in ["Access is denied. (os error 5)", "拒绝访问。 (os error 5)", "os error 32", "os error 33"] {
+            let message = format!(
+                "io error: portable install directory unavailable: move current install to rollback; \
+                 source=\"C:\\Codex\"; destination=\"C:\\Codex.rollback\"; {detail}"
+            );
+            assert_eq!(code_of(&message), "install_directory_unavailable");
+        }
+        assert_eq!(code_of("Access is denied. (os error 5)"), "permission");
     }
 
     #[test]
