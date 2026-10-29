@@ -174,7 +174,25 @@ pub fn remove_directory_all_with_retry(operation: &str, path: &Path) -> io::Resu
 }
 
 fn rename_portable_dir(operation: &str, from: &Path, to: &Path) -> Result<(), EngineError> {
-    rename_directory_with_retry(operation, from, to).map_err(|err| io_err(operation, err))
+    rename_directory_with_retry(operation, from, to)
+        .map_err(|err| portable_rename_error(operation, from, to, &err))
+}
+
+fn portable_rename_error(operation: &str, from: &Path, to: &Path, err: &io::Error) -> EngineError {
+    if is_transient_windows_fs_error(err) {
+        // Error 5 can mean either a handle held by another process or directory
+        // permissions. Preserve both paths without claiming a definite cause.
+        io_err(
+            "portable install directory unavailable",
+            format!(
+                "{operation}; source=\"{}\"; destination=\"{}\"; {err}",
+                from.display(),
+                to.display()
+            ),
+        )
+    } else {
+        io_err(operation, err)
+    }
 }
 
 fn copy_dir_all(from: &Path, to: &Path) -> Result<(), EngineError> {
@@ -2708,6 +2726,31 @@ mod tests {
         assert_eq!(err.raw_os_error(), Some(5));
         assert_eq!(attempts.get(), WINDOWS_FS_RETRY_DELAYS_MS.len() + 1);
         assert_eq!(sleeps.get(), WINDOWS_FS_RETRY_DELAYS_MS.len());
+    }
+
+    #[test]
+    fn portable_directory_failure_preserves_paths_and_windows_error_code() {
+        for code in [5, 32, 33] {
+            let error = portable_rename_error(
+                "move current install to rollback",
+                Path::new(r"C:\Users\Test User\Codex"),
+                Path::new(r"C:\Users\Test User\Codex.rollback"),
+                &io::Error::from_raw_os_error(code),
+            )
+            .to_string();
+            assert!(error.contains("portable install directory unavailable"));
+            assert!(error.contains(r#"source="C:\Users\Test User\Codex""#));
+            assert!(error.contains(r#"destination="C:\Users\Test User\Codex.rollback""#));
+            assert!(error.contains(&format!("os error {code}")));
+        }
+        let error = portable_rename_error(
+            "move current install to rollback",
+            Path::new("missing"),
+            Path::new("backup"),
+            &io::Error::from_raw_os_error(2),
+        )
+        .to_string();
+        assert!(!error.contains("portable install directory unavailable"));
     }
 
     /// When `~/.codex` is a file (not a directory), purge fails — must stay
