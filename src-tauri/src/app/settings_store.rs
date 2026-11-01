@@ -130,6 +130,10 @@ pub struct AppSettings {
     /// missing in an older settings.json via serde default.
     #[serde(default = "default_true")]
     pub confirm_close: bool,
+    /// Hide the main window in the system tray instead of quitting when it is
+    /// closed. Defaults true for existing and new installations.
+    #[serde(default = "default_true")]
+    pub minimize_to_tray: bool,
     /// "msix" | "portable" — user-facing Windows install preference. MSIX can
     /// still fall back to portable when the machine blocks sideloading.
     #[serde(default = "default_windows_install_mode")]
@@ -203,6 +207,8 @@ struct RawAppSettings {
     signed_only: bool,
     #[serde(default = "default_true")]
     confirm_close: bool,
+    #[serde(default = "default_true")]
+    minimize_to_tray: bool,
     #[serde(default = "default_windows_install_mode")]
     windows_install_mode: String,
     #[serde(default = "default_install_root")]
@@ -256,6 +262,7 @@ impl Default for AppSettings {
             ask_before: true,
             signed_only: true,
             confirm_close: true,
+            minimize_to_tray: true,
             windows_install_mode: default_windows_install_mode(),
             install_root: default_install_root(),
             proxy_mode: ProxyMode::System,
@@ -306,6 +313,7 @@ impl RawAppSettings {
                 ask_before: self.ask_before,
                 signed_only: self.signed_only,
                 confirm_close: self.confirm_close,
+                minimize_to_tray: self.minimize_to_tray,
                 windows_install_mode: self.windows_install_mode,
                 install_root: self.install_root,
                 proxy_mode,
@@ -496,8 +504,26 @@ mod tests {
         assert_eq!(settings.proxy_mode, ProxyMode::System);
         assert_eq!(settings.custom_proxy_url, "");
         assert!(!settings.disable_codex_self_updates);
+        assert!(settings.minimize_to_tray);
         assert!(unknown_source.is_none());
         assert!(newer_schema.is_none());
+    }
+
+    #[test]
+    fn tray_preference_defaults_on_for_legacy_settings() {
+        let raw: RawAppSettings = serde_json::from_str(
+            r#"{
+                "source": "auto",
+                "customUrl": "",
+                "autoCheck": true,
+                "askBefore": true,
+                "signedOnly": true
+            }"#,
+        )
+        .unwrap();
+        let (settings, _, _) = raw.into_settings();
+        assert!(settings.minimize_to_tray);
+        assert!(AppSettings::default().minimize_to_tray);
     }
 
     #[test]

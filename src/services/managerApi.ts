@@ -162,6 +162,10 @@ function normalizeSettings(raw: Partial<AppSettings>): AppSettings {
       typeof raw.disableCodexSelfUpdates === "boolean"
         ? raw.disableCodexSelfUpdates
         : DEFAULT_SETTINGS.disableCodexSelfUpdates,
+    minimizeToTray:
+      typeof raw.minimizeToTray === "boolean"
+        ? raw.minimizeToTray
+        : DEFAULT_SETTINGS.minimizeToTray,
     skippedCodexUpdate: normalizedSkippedCodexUpdate(raw.skippedCodexUpdate),
     codexTheme:
       typeof raw.codexTheme === "string" && raw.codexTheme.trim()

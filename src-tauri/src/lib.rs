@@ -62,6 +62,22 @@ fn confirmed_quit_policy_for(app: &tauri::AppHandle) -> QuitPolicy {
     prepare_quit_policy_for(app, true)
 }
 
+fn minimize_to_tray_enabled() -> bool {
+    crate::app::settings_store::AppSettings::load().minimize_to_tray
+}
+
+fn hide_main_window(app: &tauri::AppHandle, reason: &str) {
+    let Some(window) = app.get_webview_window("main") else {
+        log::error!("main window hide failed reason={reason} error=window-missing");
+        return;
+    };
+    if let Err(error) = window.hide() {
+        log::warn!("main window hide failed reason={reason} error={error}");
+    } else {
+        log::info!("main window hidden reason={reason}");
+    }
+}
+
 /// Arms the same cancellation/force-exit latches as a confirmed quit, but only
 /// when no other operation holds the lease at all. A Manager relaunch is not
 /// consent to abandon a Codex download/update, so unlike
@@ -542,6 +558,59 @@ fn install_macos_menu(app: &tauri::AppHandle, locale: NativeLocale) -> tauri::Re
     Ok(())
 }
 
+/// Create the resident tray entry used when closing the main window is
+/// configured to minimize it. The icon remains available when the setting is
+/// disabled so users can still restore the window or explicitly quit.
+fn install_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let show = MenuItem::with_id(
+        app,
+        "cam-tray-show",
+        "Show Codex App Manager",
+        true,
+        None::<&str>,
+    )?;
+    let quit = MenuItem::with_id(app, "cam-tray-quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+    let icon = app.default_window_icon().cloned().ok_or_else(|| {
+        tauri::Error::InvalidIcon(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "default application icon is unavailable",
+        ))
+    })?;
+
+    TrayIconBuilder::with_id("cam-tray")
+        .icon(icon)
+        .tooltip(PRODUCT_NAME)
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().0.as_str() {
+            "cam-tray-show" => restore_main_window(app, "tray-menu-show"),
+            "cam-tray-quit" => {
+                restore_main_window(app, "tray-menu-quit");
+                let policy = quit_policy_for(app);
+                if apply_quit_policy(app, &policy) {
+                    app.exit(0);
+                }
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                restore_main_window(tray.app_handle(), "tray-click");
+            }
+        })
+        .build(app)?;
+    Ok(())
+}
+
 /// The frontend calls this only after both quit listeners are registered.
 /// The first handshake reveals the initially hidden window and drains any
 /// close/quit decisions queued during WebView startup. Later calls only update
@@ -841,6 +910,7 @@ pub fn run() {
         ])
         .setup(|app| {
             crate::app::logging::install(app.handle())?;
+            install_tray(app)?;
             build_main_window(app)?;
             #[cfg(target_os = "macos")]
             install_macos_menu(app.handle(), NativeLocale::En)?;
@@ -1031,6 +1101,11 @@ pub fn run() {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let app = window.app_handle();
                 log::info!("window close requested label={}", window.label());
+                if minimize_to_tray_enabled() {
+                    hide_main_window(app, "window-close-to-tray");
+                    api.prevent_close();
+                    return;
+                }
                 let policy = quit_policy_for(app);
                 if apply_quit_policy(app, &policy) {
                     app.exit(0);
