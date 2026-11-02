@@ -32,8 +32,10 @@ while the frontend is not ready.
 
 If readiness takes more than 10 seconds, the backend logs an error, reveals the
 window, and enters a degraded native-dialog mode without discarding queued
-events. Pending and later Close/Cmd+Q decisions are shown serially with native
-dialogs instead of being sent to missing WebView listeners. A native Quit
+events. Pending and later quit decisions are shown serially with native dialogs
+instead of being sent to missing WebView listeners. When `minimizeToTray` is
+enabled, window-close requests hide the window directly and do not require a
+frontend dialog. A native Quit
 confirmation re-reads the current operation phase immediately before exiting;
 committing/finishing remains blocked even if the phase changed while the dialog
 was open. Degraded delivery stays latched for that generation even if its
