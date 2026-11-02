@@ -1088,15 +1088,11 @@ pub fn run() {
                 _ => {}
             }
         })
-        // A normal "open it when you need it" app — NOT a menu-bar resident.
-        // Closing the window quits the process so nothing lingers in the
-        // background; the Dock icon is the only entry point, and login launch is
-        // an explicit, off-by-default opt-in (see Settings).
-        //
         // The window has no system chrome, so every window-close path — the
-        // in-app ✕, Alt+F4, the macOS window close — arrives here. Policy is
-        // phase-aware: point-of-no-return install steps block quit; otherwise
-        // the confirm_close setting may raise a dialog.
+        // in-app ✕, Alt+F4, and the macOS window close — arrives here. When
+        // minimize_to_tray is enabled, the close request hides the window and
+        // keeps the process available through the tray. Otherwise the
+        // phase-aware quit policy and confirm_close setting apply.
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let app = window.app_handle();
