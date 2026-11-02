@@ -565,14 +565,9 @@ fn install_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
-    let show = MenuItem::with_id(
-        app,
-        "cam-tray-show",
-        "Show Codex App Manager",
-        true,
-        None::<&str>,
-    )?;
-    let quit = MenuItem::with_id(app, "cam-tray-quit", "Quit", true, None::<&str>)?;
+    let copy = NativeLocale::En.menu();
+    let show = MenuItem::with_id(app, "cam-tray-show", copy.tray_show, true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "cam-tray-quit", copy.tray_quit, true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &quit])?;
     let icon = app.default_window_icon().cloned().ok_or_else(|| {
         tauri::Error::InvalidIcon(std::io::Error::new(
@@ -611,10 +606,24 @@ fn install_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+fn update_tray_menu(app: &tauri::AppHandle, locale: NativeLocale) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+
+    let Some(tray) = app.tray_by_id("cam-tray") else {
+        log::warn!("tray menu update skipped: tray icon cam-tray is unavailable");
+        return Ok(());
+    };
+    let copy = locale.menu();
+    let show = MenuItem::with_id(app, "cam-tray-show", copy.tray_show, true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "cam-tray-quit", copy.tray_quit, true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+    tray.set_menu(Some(menu))
+}
+
 /// The frontend calls this only after both quit listeners are registered.
 /// The first handshake reveals the initially hidden window and drains any
-/// close/quit decisions queued during WebView startup. Later calls only update
-/// the native menu when the user changes the application language.
+/// close/quit decisions queued during WebView startup. Later calls update the
+/// native window and tray menus when the user changes the application language.
 #[tauri::command]
 fn frontend_ready(
     app: tauri::AppHandle,
@@ -634,6 +643,12 @@ fn frontend_ready(
         }
     };
     let locale = NativeLocale::from_tag(&lang);
+    if let Err(error) = update_tray_menu(&app, locale) {
+        log::warn!(
+            "tray menu update failed lang={} error={error}",
+            locale.code()
+        );
+    }
     #[cfg(target_os = "macos")]
     if let Err(error) = install_macos_menu(&app, locale) {
         log::warn!(
