@@ -353,6 +353,8 @@ export interface AppSettings {
   signedOnly: boolean;
   /** Ask for confirmation before closing (quitting) the window. */
   confirmClose: boolean;
+  /** Hide the window in the system tray when it is closed. */
+  minimizeToTray: boolean;
   /** Windows payload install preference. MSIX still falls back safely if blocked. */
   windowsInstallMode: WindowsInstallMode;
   /** Remembered portable install root for Windows. */
@@ -414,6 +416,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   askBefore: true,
   signedOnly: true,
   confirmClose: true,
+  minimizeToTray: true,
   windowsInstallMode: "msix",
   installRoot: "%LOCALAPPDATA%\\Programs\\Codex",
   proxyMode: "system",

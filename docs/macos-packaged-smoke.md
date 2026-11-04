@@ -11,7 +11,9 @@
   predefined items with their standard selectors and shortcuts. The frameless
   window uses explicit `Cmd+M`/`Cmd+W` menu items that call Tauri's minimize and
   close APIs, because AppKit's default Window responders do not target this
-  undecorated WebView window reliably.
+  undecorated WebView window reliably. With the default `minimizeToTray` setting,
+  `Cmd+W` hides the window to the tray and keeps the process resident; a tray
+  click or a second launch restores it. `Cmd+Q` remains the explicit quit path.
 - Unsupported or malformed language tags fall back to English. The Rust table
   covers the same 11 locale codes as the WebView catalogue.
 
@@ -30,8 +32,10 @@ while the frontend is not ready.
 
 If readiness takes more than 10 seconds, the backend logs an error, reveals the
 window, and enters a degraded native-dialog mode without discarding queued
-events. Pending and later Close/Cmd+Q decisions are shown serially with native
-dialogs instead of being sent to missing WebView listeners. A native Quit
+events. Pending and later quit decisions are shown serially with native dialogs
+instead of being sent to missing WebView listeners. When `minimizeToTray` is
+enabled, window-close requests hide the window directly and do not require a
+frontend dialog. A native Quit
 confirmation re-reads the current operation phase immediately before exiting;
 committing/finishing remains blocked even if the phase changed while the dialog
 was open. Degraded delivery stays latched for that generation even if its
@@ -68,7 +72,8 @@ Each row checks:
    localized native menu;
 3. one live process after a second launch, including restoration from both
    minimized and hidden states;
-4. `Cmd+W` close interception and visible confirmation-event delivery;
+4. `Cmd+W` close-to-tray interception, resident-process verification, and
+   second-launch restoration;
 5. both the `Cmd+Q` accelerator and clicking the native Quit item route through
    `cam-quit` instead of bypassing the phase-aware confirmation guard.
 

@@ -730,6 +730,21 @@ export function Settings({
                 }}
               />
             </div>
+            <div className="row">
+              <span className="rtext">
+                <span className="rtitle" id={`${switchId}-minimizetotray`}>{t("settings.general.minimizeToTray")}</span>
+                <span className="rsub">{t("settings.general.minimizeToTrayNote")}</span>
+              </span>
+              <Toggle
+                ariaLabelledBy={`${switchId}-minimizetotray`}
+                checked={s.minimizeToTray}
+                onChange={(v) => {
+                  setCommandError(null);
+                  setFieldError(null);
+                  update({ ...s, minimizeToTray: v });
+                }}
+              />
+            </div>
           </div>
         </div>
 

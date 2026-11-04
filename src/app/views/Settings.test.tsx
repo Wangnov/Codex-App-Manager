@@ -135,6 +135,19 @@ describe("Settings runtime contract", () => {
     expect(screen.getByRole("radio", { name: /镜像/ })).toHaveAttribute("aria-checked", "true");
   });
 
+  it("shows tray minimization enabled by default and persists changes", async () => {
+    const user = userEvent.setup();
+    api.getSettings.mockResolvedValue(settings());
+    renderSettings();
+
+    const toggle = await screen.findByRole("switch", { name: "关闭窗口后最小化到托盘" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    await user.click(toggle);
+    await waitFor(() => expect(api.setSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({ minimizeToTray: false }),
+    ));
+  });
+
   it("does not persist empty custom source selection until a URL is entered", async () => {
     const user = userEvent.setup();
     api.getSettings.mockResolvedValue(settings({ source: "mirror" }));

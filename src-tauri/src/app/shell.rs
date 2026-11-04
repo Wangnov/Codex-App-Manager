@@ -71,6 +71,8 @@ impl NativeLocale {
                 window: "Window",
                 minimize: "Minimize",
                 close_window: "Close Window",
+                tray_show: "Show Codex App Manager",
+                tray_quit: "Quit",
             },
             Self::ZhCn => NativeMenuCopy {
                 about: "关于 Codex App Manager",
@@ -89,6 +91,8 @@ impl NativeLocale {
                 window: "窗口",
                 minimize: "最小化",
                 close_window: "关闭窗口",
+                tray_show: "显示 Codex App Manager",
+                tray_quit: "退出",
             },
             Self::ZhTw => NativeMenuCopy {
                 about: "關於 Codex App Manager",
@@ -107,6 +111,8 @@ impl NativeLocale {
                 window: "視窗",
                 minimize: "最小化",
                 close_window: "關閉視窗",
+                tray_show: "顯示 Codex App Manager",
+                tray_quit: "結束",
             },
             Self::Ja => NativeMenuCopy {
                 about: "Codex App Managerについて",
@@ -125,6 +131,8 @@ impl NativeLocale {
                 window: "ウインドウ",
                 minimize: "しまう",
                 close_window: "ウインドウを閉じる",
+                tray_show: "Codex App Managerを表示",
+                tray_quit: "Codex App Managerを終了",
             },
             Self::Ko => NativeMenuCopy {
                 about: "Codex App Manager에 관하여",
@@ -143,6 +151,8 @@ impl NativeLocale {
                 window: "윈도우",
                 minimize: "최소화",
                 close_window: "윈도우 닫기",
+                tray_show: "Codex App Manager 보기",
+                tray_quit: "Codex App Manager 종료",
             },
             Self::Fr => NativeMenuCopy {
                 about: "À propos de Codex App Manager",
@@ -161,6 +171,8 @@ impl NativeLocale {
                 window: "Fenêtre",
                 minimize: "Placer dans le Dock",
                 close_window: "Fermer la fenêtre",
+                tray_show: "Afficher Codex App Manager",
+                tray_quit: "Quitter",
             },
             Self::De => NativeMenuCopy {
                 about: "Über Codex App Manager",
@@ -179,6 +191,8 @@ impl NativeLocale {
                 window: "Fenster",
                 minimize: "Im Dock ablegen",
                 close_window: "Fenster schließen",
+                tray_show: "Codex App Manager anzeigen",
+                tray_quit: "Beenden",
             },
             Self::Es => NativeMenuCopy {
                 about: "Acerca de Codex App Manager",
@@ -197,6 +211,8 @@ impl NativeLocale {
                 window: "Ventana",
                 minimize: "Minimizar",
                 close_window: "Cerrar ventana",
+                tray_show: "Mostrar Codex App Manager",
+                tray_quit: "Salir",
             },
             Self::PtBr => NativeMenuCopy {
                 about: "Sobre o Codex App Manager",
@@ -215,6 +231,8 @@ impl NativeLocale {
                 window: "Janela",
                 minimize: "Minimizar",
                 close_window: "Fechar Janela",
+                tray_show: "Mostrar Codex App Manager",
+                tray_quit: "Encerrar",
             },
             Self::Ru => NativeMenuCopy {
                 about: "О программе Codex App Manager",
@@ -233,6 +251,8 @@ impl NativeLocale {
                 window: "Окно",
                 minimize: "Свернуть",
                 close_window: "Закрыть окно",
+                tray_show: "Показать Codex App Manager",
+                tray_quit: "Завершить",
             },
             Self::Ar => NativeMenuCopy {
                 about: "حول Codex App Manager",
@@ -251,6 +271,8 @@ impl NativeLocale {
                 window: "نافذة",
                 minimize: "تصغير",
                 close_window: "إغلاق النافذة",
+                tray_show: "إظهار Codex App Manager",
+                tray_quit: "إنهاء",
             },
         }
     }
@@ -274,6 +296,8 @@ pub struct NativeMenuCopy {
     pub window: &'static str,
     pub minimize: &'static str,
     pub close_window: &'static str,
+    pub tray_show: &'static str,
+    pub tray_quit: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
