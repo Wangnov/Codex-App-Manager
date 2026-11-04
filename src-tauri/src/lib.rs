@@ -1073,6 +1073,10 @@ pub fn run() {
             match event.id().0.as_str() {
                 "cam-quit" => {
                     log::info!("menu quit requested id=cam-quit");
+                    // App-menu Quit can be invoked after the window was hidden
+                    // to the tray. Restore it before dispatching confirmation
+                    // or blocked-quit events so the frontend can show them.
+                    restore_main_window(app, "menu-quit");
                     let policy = quit_policy_for(app);
                     if apply_quit_policy(app, &policy) {
                         app.exit(0);
