@@ -11,9 +11,11 @@
   predefined items with their standard selectors and shortcuts. The frameless
   window uses explicit `Cmd+M`/`Cmd+W` menu items that call Tauri's minimize and
   close APIs, because AppKit's default Window responders do not target this
-  undecorated WebView window reliably. With the default `minimizeToTray` setting,
-  `Cmd+W` hides the window to the tray and keeps the process resident; a tray
-  click or a second launch restores it. `Cmd+Q` remains the explicit quit path.
+  undecorated WebView window reliably. With the default `minimizeToTray: false`
+  setting, `Cmd+W` routes through the confirmation-aware close handler; when a
+  user enables `minimizeToTray`, `Cmd+W` hides the window to the tray and keeps
+  the process resident (a tray click or a second launch restores it), while
+  `Cmd+Q` remains the explicit quit path.
 - Unsupported or malformed language tags fall back to English. The Rust table
   covers the same 11 locale codes as the WebView catalogue.
 
@@ -72,8 +74,8 @@ Each row checks:
    localized native menu;
 3. one live process after a second launch, including restoration from both
    minimized and hidden states;
-4. `Cmd+W` close-to-tray interception, resident-process verification, and
-   second-launch restoration;
+4. `Cmd+W` close interception and visible confirmation-event delivery (under the
+   default `minimizeToTray: false` setting);
 5. both the `Cmd+Q` accelerator and clicking the native Quit item route through
    `cam-quit` instead of bypassing the phase-aware confirmation guard.
 

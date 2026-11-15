@@ -416,7 +416,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   askBefore: true,
   signedOnly: true,
   confirmClose: true,
-  minimizeToTray: true,
+  minimizeToTray: false,
   windowsInstallMode: "msix",
   installRoot: "%LOCALAPPDATA%\\Programs\\Codex",
   proxyMode: "system",
