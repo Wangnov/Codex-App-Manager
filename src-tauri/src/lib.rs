@@ -62,6 +62,22 @@ fn confirmed_quit_policy_for(app: &tauri::AppHandle) -> QuitPolicy {
     prepare_quit_policy_for(app, true)
 }
 
+fn minimize_to_tray_enabled() -> bool {
+    crate::app::settings_store::AppSettings::load().minimize_to_tray
+}
+
+fn hide_main_window(app: &tauri::AppHandle, reason: &str) {
+    let Some(window) = app.get_webview_window("main") else {
+        log::error!("main window hide failed reason={reason} error=window-missing");
+        return;
+    };
+    if let Err(error) = window.hide() {
+        log::warn!("main window hide failed reason={reason} error={error}");
+    } else {
+        log::info!("main window hidden reason={reason}");
+    }
+}
+
 /// Arms the same cancellation/force-exit latches as a confirmed quit, but only
 /// when no other operation holds the lease at all. A Manager relaunch is not
 /// consent to abandon a Codex download/update, so unlike
@@ -542,10 +558,72 @@ fn install_macos_menu(app: &tauri::AppHandle, locale: NativeLocale) -> tauri::Re
     Ok(())
 }
 
+/// Create the resident tray entry used when closing the main window is
+/// configured to minimize it. The icon remains available when the setting is
+/// disabled so users can still restore the window or explicitly quit.
+fn install_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let copy = NativeLocale::En.menu();
+    let show = MenuItem::with_id(app, "cam-tray-show", copy.tray_show, true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "cam-tray-quit", copy.tray_quit, true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+    let icon = app.default_window_icon().cloned().ok_or_else(|| {
+        tauri::Error::InvalidIcon(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "default application icon is unavailable",
+        ))
+    })?;
+
+    TrayIconBuilder::with_id("cam-tray")
+        .icon(icon)
+        .tooltip(PRODUCT_NAME)
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().0.as_str() {
+            "cam-tray-show" => restore_main_window(app, "tray-menu-show"),
+            "cam-tray-quit" => {
+                restore_main_window(app, "tray-menu-quit");
+                let policy = quit_policy_for(app);
+                if apply_quit_policy(app, &policy) {
+                    app.exit(0);
+                }
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                restore_main_window(tray.app_handle(), "tray-click");
+            }
+        })
+        .build(app)?;
+    Ok(())
+}
+
+fn update_tray_menu(app: &tauri::AppHandle, locale: NativeLocale) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+
+    let Some(tray) = app.tray_by_id("cam-tray") else {
+        log::warn!("tray menu update skipped: tray icon cam-tray is unavailable");
+        return Ok(());
+    };
+    let copy = locale.menu();
+    let show = MenuItem::with_id(app, "cam-tray-show", copy.tray_show, true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "cam-tray-quit", copy.tray_quit, true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+    tray.set_menu(Some(menu))
+}
+
 /// The frontend calls this only after both quit listeners are registered.
 /// The first handshake reveals the initially hidden window and drains any
-/// close/quit decisions queued during WebView startup. Later calls only update
-/// the native menu when the user changes the application language.
+/// close/quit decisions queued during WebView startup. Later calls update the
+/// native window and tray menus when the user changes the application language.
 #[tauri::command]
 fn frontend_ready(
     app: tauri::AppHandle,
@@ -565,6 +643,12 @@ fn frontend_ready(
         }
     };
     let locale = NativeLocale::from_tag(&lang);
+    if let Err(error) = update_tray_menu(&app, locale) {
+        log::warn!(
+            "tray menu update failed lang={} error={error}",
+            locale.code()
+        );
+    }
     #[cfg(target_os = "macos")]
     if let Err(error) = install_macos_menu(&app, locale) {
         log::warn!(
@@ -841,6 +925,7 @@ pub fn run() {
         ])
         .setup(|app| {
             crate::app::logging::install(app.handle())?;
+            install_tray(app)?;
             build_main_window(app)?;
             #[cfg(target_os = "macos")]
             install_macos_menu(app.handle(), NativeLocale::En)?;
@@ -988,6 +1073,10 @@ pub fn run() {
             match event.id().0.as_str() {
                 "cam-quit" => {
                     log::info!("menu quit requested id=cam-quit");
+                    // App-menu Quit can be invoked after the window was hidden
+                    // to the tray. Restore it before dispatching confirmation
+                    // or blocked-quit events so the frontend can show them.
+                    restore_main_window(app, "menu-quit");
                     let policy = quit_policy_for(app);
                     if apply_quit_policy(app, &policy) {
                         app.exit(0);
@@ -1018,19 +1107,20 @@ pub fn run() {
                 _ => {}
             }
         })
-        // A normal "open it when you need it" app — NOT a menu-bar resident.
-        // Closing the window quits the process so nothing lingers in the
-        // background; the Dock icon is the only entry point, and login launch is
-        // an explicit, off-by-default opt-in (see Settings).
-        //
         // The window has no system chrome, so every window-close path — the
-        // in-app ✕, Alt+F4, the macOS window close — arrives here. Policy is
-        // phase-aware: point-of-no-return install steps block quit; otherwise
-        // the confirm_close setting may raise a dialog.
+        // in-app ✕, Alt+F4, and the macOS window close — arrives here. When
+        // minimize_to_tray is enabled, the close request hides the window and
+        // keeps the process available through the tray. Otherwise the
+        // phase-aware quit policy and confirm_close setting apply.
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let app = window.app_handle();
                 log::info!("window close requested label={}", window.label());
+                if minimize_to_tray_enabled() {
+                    hide_main_window(app, "window-close-to-tray");
+                    api.prevent_close();
+                    return;
+                }
                 let policy = quit_policy_for(app);
                 if apply_quit_policy(app, &policy) {
                     app.exit(0);
