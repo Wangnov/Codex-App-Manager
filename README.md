@@ -72,6 +72,9 @@
 
 ## 下载与安装
 
+> [!IMPORTANT]
+> **开源免费与防骗声明**：本项目完全免费开源，没有任何公众号关注回复获取密码、付费门槛或第三方捆绑软件；请务必仅从官方 GitHub 仓库（`Wangnov/Codex-App-Manager`）或本页提供的 `codexapp.agentsmirror.com` 官方镜像下载，并对照 Release 中的 `SHA256SUMS` 校验文件完整性。
+
 ### macOS —— Homebrew(推荐)
 
 ```bash
@@ -221,6 +224,9 @@ npm run tauri:build    # 本地构建(未签名)
 | 🍎 **Transparent signing status** | macOS Developer ID signing + Apple notarization; the Windows installer is not Authenticode-signed yet, while self-update artifacts carry the Tauri updater signature |
 
 ## Download & install
+
+> [!IMPORTANT]
+> **Free & open-source notice**: This project is completely free and open source — there are no WeChat public-account password gates, paywalls, or third-party bundled installers. Only download from the official GitHub repository (`Wangnov/Codex-App-Manager`) or the official `codexapp.agentsmirror.com` mirror listed here, and verify downloads against `SHA256SUMS` in the Release.
 
 ### macOS — Homebrew (recommended)
 

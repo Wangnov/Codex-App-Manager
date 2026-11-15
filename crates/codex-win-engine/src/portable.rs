@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::app_version::read_codex_app_version_from_install_root;
 use crate::msix::{parse_appx_manifest_xml, MsixIdentity};
-use crate::process::{hidden_command, LivenessResult, PORTABLE_LIVENESS_WINDOW};
+use crate::process::{
+    hidden_command, LivenessResult, PORTABLE_LIVENESS_WINDOW, PORTABLE_STARTUP_WINDOW,
+};
 #[cfg(windows)]
 use crate::process::{run_capturing, RunLimits};
 use crate::EngineError;
@@ -837,12 +839,8 @@ pub(crate) fn repair_portable_launch_entry(root: &Path) -> Result<(), EngineErro
     if let Err(error) = create_start_menu_shortcut(root) {
         log::warn!("portable shortcut repair failed: {error}");
     }
-    #[cfg(windows)]
-    if let Some(appdata) = std::env::var_os("APPDATA") {
-        let programs = PathBuf::from(appdata).join("Microsoft/Windows/Start Menu/Programs");
-        if let Err(error) = repair_legacy_start_menu_icon(root, &programs) {
-            log::warn!("legacy portable shortcut icon repair failed: {error}");
-        }
+    for warning in repair_portable_shortcut_icons(root) {
+        log::warn!("{warning}");
     }
     // Legacy uninstall commands must learn protocol cleanup before its handler
     // is added. Refreshing them is also required when repairing a flat install.
@@ -1020,55 +1018,149 @@ pub fn create_manager_launch_shortcut(
     Ok(())
 }
 
-/// Repair only a legacy link to this installation with a blank or obsolete
-/// default icon. Preserve custom icon sources, including unresolved paths.
-#[cfg(windows)]
-fn repair_legacy_start_menu_icon(install_root: &Path, programs: &Path) -> Result<bool, EngineError> {
-    let shortcut = programs.join("ChatGPT.lnk");
-    if !shortcut.exists() {
-        return Ok(false);
-    }
-    let Some(exe) = installed_app_exe(install_root) else {
-        return Ok(false);
+#[cfg(any(windows, test))]
+fn is_default_official_icon_name(icon: &Path) -> bool {
+    let normalized = icon.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+    let trimmed = normalized.trim().trim_matches('"').trim_end_matches('\\');
+    let Some(file_name) = trimmed.rsplit('\\').next() else {
+        return false;
     };
-    let nested =
-        exe.parent() == Some(install_root.join(crate::portable_command::APP_DIR_NAME).as_path());
-    let Some(app_dir) = exe.parent() else {
-        return Ok(false);
-    };
-    let launcher_paths = [
+    matches!(file_name, "icon-chatgpt.ico" | "chatgpt.exe" | "codex.exe")
+}
+
+#[cfg(any(windows, test))]
+fn portable_entry_candidates(install_root: &Path, app_exe: &Path) -> [PathBuf; 6] {
+    let app_dir = install_root.join(crate::portable_command::APP_DIR_NAME);
+    [
+        app_exe.to_path_buf(),
         install_root.join(crate::portable_command::LAUNCHER_NAME),
         install_root.join("Codex.exe"),
         install_root.join("ChatGPT.exe"),
-    ];
-    let launchers = if nested {
-        &launcher_paths[..]
-    } else {
-        &launcher_paths[..1]
-    };
-    let official_icon_paths = [
+        app_dir.join("ChatGPT.exe"),
+        app_dir.join("Codex.exe"),
+    ]
+}
+
+#[cfg(any(windows, test))]
+fn is_install_launcher_alias(install_root: &Path, app_exe: &Path, candidate: &Path) -> bool {
+    let launcher = install_root.join(crate::portable_command::LAUNCHER_NAME);
+    if crate::same_windows_path(candidate, &launcher) {
+        return true;
+    }
+    // Root-level ChatGPT.exe / Codex.exe are launcher/alias executables whenever
+    // the active payload lives elsewhere (e.g. app\ChatGPT.exe in nested layout).
+    [install_root.join("Codex.exe"), install_root.join("ChatGPT.exe")]
+        .iter()
+        .any(|alias| {
+            !crate::same_windows_path(alias, app_exe)
+                && crate::same_windows_path(candidate, alias)
+        })
+}
+
+#[cfg(any(windows, test))]
+fn should_repair_portable_shortcut_icon(
+    install_root: &Path,
+    app_exe: &Path,
+    manager_exe: Option<&Path>,
+    target: &Path,
+    arguments: &str,
+    icon: &Path,
+    icon_exists: impl Fn(&Path) -> bool,
+) -> bool {
+    let entries = portable_entry_candidates(install_root, app_exe);
+    let is_direct_entry = entries
+        .iter()
+        .any(|path| crate::same_windows_path(target, path));
+    let is_manager_entry = manager_exe.is_some_and(|manager| {
+        crate::same_windows_path(target, manager) && arguments.trim() == "--launch-codex"
+    });
+    if !is_direct_entry && !is_manager_entry {
+        return false;
+    }
+    if icon.as_os_str().is_empty() || is_install_launcher_alias(install_root, app_exe, icon) {
+        return true;
+    }
+    if icon_exists(icon) {
+        return false;
+    }
+    let app_dir = install_root.join(crate::portable_command::APP_DIR_NAME);
+    let known_official_paths = [
+        install_root.join("resources/icon-chatgpt.ico"),
         app_dir.join("resources/icon-chatgpt.ico"),
+        install_root.join("ChatGPT.exe"),
+        install_root.join("Codex.exe"),
         app_dir.join("ChatGPT.exe"),
         app_dir.join("Codex.exe"),
     ];
-    crate::portable_shortcut::ensure_icon_if(&shortcut, &shortcut_icon(install_root), |current| {
-        let is_entry = crate::same_windows_path(&current.target, &exe)
-            || launchers
-                .iter()
-                .any(|path| crate::same_windows_path(&current.target, path));
-        if !is_entry {
-            return false;
-        }
-        current.icon.as_os_str().is_empty()
-            || launchers
-                .iter()
-                .any(|path| crate::same_windows_path(&current.icon, path))
-            || (official_icon_paths
-                .iter()
-                .any(|path| crate::same_windows_path(&current.icon, path))
-                && !current.icon.is_file())
+    known_official_paths
+        .iter()
+        .any(|path| crate::same_windows_path(icon, path))
+        || is_default_official_icon_name(icon)
+}
+
+/// Repair a Start Menu or TaskBar shortcut whose target belongs to this
+/// installation when its icon is blank, points to the launcher, or points to a
+/// missing default official icon path/filename. Preserve custom icon sources,
+/// including unresolved custom paths.
+#[cfg(windows)]
+fn repair_legacy_shortcut_icon(install_root: &Path, shortcut: &Path) -> Result<bool, EngineError> {
+    if !shortcut.exists() {
+        return Ok(false);
+    }
+    let Some(app_exe) = installed_app_exe(install_root) else {
+        return Ok(false);
+    };
+    #[cfg(not(test))]
+    let manager_exe = std::env::current_exe().ok();
+    #[cfg(test)]
+    let manager_exe: Option<PathBuf> = None;
+    crate::portable_shortcut::ensure_icon_if(shortcut, &shortcut_icon(install_root), |current| {
+        should_repair_portable_shortcut_icon(
+            install_root,
+            &app_exe,
+            manager_exe.as_deref(),
+            &current.target,
+            &current.arguments,
+            &current.icon,
+            |path| path.is_file(),
+        )
     })
     .map_err(|error| io_err("repair legacy portable shortcut icon", error))
+}
+
+#[cfg(windows)]
+fn repair_portable_shortcut_icons_in(install_root: &Path, appdata: &Path) -> Vec<String> {
+    let programs = appdata.join("Microsoft/Windows/Start Menu/Programs");
+    let taskbar = appdata.join("Microsoft/Internet Explorer/Quick Launch/User Pinned/TaskBar");
+    let candidates = [
+        programs.join("ChatGPT.lnk"),
+        programs.join("Codex.lnk"),
+        taskbar.join("Codex.lnk"),
+        taskbar.join("ChatGPT.lnk"),
+    ];
+    let mut warnings = Vec::new();
+    for shortcut in candidates {
+        if let Err(error) = repair_legacy_shortcut_icon(install_root, &shortcut) {
+            warnings.push(format!(
+                "Shortcut icon repair failed for {}: {error}",
+                shortcut.display()
+            ));
+        }
+    }
+    warnings
+}
+
+#[cfg(all(windows, not(test)))]
+fn repair_portable_shortcut_icons(install_root: &Path) -> Vec<String> {
+    let Some(appdata) = std::env::var_os("APPDATA") else {
+        return Vec::new();
+    };
+    repair_portable_shortcut_icons_in(install_root, &PathBuf::from(appdata))
+}
+
+#[cfg(any(not(windows), test))]
+fn repair_portable_shortcut_icons(_install_root: &Path) -> Vec<String> {
+    Vec::new()
 }
 
 #[cfg(all(windows, not(test)))]
@@ -1332,7 +1424,9 @@ fn health_check_portable_install(
     let mut command = portable_launch_command(&exe)?;
     crate::sys::apply_launch_arguments(&mut command, arguments)?;
     match crate::process::spawn_and_check_startup(
-        command, PORTABLE_LIVENESS_WINDOW,
+        command,
+        PORTABLE_LIVENESS_WINDOW,
+        PORTABLE_STARTUP_WINDOW,
         crate::app_version::requires_portable_cli(install_root),
     ) {
         Ok(LivenessResult::Survived { child }) => {
@@ -1660,6 +1754,7 @@ pub fn install_portable_from_msix_with_launch_arguments(
             false
         }
     };
+    notes.extend(repair_portable_shortcut_icons(install_root));
     let uninstall_entry_created = match register_uninstall_entry(
         install_root,
         &prepared.identity.version,
@@ -1847,6 +1942,113 @@ mod tests {
         assert_eq!(pick_shortcut_icon(None, &launcher, |_| false), launcher);
     }
 
+    #[test]
+    fn shortcut_icon_repair_policy_handles_flat_to_nested_upgrade_and_custom_icons() {
+        let root = Path::new(r"C:\Portable\Codex");
+        let nested_exe = root.join("app/ChatGPT.exe");
+        let nested_ico = root.join("app/resources/icon-chatgpt.ico");
+        let flat_exe = root.join("ChatGPT.exe");
+        let flat_ico = root.join("resources/icon-chatgpt.ico");
+        let launcher = root.join(crate::portable_command::LAUNCHER_NAME);
+        let manager = Path::new(r"C:\Program Files\Codex App Manager\Codex App Manager.exe");
+
+        // Flat -> nested upgrade: pre-upgrade Start Menu & TaskBar links used
+        // flat entry paths or deleted flat icons.
+        for target in [&launcher, &flat_exe, &nested_exe] {
+            for obsolete_icon in [
+                Path::new(""),
+                launcher.as_path(),
+                flat_ico.as_path(),
+                flat_exe.as_path(),
+                root.join("Codex.exe").as_path(),
+                nested_ico.as_path(),
+                Path::new("icon-chatgpt.ico"),
+                Path::new(r"C:\OldInstall\resources\icon-chatgpt.ico"),
+            ] {
+                assert!(
+                    should_repair_portable_shortcut_icon(
+                        root,
+                        &nested_exe,
+                        Some(manager),
+                        target,
+                        "",
+                        obsolete_icon,
+                        |p| crate::same_windows_path(p, &nested_exe)
+                            || crate::same_windows_path(p, &launcher),
+                    ),
+                    "target={target:?} icon={obsolete_icon:?} should repair after flat->nested upgrade"
+                );
+            }
+        }
+
+        // Manager-owned pinned TaskBar shortcut also repairs missing flat icons
+        // and preserves custom icons.
+        assert!(should_repair_portable_shortcut_icon(
+            root,
+            &nested_exe,
+            Some(manager),
+            manager,
+            "--launch-codex",
+            &flat_ico,
+            |_| false,
+        ));
+        assert!(!should_repair_portable_shortcut_icon(
+            root,
+            &nested_exe,
+            Some(manager),
+            manager,
+            "--other-arg",
+            &flat_ico,
+            |_| false,
+        ));
+
+        // Reverse nested -> flat switch repairs missing nested icon path.
+        assert!(should_repair_portable_shortcut_icon(
+            root,
+            &flat_exe,
+            Some(manager),
+            &nested_exe,
+            "",
+            &nested_ico,
+            |p| crate::same_windows_path(p, &flat_exe),
+        ));
+
+        // Preserve explicit custom icons (even when missing) and valid existing current icons.
+        for preserved in [
+            Path::new(r"C:\Portable\Codex\custom.ico"),
+            Path::new(r"D:\Icons\missing-custom.ico"),
+            Path::new("relative.ico"),
+            Path::new(r"%USERPROFILE%\custom.ico"),
+            nested_ico.as_path(),
+            nested_exe.as_path(),
+        ] {
+            assert!(
+                !should_repair_portable_shortcut_icon(
+                    root,
+                    &nested_exe,
+                    Some(manager),
+                    &launcher,
+                    "",
+                    preserved,
+                    |p| crate::same_windows_path(p, &nested_ico)
+                        || crate::same_windows_path(p, &nested_exe),
+                ),
+                "icon={preserved:?} should be preserved"
+            );
+        }
+
+        // Unrelated target is untouched even if its icon looks missing/default.
+        assert!(!should_repair_portable_shortcut_icon(
+            root,
+            &nested_exe,
+            Some(manager),
+            Path::new(r"D:\OtherCodex\app\ChatGPT.exe"),
+            "",
+            &flat_ico,
+            |_| false,
+        ));
+    }
+
     #[cfg(windows)]
     #[test]
     fn legacy_shortcut_icon_repairs_only_this_installs_entry_points() {
@@ -1859,7 +2061,7 @@ mod tests {
         let icon = app.join("resources/icon-chatgpt.ico");
         fs::write(&icon, b"icon fixture").unwrap();
         let shortcut = parent.join("ChatGPT.lnk");
-        assert!(!repair_legacy_start_menu_icon(&root, &parent).unwrap());
+        assert!(!repair_legacy_shortcut_icon(&root, &shortcut).unwrap());
         assert!(!shortcut.exists());
 
         for target in [
@@ -1880,7 +2082,7 @@ mod tests {
             )
             .unwrap();
             let before = crate::portable_shortcut::read_spec(&shortcut).unwrap();
-            assert!(repair_legacy_start_menu_icon(&root, &parent).unwrap());
+            assert!(repair_legacy_shortcut_icon(&root, &shortcut).unwrap());
             let mut expected = before;
             expected.icon = icon.clone();
             expected.icon_index = 0;
@@ -1890,7 +2092,7 @@ mod tests {
             );
             let saved = fs::read(&shortcut).unwrap();
             let modified = fs::metadata(&shortcut).unwrap().modified().unwrap();
-            assert!(!repair_legacy_start_menu_icon(&root, &parent).unwrap());
+            assert!(!repair_legacy_shortcut_icon(&root, &shortcut).unwrap());
             assert_eq!(fs::read(&shortcut).unwrap(), saved);
             assert_eq!(
                 fs::metadata(&shortcut).unwrap().modified().unwrap(),
@@ -1916,7 +2118,7 @@ mod tests {
             )
             .unwrap();
             let saved = fs::read(&shortcut).unwrap();
-            assert!(!repair_legacy_start_menu_icon(&root, &parent).unwrap());
+            assert!(!repair_legacy_shortcut_icon(&root, &shortcut).unwrap());
             assert_eq!(fs::read(&shortcut).unwrap(), saved);
         }
         fs::remove_dir_all(parent).unwrap();
@@ -1931,7 +2133,7 @@ mod tests {
         let shortcut = root.join("ChatGPT.lnk");
         let stale = root.join("resources/icon-chatgpt.ico");
         crate::portable_shortcut::create(&shortcut, &exe, &root, &stale).unwrap();
-        assert!(repair_legacy_start_menu_icon(&root, &root).unwrap());
+        assert!(repair_legacy_shortcut_icon(&root, &shortcut).unwrap());
         assert!(crate::same_windows_path(
             &crate::portable_shortcut::read_spec(&shortcut).unwrap().icon,
             &exe,
@@ -1939,7 +2141,7 @@ mod tests {
         crate::portable_shortcut::create(&shortcut, &exe, &root, &stale).unwrap();
         fs::remove_file(&exe).unwrap();
         let saved = fs::read(&shortcut).unwrap();
-        assert!(!repair_legacy_start_menu_icon(&root, &root).unwrap());
+        assert!(!repair_legacy_shortcut_icon(&root, &shortcut).unwrap());
         assert_eq!(fs::read(&shortcut).unwrap(), saved);
         fs::remove_dir_all(root).unwrap();
     }
@@ -1959,6 +2161,8 @@ mod tests {
             PathBuf::new(),
             app.join("resources/icon-chatgpt.ico"),
             app.join("Codex.exe"),
+            root.join("resources/icon-chatgpt.ico"),
+            PathBuf::from("icon-chatgpt.ico"),
         ] {
             crate::portable_shortcut::create_with_arguments(
                 &shortcut,
@@ -1969,7 +2173,7 @@ mod tests {
             )
             .unwrap();
             let mut expected = crate::portable_shortcut::read_spec(&shortcut).unwrap();
-            assert!(repair_legacy_start_menu_icon(&root, &parent).unwrap());
+            assert!(repair_legacy_shortcut_icon(&root, &shortcut).unwrap());
             expected.icon = exe.clone();
             expected.icon_index = 0;
             assert_eq!(
@@ -1978,7 +2182,7 @@ mod tests {
             );
             let bytes = fs::read(&shortcut).unwrap();
             let modified = fs::metadata(&shortcut).unwrap().modified().unwrap();
-            assert!(!repair_legacy_start_menu_icon(&root, &parent).unwrap());
+            assert!(!repair_legacy_shortcut_icon(&root, &shortcut).unwrap());
             assert_eq!(fs::read(&shortcut).unwrap(), bytes);
             assert_eq!(
                 fs::metadata(&shortcut).unwrap().modified().unwrap(),
@@ -2018,7 +2222,7 @@ mod tests {
             let bytes = fs::read(&shortcut).unwrap();
             let modified = fs::metadata(&shortcut).unwrap().modified().unwrap();
             assert!(
-                !repair_legacy_start_menu_icon(&root, &parent).unwrap(),
+                !repair_legacy_shortcut_icon(&root, &shortcut).unwrap(),
                 "{icon:?}"
             );
             assert_eq!(fs::read(&shortcut).unwrap(), bytes, "{icon:?}");
@@ -2035,7 +2239,7 @@ mod tests {
         fs::write(&flat_exe, b"legacy payload fixture").unwrap();
         crate::portable_shortcut::create(&shortcut, &flat_exe, &flat, &flat_exe).unwrap();
         let bytes = fs::read(&shortcut).unwrap();
-        assert!(!repair_legacy_start_menu_icon(&flat, &parent).unwrap());
+        assert!(!repair_legacy_shortcut_icon(&flat, &shortcut).unwrap());
         assert_eq!(fs::read(&shortcut).unwrap(), bytes);
         fs::remove_dir_all(parent).unwrap();
     }
@@ -2049,15 +2253,101 @@ mod tests {
         fs::create_dir_all(&app).unwrap();
         fs::write(app.join("ChatGPT.exe"), b"payload fixture").unwrap();
         let untouched = b"not a Shell Link";
-        let other = parent.join("Codex.lnk");
+        let other = parent.join("Other.lnk");
         fs::write(&other, untouched).unwrap();
-        assert!(!repair_legacy_start_menu_icon(&root, &parent).unwrap());
-        assert_eq!(fs::read(&other).unwrap(), untouched);
         let shortcut = parent.join("ChatGPT.lnk");
+        assert!(!repair_legacy_shortcut_icon(&root, &shortcut).unwrap());
+        assert_eq!(fs::read(&other).unwrap(), untouched);
         assert!(!shortcut.exists());
         fs::write(&shortcut, untouched).unwrap();
-        assert!(repair_legacy_start_menu_icon(&root, &parent).is_err());
+        assert!(repair_legacy_shortcut_icon(&root, &shortcut).is_err());
         assert_eq!(fs::read(&shortcut).unwrap(), untouched);
+        assert_eq!(fs::read(&other).unwrap(), untouched);
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn flat_to_nested_upgrade_repairs_start_menu_and_taskbar_icons() {
+        let parent = temp_test_dir("flat-to-nested-shortcuts");
+        let root = parent.join("portable");
+        let appdata = parent.join("appdata");
+        let programs = appdata.join("Microsoft/Windows/Start Menu/Programs");
+        let taskbar = appdata.join("Microsoft/Internet Explorer/Quick Launch/User Pinned/TaskBar");
+        fs::create_dir_all(&programs).unwrap();
+        fs::create_dir_all(&taskbar).unwrap();
+        fs::create_dir_all(&root).unwrap();
+
+        let flat_exe = root.join("ChatGPT.exe");
+        let flat_ico = root.join("resources/icon-chatgpt.ico");
+        let launcher = root.join(crate::portable_command::LAUNCHER_NAME);
+        fs::create_dir_all(flat_ico.parent().unwrap()).unwrap();
+        fs::write(&flat_exe, b"flat payload fixture").unwrap();
+        fs::write(&flat_ico, b"flat icon fixture").unwrap();
+        fs::write(&launcher, b"launcher fixture").unwrap();
+
+        let start_chatgpt = programs.join("ChatGPT.lnk");
+        let start_codex = programs.join("Codex.lnk");
+        let taskbar_codex = taskbar.join("Codex.lnk");
+        let taskbar_custom = taskbar.join("ChatGPT.lnk");
+        let taskbar_unrelated = taskbar.join("Other.lnk");
+        let custom_ico = root.join("custom.ico");
+        fs::write(&custom_ico, b"custom icon fixture").unwrap();
+
+        crate::portable_shortcut::create(&start_chatgpt, &flat_exe, &root, &flat_ico).unwrap();
+        crate::portable_shortcut::create(&start_codex, &launcher, &root, &flat_exe).unwrap();
+        crate::portable_shortcut::create_with_arguments(
+            &taskbar_codex,
+            &launcher,
+            &root,
+            &flat_ico,
+            "--saved",
+        )
+        .unwrap();
+        crate::portable_shortcut::create(&taskbar_custom, &flat_exe, &root, &custom_ico).unwrap();
+        let untouched = b"not a Shell Link";
+        fs::write(&taskbar_unrelated, untouched).unwrap();
+
+        // Simulate upgrade switching layout from flat -> nested: flat payload/ico
+        // no longer exist, new nested app\ChatGPT.exe & app\resources\icon-chatgpt.ico do.
+        fs::remove_file(&flat_exe).unwrap();
+        fs::remove_dir_all(flat_ico.parent().unwrap()).unwrap();
+        let nested_app = root.join("app");
+        fs::create_dir_all(nested_app.join("resources")).unwrap();
+        let nested_exe = nested_app.join("ChatGPT.exe");
+        let nested_ico = nested_app.join("resources/icon-chatgpt.ico");
+        fs::write(&nested_exe, b"nested payload fixture").unwrap();
+        fs::write(&nested_ico, b"nested icon fixture").unwrap();
+
+        let warnings = repair_portable_shortcut_icons_in(&root, &appdata);
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        for link in [&start_chatgpt, &start_codex, &taskbar_codex] {
+            let spec = crate::portable_shortcut::read_spec(link).unwrap();
+            assert!(
+                crate::same_windows_path(&spec.icon, &nested_ico),
+                "{link:?} icon={:?}",
+                spec.icon
+            );
+        }
+        assert_eq!(
+            crate::portable_shortcut::read_spec(&taskbar_codex)
+                .unwrap()
+                .arguments,
+            "--saved"
+        );
+        assert!(crate::same_windows_path(
+            &crate::portable_shortcut::read_spec(&taskbar_custom)
+                .unwrap()
+                .icon,
+            &custom_ico
+        ));
+        assert_eq!(fs::read(&taskbar_unrelated).unwrap(), untouched);
+
+        // Idempotent second run keeps bytes untouched.
+        let saved_taskbar = fs::read(&taskbar_codex).unwrap();
+        assert!(repair_portable_shortcut_icons_in(&root, &appdata).is_empty());
+        assert_eq!(fs::read(&taskbar_codex).unwrap(), saved_taskbar);
         fs::remove_dir_all(parent).unwrap();
     }
 
@@ -2215,8 +2505,12 @@ mod tests {
                 "--user-data-dir={}",
                 profile.join("profile").display()
             ));
-        let result =
-            crate::process::spawn_and_check_startup(command, PORTABLE_LIVENESS_WINDOW, true);
+        let result = crate::process::spawn_and_check_startup(
+            command,
+            PORTABLE_LIVENESS_WINDOW,
+            PORTABLE_STARTUP_WINDOW,
+            true,
+        );
         let cleanup = close_codex_gracefully_for_root(30, &root);
         cleanup.unwrap();
         assert!(
@@ -2253,8 +2547,12 @@ mod tests {
                 "--user-data-dir={}",
                 root.join("profile").display()
             ));
-        let result =
-            crate::process::spawn_and_check_startup(command, PORTABLE_LIVENESS_WINDOW, true);
+        let result = crate::process::spawn_and_check_startup(
+            command,
+            PORTABLE_LIVENESS_WINDOW,
+            PORTABLE_STARTUP_WINDOW,
+            true,
+        );
         let cleanup = close_codex_gracefully_for_root(10, &payload);
         cleanup.unwrap();
         assert!(
@@ -2288,8 +2586,12 @@ mod tests {
                 "--user-data-dir={}",
                 profile.join("profile").display()
             ));
-        let result =
-            crate::process::spawn_and_check_startup(command, PORTABLE_LIVENESS_WINDOW, true);
+        let result = crate::process::spawn_and_check_startup(
+            command,
+            PORTABLE_LIVENESS_WINDOW,
+            PORTABLE_STARTUP_WINDOW,
+            true,
+        );
         let cleanup = close_codex_gracefully_for_root(30, &root);
         cleanup.unwrap();
         assert!(

@@ -13,6 +13,7 @@ use crate::msix::parse_appx_manifest_xml;
 use crate::network::{is_schannel_revocation_check_failure, NetworkConfig, SchannelRevocationCheck};
 use crate::process::{
     curl_exe, hidden_command, run_capturing, LivenessResult, RunLimits, PORTABLE_LIVENESS_WINDOW,
+    PORTABLE_STARTUP_WINDOW,
 };
 #[cfg(windows)]
 use crate::process::{RunError, TimeoutKind, MSIX_ACTIVATION_WINDOW_SECS, MSIX_LIVENESS_WINDOW_SECS};
@@ -2198,6 +2199,7 @@ pub fn launch_codex_with_options(
         match crate::process::spawn_and_check_startup(
             command,
             PORTABLE_LIVENESS_WINDOW,
+            PORTABLE_STARTUP_WINDOW,
             crate::app_version::requires_portable_cli(root),
         ) {
             Ok(LivenessResult::Survived { child }) => {

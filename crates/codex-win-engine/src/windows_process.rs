@@ -21,8 +21,30 @@ fn normalize_windows_path_text(value: &str) -> String {
     normalized.trim_end_matches('\\').to_string()
 }
 
+fn resolve_windows_path(path: &Path) -> std::path::PathBuf {
+    if let Ok(resolved) = std::fs::canonicalize(path) {
+        return resolved;
+    }
+    let mut tail = Vec::new();
+    let mut cursor = path.to_path_buf();
+    while let Some(name) = cursor.file_name() {
+        tail.push(name.to_os_string());
+        if !cursor.pop() {
+            break;
+        }
+        if let Ok(resolved) = std::fs::canonicalize(&cursor) {
+            let mut out = resolved;
+            for component in tail.into_iter().rev() {
+                out.push(component);
+            }
+            return out;
+        }
+    }
+    path.to_path_buf()
+}
+
 fn normalized_windows_path(path: &Path) -> String {
-    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let resolved = resolve_windows_path(path);
     normalize_windows_path_text(&resolved.to_string_lossy())
 }
 
@@ -502,5 +524,20 @@ mod tests {
             Path::new(r"C:\Users\Alice\Codex"),
             Path::new(r"C:\Users\Alice\Other")
         ));
+    }
+
+    #[test]
+    fn same_path_resolves_missing_leaf_via_existing_canonical_ancestor() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-same-path-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let canonical = std::fs::canonicalize(&root).unwrap();
+        assert!(same_windows_path(
+            &root.join("missing/ChatGPT.exe"),
+            &canonical.join("missing/ChatGPT.exe"),
+        ));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 // Only the renderer's resource inventory and custom-protocol fetch are mocked.
 const rust = await readFile(join(process.cwd(), "crates/codex-theme-engine/src/native_hot.rs"), "utf8");
 const template = rust.match(/const ENSURE_API_JS_TEMPLATE: &str = r#"([\s\S]*?)"#;/)[1];
-const newest = ["26.901.20858+", "26.831.21537+", "26.715", "26.707"];
+const newest = ["26.1111.21308+", "26.901.20858+", "26.831.21537+", "26.715", "26.707"];
 const roots = [];
 // Bypass Vitest's transformed module loader: production import() and fixtures
 // must share Node's real ESM cache, just as they share Chromium's in Codex.
@@ -53,23 +53,40 @@ ${shape}
 `;
 }
 
-async function renderer(files, { loaded = Object.keys(files), adapters = newest, failures = [], inspection = Function } = {}) {
+async function renderer(files, {
+  loaded = Object.keys(files),
+  scripts = loaded,
+  adapters = newest,
+  failures = [],
+  inspection = Function,
+  delayMs = 0,
+} = {}) {
   const root = await mkdtemp(join(tmpdir(), "cam-native-hot-"));
   roots.push(root);
   await writeFile(join(root, "package.json"), '{"type":"module"}');
   const urls = Object.fromEntries(Object.keys(files).map((name) => [name, pathToFileURL(join(root, name)).href]));
   await Promise.all(Object.entries(files).map(([name, source]) => writeFile(join(root, name), source)));
   const fetched = [];
+  let inFlight = 0;
+  let maxConcurrentFetches = 0;
   const window = {};
   const fetch = async (url) => {
     fetched.push(url);
-    if (failures.includes(url) || failures.some((name) => urls[name] === url)) throw new Error("unreadable");
-    return { ok: false, text: () => readFile(fileURLToPath(url), "utf8") };
+    inFlight += 1;
+    if (inFlight > maxConcurrentFetches) maxConcurrentFetches = inFlight;
+    try {
+      if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+      if (failures.includes(url) || failures.some((name) => urls[name] === url)) throw new Error("unreadable");
+      return { ok: false, text: () => readFile(fileURLToPath(url), "utf8") };
+    } finally {
+      inFlight -= 1;
+    }
   };
   const entries = loaded.map((name) => ({ name: urls[name] }));
+  const scriptEntries = scripts.map((name) => ({ name: urls[name] }));
   const document = {
     querySelectorAll: (selector) => selector === "script[src]"
-      ? entries.map(({ name }) => ({ src: name }))
+      ? scriptEntries.map(({ name }) => ({ src: name }))
       : entries.map(({ name }) => ({ href: name })),
   };
   const script = template.replace("__CAM_ADAPTERS__", JSON.stringify(adapters));
@@ -80,6 +97,7 @@ async function renderer(files, { loaded = Object.keys(files), adapters = newest,
     run: () => run(window, document, { getEntriesByType: () => entries }, fetch, inspection),
     window,
     fetched,
+    maxConcurrentFetches: () => maxConcurrentFetches,
     urls,
     module: (name) => nativeImport(urls[name]),
   };
@@ -258,4 +276,172 @@ export { $read as $r, $write as $w, $read as duplicateRead, $write as duplicateW
     });
     await assertRoundTrip(page, "26.901.20858+", "native");
   });
+
+  const rspackRxzzShape = `
+async function b(e){if(a.appServices?.settings!=null)return(await (0,s.P)(a.appServices.settings.read(e.key))).effective;throw Error("Settings are unavailable on this host")}
+async function L(e,t){if(a.appServices?.settings!=null)return void await (0,s.P)(a.appServices.settings.write(e.key,t));throw Error("Settings are unavailable on this host")}`;
+
+  function rspackEntrySource({ preloaded = "cached", includeDecoyTrap = true } = {}) {
+    const registerChunk = preloaded === "cached" || preloaded === "registered"
+      ? `Object.assign(p.m, {
+  q77y(e,t,n){n.d(t,{},{P:async function(p){return await p;}});},
+  RxZZ(e,t,n){
+    n.d(t,{LA:()=>b,cz:()=>L});
+    var a=n("GaA7"),s=n("q77y");
+    ${rspackRxzzShape}
+  }
+});`
+      : "";
+    const bootRxzz = preloaded === "cached" ? `p("RxZZ");` : "";
+    const trap = includeDecoyTrap
+      ? `p.m.TRAP = function trap() { throw new Error("unrelated Rspack factory must not run"); };
+Object.defineProperty(l, "BROKEN", {
+  enumerable: true,
+  value: { exports: Object.defineProperty({}, "bad", { enumerable: true, get() { throw new Error("broken getter"); } }) }
+});`
+      : "";
+    return `
+export const calls = [];
+const values = new Map([["appearanceTheme", "dark"]]);
+const appServices = {
+  settings: {
+    async read(key) { calls.push(["native-read", key]); return { effective: values.get(key) }; },
+    async write(key, value) { calls.push(["native-write", key, value]); values.set(key, value); },
+  },
+};
+const l = {};
+const u = {
+  GaA7(e,t,n){ n.d(t,{appServices:()=>appServices}); }
+};
+function p(e){
+  var a = l[e];
+  if (void 0 !== a) return a.exports;
+  var c = l[e] = { id: e, exports: {} };
+  u[e].call(c.exports, c, c.exports, p);
+  return c.exports;
+}
+p.m = u;
+p.c = l;
+p.o = (e,a) => Object.prototype.hasOwnProperty.call(e, a);
+p.d = (e,a,c) => {
+  for (var f in a) p.o(a, f) && !p.o(e, f) && Object.defineProperty(e, f, { enumerable: true, get: a[f] });
+  for (var f in c) p.o(c, f) && !p.o(e, f) && Object.defineProperty(e, f, { enumerable: true, value: c[f] });
+};
+p.C = (chunk) => {
+  var c = chunk.__webpack_modules__;
+  for (var a in c) p.o(c, a) && (p.m[a] = c[a]);
+};
+${registerChunk}
+${trap}
+${bootRxzz}
+var h = p;
+export { h as __webpack_require__ };
+`;
+  }
+
+  function rspackSettingsChunkSource(body = rspackRxzzShape) {
+    return `
+export const __rspack_esm_ids = [956370];
+export const __webpack_modules__ = {
+  q77y(e,t,n){n.d(t,{},{P:async function(p){return await p;}});},
+  RxZZ(e,t,n){
+    n.d(t,{LA:()=>b,cz:()=>L});
+    var a=n("GaA7"),s=n("q77y");
+    ${body}
+  }
+};`;
+  }
+
+  it("discovers cached 26.1111.21308 Rspack RxZZ exports without fetching all async chunks", async () => {
+    const files = {
+      "348410.374a9b8f98.js": rspackEntrySource({ preloaded: "cached" }),
+    };
+    for (let i = 0; i < 270; i += 1) {
+      files[`async-${i}.js`] = `export const __rspack_esm_ids=[${i}];export const __webpack_modules__={};`;
+    }
+    const page = await renderer(files, {
+      scripts: ["348410.374a9b8f98.js"],
+    });
+    await assertRoundTrip(page, "26.1111.21308+", "native");
+    expect(page.fetched).toHaveLength(1);
+  });
+
+  it("instantiates registered but uncached 26.1111.21308 RxZZ modules only after static match", async () => {
+    const page = await renderer({
+      "357055.d960503c8e.js": rspackEntrySource({ preloaded: "registered" }),
+    }, {
+      scripts: ["357055.d960503c8e.js"],
+    });
+    await assertRoundTrip(page, "26.1111.21308+", "native");
+  });
+
+  it("discovers lazy 26.1111.21308 Rspack settings chunks and fetches 270+ chunks in bounded parallel batches", async () => {
+    const files = {
+      "348410.374a9b8f98.js": rspackEntrySource({ preloaded: "none" }),
+    };
+    for (let i = 0; i < 270; i += 1) {
+      files[`async-${i}.js`] = `export const __rspack_esm_ids=[${i}];export const __webpack_modules__={};`;
+    }
+    files["956370.aff5cce818.js"] = rspackSettingsChunkSource();
+    const page = await renderer(files, {
+      scripts: ["348410.374a9b8f98.js"],
+      delayMs: 3,
+    });
+    const outcome = await page.run();
+    expect(outcome).toMatchObject({ ok: true, cached: false, adapter: "26.1111.21308+" });
+    expect(page.window.__camThemeSettingsV1.url).toBe(page.urls["956370.aff5cce818.js"]);
+    expect(page.maxConcurrentFetches()).toBeGreaterThan(1);
+    expect(page.maxConcurrentFetches()).toBeLessThanOrEqual(16);
+    const entryMod = await page.module("348410.374a9b8f98.js");
+    expect(entryMod.calls).toEqual([]);
+    const api = page.window.__camThemeSettingsV1;
+    const before = await api.read({ key: "appearanceTheme" });
+    await api.write({ key: "appearanceTheme" }, "light");
+    expect(await api.read({ key: "appearanceTheme" })).toBe("light");
+    await api.write({ key: "appearanceTheme" }, before);
+    expect(entryMod.calls.map((c) => c[0])).toEqual(["native-read", "native-write", "native-read", "native-write"]);
+  });
+
+  it("falls back to Rspack adapter even when an older version hint probes legacy adapters first", async () => {
+    const page = await renderer({
+      "348410.374a9b8f98.js": rspackEntrySource({ preloaded: "cached" }),
+    }, {
+      scripts: ["348410.374a9b8f98.js"],
+      adapters: ["26.831.21537+", "26.715", "26.707", "26.901.20858+", "26.1111.21308+"],
+    });
+    await assertRoundTrip(page, "26.1111.21308+", "native");
+  });
+
+  it("fetches 270+ Vite chunks with bounded concurrency instead of serially", async () => {
+    const files = {};
+    for (let i = 0; i < 270; i += 1) {
+      files[`chunk-${i}.js`] = `export const chunk${i} = ${i};`;
+    }
+    files["app-shared-tail.js"] = moduleSource(wrappers["26.1021.31345"], true, false);
+    const page = await renderer(files, {
+      adapters: ["26.901.20858+", "26.831.21537+", "26.715", "26.707"],
+      delayMs: 3,
+    });
+    await assertRoundTrip(page, "26.901.20858+", "native");
+    expect(page.maxConcurrentFetches()).toBeGreaterThan(1);
+    expect(page.maxConcurrentFetches()).toBeLessThanOrEqual(16);
+  });
+
+  for (const [name, mutate] of [
+    ["wrong key parameter", (body) => body.replace("read(e.key)", "read(other.key)")],
+    ["wrong value parameter", (body) => body.replace("write(e.key,t)", "write(e.key,other)")],
+    ["mismatched bridge chain", (body) => body.replace("a.appServices.settings.write", "other.appServices.settings.write")],
+    ["raw read response", (body) => body.replace(".effective", ".value")],
+    ["discarded read return", (body) => body.replace("return(await", "(await")],
+  ]) {
+    it(`rejects invalid 26.1111.21308 ${name} wrappers`, async () => {
+      const page = await renderer({
+        "348410.js": rspackEntrySource({ preloaded: "none", includeDecoyTrap: false }),
+        "956370.js": rspackSettingsChunkSource(mutate(rspackRxzzShape)),
+      }, { scripts: ["348410.js"] });
+      expect(await page.run()).toMatchObject({ ok: false, error: expect.stringContaining("settings module not found") });
+      expect(page.window.__camThemeSettingsV1).toBeUndefined();
+      expect((await page.module("348410.js")).calls).toEqual([]);
+    });
+  }
 });
