@@ -39,6 +39,12 @@ pub const DEFAULT_STALL_TIMEOUT: Duration = Duration::from_secs(120);
 pub const DEFAULT_DOWNLOAD_TOTAL_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 /// Minimum survival window after spawning a portable binary for "launchable".
 pub const PORTABLE_LIVENESS_WINDOW: Duration = Duration::from_secs(3);
+/// Maximum wall-clock budget to wait for a portable Codex launch or post-install
+/// health check to open its main window. Cold machines, slower disks, or
+/// first-run Electron migrations can exceed 30s without indicating failure;
+/// immediate exits and modal startup errors still fail fast.
+pub const PORTABLE_STARTUP_WINDOW_SECS: u64 = 120;
+pub const PORTABLE_STARTUP_WINDOW: Duration = Duration::from_secs(PORTABLE_STARTUP_WINDOW_SECS);
 /// Continuous survival required after MSIX shell activation — aligned with the
 /// portable liveness window so both routes reject the same class of crash-loops.
 /// MSIX shell activation only runs on Windows, but a cross-platform test
@@ -49,6 +55,7 @@ pub const MSIX_LIVENESS_WINDOW_SECS: u64 = PORTABLE_LIVENESS_WINDOW.as_secs();
 /// Outer budget to wait for a cold-started MSIX process to *appear* after
 /// `Start-Process shell:AppsFolder\…`. Cold machines / AppX service warm-up can
 /// take well over 10s; too short a window causes false portable fallbacks.
+#[cfg(any(windows, test))]
 pub const MSIX_ACTIVATION_WINDOW_SECS: u64 = 30;
 
 /// Poll interval while waiting on a child.
@@ -426,13 +433,37 @@ pub fn spawn_and_require_liveness(
     command: Command,
     window: Duration,
 ) -> Result<LivenessResult, RunError> {
-    spawn_and_check_startup(command, window, false)
+    spawn_and_check_startup(command, window, PORTABLE_STARTUP_WINDOW, false)
+}
+
+fn startup_timeout_message(startup_window: Duration) -> String {
+    format!(
+        "Codex did not open its main window within {} seconds",
+        startup_window.as_secs()
+    )
 }
 
 pub(crate) fn spawn_and_check_startup(
-    mut command: Command,
-    window: Duration,
+    command: Command,
+    liveness_window: Duration,
+    startup_window: Duration,
     require_window: bool,
+) -> Result<LivenessResult, RunError> {
+    spawn_and_check_startup_with(
+        command,
+        liveness_window,
+        startup_window,
+        require_window,
+        crate::startup_window::inspect,
+    )
+}
+
+fn spawn_and_check_startup_with(
+    mut command: Command,
+    liveness_window: Duration,
+    startup_window: Duration,
+    require_window: bool,
+    mut inspect: impl FnMut(u32) -> crate::startup_window::StartupWindow,
 ) -> Result<LivenessResult, RunError> {
     // Detach stdio so a chatty broken payload cannot fill pipes and block, and
     // so unit tests that use console tools (e.g. whoami) do not pollute output.
@@ -442,8 +473,8 @@ pub(crate) fn spawn_and_check_startup(
         .spawn()
         .map_err(|e| RunError::Spawn(e.to_string()))?;
     let started = Instant::now();
-    let deadline = started + window;
-    let startup_deadline = started + Duration::from_secs(MSIX_ACTIVATION_WINDOW_SECS);
+    let deadline = started + liveness_window;
+    let startup_deadline = started + startup_window;
     let mut progress = crate::startup_window::StartupProgress::default();
     loop {
         match child.try_wait() {
@@ -453,8 +484,8 @@ pub(crate) fn spawn_and_check_startup(
                 });
             }
             Ok(None) => {
-                let state = crate::startup_window::inspect(child.id());
-                let ready = match progress.observe(started.elapsed(), &state, window) {
+                let state = inspect(child.id());
+                let ready = match progress.observe(started.elapsed(), &state, liveness_window) {
                     Ok(ready) => ready,
                     Err(failure) => {
                         terminate_tree(&mut child);
@@ -466,9 +497,7 @@ pub(crate) fn spawn_and_check_startup(
                 }
                 if require_window && Instant::now() >= startup_deadline {
                     terminate_tree(&mut child);
-                    return Err(RunError::Wait(
-                        "Codex did not open its main window within 30 seconds".into(),
-                    ));
+                    return Err(RunError::Wait(startup_timeout_message(startup_window)));
                 }
                 thread::sleep(POLL_INTERVAL);
             }
@@ -762,6 +791,95 @@ mod tests {
         match result {
             LivenessResult::Survived { mut child } => {
                 terminate_tree(&mut child);
+            }
+            LivenessResult::ExitedEarly { code } => {
+                panic!("sleep should still be running, exit={code:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn portable_startup_window_budget_is_two_minutes() {
+        assert_eq!(PORTABLE_STARTUP_WINDOW_SECS, 120);
+        assert_eq!(PORTABLE_STARTUP_WINDOW, Duration::from_secs(120));
+        assert_eq!(MSIX_ACTIVATION_WINDOW_SECS, 30);
+        assert_eq!(
+            startup_timeout_message(PORTABLE_STARTUP_WINDOW),
+            "Codex did not open its main window within 120 seconds"
+        );
+    }
+
+    #[test]
+    fn immediate_exit_fails_fast_even_with_120s_startup_window() {
+        let started = Instant::now();
+        let result = spawn_and_check_startup_with(
+            immediate_exit_command(7),
+            PORTABLE_LIVENESS_WINDOW,
+            PORTABLE_STARTUP_WINDOW,
+            true,
+            |_| crate::startup_window::StartupWindow {
+                ready: false,
+                failure: None,
+            },
+        )
+        .expect("spawn");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "early exit should not wait for startup window"
+        );
+        match result {
+            LivenessResult::ExitedEarly { code } => assert_eq!(code, Some(7)),
+            LivenessResult::Survived { mut child } => {
+                terminate_tree(&mut child);
+                panic!("immediate-exit binary must not be reported as survived");
+            }
+        }
+    }
+
+    #[test]
+    fn startup_window_timeout_formats_configured_seconds() {
+        let err = spawn_and_check_startup_with(
+            sleep_command(30),
+            Duration::from_millis(100),
+            Duration::from_secs(1),
+            true,
+            |_| crate::startup_window::StartupWindow {
+                ready: false,
+                failure: None,
+            },
+        )
+        .expect_err("sleeping child with no main window must time out");
+        assert_eq!(
+            err.message(),
+            "wait failed: Codex did not open its main window within 1 seconds"
+        );
+    }
+
+    #[test]
+    fn slow_window_appearance_still_requires_full_liveness_settling() {
+        let mut polls = 0u32;
+        let started = Instant::now();
+        let result = spawn_and_check_startup_with(
+            sleep_command(30),
+            Duration::from_millis(250),
+            Duration::from_secs(5),
+            true,
+            |_| {
+                polls += 1;
+                crate::startup_window::StartupWindow {
+                    ready: polls >= 3,
+                    failure: None,
+                }
+            },
+        )
+        .expect("window appearing before startup deadline should survive");
+        match result {
+            LivenessResult::Survived { mut child } => {
+                terminate_tree(&mut child);
+                assert!(
+                    started.elapsed() >= Duration::from_millis(250),
+                    "must settle for full liveness window after ready"
+                );
             }
             LivenessResult::ExitedEarly { code } => {
                 panic!("sleep should still be running, exit={code:?}");
