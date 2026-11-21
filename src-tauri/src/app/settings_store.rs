@@ -155,6 +155,8 @@ pub struct AppSettings {
     /// Raw Windows command-line arguments for Codex launches and its shortcut.
     #[serde(default)]
     pub codex_launch_arguments: String,
+    #[serde(default)]
+    pub codex_launch_environment: String,
     /// One exact Codex app update the user chose not to be reminded about.
     #[serde(default)]
     pub skipped_codex_update: Option<SkippedCodexUpdate>,
@@ -223,6 +225,8 @@ struct RawAppSettings {
     #[serde(default)]
     codex_launch_arguments: String,
     #[serde(default)]
+    codex_launch_environment: String,
+    #[serde(default)]
     skipped_codex_update: Option<SkippedCodexUpdate>,
     #[serde(default)]
     codex_theme: Option<String>,
@@ -270,6 +274,7 @@ impl Default for AppSettings {
             custom_proxy_url: String::new(),
             disable_codex_self_updates: false,
             codex_launch_arguments: String::new(),
+            codex_launch_environment: String::new(),
             skipped_codex_update: None,
             codex_theme: None,
             codex_theme_dir: None,
@@ -321,6 +326,7 @@ impl RawAppSettings {
                 custom_proxy_url: self.custom_proxy_url,
                 disable_codex_self_updates: self.disable_codex_self_updates,
                 codex_launch_arguments: self.codex_launch_arguments,
+                codex_launch_environment: self.codex_launch_environment,
                 skipped_codex_update: self.skipped_codex_update,
                 codex_theme: self.codex_theme,
                 codex_theme_dir: self.codex_theme_dir,
@@ -458,6 +464,21 @@ mod tests {
         DEFAULT_PERIODIC_CHECK_INTERVAL_SECONDS, MAX_PERIODIC_CHECK_INTERVAL_SECONDS,
         MIN_PERIODIC_CHECK_INTERVAL_SECONDS,
     };
+
+    #[test]
+    fn launch_environment_defaults_empty_and_round_trips() {
+        let legacy: RawAppSettings = serde_json::from_value(serde_json::json!({})).unwrap();
+        let (legacy, _, _) = legacy.into_settings();
+        assert!(legacy.codex_launch_environment.is_empty());
+
+        let environment = "HTTP_PROXY=http://127.0.0.1:7890\r\nEXAMPLE= a=b 中文 ";
+        let raw: RawAppSettings = serde_json::from_value(serde_json::json!({
+            "codexLaunchEnvironment": environment
+        }))
+        .unwrap();
+        let (settings, _, _) = raw.into_settings();
+        assert_eq!(serde_json::to_value(settings).unwrap()["codexLaunchEnvironment"], environment);
+    }
 
     #[test]
     fn repairs_package_storage_root_and_preserves_launch_argument_quotes() {

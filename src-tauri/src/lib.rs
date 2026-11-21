@@ -774,6 +774,7 @@ pub fn run() {
         let mut settings = domain::settings::AppSettings::new(String::new(), saved.install_root);
         settings.disable_codex_self_updates = saved.disable_codex_self_updates;
         settings.codex_launch_arguments = saved.codex_launch_arguments;
+        settings.codex_launch_environment = saved.codex_launch_environment;
         let result = (|| -> Result<(), errors::AppError> {
             let lock_path = app::paths::data_dir()
                 .ok_or_else(|| errors::AppError::Internal("无法定位管理器数据目录".into()))?

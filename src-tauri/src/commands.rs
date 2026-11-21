@@ -748,6 +748,7 @@ fn windows_domain_settings_for_persisted(state: &ManagerState) -> DomainAppSetti
     settings.install_root = saved.install_root;
     settings.disable_codex_self_updates = saved.disable_codex_self_updates;
     settings.codex_launch_arguments = saved.codex_launch_arguments;
+    settings.codex_launch_environment = saved.codex_launch_environment;
     settings
 }
 
@@ -1993,20 +1994,31 @@ fn save_settings(
     }
     codex_win_engine::sys::validate_launch_arguments(&s.codex_launch_arguments)
         .map_err(|error| AppError::Engine(error.to_string()))?;
-    let previous = PersistedAppSettings::load();
     let _op = begin_guard(state, OperationKind::SetInstallRoot)?;
-    if matches!(state.target.os, OperatingSystem::Windows)
-        && previous.codex_launch_arguments != s.codex_launch_arguments
-    {
+    let previous = PersistedAppSettings::load();
+    let windows = matches!(state.target.os, OperatingSystem::Windows);
+    let environment_changed = windows && previous.codex_launch_environment != s.codex_launch_environment;
+    let sync_shortcut = || {
         let mut launch_settings = state.settings.clone();
         launch_settings.install_root = s.install_root.clone();
-        launch_settings.codex_launch_arguments = s.codex_launch_arguments.clone();
-        crate::app::win_update::sync_launch_shortcut(&launch_settings)?;
+        crate::app::win_update::sync_launch_shortcut(&launch_settings)
+    };
+    if environment_changed {
+        codex_win_engine::sys::parse_launch_environment(&s.codex_launch_environment)
+            .map_err(|error| AppError::Engine(error.to_string()))?;
+    } else if windows && previous.codex_launch_arguments != s.codex_launch_arguments {
+        sync_shortcut()?;
     }
     if previous.disable_codex_self_updates != s.disable_codex_self_updates {
         crate::app::codex_self_update::sync_setting(s.disable_codex_self_updates)?;
     }
     s.save()?;
+    if environment_changed {
+        // Home launches read the saved setting even if Windows locks the shortcut.
+        if let Err(error) = sync_shortcut() {
+            log::warn!("saved Codex launch environment but shortcut refresh failed: {error}");
+        }
+    }
     refresh_config_health(state);
     log::info!(
         "saved settings source={} windows_install_mode={} proxy_mode={} disable_codex_self_updates={}",
@@ -3117,6 +3129,15 @@ pub async fn win_launch_codex(state: State<'_, ManagerState>) -> Result<(), Comm
         return Err(AppError::UnsupportedPlatform.into());
     }
     let persisted = PersistedAppSettings::load();
+    let settings = windows_domain_settings_for_persisted(&state);
+    if !settings.codex_launch_environment.trim().is_empty() && persisted.codex_theme.is_some() {
+        let settings = settings.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::app::win_update::ensure_fresh_codex_launch(&settings)
+        })
+        .await
+        .map_err(|e| AppError::Internal(format!("join: {e}")))??;
+    }
     if persisted.codex_theme.is_some() && state.operations.snapshot().is_none() {
         let themed =
             crate::app::codex_theme::launch_with_active_theme(&state.codex_theme, &persisted)
@@ -3125,7 +3146,6 @@ pub async fn win_launch_codex(state: State<'_, ManagerState>) -> Result<(), Comm
             return Ok(());
         }
     }
-    let settings = windows_domain_settings_for_persisted(&state);
     tauri::async_runtime::spawn_blocking(move || crate::app::win_update::launch_codex(&settings))
         .await
         .map_err(|e| AppError::Internal(format!("join: {e}")))?

@@ -1435,12 +1435,18 @@ export function WinHome({
                     : perform.message
               }
               detail={winResultDetail}
-              autoDismissMs={winClean ? 6000 : undefined}
+              autoDismissMs={winClean && !perform.relaunchFailed ? 6000 : undefined}
               onClose={() => {
                 setPerform(null);
                 setUpdatedVer(null);
               }}
             />
+            {perform.relaunchFailed ? (
+              <div className="banner info" role="status">
+                <Icon name="alert" />
+                <span>{t("install.launchEnvironmentReopenFailed")}</span>
+              </div>
+            ) : null}
             {winResultDiagnostics ? (
               <details className="manual-existing-meta">
                 <summary>{t("home.error.details")}</summary>

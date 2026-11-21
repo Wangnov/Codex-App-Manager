@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 #[cfg(windows)]
 use std::path::PathBuf;
@@ -36,13 +37,46 @@ pub struct InstalledWindowsCodex {
     pub installed_at: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Clone, Copy, Default)]
 pub struct LaunchOptions<'a> {
     pub disable_codex_self_updates: bool,
     /// Start Electron's loopback DevTools endpoint for renderer theme injection.
     /// `None` preserves the ordinary launch path.
     pub remote_debugging_port: Option<u16>,
     pub additional_arguments: &'a str,
+    pub additional_environment: &'a str,
+}
+
+pub fn parse_launch_environment(input: &str) -> Result<BTreeMap<String, String>, EngineError> {
+    let mut values = BTreeMap::new();
+    for (index, line) in input.lines().enumerate() {
+        let row = index + 1;
+        let invalid = || EngineError::Io(format!("Codex 启动环境变量第 {row} 行应为名称=值"));
+        if line.contains(['\0', '\r']) {
+            return Err(invalid());
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        let (name, value) = line.split_once('=').ok_or_else(invalid)?;
+        let mut chars = name.trim().bytes();
+        if !chars.next().is_some_and(|ch| ch == b'_' || ch.is_ascii_alphabetic())
+            || !chars.all(|ch| ch == b'_' || ch.is_ascii_alphanumeric())
+        {
+            return Err(invalid());
+        }
+        let name = name.trim().to_ascii_uppercase();
+        if matches!(
+            name.as_str(),
+            "CODEX_CLI_PATH" | "CODEX_HOME" | CODEX_SELF_UPDATE_ENV_KEY | "CODEX_WINDOWS_REGISTERED_CORE"
+        ) {
+            return Err(EngineError::Io(format!("Codex 启动环境变量第 {row} 行由管理器管理")));
+        }
+        if values.insert(name, value.to_string()).is_some() {
+            return Err(EngineError::Io(format!("Codex 启动环境变量第 {row} 行名称重复")));
+        }
+    }
+    Ok(values)
 }
 
 pub fn validate_launch_arguments(arguments: &str) -> Result<(), EngineError> {
@@ -82,6 +116,20 @@ pub(crate) fn apply_launch_arguments(
 const CODEX_SELF_UPDATE_ENV_KEY: &str = "CODEX_SPARKLE_ENABLED";
 const CODEX_SELF_UPDATE_ENV_DISABLED: &str = "false";
 
+fn apply_configured_launch_environment(
+    command: &mut std::process::Command,
+    environment: &BTreeMap<String, String>,
+    disable_self_updates: bool,
+) {
+    command.envs(environment);
+    if disable_self_updates {
+        command.env(CODEX_SELF_UPDATE_ENV_KEY, CODEX_SELF_UPDATE_ENV_DISABLED);
+    } else {
+        // The Manager can inherit an earlier value from Explorer.
+        command.env_remove(CODEX_SELF_UPDATE_ENV_KEY);
+    }
+}
+
 fn remote_debugging_arguments(port: u16) -> [String; 2] {
     [
         "--remote-debugging-address=127.0.0.1".to_string(),
@@ -117,6 +165,32 @@ fn registered_msix_aumid(json: &str, expected_family: &str) -> Result<String, En
         ));
     }
     Ok(format!("{}!{app_id}", entry.package_family_name))
+}
+
+#[cfg(any(windows, test))]
+fn registered_msix_launch_alias(value: &serde_json::Value) -> Result<&'static str, EngineError> {
+    const ALIAS: &str = "chatgpt-desktop.exe";
+    if value.get("launchAlias").and_then(serde_json::Value::as_str)
+        .is_some_and(|alias| alias.eq_ignore_ascii_case(ALIAS))
+    {
+        return Ok(ALIAS);
+    }
+    Err(EngineError::Io(
+        "已注册的 Codex MSIX 缺少桌面启动别名，无法带启动环境变量打开".into(),
+    ))
+}
+
+pub fn codex_session_running_for_root(root: &Path) -> Result<bool, EngineError> {
+    crate::windows_process::codex_session_running_for_root(root)
+}
+
+pub fn ensure_fresh_codex_launch(root: &Path) -> Result<(), EngineError> {
+    if codex_session_running_for_root(root)? {
+        return Err(EngineError::Io(
+            "请完全退出 Codex（包括托盘进程），然后从管理器重新启动".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Filesystem mtime of `path` as Unix seconds, best-effort (None if unreadable).
@@ -1855,7 +1929,7 @@ pub fn verify_msix_health_with_launch_arguments(
         let activation = validate_launch_arguments(arguments).and_then(|_| {
             let installed = detect_msix_install()
                 .ok_or_else(|| EngineError::Io("registered Codex package not found".into()))?;
-            launch_msix_app_with_arguments(&installed, arguments)
+            launch_msix_app_with_arguments(&installed, arguments, &BTreeMap::new(), false)
         });
         if let Err(error) = activation {
             value["activationOk"] = false.into();
@@ -2169,6 +2243,7 @@ pub fn launch_codex_with_options(
     options: LaunchOptions<'_>,
 ) -> Result<(), EngineError> {
     validate_launch_arguments(options.additional_arguments)?;
+    let environment = parse_launch_environment(options.additional_environment)?;
     if installed.source == "portable" {
         let root = Path::new(&installed.path);
         if is_msix_package_path(root) {
@@ -2187,15 +2262,24 @@ pub fn launch_codex_with_options(
         // launch failure instead of a silent no-op.
         crate::portable::repair_portable_launch_entry(root)?;
         let mut command = crate::portable::portable_launch_command(&exe)?;
-        if options.disable_codex_self_updates {
+        if environment.is_empty() && options.disable_codex_self_updates {
             command.env(CODEX_SELF_UPDATE_ENV_KEY, CODEX_SELF_UPDATE_ENV_DISABLED);
         }
         if let Some(port) = options.remote_debugging_port {
             command.args(remote_debugging_arguments(port));
         }
         apply_launch_arguments(&mut command, options.additional_arguments)?;
-        let was_running = crate::windows_process::codex_processes_running_for_root(root)
-            .unwrap_or(false);
+        let was_running = if environment.is_empty() {
+            crate::windows_process::codex_processes_running_for_root(root).unwrap_or(false)
+        } else {
+            ensure_fresh_codex_launch(root)?;
+            apply_configured_launch_environment(
+                &mut command,
+                &environment,
+                options.disable_codex_self_updates,
+            );
+            false
+        };
         match crate::process::spawn_and_check_startup(
             command,
             PORTABLE_LIVENESS_WINDOW,
@@ -2229,7 +2313,12 @@ pub fn launch_codex_with_options(
             ),
             None => options.additional_arguments.to_string(),
         };
-        launch_msix_app_with_arguments(installed, &arguments)
+        launch_msix_app_with_arguments(
+            installed,
+            &arguments,
+            &environment,
+            options.disable_codex_self_updates,
+        )
     }
 }
 
@@ -2254,6 +2343,8 @@ fn portable_activation_succeeded(root: &Path, was_running: bool, code: Option<i3
 fn launch_msix_app_with_arguments(
     installed: &InstalledWindowsCodex,
     arguments: &str,
+    environment: &BTreeMap<String, String>,
+    disable_self_updates: bool,
 ) -> Result<(), EngineError> {
     use windows::core::HSTRING;
     use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
@@ -2281,14 +2372,24 @@ $pkg = Get-AppxPackage -Name {name} |
 if ($null -eq $pkg) {{ throw 'registered Codex package not found' }}
 $app = (Get-AppxPackageManifest $pkg -ErrorAction Stop).Package.Applications.Application
 if ($app -is [array]) {{ $app = $app[0] }}
+$alias = $null
+if ({resolve_alias}) {{
+  $alias = $app.Extensions.Extension |
+    Where-Object {{ $_.Category -eq 'windows.appExecutionAlias' -and -not $_.Executable }} |
+    ForEach-Object {{ $_.AppExecutionAlias.ExecutionAlias }} |
+    Where-Object Alias -eq 'chatgpt-desktop.exe' |
+    Select-Object -First 1
+}}
 @{{
   packageFamilyName = [string]$pkg.PackageFamilyName
   appId = [string]$app.Id
   installLocation = [string]$pkg.InstallLocation
+  launchAlias = [string]$alias.Alias
 }} | ConvertTo-Json -Compress
 "#,
         name = ps_quote(crate::OPENAI_PACKAGE_IDENTITY),
         family = ps_quote(family),
+        resolve_alias = if environment.is_empty() { "$false" } else { "$true" },
     );
     let registered = run_powershell_json_with_limits(&script, RunLimits::probe())
         .map_err(|e| e.into_install())?;
@@ -2307,6 +2408,23 @@ if ($app -is [array]) {{ $app = $app[0] }}
         ));
     }
     let root = PathBuf::from(root);
+    if !environment.is_empty() {
+        ensure_fresh_codex_launch(&root)?;
+        let alias = registered_msix_launch_alias(&value)?;
+        let local = std::env::var_os("LOCALAPPDATA")
+            .ok_or_else(|| EngineError::Io("LOCALAPPDATA is unavailable".into()))?;
+        // The per-package App Execution Alias preserves the MSIX identity.
+        // Starting the EXE directly from WindowsApps does not.
+        let launcher = PathBuf::from(local).join("Microsoft").join("WindowsApps").join(family).join(alias);
+        let mut command = hidden_command(&launcher);
+        command.current_dir(&root);
+        apply_configured_launch_environment(&mut command, environment, disable_self_updates);
+        apply_launch_arguments(&mut command, arguments)?;
+        let mut child = command.spawn().map_err(|e| {
+            EngineError::Io(format!("使用 MSIX 启动别名打开 Codex 失败: {e}"))
+        })?;
+        return finish_configured_msix_launch(&mut child, wait_for_msix_startup(&root));
+    }
     let arguments = HSTRING::from(arguments);
 
     // Blocking launch calls run on a pool thread whose COM apartment is
@@ -2343,10 +2461,33 @@ if ($app -is [array]) {{ $app = $app[0] }}
     })
 }
 
+#[cfg(windows)]
+fn finish_configured_msix_launch(
+    child: &mut std::process::Child,
+    startup: Result<(), MsixStartupFailure>,
+) -> Result<(), EngineError> {
+    finish_msix_startup_probe(startup, true, || {
+        crate::process::terminate_tree(child);
+        Ok(())
+    })
+    .map_err(|failure| {
+        EngineError::Io(format!(
+            "带启动环境变量打开 Codex 失败 ({}): {}",
+            failure.kind, failure.detail,
+        ))
+    })?;
+    if let Some(status) = child.try_wait().map_err(|e| EngineError::Io(e.to_string()))? {
+        return Err(EngineError::Io(format!("带启动环境变量的 Codex 进程已退出 ({status})")));
+    }
+    Ok(())
+}
+
 #[cfg(not(windows))]
 fn launch_msix_app_with_arguments(
     _installed: &InstalledWindowsCodex,
     _arguments: &str,
+    _environment: &BTreeMap<String, String>,
+    _disable_self_updates: bool,
 ) -> Result<(), EngineError> {
     Err(EngineError::Io(
         "MSIX launch with arguments is only available on Windows".to_string(),
@@ -2601,8 +2742,87 @@ mod tests {
     #[cfg(windows)]
     use super::*;
     use super::{
-        parse_registered_msix_package_full_name, registered_msix_aumid, remote_debugging_arguments,
+        parse_launch_environment, parse_registered_msix_package_full_name, registered_msix_aumid,
+        registered_msix_launch_alias, remote_debugging_arguments,
     };
+
+    #[test]
+    fn launch_environment_preserves_values_and_reports_invalid_lines() {
+        let values = parse_launch_environment(" \r\nEMPTY=\r\n Example = a=b 中文 \n").unwrap();
+        assert_eq!(values["EMPTY"], "");
+        assert_eq!(values["EXAMPLE"], " a=b 中文 ");
+        assert!(parse_launch_environment("\n  \n").unwrap().is_empty());
+        for invalid in [
+            "http_proxy=secret",
+            "INVALID",
+            "1NAME=secret",
+            "\u{feff}NAME=secret",
+            "NAME=secret\0",
+            "NAME=secret\rvalue",
+            "codex_cli_path=secret",
+            "CODEX_HOME=secret",
+            "CODEX_SPARKLE_ENABLED=secret",
+            "CODEX_WINDOWS_REGISTERED_CORE=secret",
+        ] {
+            let error = parse_launch_environment(&format!("HTTP_PROXY=one\n{invalid}"))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains('2'), "{error}");
+            assert!(!error.contains("secret"));
+        }
+    }
+
+    #[test]
+    fn launch_environment_accepts_only_the_registered_desktop_alias() {
+        let valid = serde_json::json!({ "launchAlias": "CHATGPT-DESKTOP.EXE" });
+        assert_eq!(registered_msix_launch_alias(&valid).unwrap(), "chatgpt-desktop.exe");
+        for invalid in [
+            serde_json::json!({}),
+            serde_json::json!({ "launchAlias": "../chatgpt-desktop.exe" }),
+            serde_json::json!({ "launchAlias": "codex-core-command-runner.exe" }),
+        ] {
+            assert!(registered_msix_launch_alias(&invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn launch_environment_uses_saved_updater_policy_instead_of_the_parent_value() {
+        let environment = parse_launch_environment("HTTP_PROXY=http://127.0.0.1:7890").unwrap();
+        let mut command = std::process::Command::new("codex.exe");
+        for disabled in [true, false] {
+            super::apply_configured_launch_environment(&mut command, &environment, disabled);
+            let vars: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+            assert_eq!(
+                vars[std::ffi::OsStr::new(super::CODEX_SELF_UPDATE_ENV_KEY)],
+                disabled.then_some(std::ffi::OsStr::new("false")),
+            );
+            assert_eq!(
+                vars[std::ffi::OsStr::new("HTTP_PROXY")],
+                Some(std::ffi::OsStr::new("http://127.0.0.1:7890")),
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn launch_environment_reaps_the_child_after_failed_msix_startup() {
+        let mut child = hidden_command(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "startup_window::tests::native_window_fixture"])
+            .env("CODEX_STARTUP_WINDOW_FIXTURE", "ready")
+            .spawn()
+            .unwrap();
+        let result = finish_configured_msix_launch(
+            &mut child,
+            Err(MsixStartupFailure { kind: msix_failure::TIMEOUT, detail: "fixture timeout".into() }),
+        );
+        let status = child.try_wait().unwrap();
+        if status.is_none() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        assert!(result.unwrap_err().to_string().contains("fixture timeout"));
+        assert!(status.is_some(), "the failed launch process was not reaped");
+    }
 
     #[test]
     fn builds_loopback_remote_debugging_arguments() {
@@ -3291,12 +3511,21 @@ mod portable_identity_tests {
         };
         let result = if ready { super::launch_codex_with_options(&installed, options) }
             else { Err(crate::EngineError::Io("fixture window did not become ready".into())) };
+        let configured = super::LaunchOptions {
+            additional_environment: "CODEX_STARTUP_WINDOW_FIXTURE=ready",
+            ..options
+        };
+        let blocked = super::launch_codex_with_options(&installed, configured);
         let _ = child.kill();
         let _ = child.wait();
         let first_launch = super::launch_codex_with_options(&installed, options);
+        let configured_launch = super::launch_codex_with_options(&installed, configured);
+        let _ = crate::windows_process::close_startup_gui_for_root(&root);
         cleanup(&root);
         result.unwrap();
+        assert!(blocked.unwrap_err().to_string().contains("请完全退出 Codex"));
         assert!(first_launch.unwrap_err().to_string().contains("exited immediately"));
+        configured_launch.unwrap();
     }
 
     #[test]
@@ -3309,6 +3538,27 @@ mod portable_identity_tests {
             assert!(super::validate_launch_arguments(arguments).is_err());
         }
         assert!(super::validate_launch_arguments(&"x".repeat(16385)).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn launch_environment_does_not_treat_package_services_as_a_running_session() {
+        let service = "codex-windows-sandbox-service.exe";
+        let root = write_root("launch-env-service", service, Some("OpenAI.Codex"));
+        let exe = root.join(service);
+        std::fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
+        let mut child = std::process::Command::new(&exe)
+            .args(["--ignored", "--exact", "startup_window::tests::native_window_fixture"])
+            .env("CODEX_STARTUP_WINDOW_FIXTURE", "ready")
+            .spawn()
+            .unwrap();
+        let broad = crate::windows_process::codex_processes_running_for_root(&root);
+        let result = super::ensure_fresh_codex_launch(&root);
+        let _ = child.kill();
+        let _ = child.wait();
+        cleanup(&root);
+        assert!(broad.unwrap());
+        result.unwrap();
     }
 
     #[test]

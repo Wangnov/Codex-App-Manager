@@ -366,6 +366,7 @@ export interface AppSettings {
   /** Disable Codex App's own embedded update checks and silent downloads. */
   disableCodexSelfUpdates: boolean;
   codexLaunchArguments: string;
+  codexLaunchEnvironment: string;
   /** One exact Codex app update the user chose not to be reminded about. */
   skippedCodexUpdate: SkippedCodexUpdate | null;
   /** Persistent Codex UI theme selection (theme id); null = stock. */
@@ -423,6 +424,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   customProxyUrl: "",
   disableCodexSelfUpdates: false,
   codexLaunchArguments: "",
+  codexLaunchEnvironment: "",
   skippedCodexUpdate: null,
   codexTheme: null,
   codexThemeDir: null,
@@ -615,6 +617,7 @@ export interface WinPerformReport {
   installed: InstalledWindowsCodex | null;
   fallbackAvailable: boolean;
   fallbackAttempted: boolean;
+  relaunchFailed?: boolean;
   notes: string[];
   outcome: OperationOutcome;
 }

@@ -119,6 +119,76 @@ describe("Settings runtime contract", () => {
     } finally { platform.mockRestore(); }
   });
 
+  it("saves launch environment only on explicit submit and confirms the backend write", async () => {
+    const platform = vi.spyOn(navigator, "platform", "get").mockReturnValue("Win32");
+    try {
+      const user = userEvent.setup();
+      const save = deferred<AppSettings>();
+      api.getSettings.mockResolvedValue(settings());
+      api.winDefaultInstallRoot.mockResolvedValue(DEFAULT_SETTINGS.installRoot);
+      renderSettings();
+      const field = await screen.findByRole("textbox", { name: "Codex 启动环境变量" });
+      const button = screen.getByRole("button", { name: "保存环境变量" });
+      const environment = "HTTP_PROXY=http://127.0.0.1:7890";
+      await user.type(field, environment);
+      const argumentsField = screen.getByRole("textbox", { name: "Codex 启动参数" });
+      await user.type(argumentsField, "--no-proxy-server");
+      await user.tab();
+      await waitFor(() => expect(api.setSettings).toHaveBeenLastCalledWith(
+        expect.objectContaining({ codexLaunchArguments: "--no-proxy-server", codexLaunchEnvironment: "" }),
+      ));
+      expect(field).toHaveValue(environment);
+      api.setSettings.mockReturnValueOnce(save.promise);
+      await user.click(button);
+      expect(api.setSettings).toHaveBeenLastCalledWith(
+        expect.objectContaining({ codexLaunchEnvironment: environment }),
+      );
+      expect(screen.queryByText("已保存 · 下次启动生效")).not.toBeInTheDocument();
+      save.resolve(settings({ codexLaunchEnvironment: environment, codexLaunchArguments: "--no-proxy-server" }));
+      expect(await screen.findByText("已保存 · 下次启动生效")).toBeInTheDocument();
+
+      await user.type(field, "{enter}http_proxy=duplicate");
+      await user.click(button);
+      expect(await screen.findByText(/第 2 行.*重复/)).toBeInTheDocument();
+      expect(api.setSettings).toHaveBeenCalledTimes(2);
+      await user.clear(field);
+      await user.paste("\uFEFFHTTPS_PROXY=http://127.0.0.1:7890");
+      await user.click(button);
+      expect(await screen.findByText(/第 1 行.*名称=值/)).toBeInTheDocument();
+      expect(api.setSettings).toHaveBeenCalledTimes(2);
+      await user.clear(field);
+      await user.click(button);
+      expect(await screen.findByText("已清除启动环境变量")).toBeInTheDocument();
+      expect(api.setSettings).toHaveBeenLastCalledWith(expect.objectContaining({ codexLaunchEnvironment: "" }));
+    } finally { platform.mockRestore(); }
+  });
+
+  it("queues the environment save when clicking it blurs the launch arguments", async () => {
+    const platform = vi.spyOn(navigator, "platform", "get").mockReturnValue("Win32");
+    try {
+      const user = userEvent.setup();
+      const blurSave = deferred<AppSettings>();
+      api.getSettings.mockResolvedValue(settings());
+      api.winDefaultInstallRoot.mockResolvedValue(DEFAULT_SETTINGS.installRoot);
+      renderSettings();
+      const environment = "HTTP_PROXY=http://127.0.0.1:7890";
+      await user.click(await screen.findByRole("textbox", { name: "Codex 启动环境变量" }));
+      await user.paste(environment);
+      await user.click(screen.getByRole("textbox", { name: "Codex 启动参数" }));
+      await user.paste("--proxy-server=http://127.0.0.1:7890");
+      api.setSettings.mockReturnValueOnce(blurSave.promise);
+      await user.click(screen.getByRole("button", { name: "保存环境变量" }));
+      expect(api.setSettings).toHaveBeenCalledTimes(1);
+      blurSave.resolve(settings({ codexLaunchArguments: "--proxy-server=http://127.0.0.1:7890" }));
+      await waitFor(() => expect(api.setSettings).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          codexLaunchArguments: "--proxy-server=http://127.0.0.1:7890",
+          codexLaunchEnvironment: environment,
+        }),
+      ));
+    } finally { platform.mockRestore(); }
+  });
+
   it("keeps the form non-editable until settings hydrate", async () => {
     const load = deferred<AppSettings>();
     api.getSettings.mockReturnValueOnce(load.promise);
@@ -305,6 +375,30 @@ describe("Settings runtime contract", () => {
       expect(api.setSettings).toHaveBeenCalledWith(expect.objectContaining({ source: "mirror" })),
     );
     expect(screen.getByRole("radio", { name: /镜像/ })).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("preserves the environment draft during provenance-only maintenance", async () => {
+    const platform = vi.spyOn(navigator, "platform", "get").mockReturnValue("Win32");
+    try {
+      const user = userEvent.setup();
+      const zh = CATALOG["zh-CN"];
+      api.getSettings.mockResolvedValue(settings());
+      api.winDefaultInstallRoot.mockResolvedValue(DEFAULT_SETTINGS.installRoot);
+      api.getConfigHealth
+        .mockResolvedValueOnce(BROKEN_CONFIG)
+        .mockResolvedValue(HEALTHY_CONFIG);
+      renderSettings();
+      const field = await screen.findByRole("textbox", { name: zh["settings.windows.launchEnvironment"] });
+      await user.click(field);
+      await user.paste("HTTPS_PROXY=http://127.0.0.1:7890");
+      await user.click(screen.getByRole("button", { name: zh["settings.health.header"] }));
+      const clear = zh["settings.health.clearProvenance"];
+      await user.click(screen.getByRole("button", { name: clear }));
+      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: clear }));
+      expect(await screen.findByText(zh["settings.health.verified"])).toBeInTheDocument();
+      expect(field).toHaveValue("HTTPS_PROXY=http://127.0.0.1:7890");
+      expect(api.setSettings).not.toHaveBeenCalled();
+    } finally { platform.mockRestore(); }
   });
 
   it.each(SAFETY_FLOW_LANGS)(
