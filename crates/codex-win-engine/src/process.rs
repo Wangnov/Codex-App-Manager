@@ -176,7 +176,7 @@ pub(crate) fn curl_exe() -> PathBuf {
 }
 
 /// Terminate a child and, on Windows, its process tree (PowerShell nests work).
-fn terminate_tree(child: &mut Child) {
+pub(crate) fn terminate_tree(child: &mut Child) {
     #[cfg(windows)]
     {
         let pid = child.id();
@@ -532,8 +532,9 @@ mod tests {
         use std::io::Write;
         match std::env::var("CODEX_CAPTURE_FIXTURE").unwrap().as_str() {
             "large" => {
+                // The test harness can write the fixture name to stdout too.
                 std::io::stdout()
-                    .write_all(&vec![b'x'; 5 * 1024 * 1024])
+                    .write_all(&vec![b'X'; 5 * 1024 * 1024])
                     .unwrap();
                 std::io::stderr()
                     .write_all(&vec![b'y'; 512 * 1024])
@@ -571,7 +572,7 @@ mod tests {
             .unwrap();
             assert_eq!(output.status.code(), Some(7));
             assert_eq!(
-                output.stdout.iter().filter(|&&b| b == b'x').count(),
+                output.stdout.iter().filter(|&&b| b == b'X').count(),
                 5 * 1024 * 1024
             );
             assert_eq!(output.stderr, vec![b'y'; 512 * 1024]);

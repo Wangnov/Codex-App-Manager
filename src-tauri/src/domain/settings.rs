@@ -8,6 +8,7 @@ pub struct AppSettings {
     pub preserve_user_data_by_default: bool,
     pub disable_codex_self_updates: bool,
     pub codex_launch_arguments: String,
+    pub codex_launch_environment: String,
 }
 
 impl AppSettings {
@@ -18,6 +19,11 @@ impl AppSettings {
             preserve_user_data_by_default: true,
             disable_codex_self_updates: false,
             codex_launch_arguments: String::new(),
+            codex_launch_environment: String::new(),
         }
+    }
+
+    pub fn has_codex_launch_options(&self) -> bool {
+        !self.codex_launch_arguments.is_empty() || !self.codex_launch_environment.trim().is_empty()
     }
 }

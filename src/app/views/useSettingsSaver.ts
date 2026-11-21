@@ -40,6 +40,7 @@ export function mergeSavedKeepingCustomDraft(
 
 export function useSettingsSaver(initial: AppSettings) {
   const [value, setValue] = useState<AppSettings>(initial);
+  const [savedSettings, setSavedSettings] = useState<AppSettings>(initial);
   const [status, setStatus] = useState<SaveStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
@@ -67,6 +68,7 @@ export function useSettingsSaver(initial: AppSettings) {
     try {
       const saved = await managerApi.setSettings(settingsPayloadForSave(next, lastValueRef.current));
       lastValueRef.current = saved;
+      setSavedSettings(saved);
       if (pendingRef.current == null) {
         // A response only owns the draft it submitted. Typing into a custom
         // field does not enqueue a write until blur, but still supersedes it.
@@ -117,6 +119,7 @@ export function useSettingsSaver(initial: AppSettings) {
       return;
     }
     lastValueRef.current = settings;
+    setSavedSettings(settings);
     setValue(settings);
     setStatus("idle");
     setError(null);
@@ -127,6 +130,7 @@ export function useSettingsSaver(initial: AppSettings) {
   const reset = useCallback((settings: AppSettings) => {
     dirtyRef.current = false;
     lastValueRef.current = settings;
+    setSavedSettings(settings);
     pendingRef.current = null;
     setValue(settings);
     setStatus("idle");
@@ -136,6 +140,7 @@ export function useSettingsSaver(initial: AppSettings) {
 
   return {
     settings: value,
+    savedSettings,
     status,
     error,
     hydrated,
