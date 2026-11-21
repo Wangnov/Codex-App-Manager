@@ -27,6 +27,26 @@ const OK_HEALTH: ConfigHealth = {
   provenanceBackupAvailable: false,
 };
 
+function launchEnvironmentError(text: string, t: TFn): string | null {
+  const names = new Set<string>();
+  for (const [index, line] of text.replaceAll("\r\n", "\n").split("\n").entries()) {
+    const row = index + 1;
+    if (line.includes("\0") || line.includes("\r")) {
+      return t("settings.windows.envInvalid", { row });
+    }
+    if (/^\p{White_Space}*$/u.test(line)) continue;
+    const match = /^\p{White_Space}*([A-Za-z_][A-Za-z0-9_]*)\p{White_Space}*=/u.exec(line);
+    if (!match) return t("settings.windows.envInvalid", { row });
+    const name = match[1].toUpperCase();
+    if (names.has(name)) return t("settings.windows.envDuplicate", { row });
+    if (["CODEX_CLI_PATH", "CODEX_HOME", "CODEX_SPARKLE_ENABLED", "CODEX_WINDOWS_REGISTERED_CORE"].includes(name)) {
+      return t("settings.windows.envReserved", { row });
+    }
+    names.add(name);
+  }
+  return null;
+}
+
 function healthLabel(status: string, t: TFn): string {
   if (status === "recovered") return t("settings.health.recovered");
   if (status === "corrupt") return t("settings.health.corrupt");
@@ -129,6 +149,7 @@ export function Settings({
   const win = isWindows();
   const {
     settings: s,
+    savedSettings,
     status: saveStatus,
     error: saveError,
     hydrated,
@@ -142,6 +163,9 @@ export function Settings({
   const [autostart, setAutostart] = useState(false);
   const [commandError, setCommandError] = useState<string | null>(null);
   const [fieldError, setFieldError] = useState<string | null>(null);
+  const [environmentDraft, setEnvironmentDraft] = useState<string | null>(null);
+  const [submittedEnvironment, setSubmittedEnvironment] = useState<string | null>(null);
+  const [environmentError, setEnvironmentError] = useState<string | null>(null);
   const [langSheet, setLangSheet] = useState(false);
   const [customIntervalOpen, setCustomIntervalOpen] = useState(false);
   const [maintenanceOpen, setMaintenanceOpen] = useState(false);
@@ -203,6 +227,11 @@ export function Settings({
       setConfigHealth(verified);
       try {
         reset(await managerApi.getSettings());
+        if (which === "settings") {
+          setEnvironmentDraft(null);
+          setSubmittedEnvironment(null);
+          setEnvironmentError(null);
+        }
       } catch {
         // Settings reload is best-effort after provenance-only ops.
       }
@@ -291,6 +320,16 @@ export function Settings({
   const intervalParts = splitInterval(s.periodicCheckIntervalSeconds);
   const intervalLabel = formatInterval(s.periodicCheckIntervalSeconds, t);
   const formLocked = !hydrated;
+  const environment = environmentDraft ?? s.codexLaunchEnvironment;
+  const savedEnvironment = savedSettings.codexLaunchEnvironment;
+  const savingEnvironment = saveStatus === "saving"
+    && submittedEnvironment !== null
+    && submittedEnvironment !== savedEnvironment;
+  const environmentStatus = environment !== savedEnvironment
+    ? t("settings.windows.envDirty")
+    : submittedEnvironment === savedEnvironment && saveStatus === "idle"
+      ? t(savedEnvironment.trim() ? "settings.windows.envSaved" : "settings.windows.envCleared")
+      : "";
 
   const updateIntervalPart = (
     part: "hours" | "minutes" | "seconds",
@@ -534,6 +573,54 @@ export function Settings({
                   onBlur={(event) => update({ ...s, codexLaunchArguments: event.currentTarget.value })}
                 />
               </div>
+              <form
+                className="row"
+                style={{ display: "block" }}
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const error = launchEnvironmentError(environment, t);
+                  setEnvironmentError(error);
+                  if (error) return;
+                  setCommandError(null);
+                  setFieldError(null);
+                  setEnvironmentDraft(null);
+                  setSubmittedEnvironment(environment);
+                  update({ ...s, codexLaunchEnvironment: environment });
+                }}
+              >
+                <label className="rtitle" htmlFor={`${switchId}-launch-environment`}>
+                  {t("settings.windows.launchEnvironment")}
+                </label>
+                <span className="rsub" id={`${switchId}-env-help`} style={{ display: "block", marginBottom: 8 }}>
+                  {t("settings.windows.envDesc")}
+                </span>
+                <textarea
+                  id={`${switchId}-launch-environment`}
+                  className="input mono"
+                  rows={4}
+                  style={{ height: "auto", resize: "vertical" }}
+                  spellCheck={false}
+                  aria-invalid={Boolean(environmentError) || undefined}
+                  aria-describedby={`${switchId}-env-help${environmentError ? ` ${switchId}-env-error` : ""}`}
+                  value={environment}
+                  placeholder="HTTPS_PROXY=http://127.0.0.1:7890"
+                  onChange={(event) => {
+                    setEnvironmentDraft(event.target.value);
+                    setEnvironmentError(null);
+                  }}
+                />
+                {environmentError ? (
+                  <p id={`${switchId}-env-error`} role="alert" className="banner err">
+                    {environmentError}
+                  </p>
+                ) : null}
+                <div className="install-root-actions">
+                  <span role="status" className="rsub">{environmentStatus}</span>
+                  <button type="submit" className="mini-action" disabled={savingEnvironment}>
+                    {t("settings.windows.envSave")}
+                  </button>
+                </div>
+              </form>
             </div>
           </div>
         ) : null}

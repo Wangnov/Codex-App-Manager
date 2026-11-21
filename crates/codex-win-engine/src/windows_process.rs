@@ -266,6 +266,14 @@ mod imp {
             .any(TargetProcess::is_running))
     }
 
+    pub(crate) fn codex_session_running_for_root(root: &Path) -> Result<bool, EngineError> {
+        // Includes ChatGPT.exe and codex.exe (app-server). The package's
+        // background sandbox service can remain running with Codex closed.
+        Ok(target_processes_under_root(root, false)?
+            .iter()
+            .any(|process| process.is_gui_app && process.is_running()))
+    }
+
     /// Hold image-verified process handles while inspecting their windows. This
     /// also follows Electron replacement processes without accepting another
     /// installed Codex (or an unrelated ChatGPT) elsewhere on disk.
@@ -468,7 +476,7 @@ mod imp {
 #[cfg(windows)]
 pub(crate) use imp::{
     close_codex_processes_for_root, close_startup_gui_for_root, codex_processes_running_for_root,
-    startup_window_for_root,
+    codex_session_running_for_root, startup_window_for_root,
 };
 
 #[cfg(not(windows))]
@@ -481,6 +489,11 @@ pub(crate) fn close_codex_processes_for_root(
 
 #[cfg(not(windows))]
 pub(crate) fn codex_processes_running_for_root(_root: &Path) -> Result<bool, EngineError> {
+    Ok(false)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn codex_session_running_for_root(_root: &Path) -> Result<bool, EngineError> {
     Ok(false)
 }
 

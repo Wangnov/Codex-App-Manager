@@ -739,6 +739,16 @@ describe("WinHome state machine", () => {
     expect(diagnostics).toHaveAttribute("open");
   });
 
+  it("keeps the installation successful when reopening with launch variables fails", async () => {
+    api.getSettings.mockResolvedValue(settings({ askBefore: false }));
+    api.winPerformUpdate.mockResolvedValue({ ...PERFORM_OK, relaunchFailed: true });
+    const user = userEvent.setup();
+    renderWinHome();
+    await user.click(await screen.findByRole("button", { name: /立即更新/ }));
+    expect(await screen.findByText(/未能带启动环境变量重新打开/)).toBeInTheDocument();
+    expect(screen.getByText(/已更新|已安装 Codex/, { selector: ".rb-title" })).toBeInTheDocument();
+  });
+
   it("keeps partial-install guidance aligned with the rendered recovery action", async () => {
     api.getSettings.mockResolvedValue(settings({ checkOnStartup: false }));
     api.winStatus

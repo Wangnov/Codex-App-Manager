@@ -158,6 +158,7 @@ function normalizeSettings(raw: Partial<AppSettings>): AppSettings {
     proxyMode,
     customProxyUrl,
     codexLaunchArguments: typeof raw.codexLaunchArguments === "string" ? raw.codexLaunchArguments : "",
+    codexLaunchEnvironment: typeof raw.codexLaunchEnvironment === "string" ? raw.codexLaunchEnvironment : "",
     disableCodexSelfUpdates:
       typeof raw.disableCodexSelfUpdates === "boolean"
         ? raw.disableCodexSelfUpdates
@@ -438,6 +439,7 @@ const WIN_FALLBACK_PERFORM: WinPerformReport = {
   },
   fallbackAvailable: true,
   fallbackAttempted: false,
+  relaunchFailed: false,
   notes: ["browser-dev mock: install path is simulated."],
   outcome: emptyOperationOutcome({
     primaryOk: true,

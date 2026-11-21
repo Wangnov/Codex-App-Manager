@@ -25,6 +25,16 @@ export type Lang =
 
 // Canonical copy lives here. zh-CN is the source of truth; en mirrors it.
 const ZH = {
+  "settings.windows.launchEnvironment": "Codex 启动环境变量",
+  "settings.windows.envDesc": "每行填写一条名称=值。完全退出 Codex 后，从管理器重新启动即可生效。Codex 自己的 .env 会覆盖同名变量。",
+  "settings.windows.envSave": "保存环境变量",
+  "settings.windows.envDirty": "有未保存的更改",
+  "settings.windows.envSaved": "已保存 · 下次启动生效",
+  "settings.windows.envCleared": "已清除启动环境变量",
+  "settings.windows.envInvalid": "第 {row} 行请使用「名称=值」格式。",
+  "settings.windows.envDuplicate": "第 {row} 行的变量名重复。",
+  "settings.windows.envReserved": "第 {row} 行的变量由管理器管理。",
+  "install.launchEnvironmentReopenFailed": "Codex 已安装，未能带启动环境变量重新打开。请从主页重新启动。",
   "home.incompatible.title": "有更新，但当前系统不兼容",
   "home.incompatible.desc": "当前 macOS {current}；最新版要求 macOS {required} 或更高版本。",
   "home.incompatible.recommended": "当前清单中最新的兼容版本：{version}。可以保留已安装的兼容版本。",
@@ -475,6 +485,16 @@ type Key = keyof typeof ZH;
 export type TKey = Key;
 
 const EN: Record<Key, string> = {
+  "settings.windows.launchEnvironment": "Codex launch environment variables",
+  "settings.windows.envDesc": "Enter one NAME=value per line. Fully quit Codex and start it from the Manager to apply changes. Codex's own .env can override these values.",
+  "settings.windows.envSave": "Save environment variables",
+  "settings.windows.envDirty": "Unsaved changes",
+  "settings.windows.envSaved": "Saved · applies on next launch",
+  "settings.windows.envCleared": "Launch environment variables cleared",
+  "settings.windows.envInvalid": "Use NAME=value on line {row}.",
+  "settings.windows.envDuplicate": "Duplicate variable name on line {row}.",
+  "settings.windows.envReserved": "The Manager controls the variable on line {row}.",
+  "install.launchEnvironmentReopenFailed": "Codex was installed but could not reopen with the launch environment. Open Codex again from the home screen.",
   "home.incompatible.title": "Update available; macOS is unsupported",
   "home.incompatible.desc": "Current macOS: {current}. The latest release requires macOS {required} or later.",
   "home.incompatible.recommended": "Latest compatible version in this feed: {version}. You can keep your compatible installation.",
@@ -922,6 +942,16 @@ const EN: Record<Key, string> = {
 };
 
 const FR: Record<Key, string> = {
+  "settings.windows.launchEnvironment": "Variables d’environnement de Codex",
+  "settings.windows.envDesc": "Saisissez une ligne NOM=valeur par variable. Quittez complètement Codex puis relancez-le depuis le gestionnaire. Le fichier .env de Codex peut remplacer ces valeurs.",
+  "settings.windows.envSave": "Enregistrer les variables",
+  "settings.windows.envDirty": "Modifications non enregistrées",
+  "settings.windows.envSaved": "Enregistré · actif au prochain lancement",
+  "settings.windows.envCleared": "Variables de lancement effacées",
+  "settings.windows.envInvalid": "Utilisez NOM=valeur à la ligne {row}.",
+  "settings.windows.envDuplicate": "Nom de variable en double à la ligne {row}.",
+  "settings.windows.envReserved": "La variable à la ligne {row} est gérée par le gestionnaire.",
+  "install.launchEnvironmentReopenFailed": "Codex est installé, mais n’a pas pu se rouvrir avec ces variables. Relancez Codex depuis l’accueil.",
   "home.incompatible.title": "Mise à jour incompatible avec ce macOS",
   "home.incompatible.desc": "macOS actuel : {current}. La dernière version nécessite macOS {required} ou ultérieur.",
   "home.incompatible.recommended": "Dernière version compatible du flux : {version}. Vous pouvez conserver votre installation compatible.",
@@ -1369,6 +1399,16 @@ const FR: Record<Key, string> = {
 };
 
 const ZH_TW: Record<Key, string> = {
+  "settings.windows.launchEnvironment": "Codex 啟動環境變數",
+  "settings.windows.envDesc": "每行填寫一筆名稱=值。完全退出 Codex 後，從管理程式重新啟動即可生效。Codex 自己的 .env 會覆寫同名變數。",
+  "settings.windows.envSave": "儲存環境變數",
+  "settings.windows.envDirty": "有未儲存的變更",
+  "settings.windows.envSaved": "已儲存 · 下次啟動生效",
+  "settings.windows.envCleared": "已清除啟動環境變數",
+  "settings.windows.envInvalid": "第 {row} 行請使用「名稱=值」格式。",
+  "settings.windows.envDuplicate": "第 {row} 行的變數名稱重複。",
+  "settings.windows.envReserved": "第 {row} 行的變數由管理程式管理。",
+  "install.launchEnvironmentReopenFailed": "Codex 已安裝，無法帶啟動環境變數重新開啟。請從首頁重新啟動。",
   "home.incompatible.title": "有更新，但目前系統不相容",
   "home.incompatible.desc": "目前 macOS {current}；最新版需要 macOS {required} 或更新版本。",
   "home.incompatible.recommended": "目前清單中最新的相容版本：{version}。可以保留已安裝的相容版本。",
@@ -1827,6 +1867,16 @@ const ZH_TW: Record<Key, string> = {
 };
 
 const DE: Record<Key, string> = {
+  "settings.windows.launchEnvironment": "Codex-Startumgebungsvariablen",
+  "settings.windows.envDesc": "Pro Zeile NAME=Wert eingeben. Codex vollständig beenden und über den Manager neu starten. Die .env-Datei von Codex kann diese Werte überschreiben.",
+  "settings.windows.envSave": "Umgebungsvariablen speichern",
+  "settings.windows.envDirty": "Ungespeicherte Änderungen",
+  "settings.windows.envSaved": "Gespeichert · gilt beim nächsten Start",
+  "settings.windows.envCleared": "Startumgebungsvariablen gelöscht",
+  "settings.windows.envInvalid": "Zeile {row} benötigt NAME=Wert.",
+  "settings.windows.envDuplicate": "Doppelter Variablenname in Zeile {row}.",
+  "settings.windows.envReserved": "Die Variable in Zeile {row} wird vom Manager verwaltet.",
+  "install.launchEnvironmentReopenFailed": "Codex wurde installiert, konnte aber mit den Startvariablen nicht geöffnet werden. Starten Sie Codex erneut über die Startseite.",
   "home.incompatible.title": "Update verfügbar, macOS nicht unterstützt",
   "home.incompatible.desc": "Aktuelles macOS: {current}. Die neueste Version benötigt macOS {required} oder neuer.",
   "home.incompatible.recommended": "Neueste kompatible Version im Feed: {version}. Sie können Ihre kompatible Installation behalten.",
@@ -2285,6 +2335,16 @@ const DE: Record<Key, string> = {
 };
 
 const KO: Record<Key, string> = {
+  "settings.windows.launchEnvironment": "Codex 시작 환경 변수",
+  "settings.windows.envDesc": "한 줄에 이름=값 하나를 입력하세요. Codex를 완전히 종료한 다음 관리자에서 다시 시작하면 적용됩니다. Codex의 .env 파일이 같은 이름의 값을 덮어쓸 수 있습니다.",
+  "settings.windows.envSave": "환경 변수 저장",
+  "settings.windows.envDirty": "저장하지 않은 변경 사항",
+  "settings.windows.envSaved": "저장됨 · 다음 시작 시 적용",
+  "settings.windows.envCleared": "시작 환경 변수 지움",
+  "settings.windows.envInvalid": "{row}번째 줄에 이름=값을 사용하세요.",
+  "settings.windows.envDuplicate": "{row}번째 줄에 중복된 변수 이름이 있습니다.",
+  "settings.windows.envReserved": "{row}번째 줄의 변수는 관리자가 제어합니다.",
+  "install.launchEnvironmentReopenFailed": "Codex가 설치되었지만 시작 환경 변수로 다시 열리지 않았습니다. 홈 화면에서 다시 실행하세요.",
   "home.incompatible.title": "업데이트가 있지만 macOS가 호환되지 않음",
   "home.incompatible.desc": "현재 macOS: {current}. 최신 버전은 macOS {required} 이상이 필요합니다.",
   "home.incompatible.recommended": "목록에서 확인된 최신 호환 버전: {version}. 현재 호환 버전을 유지할 수 있습니다.",
@@ -2742,6 +2802,16 @@ const KO: Record<Key, string> = {
 };
 
 const JA: Record<Key, string> = {
+  "settings.windows.launchEnvironment": "Codex 起動環境変数",
+  "settings.windows.envDesc": "1 行に「名前=値」を入力します。Codex を完全に終了してから Manager で起動すると適用されます。 Codex の .env が同じ名前の変数を上書きする場合があります。",
+  "settings.windows.envSave": "環境変数を保存",
+  "settings.windows.envDirty": "未保存の変更があります",
+  "settings.windows.envSaved": "保存済み · 次回起動時に適用",
+  "settings.windows.envCleared": "起動環境変数を消去しました",
+  "settings.windows.envInvalid": "{row} 行目は「名前=値」の形式で入力してください。",
+  "settings.windows.envDuplicate": "{row} 行目の変数名が重複しています。",
+  "settings.windows.envReserved": "{row} 行目の変数は Manager が管理しています。",
+  "install.launchEnvironmentReopenFailed": "Codex はインストールされましたが、起動環境変数を指定した再起動に失敗しました。ホームから再起動してください。",
   "home.incompatible.title": "更新がありますが、この macOS は非対応です",
   "home.incompatible.desc": "現在の macOS: {current}。最新版には macOS {required} 以降が必要です。",
   "home.incompatible.recommended": "配信一覧で確認できる最新の対応版: {version}。現在の対応版をそのまま使用できます。",
@@ -3180,6 +3250,16 @@ const JA: Record<Key, string> = {
 };
 
 const RU: Record<Key, string> = {
+  "settings.windows.launchEnvironment": "Переменные окружения Codex",
+  "settings.windows.envDesc": "Укажите одну пару ИМЯ=значение в строке. Полностью закройте Codex и снова запустите его из менеджера. Файл .env Codex может переопределить эти значения.",
+  "settings.windows.envSave": "Сохранить переменные",
+  "settings.windows.envDirty": "Несохранённые изменения",
+  "settings.windows.envSaved": "Сохранено · вступит в силу при запуске",
+  "settings.windows.envCleared": "Переменные запуска очищены",
+  "settings.windows.envInvalid": "В строке {row} используйте ИМЯ=значение.",
+  "settings.windows.envDuplicate": "Повтор имени переменной в строке {row}.",
+  "settings.windows.envReserved": "Переменная в строке {row} задаётся менеджером.",
+  "install.launchEnvironmentReopenFailed": "Codex установлен, но не открылся с переменными запуска. Откройте Codex снова с главного экрана.",
   "home.incompatible.title": "Обновление несовместимо с этой macOS",
   "home.incompatible.desc": "Текущая macOS: {current}. Последней версии нужна macOS {required} или новее.",
   "home.incompatible.recommended": "Последняя совместимая версия в ленте: {version}. Можно сохранить установленную совместимую версию.",
@@ -3618,6 +3698,16 @@ const RU: Record<Key, string> = {
 };
 
 const AR: Record<Key, string> = {
+  "settings.windows.launchEnvironment": "متغيرات بيئة تشغيل Codex",
+  "settings.windows.envDesc": "أدخل اسم=قيمة في كل سطر. أغلق Codex بالكامل ثم شغّله من المدير لتطبيق التغييرات. يمكن لملف .env الخاص بـ Codex تجاوز هذه القيم.",
+  "settings.windows.envSave": "حفظ متغيرات البيئة",
+  "settings.windows.envDirty": "تغييرات غير محفوظة",
+  "settings.windows.envSaved": "تم الحفظ · يُطبّق عند التشغيل التالي",
+  "settings.windows.envCleared": "تم مسح متغيرات بيئة التشغيل",
+  "settings.windows.envInvalid": "استخدم اسم=قيمة في السطر {row}.",
+  "settings.windows.envDuplicate": "اسم متغير مكرر في السطر {row}.",
+  "settings.windows.envReserved": "يتحكم المدير في المتغير في السطر {row}.",
+  "install.launchEnvironmentReopenFailed": "تم تثبيت Codex لكن تعذرت إعادة فتحه بمتغيرات التشغيل. افتحه مجددًا من الشاشة الرئيسية.",
   "home.incompatible.title": "يتوفر تحديث غير متوافق مع macOS الحالي",
   "home.incompatible.desc": "macOS الحالي: {current}. يتطلب أحدث إصدار macOS {required} أو أحدث.",
   "home.incompatible.recommended": "أحدث إصدار متوافق في القائمة: {version}. يمكنك الاحتفاظ بالتثبيت المتوافق الحالي.",
@@ -4056,6 +4146,16 @@ const AR: Record<Key, string> = {
 };
 
 const ES: Record<Key, string> = {
+  "settings.windows.launchEnvironment": "Variables de entorno de Codex",
+  "settings.windows.envDesc": "Introduce un par NOMBRE=valor por línea. Cierra Codex por completo y ábrelo desde el gestor. El archivo .env de Codex puede anular estos valores.",
+  "settings.windows.envSave": "Guardar variables de entorno",
+  "settings.windows.envDirty": "Cambios sin guardar",
+  "settings.windows.envSaved": "Guardado · se aplica en el próximo inicio",
+  "settings.windows.envCleared": "Variables de inicio borradas",
+  "settings.windows.envInvalid": "Usa NOMBRE=valor en la línea {row}.",
+  "settings.windows.envDuplicate": "Nombre de variable duplicado en la línea {row}.",
+  "settings.windows.envReserved": "El gestor controla la variable de la línea {row}.",
+  "install.launchEnvironmentReopenFailed": "Codex se instaló, pero no pudo reabrirse con las variables de inicio. Ábrelo de nuevo desde la pantalla de inicio.",
   "home.incompatible.title": "Actualización incompatible con este macOS",
   "home.incompatible.desc": "macOS actual: {current}. La última versión requiere macOS {required} o posterior.",
   "home.incompatible.recommended": "Última versión compatible en esta lista: {version}. Puedes conservar la instalación compatible.",
@@ -4494,6 +4594,16 @@ const ES: Record<Key, string> = {
 };
 
 const PT_BR: Record<Key, string> = {
+  "settings.windows.launchEnvironment": "Variáveis de ambiente do Codex",
+  "settings.windows.envDesc": "Digite um par NOME=valor por linha. Feche o Codex por completo e abra-o pelo gerenciador. O arquivo .env do Codex pode substituir esses valores.",
+  "settings.windows.envSave": "Salvar variáveis de ambiente",
+  "settings.windows.envDirty": "Alterações não salvas",
+  "settings.windows.envSaved": "Salvo · aplicado na próxima inicialização",
+  "settings.windows.envCleared": "Variáveis de inicialização removidas",
+  "settings.windows.envInvalid": "Use NOME=valor na linha {row}.",
+  "settings.windows.envDuplicate": "Nome de variável duplicado na linha {row}.",
+  "settings.windows.envReserved": "O gerenciador controla a variável da linha {row}.",
+  "install.launchEnvironmentReopenFailed": "O Codex foi instalado, mas não reabriu com as variáveis de inicialização. Abra-o novamente pela tela inicial.",
   "home.incompatible.title": "Atualização incompatível com este macOS",
   "home.incompatible.desc": "macOS atual: {current}. A versão mais recente exige macOS {required} ou posterior.",
   "home.incompatible.recommended": "Versão compatível mais recente nesta lista: {version}. Pode manter a instalação compatível.",
