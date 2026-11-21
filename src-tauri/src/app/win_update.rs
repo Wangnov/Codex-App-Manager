@@ -117,6 +117,7 @@ pub struct WinPerformReport {
     pub installed: Option<InstalledWindowsCodex>,
     pub fallback_available: bool,
     pub fallback_attempted: bool,
+    pub relaunch_failed: bool,
     pub notes: Vec<String>,
     /// Structured primary/ancillary result (provenance save, residual cleanup).
     #[serde(default)]
@@ -475,7 +476,12 @@ fn existing_codex_was_running(
     }
 
     for root in roots {
-        if codex_running_for_root(&root).map_err(engine_err)? {
+        let running = if settings.codex_launch_environment.trim().is_empty() {
+            codex_running_for_root(&root)
+        } else {
+            codex_win_engine::sys::codex_session_running_for_root(&root)
+        };
+        if running.map_err(engine_err)? {
             return Ok(true);
         }
     }
@@ -1472,6 +1478,7 @@ fn perform_verified_windows_stage_tail(
             msix_health: None,
             fallback_available: stage.portable_fallback_ready,
             fallback_attempted: false,
+            relaunch_failed: false,
             notes: stage.notes.clone(),
             stage,
             outcome: OperationOutcome::full_success(
@@ -1660,8 +1667,11 @@ fn perform_verified_windows_stage_tail(
         // stripped Windows it can register yet fail to launch. If it's unhealthy,
         // first install the portable fallback so the user is never left without
         // a runnable build, then clean up the bad MSIX best-effort.
+        let reopen_with_environment = should_relaunch_with_environment(was_running, settings);
+        // Verify the installation on its standard launch path. The configured
+        // session relaunch runs after this gate so its failure cannot trigger fallback.
         let health = codex_win_engine::sys::verify_msix_health_with_launch_arguments(
-            was_running,
+            was_running && !reopen_with_environment,
             &settings.codex_launch_arguments,
         );
         if !health.healthy {
@@ -1749,7 +1759,9 @@ fn perform_verified_windows_stage_tail(
             outcome.push_warning(warning.clone());
         }
         notes.extend(msix_policy_warnings);
-        if !settings.codex_launch_arguments.is_empty() {
+        let relaunch_failed = reopen_with_environment
+            && !relaunch_configured_codex(settings, installed.as_ref(), &mut outcome);
+        if settings.has_codex_launch_options() {
             if let Err(error) = sync_launch_shortcut(settings) {
                 let warning = format!("Codex 已安装，但启动参数快捷方式未能更新：{error}");
                 notes.push(warning.clone());
@@ -1774,6 +1786,7 @@ fn perform_verified_windows_stage_tail(
             msix_health: Some(health),
             fallback_available: stage.portable_fallback_ready,
             fallback_attempted: false,
+            relaunch_failed,
             notes,
             stage,
             outcome,
@@ -1937,11 +1950,12 @@ fn install_portable_after_stage(
             | PortableBoundary::RollbackCompleted { .. } => unreachable!("handled above"),
         }
     };
-    let portable = codex_win_engine::portable::install_portable_from_msix_with_launch_arguments(
+    let reopen_with_environment = should_relaunch_with_environment(relaunch, settings);
+    let mut portable = codex_win_engine::portable::install_portable_from_msix_with_launch_arguments(
         msix_path.as_path(),
         install_root_path.as_path(),
         true,
-        relaunch,
+        relaunch && !reopen_with_environment,
         &settings.codex_launch_arguments,
         &mut observer,
     )
@@ -2050,7 +2064,13 @@ fn install_portable_after_stage(
             }
         }
     }
-    if !settings.codex_launch_arguments.is_empty() {
+    let relaunch_failed = if reopen_with_environment {
+        portable.relaunched = relaunch_configured_codex(settings, installed.as_ref(), &mut outcome);
+        !portable.relaunched
+    } else {
+        false
+    };
+    if settings.has_codex_launch_options() {
         if let Err(error) = sync_launch_shortcut(settings) {
             outcome.push_warning(format!("Codex 已安装，但启动参数快捷方式未能更新：{error}"));
         }
@@ -2076,6 +2096,7 @@ fn install_portable_after_stage(
         msix_health: health,
         fallback_available: true,
         fallback_attempted: true,
+        relaunch_failed,
         notes,
         stage,
         outcome,
@@ -2088,6 +2109,26 @@ fn install_portable_after_stage(
         .unwrap_or("none");
     log::info!("Windows perform success action={action} installed_version={installed_version}");
     Ok(report)
+}
+
+fn should_relaunch_with_environment(was_running: bool, settings: &AppSettings) -> bool {
+    was_running && !settings.codex_launch_environment.trim().is_empty()
+}
+
+fn relaunch_configured_codex(
+    settings: &AppSettings,
+    installed: Option<&InstalledWindowsCodex>,
+    outcome: &mut OperationOutcome,
+) -> bool {
+    let result = installed
+        .ok_or_else(|| AppError::Engine("安装成功后找不到可重新打开的 Codex".into()))
+        .and_then(|installed| launch_installed_codex(installed, settings, None));
+    if let Err(error) = result {
+        log::warn!("opening the updated Codex with its launch environment failed: {error}");
+        outcome.push_warning("Codex 已安装，未能带启动环境变量重新打开");
+        return false;
+    }
+    true
 }
 
 fn portable_install_result_message(base: &str, outcome: &OperationOutcome) -> String {
@@ -2215,6 +2256,31 @@ pub fn win_adopt_path(settings: &AppSettings, path: &Path) -> Result<WinInstallS
 /// `detect_installed_codex` — so we launch exactly the build the UI is showing,
 /// never a stale MSIX that lingers behind a managed portable install.
 /// Fully-qualified engine call to avoid shadowing this function's name.
+pub(crate) fn ensure_fresh_codex_launch(settings: &AppSettings) -> Result<(), AppError> {
+    codex_win_engine::sys::parse_launch_environment(&settings.codex_launch_environment)
+        .map_err(engine_err)?;
+    let installed = detect_managed_codex(settings, &ProvenanceStore::load())
+        .ok_or_else(|| AppError::Engine("没有可打开的 Codex".to_string()))?;
+    codex_win_engine::sys::ensure_fresh_codex_launch(Path::new(&installed.path)).map_err(engine_err)
+}
+
+pub(crate) fn launch_installed_codex(
+    installed: &InstalledWindowsCodex,
+    settings: &AppSettings,
+    remote_debugging_port: Option<u16>,
+) -> Result<(), AppError> {
+    codex_win_engine::launch_codex_with_options(
+        installed,
+        codex_win_engine::LaunchOptions {
+            disable_codex_self_updates: settings.disable_codex_self_updates,
+            remote_debugging_port,
+            additional_arguments: &settings.codex_launch_arguments,
+            additional_environment: &settings.codex_launch_environment,
+        },
+    )
+    .map_err(engine_err)
+}
+
 pub fn launch_codex(settings: &AppSettings) -> Result<(), AppError> {
     let store = ProvenanceStore::load();
     let installed = detect_managed_codex(settings, &store)
@@ -2224,19 +2290,10 @@ pub fn launch_codex(settings: &AppSettings) -> Result<(), AppError> {
     }
     let path = &installed.path;
     log::info!("Windows launch Codex path={path}");
-    codex_win_engine::launch_codex_with_options(
-        &installed,
-        codex_win_engine::LaunchOptions {
-            disable_codex_self_updates: settings.disable_codex_self_updates,
-            remote_debugging_port: None,
-            additional_arguments: &settings.codex_launch_arguments,
-        },
-    )
-    .map_err(|e| {
+    launch_installed_codex(&installed, settings, None).inspect_err(|_| {
         crate::app::diagnostics::record_windows_runtime_failure(Some(&installed));
-        AppError::Engine(e.to_string())
     })?;
-    if !settings.codex_launch_arguments.is_empty() {
+    if settings.has_codex_launch_options() {
         if let Err(error) = sync_launch_shortcut(settings) {
             log::warn!("Codex launched but shortcut refresh failed: {error}");
         }
@@ -2577,7 +2634,8 @@ mod tests {
         detect_managed_codex, outcome_from_portable_uninstall,
         portable_boundary_mutated_install_root, portable_fallback_needs_msix_cleanup,
         portable_install_result_message, record_windows_adoption,
-        retry_windows_ancillary_with_detector,
+        relaunch_configured_codex, retry_windows_ancillary_with_detector,
+        should_relaunch_with_environment,
         validate_historical_windows_app_version, WinAbortGuard, WinInstallStatus, WinPerformAction,
         WIN_UPDATE_ABORT,
     };
@@ -3018,5 +3076,20 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  OpenAI.Codex_2
             .recovery_actions
             .iter()
             .any(|action| action == recovery::RECORD_PROVENANCE));
+    }
+
+    #[test]
+    fn launch_environment_reopen_requires_previous_running_and_nonempty_config() {
+        let mut settings = AppSettings::new(String::new(), String::new());
+        assert!(!should_relaunch_with_environment(true, &settings));
+        settings.codex_launch_environment = "HTTP_PROXY=http://127.0.0.1:7890".into();
+        assert!(!should_relaunch_with_environment(false, &settings));
+        assert!(should_relaunch_with_environment(true, &settings));
+        let mut outcome = OperationOutcome::full_success("present", Some("managed"));
+        assert!(!relaunch_configured_codex(&settings, None, &mut outcome));
+        assert!(outcome.primary_ok);
+        assert_eq!(outcome.app_state, "present");
+        assert_eq!(outcome.warnings.len(), 1);
+        assert!(!outcome.warnings[0].contains("127.0.0.1"));
     }
 }
