@@ -175,6 +175,7 @@ rows.push(`| Mirror stage | ${env.MIRROR_STAGE_OUTCOME || "skipped"} |`);
 rows.push(`| Mirror pre-publish verify | ${env.MIRROR_VERIFY_OUTCOME || "skipped"} |`);
 rows.push(`| Mirror promote | ${env.MIRROR_PROMOTE_OUTCOME || "skipped"} |`);
 rows.push(`| winget dispatch | ${env.WINGET_OUTCOME || "skipped"} |`);
+rows.push(`| Homebrew tap dispatch | ${env.HOMEBREW_TAP_OUTCOME || "skipped"} |`);
 rows.push(`| SBOM | ${env.SBOM_OUTCOME || "skipped"} |`);
 rows.push(`| fresh provenance attestation | ${env.ATTESTATION_OUTCOME || "skipped"} |`);
 rows.push(`| provenance mode | ${env.PROVENANCE_MODE || "blocked"} |`);
