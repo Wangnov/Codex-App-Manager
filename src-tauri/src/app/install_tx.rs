@@ -438,10 +438,12 @@ pub struct RecoverySummary {
 /// Paths referenced by any pending (non-cleared) transaction, including
 /// `NeedsManual`. Staging cleanup must not delete these.
 ///
-/// We protect install/new/backup **themselves** and staging-ish parents of
-/// `new_path` / `backup_path` (update-* dirs, `.codex-app-manager-staging`),
-/// but never the install's parent (e.g. `/Applications`) — that would block
-/// unrelated cleanup.
+/// We protect install/new/backup **themselves** and per-run staging parents of
+/// `new_path` / `backup_path` (`update-*`, `portable-*`, `Codex.rollback*`,
+/// `backup-*`), but never the shared container (`.codex-app-manager-staging`,
+/// `staging`, or `/Applications`) — `path_is_protected` already prevents
+/// deleting any ancestor of a protected path, while omitting the shared
+/// container lets stale sibling runs still be reclaimed.
 pub fn protected_paths() -> Vec<PathBuf> {
     let mut out = Vec::new();
     let Some(dir) = transactions_dir() else {
@@ -458,36 +460,39 @@ pub fn protected_paths() -> Vec<PathBuf> {
         let Ok(tx) = InstallTransaction::load_from_path(&path) else {
             continue;
         };
-        if matches!(
-            tx.step,
-            InstallTxStep::Completed | InstallTxStep::RolledBack
-        ) {
-            continue;
-        }
-        for raw in [&tx.install_path, &tx.new_path, &tx.backup_path] {
-            out.push(PathBuf::from(raw));
-        }
-        // Staging parents for new + backup only.
-        for raw in [&tx.new_path, &tx.backup_path] {
-            let p = PathBuf::from(raw);
-            let mut cur = p.parent();
-            while let Some(parent) = cur {
-                let name = parent.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                let staging_ish = name.starts_with("update-")
-                    || name.starts_with("portable-")
-                    || name == ".codex-app-manager-staging"
-                    || name.starts_with("Codex.rollback")
-                    || name.starts_with("backup-");
-                if staging_ish {
-                    out.push(parent.to_path_buf());
-                    cur = parent.parent();
-                } else {
-                    break;
-                }
+        collect_protected_paths_for_tx(&tx, &mut out);
+    }
+    out
+}
+
+fn collect_protected_paths_for_tx(tx: &InstallTransaction, out: &mut Vec<PathBuf>) {
+    if matches!(
+        tx.step,
+        InstallTxStep::Completed | InstallTxStep::RolledBack
+    ) {
+        return;
+    }
+    for raw in [&tx.install_path, &tx.new_path, &tx.backup_path] {
+        out.push(PathBuf::from(raw));
+    }
+    // Per-run staging parents for new + backup only.
+    for raw in [&tx.new_path, &tx.backup_path] {
+        let p = PathBuf::from(raw);
+        let mut cur = p.parent();
+        while let Some(parent) = cur {
+            let name = parent.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let staging_ish = name.starts_with("update-")
+                || name.starts_with("portable-")
+                || name.starts_with("Codex.rollback")
+                || name.starts_with("backup-");
+            if staging_ish {
+                out.push(parent.to_path_buf());
+                cur = parent.parent();
+            } else {
+                break;
             }
         }
     }
-    out
 }
 
 /// Whether `path` is covered by a pending install transaction and must not be
@@ -706,10 +711,24 @@ fn decide_transaction_recovery(
 }
 
 fn cleanup_backup_best_effort(tx: &InstallTransaction) {
-    if path_exists(&tx.backup_path) {
-        let _ = fs::remove_dir_all(&tx.backup_path);
-        let _ = fs::remove_file(&tx.backup_path);
+    if !path_exists(&tx.backup_path) {
+        return;
     }
+    if tx.kind == InstallTxKind::WindowsPortable {
+        let outcome = codex_win_engine::portable::cleanup_portable_backup_preserving_user_files(
+            Path::new(&tx.backup_path),
+            Path::new(&tx.install_path),
+        );
+        for note in &outcome.notes {
+            log::warn!(
+                "install transaction portable backup cleanup id={} note={note}",
+                tx.id
+            );
+        }
+        return;
+    }
+    let _ = fs::remove_dir_all(&tx.backup_path);
+    let _ = fs::remove_file(&tx.backup_path);
 }
 
 /// RAII helper used by perform paths: advances steps and completes/clears on drop
@@ -1112,5 +1131,110 @@ mod tests {
         assert!(path_is_protected(&staging, &protected));
         assert!(path_is_protected(&staging.join("backup"), &protected));
         assert!(!path_is_protected(Path::new("/tmp/other"), &protected));
+    }
+
+    #[test]
+    fn protected_paths_covers_portable_run_without_blocking_sibling_runs() {
+        let container = PathBuf::from("/tmp/Programs/.codex-app-manager-staging");
+        let active_run = container.join("portable-11111111-1111-1111-1111-111111111111");
+        let sibling_run = container.join("portable-22222222-2222-2222-2222-222222222222");
+        let tx = InstallTransaction {
+            schema_version: SCHEMA_VERSION,
+            id: "portable-tx".to_string(),
+            kind: InstallTxKind::WindowsPortable,
+            step: InstallTxStep::OldMoved,
+            install_path: "/tmp/Programs/Codex".to_string(),
+            new_path: active_run.join("payload").to_string_lossy().into_owned(),
+            backup_path: "/tmp/Programs/Codex.rollback-1111".to_string(),
+            had_previous: true,
+            was_running: None,
+            self_update_policy: None,
+            started_unix: 1,
+            updated_unix: 1,
+            notes: Vec::new(),
+        };
+        let mut protected = Vec::new();
+        collect_protected_paths_for_tx(&tx, &mut protected);
+
+        assert!(path_is_protected(&active_run, &protected));
+        assert!(path_is_protected(&active_run.join("extracted"), &protected));
+        assert!(path_is_protected(&container, &protected));
+        assert!(
+            !path_is_protected(&sibling_run, &protected),
+            "pending portable tx must not block cleanup of an unrelated stale sibling run"
+        );
+    }
+
+    #[test]
+    fn windows_portable_recovery_backup_cleanup_preserves_user_files() {
+        let root = test_root("portable-backup-preserve");
+        let install = root.join("Codex");
+        let backup = root.join("Codex.rollback-recovery");
+
+        // New installed payload in `install`.
+        fs::create_dir_all(install.join("app/resources")).unwrap();
+        fs::write(install.join("app/ChatGPT.exe"), b"new exe").unwrap();
+        fs::write(install.join("app/resources/app.asar"), b"new asar").unwrap();
+        fs::write(install.join("AppxManifest.xml"), b"<Package />").unwrap();
+        fs::write(
+            install.join(codex_win_engine::PORTABLE_FILES_MANIFEST_NAME),
+            "AppxManifest.xml\napp/ChatGPT.exe\napp/resources/app.asar\ncodex-portable-files.txt\n",
+        )
+        .unwrap();
+
+        // Previous install in `backup` containing user projects at both root and app/.
+        fs::create_dir_all(backup.join("app/resources")).unwrap();
+        fs::write(backup.join("app/ChatGPT.exe"), b"old exe").unwrap();
+        fs::write(backup.join("app/resources/app.asar"), b"old asar").unwrap();
+        fs::write(backup.join("AppxManifest.xml"), b"<Package />").unwrap();
+        fs::write(
+            backup.join(codex_win_engine::PORTABLE_FILES_MANIFEST_NAME),
+            "AppxManifest.xml\napp/ChatGPT.exe\napp/resources/app.asar\ncodex-portable-files.txt\n",
+        )
+        .unwrap();
+        fs::create_dir_all(backup.join("my-root-repo")).unwrap();
+        fs::write(backup.join("my-root-repo/main.rs"), b"root code").unwrap();
+        fs::create_dir_all(backup.join("app/my-app-repo")).unwrap();
+        fs::write(backup.join("app/my-app-repo/index.ts"), b"app code").unwrap();
+
+        let tx = InstallTransaction {
+            schema_version: SCHEMA_VERSION,
+            id: "portable-recover".to_string(),
+            kind: InstallTxKind::WindowsPortable,
+            step: InstallTxStep::NewInstalled,
+            install_path: install.to_string_lossy().into_owned(),
+            new_path: root.join("missing-payload").to_string_lossy().into_owned(),
+            backup_path: backup.to_string_lossy().into_owned(),
+            had_previous: true,
+            was_running: None,
+            self_update_policy: None,
+            started_unix: 1,
+            updated_unix: 1,
+            notes: Vec::new(),
+        };
+
+        cleanup_backup_best_effort(&tx);
+
+        assert!(!backup.exists(), "official backup should be removed after user files migrate");
+        assert_eq!(
+            fs::read(install.join("my-root-repo/main.rs")).unwrap(),
+            b"root code"
+        );
+        let preserved_dir = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("Codex-Preserved-Files-"))
+            })
+            .expect("app-level user project must be preserved outside app/");
+        assert_eq!(
+            fs::read(preserved_dir.join("app/my-app-repo/index.ts")).unwrap(),
+            b"app code"
+        );
+
+        let _ = fs::remove_dir_all(root);
     }
 }

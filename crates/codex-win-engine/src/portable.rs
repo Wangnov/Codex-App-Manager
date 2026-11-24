@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Read};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +15,66 @@ use crate::process::{
 #[cfg(windows)]
 use crate::process::{run_capturing, RunLimits};
 use crate::EngineError;
+
+pub const PORTABLE_STAGING_DIR_NAME: &str = ".codex-app-manager-staging";
+pub const PORTABLE_FILES_MANIFEST_NAME: &str = "codex-portable-files.txt";
+const PRESERVED_FILES_DIR_PREFIX: &str = "Codex-Preserved-Files-";
+const MANAGER_TEMP_WRITE_PREFIX: &str = ".codex-portable-write-";
+const MAX_PORTABLE_MANIFEST_BYTES: u64 = 32 * 1024 * 1024;
+
+const MANAGER_ROOT_FILES: [&str; 6] = [
+    "appxmanifest.xml",
+    "codex-portable-launcher.txt",
+    "codex-portable-files.txt",
+    "launchcodex.exe",
+    "codex.exe",
+    "chatgpt.exe",
+];
+
+// Fallback allowlist for uninstalling pre-manifest (legacy) portable installs
+// when neither `codex-portable-files.txt` nor `AppxBlockMap.xml` exists.
+// Deliberately conservative: any unrecognized file or folder is preserved.
+const LEGACY_OFFICIAL_APP_FILES: [&str; 21] = [
+    "chatgpt.exe",
+    "codex.exe",
+    "chrome_100_percent.pak",
+    "chrome_200_percent.pak",
+    "d3dcompiler_47.dll",
+    "dxcompiler.dll",
+    "dxil.dll",
+    "ffmpeg.dll",
+    "icudtl.dat",
+    "libegl.dll",
+    "libglesv2.dll",
+    "license",
+    "licenses.chromium.html",
+    "resources.pak",
+    "resources.pri",
+    "snapshot_blob.bin",
+    "v8_context_snapshot.bin",
+    "version",
+    "vk_swiftshader.dll",
+    "vk_swiftshader_icd.json",
+    "vulkan-1.dll",
+];
+
+const LEGACY_OFFICIAL_APP_DIRS: [&str; 3] = ["locales", "resources", "swiftshader"];
+
+#[derive(Debug, Clone, Default)]
+pub struct PortableBackupCleanupOutcome {
+    /// Set if the rollback backup directory was retained on disk (e.g. scan
+    /// failed, any user item failed to move, or removing the backup failed).
+    pub retained_backup: Option<PathBuf>,
+    /// Sibling directory created under `install_parent` when `app/`-nested or
+    /// name-colliding root user items were moved out of `backup`.
+    pub preserved_dir: Option<PathBuf>,
+    /// Relative paths of root-level user items moved back into `install_root`.
+    pub restored_in_place: Vec<PathBuf>,
+    /// Relative paths of user items moved into `preserved_dir`.
+    pub moved_to_preserved_dir: Vec<PathBuf>,
+    /// Human-readable preservation or retention notes.
+    pub notes: Vec<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -737,11 +797,963 @@ fn prepare_portable_payload(
     fs::write(payload.join("AppxManifest.xml"), manifest_xml)
         .map_err(|e| io_err("write portable AppxManifest.xml", e))?;
     ensure_portable_launcher(&payload)?;
+    write_portable_files_manifest(&payload)?;
 
     Ok(PreparedPortable {
         payload_dir: payload,
         identity,
     })
+}
+
+#[derive(Debug, Clone, Default)]
+struct PortableRootScan {
+    /// Relative paths under `root` belonging to non-official user files,
+    /// directories, or symlinks/junctions. Unknown directories are recorded as
+    /// a single entry without recursing into their contents.
+    unknown_entries: Vec<PathBuf>,
+    /// Regular official files safe to delete after user entries are preserved.
+    official_files: Vec<PathBuf>,
+    /// Official directories safe to remove via non-recursive `remove_dir` once empty.
+    official_dirs: Vec<PathBuf>,
+}
+
+#[cfg(windows)]
+fn is_symlink_or_reparse_point(meta: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    meta.file_type().is_symlink() || (meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT) != 0
+}
+
+#[cfg(not(windows))]
+fn is_symlink_or_reparse_point(meta: &fs::Metadata) -> bool {
+    meta.file_type().is_symlink()
+}
+
+fn is_manager_temp_write_file(name: &str) -> bool {
+    name.to_ascii_lowercase()
+        .starts_with(MANAGER_TEMP_WRITE_PREFIX)
+}
+
+fn is_manager_root_file_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    MANAGER_ROOT_FILES.contains(&lower.as_str()) || lower.starts_with(MANAGER_TEMP_WRITE_PREFIX)
+}
+
+fn normalize_rel_key(rel: &Path) -> String {
+    rel.iter()
+        .map(|part| part.to_string_lossy().to_lowercase())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn display_rel_path(rel: &Path) -> String {
+    rel.iter()
+        .map(|part| part.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn add_ancestor_dir_keys(rel_key: &str, dirs: &mut HashSet<String>) {
+    let mut cur = rel_key;
+    while let Some((parent, _)) = cur.rsplit_once('/') {
+        if parent.is_empty() {
+            break;
+        }
+        if !dirs.insert(parent.to_string()) {
+            break;
+        }
+        cur = parent;
+    }
+}
+
+fn write_portable_files_manifest(payload: &Path) -> Result<(), EngineError> {
+    let mut files = Vec::new();
+    let mut stack = vec![PathBuf::new()];
+    while let Some(rel_dir) = stack.pop() {
+        let abs_dir = if rel_dir.as_os_str().is_empty() {
+            payload.to_path_buf()
+        } else {
+            payload.join(&rel_dir)
+        };
+        for entry in fs::read_dir(&abs_dir).map_err(|e| io_err("scan portable payload", e))? {
+            let entry = entry.map_err(|e| io_err("read portable payload entry", e))?;
+            let path = entry.path();
+            let meta = fs::symlink_metadata(&path)
+                .map_err(|e| io_err("stat portable payload entry", e))?;
+            if is_symlink_or_reparse_point(&meta) {
+                continue;
+            }
+            let rel = rel_dir.join(entry.file_name());
+            if meta.is_dir() {
+                stack.push(rel);
+            } else if meta.is_file() {
+                files.push(display_rel_path(&rel));
+            }
+        }
+    }
+    files.push(PORTABLE_FILES_MANIFEST_NAME.to_string());
+    files.sort();
+    files.dedup();
+    let mut body = files.join("\n");
+    body.push('\n');
+    fs::write(payload.join(PORTABLE_FILES_MANIFEST_NAME), body)
+        .map_err(|e| io_err("write portable files manifest", e))
+}
+
+fn validate_manifest_rel_line(line: &str) -> Result<String, EngineError> {
+    if line.is_empty() || line.starts_with(['/', '\\']) || line.contains(':') {
+        return Err(EngineError::Install(format!(
+            "invalid portable manifest entry: {line:?}"
+        )));
+    }
+    let normalized = line.replace('\\', "/");
+    let mut parts = Vec::new();
+    for segment in normalized.split('/') {
+        if segment.is_empty()
+            || segment == "."
+            || segment == ".."
+            || segment.chars().any(|ch| ch == '\0' || ch.is_control())
+        {
+            return Err(EngineError::Install(format!(
+                "unsafe portable manifest entry: {line:?}"
+            )));
+        }
+        parts.push(segment.to_lowercase());
+    }
+    if parts.is_empty() {
+        return Err(EngineError::Install(
+            "empty portable manifest entry".to_string(),
+        ));
+    }
+    Ok(parts.join("/"))
+}
+
+fn read_portable_files_manifest(root: &Path) -> Result<Option<HashSet<String>>, EngineError> {
+    let path = root.join(PORTABLE_FILES_MANIFEST_NAME);
+    let meta = match fs::symlink_metadata(&path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(io_err("inspect portable files manifest", err)),
+    };
+    if is_symlink_or_reparse_point(&meta) || !meta.is_file() {
+        return Err(EngineError::Install(format!(
+            "portable files manifest is not a regular file: {}",
+            path.display()
+        )));
+    }
+    if meta.len() > MAX_PORTABLE_MANIFEST_BYTES {
+        return Err(EngineError::Install(format!(
+            "portable files manifest is unexpectedly large: {} bytes",
+            meta.len()
+        )));
+    }
+    let content =
+        fs::read_to_string(&path).map_err(|e| io_err("read portable files manifest", e))?;
+    let mut keys = HashSet::new();
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        keys.insert(validate_manifest_rel_line(line)?);
+    }
+    if keys.is_empty() {
+        return Err(EngineError::Install(
+            "portable files manifest is empty".to_string(),
+        ));
+    }
+    Ok(Some(keys))
+}
+
+fn read_root_block_map_keys(root: &Path) -> Result<Option<HashSet<String>>, EngineError> {
+    let path = root.join("AppxBlockMap.xml");
+    let meta = match fs::symlink_metadata(&path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(io_err("inspect AppxBlockMap.xml", err)),
+    };
+    if is_symlink_or_reparse_point(&meta) || !meta.is_file() {
+        return Err(EngineError::Install(format!(
+            "AppxBlockMap.xml is not a regular file: {}",
+            path.display()
+        )));
+    }
+    if meta.len() > MAX_BLOCK_MAP_BYTES {
+        return Err(EngineError::Install(format!(
+            "AppxBlockMap.xml is unexpectedly large: {} bytes",
+            meta.len()
+        )));
+    }
+    let xml = fs::read_to_string(&path).map_err(|e| io_err("read AppxBlockMap.xml", e))?;
+    let parsed = parse_appx_block_map(&xml)?;
+    let mut keys = HashSet::new();
+    for entry in parsed.by_logical_name.values() {
+        keys.insert(normalize_rel_key(&entry.output_path));
+    }
+    for meta_file in [
+        "appxblockmap.xml",
+        "appxmanifest.xml",
+        "appxsignature.p7x",
+        "[content_types].xml",
+        "appxmetadata/codeintegrity.cat",
+    ] {
+        keys.insert(meta_file.to_string());
+    }
+    Ok(Some(keys))
+}
+
+fn declared_manifest_exe_basename(root: &Path) -> Option<String> {
+    let manifest = root.join("AppxManifest.xml");
+    let meta = fs::symlink_metadata(&manifest).ok()?;
+    if is_symlink_or_reparse_point(&meta) || !meta.is_file() {
+        return None;
+    }
+    let xml = fs::read_to_string(&manifest).ok()?;
+    let declared = crate::msix::parse_appx_application_executable(&xml)?;
+    let normalized = declared.replace('\\', "/");
+    normalized
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .map(|name| name.to_lowercase())
+}
+
+fn is_legacy_nested_root(root: &Path) -> bool {
+    let app_dir = root.join(crate::portable_command::APP_DIR_NAME);
+    let app_is_real_dir = fs::symlink_metadata(&app_dir)
+        .is_ok_and(|meta| meta.is_dir() && !is_symlink_or_reparse_point(&meta));
+    if !app_is_real_dir {
+        return false;
+    }
+    let launch_target = root.join(crate::portable_command::LAUNCH_TARGET_NAME);
+    if fs::symlink_metadata(&launch_target)
+        .is_ok_and(|meta| meta.is_file() && !is_symlink_or_reparse_point(&meta))
+    {
+        if let Ok(config) = fs::read_to_string(&launch_target) {
+            if let Some((target, _)) = crate::portable_command::parse_launch_config(&config) {
+                return target.replace('\\', "/").starts_with("app/");
+            }
+        }
+    }
+    // Without a valid launch config, only treat `app/` as the official nested
+    // payload directory if it contains a real Codex entrypoint or app.asar,
+    // so a user project folder literally named `app/` in a flat install is
+    // never mistaken for the official app directory.
+    let declared = declared_manifest_exe_basename(root);
+    app_dir.join("ChatGPT.exe").is_file()
+        || app_dir.join("Codex.exe").is_file()
+        || declared.is_some_and(|name| app_dir.join(name).is_file())
+        || app_dir.join("resources").join("app.asar").is_file()
+}
+
+fn scan_with_exact_manifest(
+    root: &Path,
+    mut official_file_keys: HashSet<String>,
+) -> Result<PortableRootScan, EngineError> {
+    for fixed in MANAGER_ROOT_FILES {
+        official_file_keys.insert(fixed.to_string());
+    }
+    let mut official_dir_keys = HashSet::new();
+    for file_key in &official_file_keys {
+        add_ancestor_dir_keys(file_key, &mut official_dir_keys);
+    }
+
+    let mut scan = PortableRootScan::default();
+    let mut stack = vec![PathBuf::new()];
+    while let Some(rel_dir) = stack.pop() {
+        let abs_dir = if rel_dir.as_os_str().is_empty() {
+            root.to_path_buf()
+        } else {
+            root.join(&rel_dir)
+        };
+        for entry in fs::read_dir(&abs_dir).map_err(|e| io_err("scan portable directory", e))? {
+            let entry = entry.map_err(|e| io_err("read portable directory entry", e))?;
+            let path = entry.path();
+            let meta = fs::symlink_metadata(&path)
+                .map_err(|e| io_err("inspect portable directory entry", e))?;
+            let rel = rel_dir.join(entry.file_name());
+            if is_symlink_or_reparse_point(&meta) {
+                scan.unknown_entries.push(rel);
+                continue;
+            }
+            let key = normalize_rel_key(&rel);
+            if meta.is_dir() {
+                if official_dir_keys.contains(&key) {
+                    scan.official_dirs.push(rel.clone());
+                    stack.push(rel);
+                } else {
+                    scan.unknown_entries.push(rel);
+                }
+            } else if meta.is_file() {
+                let is_root_temp = rel_dir.as_os_str().is_empty()
+                    && entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(is_manager_temp_write_file);
+                if official_file_keys.contains(&key) || is_root_temp {
+                    scan.official_files.push(rel);
+                } else {
+                    scan.unknown_entries.push(rel);
+                }
+            } else {
+                scan.unknown_entries.push(rel);
+            }
+        }
+    }
+    scan.unknown_entries.sort();
+    Ok(scan)
+}
+
+/// Walk a legacy official subdirectory (such as `resources/` or `locales/`),
+/// recording regular files and real subdirectories as official while still
+/// treating any symlink/junction encountered inside as unknown (never followed).
+fn scan_legacy_official_subtree(
+    root: &Path,
+    subtree_rel: PathBuf,
+    scan: &mut PortableRootScan,
+) -> Result<(), EngineError> {
+    scan.official_dirs.push(subtree_rel.clone());
+    let mut stack = vec![subtree_rel];
+    while let Some(rel_dir) = stack.pop() {
+        let abs_dir = root.join(&rel_dir);
+        for entry in
+            fs::read_dir(&abs_dir).map_err(|e| io_err("scan legacy official subtree", e))?
+        {
+            let entry = entry.map_err(|e| io_err("read legacy official subtree entry", e))?;
+            let path = entry.path();
+            let meta = fs::symlink_metadata(&path)
+                .map_err(|e| io_err("inspect legacy official subtree entry", e))?;
+            let rel = rel_dir.join(entry.file_name());
+            if is_symlink_or_reparse_point(&meta) {
+                scan.unknown_entries.push(rel);
+            } else if meta.is_dir() {
+                scan.official_dirs.push(rel.clone());
+                stack.push(rel);
+            } else if meta.is_file() {
+                scan.official_files.push(rel);
+            } else {
+                scan.unknown_entries.push(rel);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_reference_app_top_level(
+    reference_install_root: &Path,
+) -> Result<(HashSet<String>, HashSet<String>), EngineError> {
+    let app_dir = reference_install_root.join(crate::portable_command::APP_DIR_NAME);
+    let mut files = HashSet::new();
+    let mut dirs = HashSet::new();
+    for entry in fs::read_dir(&app_dir).map_err(|e| io_err("read reference payload app dir", e))? {
+        let entry = entry.map_err(|e| io_err("read reference payload app entry", e))?;
+        let meta = fs::symlink_metadata(entry.path())
+            .map_err(|e| io_err("inspect reference payload app entry", e))?;
+        if is_symlink_or_reparse_point(&meta) {
+            continue;
+        }
+        let lower = entry.file_name().to_string_lossy().to_lowercase();
+        if meta.is_dir() {
+            dirs.insert(lower);
+        } else if meta.is_file() {
+            files.insert(lower);
+        }
+    }
+    for exe in APP_EXE_CANDIDATES {
+        files.insert(exe.to_lowercase());
+    }
+    Ok((files, dirs))
+}
+
+fn scan_portable_root(
+    root: &Path,
+    reference_payload: Option<&Path>,
+) -> Result<PortableRootScan, EngineError> {
+    if let Some(manifest_keys) = read_portable_files_manifest(root)? {
+        return scan_with_exact_manifest(root, manifest_keys);
+    }
+    if let Some(block_map_keys) = read_root_block_map_keys(root)? {
+        return scan_with_exact_manifest(root, block_map_keys);
+    }
+
+    // Legacy portable installation (no codex-portable-files.txt / AppxBlockMap.xml).
+    let (mut app_files, app_dirs) = match reference_payload {
+        Some(reference) => collect_reference_app_top_level(reference)?,
+        None => (
+            LEGACY_OFFICIAL_APP_FILES
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect(),
+            LEGACY_OFFICIAL_APP_DIRS
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect(),
+        ),
+    };
+    if let Some(declared) = declared_manifest_exe_basename(root) {
+        app_files.insert(declared);
+    }
+
+    let nested = is_legacy_nested_root(root);
+    let mut scan = PortableRootScan::default();
+    for entry in fs::read_dir(root).map_err(|e| io_err("scan legacy portable root", e))? {
+        let entry = entry.map_err(|e| io_err("read legacy portable root entry", e))?;
+        let path = entry.path();
+        let meta = fs::symlink_metadata(&path)
+            .map_err(|e| io_err("inspect legacy portable root entry", e))?;
+        let rel = PathBuf::from(entry.file_name());
+        if is_symlink_or_reparse_point(&meta) {
+            scan.unknown_entries.push(rel);
+            continue;
+        }
+        let lower = entry.file_name().to_string_lossy().to_lowercase();
+        if nested {
+            if meta.is_dir() && lower == crate::portable_command::APP_DIR_NAME {
+                scan.official_dirs.push(rel.clone());
+                for app_entry in
+                    fs::read_dir(&path).map_err(|e| io_err("scan legacy portable app dir", e))?
+                {
+                    let app_entry =
+                        app_entry.map_err(|e| io_err("read legacy portable app entry", e))?;
+                    let app_path = app_entry.path();
+                    let app_meta = fs::symlink_metadata(&app_path)
+                        .map_err(|e| io_err("inspect legacy portable app entry", e))?;
+                    let app_rel = rel.join(app_entry.file_name());
+                    if is_symlink_or_reparse_point(&app_meta) {
+                        scan.unknown_entries.push(app_rel);
+                        continue;
+                    }
+                    let app_lower = app_entry.file_name().to_string_lossy().to_lowercase();
+                    if app_meta.is_dir() {
+                        if app_dirs.contains(&app_lower) {
+                            scan_legacy_official_subtree(root, app_rel, &mut scan)?;
+                        } else {
+                            scan.unknown_entries.push(app_rel);
+                        }
+                    } else if app_meta.is_file() && app_files.contains(&app_lower) {
+                        scan.official_files.push(app_rel);
+                    } else {
+                        scan.unknown_entries.push(app_rel);
+                    }
+                }
+            } else if meta.is_file() && is_manager_root_file_name(&lower) {
+                scan.official_files.push(rel);
+            } else {
+                scan.unknown_entries.push(rel);
+            }
+        } else if meta.is_dir() {
+            if app_dirs.contains(&lower) {
+                scan_legacy_official_subtree(root, rel, &mut scan)?;
+            } else {
+                scan.unknown_entries.push(rel);
+            }
+        } else if meta.is_file() && (is_manager_root_file_name(&lower) || app_files.contains(&lower))
+        {
+            scan.official_files.push(rel);
+        } else {
+            scan.unknown_entries.push(rel);
+        }
+    }
+
+    scan.unknown_entries.sort();
+    Ok(scan)
+}
+
+fn format_utc_timestamp(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let hour = rem / 3_600;
+    let minute = (rem % 3_600) / 60;
+    let second = rem % 60;
+    // Howard Hinnant's civil_from_days algorithm (days since 1970-01-01).
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = (yoe as i64) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = y + i64::from(month <= 2);
+    format!("{year:04}{month:02}{day:02}-{hour:02}{minute:02}{second:02}")
+}
+
+fn create_unique_preserved_files_dir(install_parent: &Path) -> io::Result<PathBuf> {
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let stamp = format_utc_timestamp(now_secs);
+    let primary = install_parent.join(format!("{PRESERVED_FILES_DIR_PREFIX}{stamp}"));
+    match fs::create_dir(&primary) {
+        Ok(()) => return Ok(primary),
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(err) => return Err(err),
+    }
+    for _ in 0..16 {
+        let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
+        let candidate = install_parent.join(format!("{PRESERVED_FILES_DIR_PREFIX}{stamp}-{suffix}"));
+        match fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate unique preserved-files directory",
+    ))
+}
+
+fn target_collides_in_dir(parent: &Path, name: &std::ffi::OsStr) -> Result<bool, io::Error> {
+    let direct = parent.join(name);
+    match fs::symlink_metadata(&direct) {
+        Ok(_) => return Ok(true),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err),
+    }
+    let needle = name.to_string_lossy().to_lowercase();
+    for entry in fs::read_dir(parent)? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().to_lowercase() == needle {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn summarize_rel_entries(entries: &[PathBuf]) -> String {
+    const MAX_PREVIEW: usize = 5;
+    let preview = entries
+        .iter()
+        .take(MAX_PREVIEW)
+        .map(|p| display_rel_path(p))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if entries.len() > MAX_PREVIEW {
+        format!("{preview} (+{} more)", entries.len() - MAX_PREVIEW)
+    } else {
+        preview
+    }
+}
+
+fn is_dir_not_empty_error(dir: &Path, err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::DirectoryNotEmpty
+        || fs::read_dir(dir)
+            .ok()
+            .and_then(|mut entries| entries.next())
+            .is_some()
+}
+
+fn remove_file_with_retry(operation: &str, path: &Path) -> io::Result<()> {
+    filesystem_operation_with_retry(operation, path, None, || fs::remove_file(path), thread::sleep)
+}
+
+fn remove_empty_dir_with_retry(operation: &str, path: &Path) -> io::Result<()> {
+    filesystem_operation_with_retry(operation, path, None, || fs::remove_dir(path), thread::sleep)
+}
+
+/// Delete only verified official regular files and empty official directories
+/// from `root`, never calling `remove_dir_all` and never following symlinks or
+/// NTFS junctions. Returns `Ok(true)` if `root` itself became empty and was
+/// removed, or `Ok(false)` if non-official entries remain in `root`.
+fn remove_verified_official_entries(
+    root: &Path,
+    scan: &PortableRootScan,
+    allow_non_empty_dirs: bool,
+) -> Result<bool, EngineError> {
+    for rel in &scan.official_files {
+        let path = root.join(rel);
+        match fs::symlink_metadata(&path) {
+            Ok(meta) => {
+                if is_symlink_or_reparse_point(&meta) || !meta.is_file() {
+                    return Err(EngineError::Install(format!(
+                        "refusing to delete unexpected non-regular entry: {}",
+                        path.display()
+                    )));
+                }
+                remove_file_with_retry("remove portable official file", &path)
+                    .map_err(|e| io_err("remove portable official file", e))?;
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(io_err("inspect portable official file", err)),
+        }
+    }
+
+    let mut dirs = scan.official_dirs.clone();
+    dirs.sort_by(|a, b| {
+        b.components()
+            .count()
+            .cmp(&a.components().count())
+            .then_with(|| b.cmp(a))
+    });
+    for rel in &dirs {
+        let path = root.join(rel);
+        match fs::symlink_metadata(&path) {
+            Ok(meta) => {
+                if is_symlink_or_reparse_point(&meta) || !meta.is_dir() {
+                    continue;
+                }
+                match remove_empty_dir_with_retry("remove portable official dir", &path) {
+                    Ok(()) => {}
+                    Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                    Err(err) if allow_non_empty_dirs && is_dir_not_empty_error(&path, &err) => {}
+                    Err(err) => return Err(io_err("remove portable official dir", err)),
+                }
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(io_err("inspect portable official dir", err)),
+        }
+    }
+
+    match remove_empty_dir_with_retry("remove portable root dir", root) {
+        Ok(()) => Ok(true),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(true),
+        Err(err) if allow_non_empty_dirs && is_dir_not_empty_error(root, &err) => Ok(false),
+        Err(err) => Err(io_err("remove portable root dir", err)),
+    }
+}
+
+/// Safely dispose of a portable rollback backup after the new payload is in
+/// place at `install_root`. Any non-official user files/directories found inside
+/// `backup` (at root level or inside `app/`) are migrated via same-volume rename
+/// before any official backup files are deleted:
+///   - Root-level user items without a name collision are moved back into
+///     `install_root` in-place so existing project paths and Codex threads stay valid.
+///   - `app/`-nested user items and colliding root items are moved into a sibling
+///     `<install_parent>/Codex-Preserved-Files-<timestamp>/` directory keeping
+///     their relative paths and never overwriting existing entries.
+///   - If scanning fails or ANY migration fails, the entire `backup` directory
+///     is left untouched and returned via `retained_backup`.
+pub fn cleanup_portable_backup_preserving_user_files(
+    backup: &Path,
+    install_root: &Path,
+) -> PortableBackupCleanupOutcome {
+    cleanup_portable_backup_preserving_user_files_with_mover(
+        backup,
+        install_root,
+        |src, dst| rename_directory_with_retry("preserve user entry from portable backup", src, dst),
+    )
+}
+
+fn cleanup_portable_backup_preserving_user_files_with_mover<M>(
+    backup: &Path,
+    install_root: &Path,
+    mut move_entry: M,
+) -> PortableBackupCleanupOutcome
+where
+    M: FnMut(&Path, &Path) -> io::Result<()>,
+{
+    let mut outcome = PortableBackupCleanupOutcome::default();
+    let backup_meta = match fs::symlink_metadata(backup) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return outcome,
+        Err(err) => {
+            outcome.retained_backup = Some(backup.to_path_buf());
+            outcome.notes.push(format!(
+                "Could not inspect previous portable backup ({err}); kept backup at {} so no user files are lost.",
+                backup.display()
+            ));
+            return outcome;
+        }
+    };
+    if is_symlink_or_reparse_point(&backup_meta) || !backup_meta.is_dir() {
+        outcome.retained_backup = Some(backup.to_path_buf());
+        outcome.notes.push(format!(
+            "Previous portable backup is not a regular directory; kept {} untouched.",
+            backup.display()
+        ));
+        return outcome;
+    }
+
+    let scan = match scan_portable_root(backup, Some(install_root)) {
+        Ok(scan) => scan,
+        Err(err) => {
+            log::warn!(
+                "portable backup scan failed; retaining backup path={} error={err}",
+                backup.display()
+            );
+            outcome.retained_backup = Some(backup.to_path_buf());
+            outcome.notes.push(format!(
+                "Could not verify files in previous portable backup ({err}); kept full backup at {} so no user files are lost.",
+                backup.display()
+            ));
+            return outcome;
+        }
+    };
+
+    let install_parent = install_root
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(install_root);
+    let mut migration_failed = false;
+
+    for rel in &scan.unknown_entries {
+        let src = backup.join(rel);
+        let is_root_level = rel
+            .components()
+            .filter(|c| matches!(c, Component::Normal(_)))
+            .count()
+            == 1;
+
+        let try_in_place = if is_root_level {
+            match rel
+                .file_name()
+                .map(|name| target_collides_in_dir(install_root, name))
+            {
+                Some(Ok(false)) => true,
+                Some(Ok(true)) => false,
+                Some(Err(err)) => {
+                    migration_failed = true;
+                    outcome.notes.push(format!(
+                        "Could not check destination for user item '{}' ({err}); kept backup at {} so no user files are lost.",
+                        display_rel_path(rel),
+                        backup.display()
+                    ));
+                    break;
+                }
+                None => false,
+            }
+        } else {
+            false
+        };
+
+        if try_in_place {
+            let dst = install_root.join(rel);
+            match move_entry(&src, &dst) {
+                Ok(()) => {
+                    outcome.restored_in_place.push(rel.clone());
+                }
+                Err(err) => {
+                    migration_failed = true;
+                    log::warn!(
+                        "failed to restore user item in place src={} dst={} error={err}",
+                        src.display(),
+                        dst.display()
+                    );
+                    outcome.notes.push(format!(
+                        "Failed to preserve user item '{}' into {} ({err}); kept previous backup at {} so no files are lost.",
+                        display_rel_path(rel),
+                        install_root.display(),
+                        backup.display()
+                    ));
+                    break;
+                }
+            }
+        } else {
+            let preserved_root = match &outcome.preserved_dir {
+                Some(dir) => dir.clone(),
+                None => match create_unique_preserved_files_dir(install_parent) {
+                    Ok(dir) => {
+                        outcome.preserved_dir = Some(dir.clone());
+                        dir
+                    }
+                    Err(err) => {
+                        migration_failed = true;
+                        outcome.notes.push(format!(
+                            "Could not create preserved-files directory under {} ({err}); kept previous backup at {} so no files are lost.",
+                            install_parent.display(),
+                            backup.display()
+                        ));
+                        break;
+                    }
+                },
+            };
+            let dst = preserved_root.join(rel);
+            if let Some(parent) = dst.parent() {
+                if let Err(err) = fs::create_dir_all(parent) {
+                    migration_failed = true;
+                    outcome.notes.push(format!(
+                        "Could not prepare preserved path for '{}' ({err}); kept previous backup at {} so no files are lost.",
+                        display_rel_path(rel),
+                        backup.display()
+                    ));
+                    break;
+                }
+            }
+            if dst
+                .parent()
+                .zip(dst.file_name())
+                .is_some_and(|(parent, name)| {
+                    target_collides_in_dir(parent, name).unwrap_or(true)
+                })
+            {
+                migration_failed = true;
+                outcome.notes.push(format!(
+                    "Preserved destination already exists for '{}'; kept previous backup at {} so no files are overwritten.",
+                    display_rel_path(rel),
+                    backup.display()
+                ));
+                break;
+            }
+            match move_entry(&src, &dst) {
+                Ok(()) => {
+                    outcome.moved_to_preserved_dir.push(rel.clone());
+                }
+                Err(err) => {
+                    migration_failed = true;
+                    // Prune any empty intermediate dirs created inside preserved_root.
+                    let mut cur = dst.parent();
+                    while let Some(dir) = cur {
+                        if dir == preserved_root {
+                            break;
+                        }
+                        if fs::remove_dir(dir).is_err() {
+                            break;
+                        }
+                        cur = dir.parent();
+                    }
+                    log::warn!(
+                        "failed to move user item to preserved dir src={} dst={} error={err}",
+                        src.display(),
+                        dst.display()
+                    );
+                    outcome.notes.push(format!(
+                        "Failed to move user item '{}' to {} ({err}); kept previous backup at {} so no files are lost.",
+                        display_rel_path(rel),
+                        preserved_root.display(),
+                        backup.display()
+                    ));
+                    break;
+                }
+            }
+        }
+    }
+
+    if outcome.moved_to_preserved_dir.is_empty() {
+        if let Some(empty_dir) = outcome.preserved_dir.take() {
+            let _ = fs::remove_dir(&empty_dir);
+        }
+    }
+
+    if !outcome.restored_in_place.is_empty() {
+        outcome.notes.push(format!(
+            "Preserved {} non-official item(s) in {} ({}). Consider moving personal projects outside the Codex install folder.",
+            outcome.restored_in_place.len(),
+            install_root.display(),
+            summarize_rel_entries(&outcome.restored_in_place)
+        ));
+    }
+    if !outcome.moved_to_preserved_dir.is_empty() {
+        if let Some(dir) = &outcome.preserved_dir {
+            outcome.notes.push(format!(
+                "Moved {} non-official item(s) from the previous portable directory to {} ({}).",
+                outcome.moved_to_preserved_dir.len(),
+                dir.display(),
+                summarize_rel_entries(&outcome.moved_to_preserved_dir)
+            ));
+        }
+    }
+
+    if migration_failed {
+        outcome.retained_backup = Some(backup.to_path_buf());
+        return outcome;
+    }
+
+    match remove_verified_official_entries(backup, &scan, false) {
+        Ok(true) => {}
+        Ok(false) => {
+            outcome.retained_backup = Some(backup.to_path_buf());
+            outcome.notes.push(format!(
+                "Portable rollback backup was not empty after removing official files; kept {} so no unexpected files are lost.",
+                backup.display()
+            ));
+        }
+        Err(err) => {
+            outcome.retained_backup = Some(backup.to_path_buf());
+            outcome.notes.push(format!(
+                "Portable rollback backup could not be removed after successful install: {err}"
+            ));
+        }
+    }
+
+    outcome
+}
+
+fn remove_portable_official_files(
+    install_root: &Path,
+    notes: &mut Vec<String>,
+) -> Result<(bool, bool), EngineError> {
+    let scan = scan_portable_root(install_root, None)?;
+    let has_official = !scan.official_files.is_empty() || !scan.official_dirs.is_empty();
+    let has_unknown = !scan.unknown_entries.is_empty();
+    let removed_root = remove_verified_official_entries(install_root, &scan, true)?;
+    let preserved_user_files = has_unknown || !removed_root;
+    if has_unknown {
+        notes.push(format!(
+            "Preserved {} non-official user item(s) in {} ({}); only Codex program files were removed.",
+            scan.unknown_entries.len(),
+            install_root.display(),
+            summarize_rel_entries(&scan.unknown_entries)
+        ));
+    } else if !removed_root {
+        notes.push(format!(
+            "Install directory {} was not empty after removing Codex program files; remaining files were preserved.",
+            install_root.display()
+        ));
+    }
+    Ok((has_official || removed_root, preserved_user_files))
+}
+
+struct PortableWorkDirGuard {
+    work_dir: PathBuf,
+    keep: bool,
+}
+
+impl PortableWorkDirGuard {
+    fn new(work_dir: PathBuf) -> Self {
+        Self {
+            work_dir,
+            keep: false,
+        }
+    }
+
+    /// Leave the staging directory intact when a crash/recovery boundary
+    /// intentionally preserves the staged payload for startup recovery.
+    fn keep(&mut self) {
+        self.keep = true;
+    }
+
+    fn cleanup_now(&mut self) {
+        self.keep = true;
+        cleanup_portable_work_dir(&self.work_dir);
+    }
+}
+
+impl Drop for PortableWorkDirGuard {
+    fn drop(&mut self) {
+        if !self.keep {
+            cleanup_portable_work_dir(&self.work_dir);
+        }
+    }
+}
+
+fn cleanup_portable_work_dir(work_dir: &Path) {
+    if fs::symlink_metadata(work_dir).is_ok() {
+        if let Err(err) = remove_directory_all_with_retry("cleanup portable staging", work_dir) {
+            log::warn!(
+                "failed to clean up portable staging directory path={} error={err}",
+                work_dir.display()
+            );
+            return;
+        }
+    }
+    // Remove `.codex-app-manager-staging` ONLY via non-recursive `remove_dir`
+    // when it is empty, never touching sibling runs or unrelated entries.
+    if let Some(staging_parent) = work_dir.parent() {
+        if staging_parent
+            .file_name()
+            .and_then(|name| name.to_str())
+            == Some(PORTABLE_STAGING_DIR_NAME)
+        {
+            match fs::remove_dir(staging_parent) {
+                Ok(()) => {}
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(_) => {}
+            }
+        }
+    }
 }
 
 /// Materialize the Manager-owned native launcher without touching upstream files.
@@ -1194,9 +2206,10 @@ fn create_start_menu_shortcut(install_root: &Path) -> Result<bool, EngineError> 
         fs::create_dir_all(parent).map_err(|error| io_err("create shortcut directory", error))?;
     }
     let launcher = ensure_portable_launcher(install_root)?;
+    let workdir = crate::portable_command::preferred_working_dir(install_root);
     let spec = crate::portable_shortcut::ShortcutSpec::new(
         &launcher,
-        install_root,
+        &workdir,
         &pick_shortcut_icon(Some(&exe), &launcher, |p| p.is_file()),
         "",
     );
@@ -1219,11 +2232,40 @@ fn register_uninstall_entry(install_root: &Path, version: &str, estimated_size_k
 }
 
 #[cfg(windows)]
+fn portable_files_uninstall_ps_snippet(install_root: &Path) -> String {
+    let escaped_root = install_root.to_string_lossy().replace('\'', "''");
+    // Only remove recorded official files and Manager root entries; never run a
+    // blanket recursive delete on `install_root` and never follow reparse points.
+    // Uses compact built-in aliases so double-encoded UninstallString stays well
+    // under the Windows command-line budget.
+    format!(
+        "function _g($x){{gi -LiteralPath $x -Force -ea 0}};\
+         function _n($o){{$o -and ($o.Attributes -band 1024) -eq 0}};\
+         function _z($x){{ri -LiteralPath $x -Force -ea 0}};\
+         $r=('{root}').TrimEnd('\\','/');\
+         $i=if($r){{_g $r}};\
+         if((_n $i) -and $i.PSIsContainer){{\
+         $d=@{{}};$m=Join-Path $r '{manifest}';$mi=_g $m;$ls=@();\
+         if((_n $mi) -and !$mi.PSIsContainer){{$ls=@(gc -LiteralPath $m -Encoding UTF8 -ea 0)}};\
+         ($ls+'Codex.exe','ChatGPT.exe','LaunchCodex.exe','codex-portable-launcher.txt','{manifest}','AppxManifest.xml')|%{{\
+         $l=\"$_\".Trim();\
+         if($l -and $l -notmatch '(^|[\\\\/])\\.\\.([\\\\/]|$)' -and $l -notlike '*:*' -and $l -notlike '/*' -and $l -notlike '\\*'){{ \
+         $p=Join-Path $r ($l -replace '/','\\');$ok=$true;$c=Split-Path $p;$a=@();\
+         while($c -and $c.Length -gt $r.Length){{$ai=_g $c;if($ai -and !(_n $ai)){{$ok=$false;break}};$a+=$c;$c=Split-Path $c}};\
+         if($ok){{$f=_g $p;if((_n $f) -and !$f.PSIsContainer){{_z $p;$a|%{{$d[$_]=1}}}}}}}}}};\
+         $d.Keys|sort Length -Desc|%{{$x=_g $_;if((_n $x) -and $x.PSIsContainer -and !(gci -LiteralPath $_ -Force -ea 0)){{_z $_}}}};\
+         if(!(gci -LiteralPath $r -Force -ea 0)){{_z $r}}}}",
+        root = escaped_root,
+        manifest = PORTABLE_FILES_MANIFEST_NAME,
+    )
+}
+
+#[cfg(windows)]
 fn uninstall_metadata_script(install_root: &Path, launcher: &Path, exe: &Path, version: &str, estimated_size_kb: Option<u64>) -> String {
     let uninstall_script = format!(
-        "{}; if ($env:APPDATA) {{ $Shortcut = Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs\\Codex.lnk'; Remove-Item -LiteralPath $Shortcut -Force -ErrorAction SilentlyContinue }}; Remove-Item -LiteralPath '{}' -Recurse -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Codex' -Recurse -Force -ErrorAction SilentlyContinue",
-        crate::portable_protocol::uninstall_script(launcher),
-        install_root.to_string_lossy().replace('\'', "''")
+        "{protocol}; if ($env:APPDATA) {{ $Shortcut = Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs\\Codex.lnk'; Remove-Item -LiteralPath $Shortcut -Force -ErrorAction SilentlyContinue }}; {files}; Remove-Item -LiteralPath 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Codex' -Recurse -Force -ErrorAction SilentlyContinue",
+        protocol = crate::portable_protocol::uninstall_script(launcher),
+        files = portable_files_uninstall_ps_snippet(install_root),
     );
     // The protocol cleanup compares a quoted executable command. Encode the
     // complete script to avoid another Windows command-line quoting layer.
@@ -1618,16 +2660,20 @@ pub fn install_portable_from_msix_with_launch_arguments(
             "Portable install location cannot be inside WindowsApps; choose a writable folder in Settings".to_string(),
         ));
     }
-    let install_parent = install_root.parent().unwrap_or(install_root);
+    let install_parent = install_root
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(install_root);
     fs::create_dir_all(install_parent).map_err(|e| io_err("create install parent", e))?;
     let operation_id = uuid::Uuid::new_v4();
     let work_dir = install_parent
-        .join(".codex-app-manager-staging")
+        .join(PORTABLE_STAGING_DIR_NAME)
         .join(format!("portable-{operation_id}"));
     if work_dir.exists() {
         fs::remove_dir_all(&work_dir).map_err(|e| io_err("clear portable staging", e))?;
     }
     fs::create_dir_all(&work_dir).map_err(|e| io_err("create portable staging", e))?;
+    let mut work_dir_guard = PortableWorkDirGuard::new(work_dir.clone());
 
     let prepared = prepare_portable_payload(msix_path, &work_dir)?;
     let payload = prepared.payload_dir;
@@ -1648,7 +2694,6 @@ pub fn install_portable_from_msix_with_launch_arguments(
         had_previous,
     })?;
     if fault == Some(PortableFault::BeforeMoveOld) {
-        let _ = fs::remove_dir_all(&work_dir);
         return Err(portable_fault_err("before-move-old"));
     }
 
@@ -1664,27 +2709,37 @@ pub fn install_portable_from_msix_with_launch_arguments(
         backup: backup.clone(),
         had_previous,
     }) {
-        return Err(rollback_install_error(
+        let rollback_err = rollback_install_error(
             install_root,
             &backup,
             had_previous,
             observer,
             obs_err,
-        ));
+        );
+        if had_previous && !install_root.exists() && payload.exists() {
+            work_dir_guard.keep();
+        }
+        return Err(rollback_err);
     }
     if fault == Some(PortableFault::AfterMoveOld) {
         // Leave the crash window intact for recovery tests (no auto-rollback).
+        work_dir_guard.keep();
         return Err(portable_fault_err("after-move-old"));
     }
 
-    observer(PortableBoundary::BeforeMoveNew {
+    if let Err(obs_err) = observer(PortableBoundary::BeforeMoveNew {
         install_root: install_root.to_path_buf(),
         payload: payload.clone(),
         backup: backup.clone(),
         had_previous,
-    })?;
+    }) {
+        if payload.exists() && !install_root.exists() {
+            work_dir_guard.keep();
+        }
+        return Err(obs_err);
+    }
     if fault == Some(PortableFault::OnMoveNew) {
-        let _ = fs::remove_dir_all(&work_dir);
+        work_dir_guard.cleanup_now();
         return Err(rollback_install_error(
             install_root,
             &backup,
@@ -1701,24 +2756,28 @@ pub fn install_portable_from_msix_with_launch_arguments(
                 backup: backup.clone(),
                 had_previous,
             }) {
-                // Payload is already at install_root; leave for recovery.
+                // Payload is already at install_root; leave tx for recovery.
                 log::error!("portable observer failed after move-new: {obs_err}");
                 return Err(obs_err);
             }
         }
         Err(err) => {
-            return Err(rollback_install_error(
+            let rollback_err = rollback_install_error(
                 install_root,
                 &backup,
                 had_previous,
                 observer,
                 err,
-            ));
+            );
+            if had_previous && !install_root.exists() && payload.exists() {
+                work_dir_guard.keep();
+            }
+            return Err(rollback_err);
         }
     }
 
     if fault == Some(PortableFault::AfterMoveNew) {
-        let _ = fs::remove_dir_all(&work_dir);
+        work_dir_guard.cleanup_now();
         return Err(rollback_install_error(
             install_root,
             &backup,
@@ -1736,7 +2795,7 @@ pub fn install_portable_from_msix_with_launch_arguments(
     ) {
         Ok(relaunched) => relaunched,
         Err(err) => {
-            let _ = fs::remove_dir_all(&work_dir);
+            work_dir_guard.cleanup_now();
             return Err(rollback_install_error(
                 install_root,
                 &backup,
@@ -1778,19 +2837,15 @@ pub fn install_portable_from_msix_with_launch_arguments(
 
     let installed_exe = installed_app_exe(install_root);
     let mut backup_path = None;
-    if had_previous && backup.exists() {
-        match fs::remove_dir_all(&backup) {
-            Ok(()) => {}
-            Err(err) => {
-                notes.push(format!(
-                    "Portable rollback backup could not be removed after successful install: {err}"
-                ));
-                backup_path = Some(backup.to_string_lossy().into_owned());
-            }
+    if had_previous && fs::symlink_metadata(&backup).is_ok() {
+        let cleanup = cleanup_portable_backup_preserving_user_files(&backup, install_root);
+        notes.extend(cleanup.notes);
+        if let Some(retained) = cleanup.retained_backup {
+            backup_path = Some(retained.to_string_lossy().into_owned());
         }
     }
 
-    let _ = fs::remove_dir_all(&work_dir);
+    work_dir_guard.cleanup_now();
 
     let version = read_codex_app_version_from_install_root(install_root)
         .unwrap_or_else(|| prepared.identity.version.clone());
@@ -1896,19 +2951,39 @@ pub fn uninstall_portable(
     log::info!("portable uninstall start path={path}");
     close_codex_gracefully_for_root(30, install_root)?;
 
-    let removed_files = if install_root.exists() {
-        fs::remove_dir_all(install_root).map_err(|e| io_err("remove portable install", e))?;
-        true
-    } else {
-        false
+    let mut uninstall_notes = Vec::new();
+    let (removed_files, preserved_user_files) = match fs::symlink_metadata(install_root) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => (false, false),
+        Err(err) => return Err(io_err("inspect portable install", err)),
+        Ok(meta) => {
+            if is_symlink_or_reparse_point(&meta) {
+                return Err(EngineError::Install(format!(
+                    "refusing to remove symbolic link or junction at {}",
+                    install_root.display()
+                )));
+            }
+            if !meta.is_dir() {
+                return Err(EngineError::Install(format!(
+                    "portable install path is not a directory: {}",
+                    install_root.display()
+                )));
+            }
+            remove_portable_official_files(install_root, &mut uninstall_notes)?
+        }
     };
 
     let mut meta = cleanup_portable_metadata(purge_user_data)?;
     // Preserve install-root context on the combined report.
     meta.install_root = install_root.to_string_lossy().into_owned();
     meta.removed_files = removed_files;
+    if !uninstall_notes.is_empty() {
+        uninstall_notes.append(&mut meta.notes);
+        meta.notes = uninstall_notes;
+    }
     meta.message = if meta.partial {
         "Portable Codex uninstall completed with cleanup warnings.".to_string()
+    } else if preserved_user_files {
+        "Portable Codex uninstall completed; non-official user files were preserved.".to_string()
     } else {
         "Portable Codex uninstall completed.".to_string()
     };
@@ -2674,6 +3749,8 @@ mod tests {
             } else {
                 moved.clone()
             };
+            let launcher_home = parent.join(format!("home-{nested}"));
+            fs::create_dir_all(&launcher_home).unwrap();
             let names: &[&str] = if nested {
                 &["Codex.exe", "ChatGPT.exe", "LaunchCodex.exe"]
             } else {
@@ -2684,6 +3761,7 @@ mod tests {
                 let marker = "codex://test/参数 with spaces & \"quotes\"";
                 let mut command = hidden_command(moved.join(name));
                 command
+                    .env("USERPROFILE", &launcher_home)
                     .env_remove("CODEX_CLI_PATH")
                     .env("CODEX_WINDOWS_REGISTERED_CORE", "1")
                     .env("CODEX_TEST_LAUNCH_REPORT", &output)
@@ -2710,7 +3788,10 @@ mod tests {
                         .as_ref()
                 );
                 assert!(report["registered"].is_null());
-                assert_eq!(report["cwd"], moved_app.to_string_lossy().as_ref());
+                assert_eq!(
+                    fs::canonicalize(Path::new(report["cwd"].as_str().unwrap())).unwrap(),
+                    fs::canonicalize(&launcher_home).unwrap()
+                );
                 assert!(report["args"]
                     .as_array()
                     .unwrap()
@@ -2776,6 +3857,8 @@ mod tests {
             fs::create_dir_all(&app).unwrap();
             fs::copy(std::env::current_exe().unwrap(), app.join("ChatGPT.exe")).unwrap();
             ensure_portable_launcher(&root).unwrap();
+            let launcher_home = parent.join(format!("legacy-home-{nested}"));
+            fs::create_dir_all(&launcher_home).unwrap();
             let names: &[&str] = if nested {
                 &["Codex.exe", "ChatGPT.exe", "LaunchCodex.exe"]
             } else {
@@ -2785,6 +3868,7 @@ mod tests {
                 let output = parent.join(format!("{nested}-{name}.json"));
                 let mut command = hidden_command(root.join(name));
                 command
+                    .env("USERPROFILE", &launcher_home)
                     .env_remove("CODEX_CLI_PATH")
                     .env("CODEX_TEST_LAUNCH_REPORT", &output)
                     .args([
@@ -2804,7 +3888,10 @@ mod tests {
                     report["cli"].is_null(),
                     "a legacy payload must not require or invent a CLI"
                 );
-                assert_eq!(report["cwd"], app.to_string_lossy().as_ref());
+                assert_eq!(
+                    fs::canonicalize(Path::new(report["cwd"].as_str().unwrap())).unwrap(),
+                    fs::canonicalize(&launcher_home).unwrap()
+                );
             }
         }
         remove_directory_all_with_retry("remove CLI-less launcher test", &parent).unwrap();
@@ -3717,9 +4804,9 @@ mod tests {
         let install_root = root.join("Codex");
         write_fake_msix(&msix);
 
-        fs::create_dir_all(&install_root).unwrap();
+        fs::create_dir_all(install_root.join("resources")).unwrap();
         fs::write(install_root.join("Codex.exe"), b"old exe").unwrap();
-        fs::write(install_root.join("old-marker.txt"), b"old").unwrap();
+        fs::write(install_root.join("resources/old-asar.bin"), b"old").unwrap();
 
         let report = install_portable_from_msix_inner(&msix, &install_root, false, false).unwrap();
         assert!(report.success);
@@ -3729,8 +4816,10 @@ mod tests {
             .file_name()
             .to_string_lossy()
             .starts_with("Codex.rollback")));
-        assert!(!install_root.join("old-marker.txt").exists());
+        assert!(!root.join(PORTABLE_STAGING_DIR_NAME).exists());
+        assert!(!install_root.join("resources/old-asar.bin").exists());
         assert!(install_root.join("app/resources/app.asar").exists());
+        assert!(install_root.join(PORTABLE_FILES_MANIFEST_NAME).is_file());
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -3824,6 +4913,20 @@ mod tests {
             });
         assert!(backup.is_some(), "rollback backup must remain");
         assert!(backup.unwrap().join("old-marker.txt").exists());
+        let staging_dir = root.join(PORTABLE_STAGING_DIR_NAME);
+        let staged_run = fs::read_dir(&staging_dir)
+            .expect("staging container must remain during AfterMoveOld crash window")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("portable-"))
+            });
+        assert!(
+            staged_run.is_some_and(|run| run.join("payload/app/Codex.exe").is_file()),
+            "staged payload must survive AfterMoveOld for startup recovery"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -3846,6 +4949,10 @@ mod tests {
         let err = install_portable_from_msix_inner(&msix, &install_root, false, false).unwrap_err();
         assert!(err.to_string().contains("before-move-old"));
         assert!(install_root.join("old-marker.txt").exists());
+        assert!(
+            !root.join(PORTABLE_STAGING_DIR_NAME).exists(),
+            "RAII staging guard must remove work_dir and empty staging container"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -4041,5 +5148,501 @@ mod tests {
         assert!(!backup.exists());
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    fn find_preserved_dirs(parent: &Path) -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = fs::read_dir(parent)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with(PRESERVED_FILES_DIR_PREFIX))
+            })
+            .collect();
+        dirs.sort();
+        dirs
+    }
+
+    #[test]
+    fn format_utc_timestamp_formats_epoch_and_leap_day() {
+        assert_eq!(format_utc_timestamp(0), "19700101-000000");
+        // 2024-02-29 23:59:59 UTC
+        assert_eq!(format_utc_timestamp(1_709_251_199), "20240229-235959");
+    }
+
+    #[test]
+    fn clean_nested_upgrade_has_no_false_positives_even_when_old_files_are_dropped() {
+        let parent = temp_test_dir("clean-nested-upgrade");
+        let msix_v1 = parent.join("v1.msix");
+        let msix_v2 = parent.join("v2.msix");
+        let install_root = parent.join("Codex");
+
+        write_block_mapped_msix(
+            &msix_v1,
+            &[
+                (r"app\ChatGPT.exe", 6),
+                (r"app\old-helper.dll", 7),
+                (r"app\resources\app.asar", 5),
+            ],
+            &[
+                ("app/ChatGPT.exe", b"v1-exe"),
+                ("app/old-helper.dll", b"old-dll"),
+                ("app/resources/app.asar", b"v1-as"),
+            ],
+        );
+        write_fake_rebranded_msix(&msix_v2);
+
+        install_portable_from_msix_inner(&msix_v1, &install_root, false, false).unwrap();
+        assert!(install_root.join(PORTABLE_FILES_MANIFEST_NAME).is_file());
+        assert!(install_root.join("app/old-helper.dll").is_file());
+
+        let report = install_portable_from_msix_inner(&msix_v2, &install_root, false, false).unwrap();
+        assert!(report.success);
+        assert!(report.backup_path.is_none());
+        assert!(
+            find_preserved_dirs(&parent).is_empty(),
+            "clean upgrade must not create a preserved-files directory"
+        );
+        assert!(!parent.join(PORTABLE_STAGING_DIR_NAME).exists());
+        assert!(!install_root.join("app/old-helper.dll").exists());
+        assert!(install_root.join("app/ChatGPT.exe").is_file());
+        assert!(
+            !report
+                .notes
+                .iter()
+                .any(|n| n.contains("Preserved") || n.contains("Moved")),
+            "clean upgrade must not emit user-file preservation warnings: {:?}",
+            report.notes
+        );
+
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn flat_to_nested_upgrade_preserves_user_projects_and_resolves_app_name_collision() {
+        let parent = temp_test_dir("flat-to-nested-user-files");
+        let install_root = parent.join("Codex");
+        let msix = parent.join("new.msix");
+        write_fake_rebranded_msix(&msix);
+
+        // Pre-fix flat install (no codex-portable-files.txt) with user projects:
+        // one at root (`my-repo/`) and one literally named `app/` that collides
+        // with the new nested layout's `app/` directory.
+        fs::create_dir_all(install_root.join("resources")).unwrap();
+        fs::write(install_root.join("ChatGPT.exe"), b"old flat entry").unwrap();
+        fs::write(install_root.join("resources/app.asar"), b"old asar").unwrap();
+        fs::write(
+            install_root.join(crate::portable_command::LAUNCH_TARGET_NAME),
+            "ChatGPT.exe\nrequire-cli=0",
+        )
+        .unwrap();
+        fs::create_dir_all(install_root.join("my-repo/src")).unwrap();
+        fs::write(install_root.join("my-repo/src/main.rs"), b"fn main() {}").unwrap();
+        fs::create_dir_all(install_root.join("app")).unwrap();
+        fs::write(install_root.join("app/user-webapp.ts"), b"export const x = 1;").unwrap();
+
+        let report = install_portable_from_msix_inner(&msix, &install_root, false, false).unwrap();
+        assert!(report.success);
+        assert!(report.backup_path.is_none());
+        // Root project without collision stays in place so project paths remain intact.
+        assert_eq!(
+            fs::read(install_root.join("my-repo/src/main.rs")).unwrap(),
+            b"fn main() {}"
+        );
+        // New nested official app directory is intact and not overwritten.
+        assert_eq!(
+            fs::read(install_root.join("app/ChatGPT.exe")).unwrap(),
+            b"fake entry exe"
+        );
+        assert!(!install_root.join("app/user-webapp.ts").exists());
+        // Colliding `app/` user folder was safely moved to sibling preserved dir.
+        let preserved = find_preserved_dirs(&parent);
+        assert_eq!(preserved.len(), 1, "expected one preserved dir: {preserved:?}");
+        assert_eq!(
+            fs::read(preserved[0].join("app/user-webapp.ts")).unwrap(),
+            b"export const x = 1;"
+        );
+        assert!(!parent.join(PORTABLE_STAGING_DIR_NAME).exists());
+
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn nested_to_nested_upgrade_preserves_root_app_and_deep_user_files() {
+        let parent = temp_test_dir("nested-to-nested-user-files");
+        let install_root = parent.join("Codex");
+        let msix_v1 = parent.join("v1.msix");
+        let msix_v2 = parent.join("v2.msix");
+        write_fake_msix(&msix_v1);
+        write_fake_rebranded_msix(&msix_v2);
+
+        install_portable_from_msix_inner(&msix_v1, &install_root, false, false).unwrap();
+
+        // User projects in all three locations: root, app/ top-level (previous CWD),
+        // and inside an official subdirectory.
+        fs::create_dir_all(install_root.join("root-project")).unwrap();
+        fs::write(install_root.join("root-project/README.md"), b"root readme").unwrap();
+        fs::create_dir_all(install_root.join("app/cwd-project/src")).unwrap();
+        fs::write(
+            install_root.join("app/cwd-project/src/lib.rs"),
+            b"pub fn ok() {}",
+        )
+        .unwrap();
+        fs::write(
+            install_root.join("app/resources/personal-notes.txt"),
+            b"do not delete",
+        )
+        .unwrap();
+
+        let report = install_portable_from_msix_inner(&msix_v2, &install_root, false, false).unwrap();
+        assert!(report.success);
+        assert!(report.backup_path.is_none());
+
+        // Root-level project restored in-place.
+        assert_eq!(
+            fs::read(install_root.join("root-project/README.md")).unwrap(),
+            b"root readme"
+        );
+        // `app/`-level and deeper user files moved out of `app/` into sibling preserved dir.
+        assert!(!install_root.join("app/cwd-project").exists());
+        assert!(!install_root.join("app/resources/personal-notes.txt").exists());
+        let preserved = find_preserved_dirs(&parent);
+        assert_eq!(preserved.len(), 1);
+        assert_eq!(
+            fs::read(preserved[0].join("app/cwd-project/src/lib.rs")).unwrap(),
+            b"pub fn ok() {}"
+        );
+        assert_eq!(
+            fs::read(preserved[0].join("app/resources/personal-notes.txt")).unwrap(),
+            b"do not delete"
+        );
+        assert!(report.notes.iter().any(|n| n.contains("root-project")));
+        assert!(report.notes.iter().any(|n| n.contains("app/cwd-project")));
+
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn legacy_nested_upgrade_without_manifest_preserves_root_and_app_user_files() {
+        let parent = temp_test_dir("legacy-nested-upgrade");
+        let install_root = parent.join("Codex");
+        let msix = parent.join("new.msix");
+        write_fake_rebranded_msix(&msix);
+
+        // Pre-fix nested install: has `app/` + `AppxManifest.xml` + launcher config,
+        // NO `codex-portable-files.txt`.
+        fs::create_dir_all(install_root.join("app/resources")).unwrap();
+        fs::write(install_root.join("app/ChatGPT.exe"), b"old nested exe").unwrap();
+        fs::write(install_root.join("app/resources/app.asar"), b"old asar").unwrap();
+        fs::write(
+            install_root.join(crate::portable_command::LAUNCH_TARGET_NAME),
+            "app/ChatGPT.exe\nrequire-cli=0",
+        )
+        .unwrap();
+        fs::create_dir_all(install_root.join("user-root-repo")).unwrap();
+        fs::write(install_root.join("user-root-repo/a.txt"), b"alpha").unwrap();
+        fs::create_dir_all(install_root.join("app/user-app-repo")).unwrap();
+        fs::write(install_root.join("app/user-app-repo/b.txt"), b"beta").unwrap();
+
+        let report = install_portable_from_msix_inner(&msix, &install_root, false, false).unwrap();
+        assert!(report.success);
+        assert!(report.backup_path.is_none());
+        assert_eq!(
+            fs::read(install_root.join("user-root-repo/a.txt")).unwrap(),
+            b"alpha"
+        );
+        let preserved = find_preserved_dirs(&parent);
+        assert_eq!(preserved.len(), 1);
+        assert_eq!(
+            fs::read(preserved[0].join("app/user-app-repo/b.txt")).unwrap(),
+            b"beta"
+        );
+
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn consecutive_preserved_migrations_never_overwrite_existing_preserved_dir() {
+        let parent = temp_test_dir("preserved-collision");
+        let install_root = parent.join("Codex");
+        let msix = parent.join("v.msix");
+        write_fake_rebranded_msix(&msix);
+
+        install_portable_from_msix_inner(&msix, &install_root, false, false).unwrap();
+        fs::create_dir_all(install_root.join("app/first-project")).unwrap();
+        fs::write(install_root.join("app/first-project/one.txt"), b"one").unwrap();
+        install_portable_from_msix_inner(&msix, &install_root, false, false).unwrap();
+
+        fs::create_dir_all(install_root.join("app/second-project")).unwrap();
+        fs::write(install_root.join("app/second-project/two.txt"), b"two").unwrap();
+        install_portable_from_msix_inner(&msix, &install_root, false, false).unwrap();
+
+        let preserved = find_preserved_dirs(&parent);
+        assert_eq!(
+            preserved.len(),
+            2,
+            "second upgrade must allocate a distinct preserved dir: {preserved:?}"
+        );
+        assert!(preserved
+            .iter()
+            .any(|d| fs::read(d.join("app/first-project/one.txt")).ok().as_deref() == Some(b"one")));
+        assert!(preserved
+            .iter()
+            .any(|d| fs::read(d.join("app/second-project/two.txt")).ok().as_deref() == Some(b"two")));
+
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn migration_failure_retains_full_backup_without_deleting_user_files() {
+        let parent = temp_test_dir("migration-failure-retains-backup");
+        let install_root = parent.join("Codex");
+        let backup = parent.join("Codex.rollback-fail");
+        let msix = parent.join("v.msix");
+        write_fake_rebranded_msix(&msix);
+
+        install_portable_from_msix_inner(&msix, &install_root, false, false).unwrap();
+        install_portable_from_msix_inner(&msix, &backup, false, false).unwrap();
+        fs::create_dir_all(backup.join("app/locked-repo")).unwrap();
+        fs::write(backup.join("app/locked-repo/secret.txt"), b"precious").unwrap();
+
+        let outcome = cleanup_portable_backup_preserving_user_files_with_mover(
+            &backup,
+            &install_root,
+            |_src, _dst| Err(io::Error::new(io::ErrorKind::PermissionDenied, "simulated lock")),
+        );
+
+        assert_eq!(outcome.retained_backup.as_deref(), Some(backup.as_path()));
+        assert_eq!(
+            fs::read(backup.join("app/locked-repo/secret.txt")).unwrap(),
+            b"precious",
+            "backup and user files must stay completely intact when migration fails"
+        );
+        assert!(
+            find_preserved_dirs(&parent).is_empty(),
+            "empty preserved dir must be cleaned up when migration fails before moving anything"
+        );
+        assert!(outcome
+            .notes
+            .iter()
+            .any(|n| n.contains("kept previous backup")));
+
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn uninstall_portable_removes_clean_install_and_preserves_user_files_when_present() {
+        let parent = temp_test_dir("uninstall-user-files");
+        let msix = parent.join("v.msix");
+        write_fake_rebranded_msix(&msix);
+
+        // 1. Clean install: entire directory is removed.
+        let clean_root = parent.join("Codex-Clean");
+        install_portable_from_msix_inner(&msix, &clean_root, false, false).unwrap();
+        let clean_report = uninstall_portable(&clean_root, false).unwrap();
+        assert!(clean_report.success);
+        assert!(clean_report.removed_files);
+        assert!(!clean_root.exists());
+
+        // 2. Install containing user projects in both root and app/:
+        //    official files are removed while user projects remain untouched.
+        let mixed_root = parent.join("Codex-Mixed");
+        install_portable_from_msix_inner(&msix, &mixed_root, false, false).unwrap();
+        fs::create_dir_all(mixed_root.join("my-root-project")).unwrap();
+        fs::write(mixed_root.join("my-root-project/code.rs"), b"root").unwrap();
+        fs::create_dir_all(mixed_root.join("app/my-app-project")).unwrap();
+        fs::write(mixed_root.join("app/my-app-project/index.js"), b"app").unwrap();
+
+        let mixed_report = uninstall_portable(&mixed_root, false).unwrap();
+        assert!(mixed_report.success);
+        assert!(!mixed_report.partial);
+        assert!(mixed_report.removed_files);
+        assert_eq!(installed_app_exe(&mixed_root), None);
+        assert!(!mixed_root.join("app/ChatGPT.exe").exists());
+        assert!(!mixed_root.join("AppxManifest.xml").exists());
+        assert!(!mixed_root.join(PORTABLE_FILES_MANIFEST_NAME).exists());
+        assert_eq!(
+            fs::read(mixed_root.join("my-root-project/code.rs")).unwrap(),
+            b"root"
+        );
+        assert_eq!(
+            fs::read(mixed_root.join("app/my-app-project/index.js")).unwrap(),
+            b"app"
+        );
+        assert!(mixed_report
+            .notes
+            .iter()
+            .any(|n| n.contains("Preserved 2 non-official user item(s)")));
+
+        // 3. Legacy install (without codex-portable-files.txt) also preserves user files.
+        let legacy_root = parent.join("Codex-Legacy");
+        fs::create_dir_all(legacy_root.join("app/resources")).unwrap();
+        fs::write(legacy_root.join("app/ChatGPT.exe"), b"legacy exe").unwrap();
+        fs::write(legacy_root.join("app/resources/app.asar"), b"legacy asar").unwrap();
+        fs::write(
+            legacy_root.join(crate::portable_command::LAUNCH_TARGET_NAME),
+            "app/ChatGPT.exe\nrequire-cli=0",
+        )
+        .unwrap();
+        fs::create_dir_all(legacy_root.join("app/my-legacy-project")).unwrap();
+        fs::write(legacy_root.join("app/my-legacy-project/keep.txt"), b"keep").unwrap();
+
+        let legacy_report = uninstall_portable(&legacy_root, false).unwrap();
+        assert!(legacy_report.success);
+        assert!(legacy_report.removed_files);
+        assert!(!legacy_root.join("app/ChatGPT.exe").exists());
+        assert!(!legacy_root.join("app/resources").exists());
+        assert_eq!(
+            fs::read(legacy_root.join("app/my-legacy-project/keep.txt")).unwrap(),
+            b"keep"
+        );
+
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn upgrade_and_uninstall_never_follow_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let parent = temp_test_dir("symlink-safety");
+        let external = parent.join("ExternalRepo");
+        fs::create_dir_all(&external).unwrap();
+        fs::write(external.join("important.txt"), b"must survive").unwrap();
+
+        let install_root = parent.join("Codex");
+        let msix = parent.join("v.msix");
+        write_fake_rebranded_msix(&msix);
+        install_portable_from_msix_inner(&msix, &install_root, false, false).unwrap();
+
+        symlink(&external, install_root.join("app/linked-project")).unwrap();
+
+        // Upgrade moves the symlink itself into preserved dir without touching external target.
+        let report = install_portable_from_msix_inner(&msix, &install_root, false, false).unwrap();
+        assert!(report.success);
+        assert_eq!(
+            fs::read(external.join("important.txt")).unwrap(),
+            b"must survive"
+        );
+        let preserved = find_preserved_dirs(&parent);
+        assert_eq!(preserved.len(), 1);
+        assert!(fs::symlink_metadata(preserved[0].join("app/linked-project"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        // Uninstall also leaves a symlink and its external target intact.
+        symlink(&external, install_root.join("linked-root")).unwrap();
+        let uninstall = uninstall_portable(&install_root, false).unwrap();
+        assert!(uninstall.success);
+        assert!(fs::symlink_metadata(install_root.join("linked-root"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read(external.join("important.txt")).unwrap(),
+            b"must survive"
+        );
+
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn early_install_failures_clean_portable_staging_and_empty_parent() {
+        let parent = temp_test_dir("raii-staging-cleanup");
+        let install_root = parent.join("Codex");
+        let staging_parent = parent.join(PORTABLE_STAGING_DIR_NAME);
+
+        // 1. Failure inside prepare_portable_payload (corrupt MSIX) cleans work_dir + empty parent.
+        let corrupt_msix = parent.join("corrupt.msix");
+        fs::write(&corrupt_msix, b"not a zip").unwrap();
+        assert!(install_portable_from_msix_inner(&corrupt_msix, &install_root, false, false).is_err());
+        assert!(
+            !staging_parent.exists(),
+            "corrupt MSIX failure must remove work_dir and empty .codex-app-manager-staging"
+        );
+
+        // 2. Observer failure at BeforeMoveOld cleans work_dir + empty parent.
+        let valid_msix = parent.join("valid.msix");
+        write_fake_rebranded_msix(&valid_msix);
+        let err = install_portable_from_msix_with_observer(
+            &valid_msix,
+            &install_root,
+            false,
+            false,
+            &mut |boundary| {
+                if matches!(boundary, PortableBoundary::BeforeMoveOld { .. }) {
+                    return Err(EngineError::Io("simulated pre-swap abort".to_string()));
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("simulated pre-swap abort"));
+        assert!(!staging_parent.exists());
+
+        // 3. Sibling entry inside `.codex-app-manager-staging` is never removed by non-recursive parent cleanup.
+        let sibling = staging_parent.join("keep-sibling");
+        fs::create_dir_all(&sibling).unwrap();
+        fs::write(sibling.join("marker.txt"), b"keep").unwrap();
+        assert!(install_portable_from_msix_inner(&corrupt_msix, &install_root, false, false).is_err());
+        assert!(sibling.join("marker.txt").is_file());
+        assert_eq!(
+            fs::read_dir(&staging_parent).unwrap().count(),
+            1,
+            "failed run's portable-<uuid> must be removed while sibling stays intact"
+        );
+
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn apps_features_uninstall_script_removes_official_files_and_preserves_user_files() {
+        let parent = temp_test_dir("ps-uninstall-preserves-user-files");
+        let msix = parent.join("v.msix");
+        write_fake_rebranded_msix(&msix);
+
+        // 1. Clean install: snippet removes the entire directory.
+        let clean_root = parent.join("Codex-Clean");
+        install_portable_from_msix_inner(&msix, &clean_root, false, false).unwrap();
+        run_powershell_with_limits(
+            &portable_files_uninstall_ps_snippet(&clean_root),
+            RunLimits::install(),
+        )
+        .unwrap();
+        assert!(
+            !clean_root.exists(),
+            "clean install root must be removed by Apps & Features uninstall snippet"
+        );
+
+        // 2. Mixed install: official files removed, user files at root and app/ survive.
+        let install_root = parent.join("Codex");
+        install_portable_from_msix_inner(&msix, &install_root, false, false).unwrap();
+        fs::create_dir_all(install_root.join("my-root-project")).unwrap();
+        fs::write(install_root.join("my-root-project/main.rs"), b"keep root").unwrap();
+        fs::create_dir_all(install_root.join("app/my-app-project")).unwrap();
+        fs::write(install_root.join("app/my-app-project/app.ts"), b"keep app").unwrap();
+
+        run_powershell_with_limits(
+            &portable_files_uninstall_ps_snippet(&install_root),
+            RunLimits::install(),
+        )
+        .unwrap();
+        assert!(!install_root.join("app/ChatGPT.exe").exists());
+        assert!(!install_root.join("AppxManifest.xml").exists());
+        assert!(!install_root.join(PORTABLE_FILES_MANIFEST_NAME).exists());
+        assert_eq!(
+            fs::read(install_root.join("my-root-project/main.rs")).unwrap(),
+            b"keep root"
+        );
+        assert_eq!(
+            fs::read(install_root.join("app/my-app-project/app.ts")).unwrap(),
+            b"keep app"
+        );
+
+        let _ = fs::remove_dir_all(&parent);
     }
 }

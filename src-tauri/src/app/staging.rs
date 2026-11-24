@@ -221,6 +221,20 @@ pub fn cleanup_stale_staging(ops: &OperationManager) -> CleanupSummary {
         }
     }
 
+    // Also reclaim stale Windows portable staging directories left beside
+    // portable install roots (`.codex-app-manager-staging/portable-<uuid>`).
+    // Extraction happens before an install transaction journal exists, so
+    // active portable installs are protected by `ops.is_busy()` (the
+    // OperationManager lease held across the entire win_perform_update /
+    // win_install_historical_release lifecycle) plus STALE_AFTER age and
+    // `install_tx::path_is_protected` for pending/NeedsManual recovery txs.
+    for staging_dir in portable_staging_dirs() {
+        cleanup_portable_staging_in_dir(&staging_dir, ops, &protected, now, &mut summary);
+        if summary.skipped_busy {
+            break;
+        }
+    }
+
     log::info!(
         "staging cleanup summary scanned={} removed={} failed={}",
         summary.scanned,
@@ -232,6 +246,181 @@ pub fn cleanup_stale_staging(ops: &OperationManager) -> CleanupSummary {
 
 fn is_managed_staging_dir_name(name: &str) -> bool {
     name.starts_with("update-") || name.starts_with("inspect-")
+}
+
+/// Strictly match `portable-<hyphenated-uuid>` directories created by
+/// `codex_win_engine::portable::install_portable_from_msix_with_launch_arguments`.
+fn is_portable_staging_dir_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("portable-") else {
+        return false;
+    };
+    rest.len() == 36
+        && Uuid::parse_str(rest)
+            .is_ok_and(|parsed| parsed.hyphenated().to_string() == rest.to_ascii_lowercase())
+}
+
+#[cfg(windows)]
+fn is_symlink_or_reparse_point(meta: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    meta.file_type().is_symlink() || (meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT) != 0
+}
+
+#[cfg(not(windows))]
+fn is_symlink_or_reparse_point(meta: &std::fs::Metadata) -> bool {
+    meta.file_type().is_symlink()
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn portable_staging_dirs_from(install_roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut seen = std::collections::HashSet::new();
+    let mut dirs = Vec::new();
+    for root in install_roots {
+        if root.as_os_str().is_empty()
+            || !root.is_absolute()
+            || codex_win_engine::sys::is_msix_package_path(root)
+        {
+            continue;
+        }
+        let Some(parent) = root.parent().filter(|p| !p.as_os_str().is_empty()) else {
+            continue;
+        };
+        let candidate = parent.join(codex_win_engine::PORTABLE_STAGING_DIR_NAME);
+        let dedup_key = if cfg!(windows) {
+            candidate.to_string_lossy().to_lowercase()
+        } else {
+            candidate.to_string_lossy().into_owned()
+        };
+        if seen.insert(dedup_key) {
+            dirs.push(candidate);
+        }
+    }
+    dirs
+}
+
+#[cfg(target_os = "windows")]
+fn portable_staging_dirs() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let settings = crate::app::settings_store::AppSettings::load();
+    if !settings.install_root.trim().is_empty() {
+        roots.push(PathBuf::from(&settings.install_root));
+    }
+    let provenance = crate::app::provenance::ProvenanceStore::load();
+    for record in provenance.managed {
+        if !record.path.trim().is_empty() {
+            roots.push(PathBuf::from(record.path));
+        }
+    }
+    // Also cover the default portable location (`%LOCALAPPDATA%\Programs\Codex`)
+    // in case the user changed `install_root` after a previous failed install,
+    // except during packaged smoke tests which must stay isolated.
+    if crate::app::paths::packaged_smoke_run_id().is_none() {
+        let default_root = crate::app::settings_store::default_install_root();
+        if !default_root.trim().is_empty() {
+            roots.push(PathBuf::from(default_root));
+        }
+    }
+    portable_staging_dirs_from(&roots)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn portable_staging_dirs() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+fn is_portable_staging_stale(path: &Path, now: SystemTime) -> bool {
+    let Ok(root_meta) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    let Ok(mut latest) = root_meta.modified() else {
+        return false;
+    };
+    for child in ["extracted", "payload"] {
+        if let Ok(meta) = std::fs::symlink_metadata(path.join(child)) {
+            if let Ok(modified) = meta.modified() {
+                if modified > latest {
+                    latest = modified;
+                }
+            }
+        }
+    }
+    now.duration_since(latest)
+        .map(|age| age >= STALE_AFTER)
+        .unwrap_or(false)
+}
+
+fn cleanup_portable_staging_in_dir(
+    staging_dir: &Path,
+    ops: &OperationManager,
+    protected: &[PathBuf],
+    now: SystemTime,
+    summary: &mut CleanupSummary,
+) {
+    if ops.is_busy() {
+        summary.skipped_busy = true;
+        return;
+    }
+    let Ok(dir_meta) = std::fs::symlink_metadata(staging_dir) else {
+        return;
+    };
+    if !dir_meta.is_dir() || is_symlink_or_reparse_point(&dir_meta) {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(staging_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if ops.is_busy() {
+            summary.skipped_busy = true;
+            return;
+        }
+        let path = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.is_dir() || is_symlink_or_reparse_point(&meta) {
+            continue;
+        }
+        let is_portable_dir = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(is_portable_staging_dir_name);
+        if !is_portable_dir {
+            continue;
+        }
+        summary.scanned += 1;
+        if crate::app::install_tx::path_is_protected(&path, protected) {
+            log::info!(
+                "portable staging cleanup skipped protected path={}",
+                path.display()
+            );
+            continue;
+        }
+        if !is_portable_staging_stale(&path, now) {
+            continue;
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {
+                summary.removed += 1;
+                log::debug!(
+                    "portable staging cleanup removed path={}",
+                    path.display()
+                );
+            }
+            Err(err) => {
+                summary.failed += 1;
+                log::debug!(
+                    "portable staging cleanup failed path={} error={err}",
+                    path.display()
+                );
+            }
+        }
+    }
+    // Remove the `.codex-app-manager-staging` container ONLY when it is empty
+    // and not protected by any pending install transaction.
+    if !crate::app::install_tx::path_is_protected(staging_dir, protected) {
+        let _ = std::fs::remove_dir(staging_dir);
+    }
 }
 
 fn is_stale(path: &Path, now: SystemTime) -> bool {
@@ -263,15 +452,20 @@ fn set_owner_only(_path: &Path) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cleanup_stale_staging, clear_download_cache, create_unique_staging, download_cache_path,
-        download_cache_root, is_managed_staging_dir_name,
+        cleanup_portable_staging_in_dir, cleanup_stale_staging, clear_download_cache,
+        create_unique_staging, download_cache_path, download_cache_root,
+        is_managed_staging_dir_name, is_portable_staging_dir_name, portable_staging_dirs_from,
+        CleanupSummary, STALE_AFTER,
     };
     use crate::app::oplock::{OperationKind, OperationManager};
     use std::fs;
+    use std::path::PathBuf;
     use std::sync::{
         atomic::{AtomicU64, Ordering},
         Mutex,
     };
+    use std::time::{Duration, SystemTime};
+    use uuid::Uuid;
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(1);
     static DOWNLOAD_CACHE_LOCK: Mutex<()> = Mutex::new(());
@@ -363,5 +557,172 @@ mod tests {
         assert!(summary.skipped_busy);
         assert!(staging.path().exists());
         staging.discard();
+    }
+
+    #[test]
+    fn portable_staging_name_requires_strict_hyphenated_uuid() {
+        let id = Uuid::new_v4();
+        assert!(is_portable_staging_dir_name(&format!("portable-{id}")));
+        assert!(is_portable_staging_dir_name(&format!(
+            "portable-{}",
+            id.hyphenated().to_string().to_uppercase()
+        )));
+        for invalid in [
+            "",
+            "portable-",
+            "portable-123",
+            "portable-custom",
+            &format!("portable-{}", id.simple()),
+            &format!("portable-{{{id}}}"),
+            &format!("update-{id}"),
+            "other",
+        ] {
+            assert!(!is_portable_staging_dir_name(invalid), "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn portable_staging_dirs_from_dedups_and_skips_windowsapps() {
+        let base = lock_path("portable-roots").parent().unwrap().to_path_buf();
+        let root_a = base.join("Programs").join("Codex");
+        let root_b = base.join("Programs").join("CodexAlt");
+        let root_c = base.join("Custom").join("Codex");
+        let msix_root = base.join("WindowsApps").join("OpenAI.Codex");
+
+        let dirs = portable_staging_dirs_from(&[
+            root_a,
+            root_b,
+            root_c,
+            msix_root,
+            PathBuf::from("relative/Codex"),
+        ]);
+        assert_eq!(
+            dirs,
+            vec![
+                base.join("Programs")
+                    .join(codex_win_engine::PORTABLE_STAGING_DIR_NAME),
+                base.join("Custom")
+                    .join(codex_win_engine::PORTABLE_STAGING_DIR_NAME),
+            ]
+        );
+    }
+
+    #[test]
+    fn portable_staging_cleanup_removes_stale_uuid_and_empty_container() {
+        let test_dir = lock_path("portable-stale").parent().unwrap().to_path_buf();
+        let staging_dir = test_dir.join(codex_win_engine::PORTABLE_STAGING_DIR_NAME);
+        let stale_run = staging_dir.join(format!("portable-{}", Uuid::new_v4()));
+        fs::create_dir_all(stale_run.join("extracted")).unwrap();
+        fs::write(stale_run.join("extracted/huge.bin"), b"payload").unwrap();
+
+        let manager = OperationManager::new(lock_path("portable-stale-op"));
+        let mut summary = CleanupSummary::default();
+        let future_now = SystemTime::now() + STALE_AFTER + Duration::from_secs(60);
+        cleanup_portable_staging_in_dir(&staging_dir, &manager, &[], future_now, &mut summary);
+
+        assert!(!summary.skipped_busy);
+        assert_eq!(summary.scanned, 1);
+        assert_eq!(summary.removed, 1);
+        assert_eq!(summary.failed, 0);
+        assert!(!stale_run.exists());
+        assert!(
+            !staging_dir.exists(),
+            "empty .codex-app-manager-staging container must be removed"
+        );
+        let _ = fs::remove_dir_all(test_dir);
+    }
+
+    #[test]
+    fn portable_staging_cleanup_skips_fresh_protected_non_uuid_and_busy() {
+        let test_dir = lock_path("portable-guards").parent().unwrap().to_path_buf();
+        let staging_dir = test_dir.join(codex_win_engine::PORTABLE_STAGING_DIR_NAME);
+        let stale_removable = staging_dir.join(format!("portable-{}", Uuid::new_v4()));
+        let stale_protected = staging_dir.join(format!("portable-{}", Uuid::new_v4()));
+        let non_uuid = staging_dir.join("portable-custom-keep");
+        for dir in [&stale_removable, &stale_protected, &non_uuid] {
+            fs::create_dir_all(dir).unwrap();
+        }
+
+        let protected = vec![stale_protected.clone(), stale_protected.join("payload")];
+        let manager = OperationManager::new(lock_path("portable-guards-op"));
+        let future_now = SystemTime::now() + STALE_AFTER + Duration::from_secs(60);
+
+        // 1. Busy manager skips everything immediately.
+        {
+            let _guard = manager.begin(OperationKind::Install).unwrap();
+            let mut busy_summary = CleanupSummary::default();
+            cleanup_portable_staging_in_dir(
+                &staging_dir,
+                &manager,
+                &protected,
+                future_now,
+                &mut busy_summary,
+            );
+            assert!(busy_summary.skipped_busy);
+            assert_eq!(busy_summary.removed, 0);
+            assert!(stale_removable.exists());
+        }
+
+        // 2. Fresh timestamp skips removal of all entries.
+        let mut fresh_summary = CleanupSummary::default();
+        cleanup_portable_staging_in_dir(
+            &staging_dir,
+            &manager,
+            &protected,
+            SystemTime::now(),
+            &mut fresh_summary,
+        );
+        assert_eq!(fresh_summary.scanned, 2);
+        assert_eq!(fresh_summary.removed, 0);
+        assert!(stale_removable.exists());
+        assert!(stale_protected.exists());
+
+        // 3. Stale timestamp removes ONLY the unprotected strict-UUID run;
+        //    protected run, non-UUID dir, and non-empty container survive.
+        let mut stale_summary = CleanupSummary::default();
+        cleanup_portable_staging_in_dir(
+            &staging_dir,
+            &manager,
+            &protected,
+            future_now,
+            &mut stale_summary,
+        );
+        assert_eq!(stale_summary.scanned, 2);
+        assert_eq!(stale_summary.removed, 1);
+        assert_eq!(stale_summary.failed, 0);
+        assert!(!stale_removable.exists());
+        assert!(stale_protected.exists());
+        assert!(non_uuid.exists());
+        assert!(staging_dir.exists());
+
+        let _ = fs::remove_dir_all(test_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn portable_staging_cleanup_never_follows_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let test_dir = lock_path("portable-symlink").parent().unwrap().to_path_buf();
+        let external = test_dir.join("external-target");
+        let staging_dir = test_dir.join(codex_win_engine::PORTABLE_STAGING_DIR_NAME);
+        fs::create_dir_all(&external).unwrap();
+        fs::write(external.join("keep.txt"), b"must stay").unwrap();
+        fs::create_dir_all(&staging_dir).unwrap();
+
+        let symlink_run = staging_dir.join(format!("portable-{}", Uuid::new_v4()));
+        symlink(&external, &symlink_run).unwrap();
+
+        let manager = OperationManager::new(lock_path("portable-symlink-op"));
+        let mut summary = CleanupSummary::default();
+        let future_now = SystemTime::now() + STALE_AFTER + Duration::from_secs(60);
+        cleanup_portable_staging_in_dir(&staging_dir, &manager, &[], future_now, &mut summary);
+
+        assert_eq!(summary.scanned, 0);
+        assert_eq!(summary.removed, 0);
+        assert!(fs::symlink_metadata(&symlink_run).is_ok());
+        assert_eq!(fs::read(external.join("keep.txt")).unwrap(), b"must stay");
+
+        let _ = fs::remove_dir_all(test_dir);
     }
 }

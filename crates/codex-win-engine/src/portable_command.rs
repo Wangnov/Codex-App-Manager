@@ -68,22 +68,58 @@ pub fn parse_launch_config(config: &str) -> Option<(&str, bool)> {
     Some((target, required))
 }
 
+/// Prefer the user's home directory as Codex's working directory so dialogs and
+/// new projects never default inside the managed portable install directory.
+/// Falls back to `fallback` (the app directory) only if no valid home directory
+/// is available in the environment.
+#[allow(dead_code)] // Used by Windows shortcut creation, configure, and unit tests.
+pub fn preferred_working_dir(fallback: &Path) -> std::path::PathBuf {
+    resolve_working_dir(env::var_os("USERPROFILE"), env::var_os("HOME"), fallback)
+}
+
+fn resolve_working_dir(
+    user_profile: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+    fallback: &Path,
+) -> std::path::PathBuf {
+    for candidate in [user_profile, home].into_iter().flatten() {
+        if candidate.to_string_lossy().trim().is_empty() {
+            continue;
+        }
+        let path = std::path::PathBuf::from(candidate);
+        if path.is_dir() {
+            return path;
+        }
+    }
+    fallback.to_path_buf()
+}
+
 /// Use the payload's CLI without changing the user's or the Manager's environment.
 /// A nonempty explicit user override retains its normal upstream semantics.
 pub fn configure(command: &mut Command, app_exe: &Path, required: bool) -> io::Result<()> {
-    configure_with_override(command, app_exe, required, env::var_os("CODEX_CLI_PATH"))
+    configure_with_env(
+        command,
+        app_exe,
+        required,
+        env::var_os("CODEX_CLI_PATH"),
+        env::var_os("USERPROFILE"),
+        env::var_os("HOME"),
+    )
 }
 
-fn configure_with_override(
+fn configure_with_env(
     command: &mut Command,
     app_exe: &Path,
     required: bool,
     cli_override: Option<std::ffi::OsString>,
+    user_profile: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
 ) -> io::Result<()> {
     let root = app_exe
         .parent()
         .ok_or_else(|| io::Error::other("missing app directory"))?;
-    command.current_dir(root);
+    let working_dir = resolve_working_dir(user_profile, home, root);
+    command.current_dir(working_dir);
     command.env_remove("CODEX_WINDOWS_REGISTERED_CORE");
     let overridden = cli_override.is_some_and(|value| !value.to_string_lossy().trim().is_empty());
     if !overridden {
@@ -173,32 +209,140 @@ mod tests {
     }
     #[test]
     fn bundled_cli_configuration_handles_missing_legacy_and_explicit_overrides() {
-        let root = env::temp_dir().join(format!("portable-command-{}", uuid::Uuid::new_v4()));
+        let base = env::temp_dir().join(format!("portable-command-{}", uuid::Uuid::new_v4()));
+        let root = base.join("Codex").join("app");
+        let home = base.join("UserHome");
         std::fs::create_dir_all(root.join("resources/bin")).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
         let exe = root.join("ChatGPT.exe");
-        assert!(configure_with_override(&mut Command::new(&exe), &exe, true, None).is_err());
-        assert!(configure_with_override(&mut Command::new(&exe), &exe, false, None).is_ok());
+        assert!(configure_with_env(
+            &mut Command::new(&exe),
+            &exe,
+            true,
+            None,
+            Some(home.as_os_str().to_os_string()),
+            None,
+        )
+        .is_err());
+        assert!(configure_with_env(
+            &mut Command::new(&exe),
+            &exe,
+            false,
+            None,
+            Some(home.as_os_str().to_os_string()),
+            None,
+        )
+        .is_ok());
         let old_cli = root.join("resources/bin/codex.exe");
         std::fs::write(&old_cli, b"old").unwrap();
         let mut command = Command::new(&exe);
-        configure_with_override(&mut command, &exe, true, Some("  ".into())).unwrap();
+        configure_with_env(
+            &mut command,
+            &exe,
+            true,
+            Some("  ".into()),
+            Some(home.as_os_str().to_os_string()),
+            None,
+        )
+        .unwrap();
         assert!(command
             .get_envs()
             .any(|(k, v)| k == "CODEX_CLI_PATH" && v == Some(old_cli.as_os_str())));
         let cli = root.join("resources/codex.exe");
         std::fs::write(&cli, b"new").unwrap();
         let mut command = Command::new(&exe);
-        configure_with_override(&mut command, &exe, true, None).unwrap();
+        configure_with_env(
+            &mut command,
+            &exe,
+            true,
+            None,
+            Some(home.as_os_str().to_os_string()),
+            None,
+        )
+        .unwrap();
         assert!(command
             .get_envs()
             .any(|(k, v)| k == "CODEX_CLI_PATH" && v == Some(cli.as_os_str())));
         assert!(command
             .get_envs()
             .any(|(k, v)| k == "CODEX_WINDOWS_REGISTERED_CORE" && v.is_none()));
-        assert_eq!(command.get_current_dir(), Some(root.as_path()));
+        assert_eq!(command.get_current_dir(), Some(home.as_path()));
         let mut explicit = Command::new(&exe);
-        configure_with_override(&mut explicit, &exe, true, Some("custom-cli".into())).unwrap();
+        configure_with_env(
+            &mut explicit,
+            &exe,
+            true,
+            Some("custom-cli".into()),
+            Some(home.as_os_str().to_os_string()),
+            None,
+        )
+        .unwrap();
         assert!(!explicit.get_envs().any(|(k, _)| k == "CODEX_CLI_PATH"));
-        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(explicit.get_current_dir(), Some(home.as_path()));
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn working_dir_prefers_userprofile_then_home_and_falls_back_to_app_dir() {
+        let base = env::temp_dir().join(format!("portable-cwd-{}", uuid::Uuid::new_v4()));
+        let root = base.join("Codex").join("app");
+        let user_profile = base.join("UserProfile");
+        let home = base.join("HomeFallback");
+        let not_a_dir = base.join("not-a-dir.txt");
+        let missing = base.join("does-not-exist");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&user_profile).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(&not_a_dir, b"file").unwrap();
+        let exe = root.join("ChatGPT.exe");
+
+        // Valid USERPROFILE wins over HOME and the app directory.
+        let mut cmd = Command::new(&exe);
+        configure_with_env(
+            &mut cmd,
+            &exe,
+            false,
+            None,
+            Some(user_profile.as_os_str().to_os_string()),
+            Some(home.as_os_str().to_os_string()),
+        )
+        .unwrap();
+        assert_eq!(cmd.get_current_dir(), Some(user_profile.as_path()));
+
+        // Missing, blank, nonexistent, or file USERPROFILE falls back to valid HOME.
+        for bad_profile in [
+            None,
+            Some(std::ffi::OsString::from("")),
+            Some(std::ffi::OsString::from("   ")),
+            Some(missing.as_os_str().to_os_string()),
+            Some(not_a_dir.as_os_str().to_os_string()),
+        ] {
+            let mut cmd = Command::new(&exe);
+            configure_with_env(
+                &mut cmd,
+                &exe,
+                false,
+                None,
+                bad_profile,
+                Some(home.as_os_str().to_os_string()),
+            )
+            .unwrap();
+            assert_eq!(cmd.get_current_dir(), Some(home.as_path()));
+        }
+
+        // If neither USERPROFILE nor HOME resolves to an existing directory, fall back to root.
+        let mut fallback_cmd = Command::new(&exe);
+        configure_with_env(
+            &mut fallback_cmd,
+            &exe,
+            false,
+            None,
+            Some(missing.as_os_str().to_os_string()),
+            Some(not_a_dir.as_os_str().to_os_string()),
+        )
+        .unwrap();
+        assert_eq!(fallback_cmd.get_current_dir(), Some(root.as_path()));
+
+        std::fs::remove_dir_all(base).unwrap();
     }
 }
