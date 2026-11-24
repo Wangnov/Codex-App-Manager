@@ -8,8 +8,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
-const fontkit = createRequire(import.meta.url)("fontkit");
+import * as fontkit from "fontkit";
 import sharp from "sharp";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
