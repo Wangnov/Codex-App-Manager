@@ -275,6 +275,7 @@ export default {
     navLabel: "页脚导航",
     cols: { projects: "项目", docs: "文档", community: "社区" },
     links: {
+      terms: "服务条款",
       signing: "代码签名政策",
       privacy: "隐私政策",
       spec: ".codexskin 规范",

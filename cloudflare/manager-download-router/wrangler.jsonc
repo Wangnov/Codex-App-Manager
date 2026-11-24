@@ -2,8 +2,7 @@
   // Serves the manager's own update artifacts at
   // https://codexapp.agentsmirror.com/manager/* — global traffic from the
   // dedicated R2 bucket (bound directly), mainland-China traffic from a
-  // presigned IHEP S3 URL (parallel to the codex-app-mirror download-router,
-  // but on the manager's OWN bucket so the two never mix).
+  // presigned IHEP S3 URL.
   "name": "codex-app-manager-download-router",
   "main": "src/index.js",
   "compatibility_date": "2026-06-04",
@@ -11,7 +10,40 @@
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "codex-app-manager" }],
   "vars": {
     "SECONDARY_COUNTRY_CODES": "CN",
-    "SECONDARY_S3_SIGNED_URL_TTL_SECONDS": "3600"
+    "SECONDARY_S3_SIGNED_URL_TTL_SECONDS": "600",
+    "SECONDARY_S3_METADATA_TTL_SECONDS": "120",
+    "BLOCK_MODE": "enforce",
+    "TERMS_HOME_URL": "https://codexapp.agentsmirror.com/",
+    "TERMS_URL": "https://codexapp.agentsmirror.com/terms/",
+    "SOURCE_REPO_URL": "https://github.com/Wangnov/Codex-App-Manager",
+    "BLOCKED_REFERER_HOSTS": [
+      "dqtx.cc",
+      "opchat.eu.org",
+      "ccwu.cc"
+    ],
+    "BLOCKED_UA_SUBSTRINGS": [
+      "越途ai智枢",
+      "yuetunexus",
+      "kakou/",
+      "xingmang-ai-manager",
+      "yuluogptsetup",
+      "relayautoconfig",
+      "relayassistant",
+      "copilotbridgenative",
+      "nicecodetools",
+      "codex2api",
+      "yaoyao-chatgpt",
+      "xiaojiassistant",
+      "pojiamanager",
+      "tianyulink-installer",
+      "chatgptlauncher-codexinstaller",
+      "ccswitchpro-resourceworker",
+      "kjhassistant",
+      "c2a agent studio",
+      "codestudio lite",
+      "winipptchannelchecker",
+      "yihaogpt-tools"
+    ]
   },
   // The IHEP S3 credentials are set as encrypted secrets (NOT here):
   //   wrangler secret put SECONDARY_S3_ENDPOINT
@@ -19,11 +51,20 @@
   //   wrangler secret put SECONDARY_S3_ACCESS_KEY_ID
   //   wrangler secret put SECONDARY_S3_SECRET_ACCESS_KEY
   //   (optional) SECONDARY_S3_REGION, SECONDARY_S3_PREFIX
-  // Until they exist the worker serves everyone from R2 (CN included).
   "routes": [
     {
       "pattern": "codexapp.agentsmirror.com/manager/*",
       "zone_id": "a5bae9b722f3c5fe1a24aaebe7a8e663"
+    }
+  ],
+  "analytics_engine_datasets": [
+    {
+      "binding": "DOWNLOAD_ANALYTICS",
+      "dataset": "codex_manager_downloads"
+    },
+    {
+      "binding": "ABUSE_ANALYTICS",
+      "dataset": "codex_mirror_abuse"
     }
   ]
 }
