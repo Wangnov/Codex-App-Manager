@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import worker from "../src/index.js";
 
@@ -257,7 +259,7 @@ describe("manager download router", () => {
       ),
       BLOCK_MODE: "enforce",
       BLOCKED_REFERER_HOSTS: ["dqtx.cc", "ccwu.cc"],
-      BLOCKED_UA_SUBSTRINGS: ["越途ai智枢", "winipptchannelchecker"],
+      BLOCKED_UA_SUBSTRINGS: ["越途ai智枢", "funtoolkit/"],
       ABUSE_ANALYTICS: abuse,
       DOWNLOAD_ANALYTICS: downloads,
       ABUSE_SAMPLE_RATE: "1",
@@ -321,5 +323,28 @@ describe("manager download router", () => {
     expect(new URL(instCn.headers.get("Location")).searchParams.get("X-Amz-Expires")).toBe("600");
     expect(downloads.points.length).toBe(1);
     expect(downloads.points[0].blobs.slice(0, 3)).toEqual(["secondary", "CN", "manager-installer"]);
+  });
+
+  it("keeps wrangler.jsonc blocklist focused on high-impact abuse and exempts harmless clients", () => {
+    const raw = readFileSync(resolve(import.meta.dirname, "../wrangler.jsonc"), "utf8");
+    const parsed = JSON.parse(raw.replace(/^\s*\/\/.*$/gm, ""));
+    const list = parsed.vars.BLOCKED_UA_SUBSTRINGS;
+    for (const exempt of [
+      "xingmang-ai-manager",
+      "codex2api",
+      "copilotbridgenative",
+      "yuluogptsetup",
+      "xiaojiassistant",
+      "chatgptlauncher-codexinstaller",
+      "kjhassistant",
+      "c2a agent studio",
+      "codestudio lite",
+      "winipptchannelchecker",
+    ]) {
+      expect(list).not.toContain(exempt);
+    }
+    for (const blocked of ["kakou/", "越途ai智枢", "funtoolkit/", "nicecodetools", "ccswitchpro-resourceworker"]) {
+      expect(list).toContain(blocked);
+    }
   });
 });
