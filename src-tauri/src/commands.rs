@@ -1994,19 +1994,20 @@ fn save_settings(
     }
     codex_win_engine::sys::validate_launch_arguments(&s.codex_launch_arguments)
         .map_err(|error| AppError::Engine(error.to_string()))?;
+    codex_win_engine::sys::parse_launch_environment(&s.codex_launch_environment)
+        .map_err(|error| AppError::Engine(error.to_string()))?;
     let _op = begin_guard(state, OperationKind::SetInstallRoot)?;
     let previous = PersistedAppSettings::load();
     let windows = matches!(state.target.os, OperatingSystem::Windows);
-    let environment_changed = windows && previous.codex_launch_environment != s.codex_launch_environment;
+    let arguments_changed = windows && previous.codex_launch_arguments != s.codex_launch_arguments;
+    let environment_changed =
+        windows && previous.codex_launch_environment != s.codex_launch_environment;
     let sync_shortcut = || {
         let mut launch_settings = state.settings.clone();
         launch_settings.install_root = s.install_root.clone();
         crate::app::win_update::sync_launch_shortcut(&launch_settings)
     };
-    if environment_changed {
-        codex_win_engine::sys::parse_launch_environment(&s.codex_launch_environment)
-            .map_err(|error| AppError::Engine(error.to_string()))?;
-    } else if windows && previous.codex_launch_arguments != s.codex_launch_arguments {
+    if arguments_changed && !environment_changed {
         sync_shortcut()?;
     }
     if previous.disable_codex_self_updates != s.disable_codex_self_updates {
@@ -3892,5 +3893,43 @@ mod tests {
         assert!(err
             .to_string()
             .contains("安装位置不能放在系统目录、管理员目录或磁盘根目录"));
+    }
+
+    #[test]
+    fn save_settings_unconditionally_validates_launch_environment() {
+        for os in [OperatingSystem::Windows, OperatingSystem::Macos] {
+            let mut state = super::ManagerState::new();
+            state.target.os = os;
+            state.operations = OperationManager::new(temp_path("codex-save-settings-env.lock"));
+
+            let oversized = format!(
+                "HTTP_PROXY={}",
+                "a".repeat(codex_win_engine::sys::MAX_LAUNCH_ENVIRONMENT_BYTES)
+            );
+            for invalid in [
+                "PATH=C:\\evil",
+                "node_options=--require=evil.js",
+                "ELECTRON_RUN_AS_NODE=1",
+                "ELECTRON_NO_ASAR=1",
+                "NODE_TLS_REJECT_UNAUTHORIZED=0",
+                "__COMPAT_LAYER=RunAsInvoker",
+                "HTTP_PROXY=http://127.0.0.1:7890\nhttp_proxy=http://127.0.0.1:7891",
+                "HTTP_PROXY=",
+                " HTTP_PROXY=http://127.0.0.1:7890",
+                oversized.as_str(),
+            ] {
+                let settings = super::PersistedAppSettings {
+                    codex_launch_environment: invalid.to_string(),
+                    ..super::PersistedAppSettings::default()
+                };
+                let err = super::save_settings(&state, settings).unwrap_err();
+                assert!(
+                    err.message.contains("Codex 启动环境变量"),
+                    "{invalid:?} -> {:?}",
+                    err
+                );
+                assert!(!err.message.contains("evil.js"));
+            }
+        }
     }
 }

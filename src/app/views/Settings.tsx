@@ -16,6 +16,7 @@ import { NavBar, Segmented, Toggle, radioNavTarget } from "../components";
 import { isWindows } from "../platform";
 import { samePath } from "../paths";
 import { Sheet } from "../Sheet";
+import { launchEnvironmentError } from "./launchEnvironment";
 import { useSettingsSaver } from "./useSettingsSaver";
 
 const OK_HEALTH: ConfigHealth = {
@@ -26,26 +27,6 @@ const OK_HEALTH: ConfigHealth = {
   settingsBackupAvailable: false,
   provenanceBackupAvailable: false,
 };
-
-function launchEnvironmentError(text: string, t: TFn): string | null {
-  const names = new Set<string>();
-  for (const [index, line] of text.replaceAll("\r\n", "\n").split("\n").entries()) {
-    const row = index + 1;
-    if (line.includes("\0") || line.includes("\r")) {
-      return t("settings.windows.envInvalid", { row });
-    }
-    if (/^\p{White_Space}*$/u.test(line)) continue;
-    const match = /^\p{White_Space}*([A-Za-z_][A-Za-z0-9_]*)\p{White_Space}*=/u.exec(line);
-    if (!match) return t("settings.windows.envInvalid", { row });
-    const name = match[1].toUpperCase();
-    if (names.has(name)) return t("settings.windows.envDuplicate", { row });
-    if (["CODEX_CLI_PATH", "CODEX_HOME", "CODEX_SPARKLE_ENABLED", "CODEX_WINDOWS_REGISTERED_CORE"].includes(name)) {
-      return t("settings.windows.envReserved", { row });
-    }
-    names.add(name);
-  }
-  return null;
-}
 
 function healthLabel(status: string, t: TFn): string {
   if (status === "recovered") return t("settings.health.recovered");
