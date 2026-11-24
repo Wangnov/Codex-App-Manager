@@ -173,12 +173,20 @@ function getAccessPolicy(env) {
     .map((item) => decodeHeaderUtf8(item).trim().toLowerCase())
     .filter(Boolean);
   const blockedReferers = parseStringList(refSource)
-    .map((item) => item.trim().toLowerCase().replace(/^\.+|\.+$/g, ""))
+    .map((item) => trimDots(item.trim().toLowerCase()))
     .filter(Boolean);
 
   compiledPolicyCache = { mode, blockedUas, blockedReferers };
   compiledPolicyKey = cacheKey;
   return compiledPolicyCache;
+}
+
+function trimDots(value) {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === ".") start += 1;
+  while (end > start && value[end - 1] === ".") end -= 1;
+  return value.slice(start, end);
 }
 
 function stringifySource(value) {
