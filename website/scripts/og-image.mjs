@@ -8,11 +8,10 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
+import * as fontkit from "fontkit";
 import sharp from "sharp";
 import subsetFont from "subset-font";
 
-const fontkit = createRequire(import.meta.url)("fontkit");
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const IMG = path.join(root, "public/img");
 const W = 1200;
