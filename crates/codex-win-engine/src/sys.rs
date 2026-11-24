@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 #[cfg(windows)]
 use std::path::PathBuf;
@@ -47,34 +47,126 @@ pub struct LaunchOptions<'a> {
     pub additional_environment: &'a str,
 }
 
+pub const MAX_LAUNCH_ENVIRONMENT_BYTES: usize = 16 * 1024;
+
+/// Variables owned by the Manager itself; case-insensitively reserved so user
+/// entries cannot fight the portable launcher or self-update policy.
+pub const MANAGER_MANAGED_ENV_NAMES: &[&str] = &[
+    "CODEX_CLI_PATH",
+    "CODEX_HOME",
+    "CODEX_SPARKLE_ENABLED",
+    "CODEX_WINDOWS_REGISTERED_CORE",
+];
+
+/// Windows core path/profile variables and cross-runtime code-injection or
+/// dynamic-library hijacking variables that must never be overridden here.
+/// Proxy and TLS certificate variables (HTTP_PROXY, HTTPS_PROXY, ALL_PROXY,
+/// NO_PROXY, NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, etc.) stay allowed.
+pub const BLOCKED_LAUNCH_ENV_NAMES: &[&str] = &[
+    // Windows core system, path, shell, and profile directories
+    "PATH",
+    "PATHEXT",
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "WINDIR",
+    "COMSPEC",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "TEMP",
+    "TMP",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "ALLUSERSPROFILE",
+    "PROGRAMDATA",
+    "PROGRAMFILES",
+    "PROGRAMW6432",
+    "COMMONPROGRAMFILES",
+    "COMMONPROGRAMW6432",
+    "PSMODULEPATH",
+    "__COMPAT_LAYER",
+    // Electron and Node.js code-injection, integrity-bypass, or TLS-disable variables
+    "ELECTRON_RUN_AS_NODE",
+    "ELECTRON_NO_ASAR",
+    "ELECTRON_FORCE_IS_PACKAGED",
+    "NODE_OPTIONS",
+    "NODE_PATH",
+    "NODE_TLS_REJECT_UNAUTHORIZED",
+    // Dynamic library, OpenSSL, .NET profiler, and shell startup hijacking
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "LD_AUDIT",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FRAMEWORK_PATH",
+    "OPENSSL_CONF",
+    "OPENSSL_ENGINES",
+    "OPENSSL_MODULES",
+    "COR_ENABLE_PROFILING",
+    "COR_PROFILER",
+    "COR_PROFILER_PATH",
+    "COR_PROFILER_PATH_32",
+    "COR_PROFILER_PATH_64",
+    "CORECLR_ENABLE_PROFILING",
+    "CORECLR_PROFILER",
+    "CORECLR_PROFILER_PATH",
+    "CORECLR_PROFILER_PATH_32",
+    "CORECLR_PROFILER_PATH_64",
+    "DOTNET_STARTUP_HOOKS",
+    "BASH_ENV",
+];
+
 pub fn parse_launch_environment(input: &str) -> Result<BTreeMap<String, String>, EngineError> {
+    if input.len() > MAX_LAUNCH_ENVIRONMENT_BYTES {
+        return Err(EngineError::Io(format!(
+            "Codex 启动环境变量总长度不能超过 {MAX_LAUNCH_ENVIRONMENT_BYTES} 字节"
+        )));
+    }
     let mut values = BTreeMap::new();
+    let mut seen = BTreeSet::new();
     for (index, line) in input.lines().enumerate() {
         let row = index + 1;
         let invalid = || EngineError::Io(format!("Codex 启动环境变量第 {row} 行应为名称=值"));
-        if line.contains(['\0', '\r']) {
+        if line
+            .chars()
+            .any(|ch| ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}'))
+        {
             return Err(invalid());
         }
         if line.trim().is_empty() {
             continue;
         }
         let (name, value) = line.split_once('=').ok_or_else(invalid)?;
-        let mut chars = name.trim().bytes();
-        if !chars.next().is_some_and(|ch| ch == b'_' || ch.is_ascii_alphabetic())
-            || !chars.all(|ch| ch == b'_' || ch.is_ascii_alphanumeric())
+        let mut bytes = name.bytes();
+        if !bytes
+            .next()
+            .is_some_and(|ch| ch == b'_' || ch.is_ascii_alphabetic())
+            || !bytes.all(|ch| ch == b'_' || ch.is_ascii_alphanumeric())
         {
             return Err(invalid());
         }
-        let name = name.trim().to_ascii_uppercase();
-        if matches!(
-            name.as_str(),
-            "CODEX_CLI_PATH" | "CODEX_HOME" | CODEX_SELF_UPDATE_ENV_KEY | "CODEX_WINDOWS_REGISTERED_CORE"
-        ) {
-            return Err(EngineError::Io(format!("Codex 启动环境变量第 {row} 行由管理器管理")));
+        let canonical = name.to_ascii_uppercase();
+        if MANAGER_MANAGED_ENV_NAMES.contains(&canonical.as_str()) {
+            return Err(EngineError::Io(format!(
+                "Codex 启动环境变量第 {row} 行由管理器管理"
+            )));
         }
-        if values.insert(name, value.to_string()).is_some() {
-            return Err(EngineError::Io(format!("Codex 启动环境变量第 {row} 行名称重复")));
+        if BLOCKED_LAUNCH_ENV_NAMES.contains(&canonical.as_str()) {
+            return Err(EngineError::Io(format!(
+                "Codex 启动环境变量第 {row} 行的系统或安全受限变量不允许覆盖"
+            )));
         }
+        if !seen.insert(canonical) {
+            return Err(EngineError::Io(format!(
+                "Codex 启动环境变量第 {row} 行名称重复（不区分大小写）"
+            )));
+        }
+        if value.trim().is_empty() {
+            return Err(EngineError::Io(format!(
+                "Codex 启动环境变量第 {row} 行的值不能为空"
+            )));
+        }
+        values.insert(name.to_string(), value.to_string());
     }
     Ok(values)
 }
@@ -2743,33 +2835,117 @@ mod tests {
     use super::*;
     use super::{
         parse_launch_environment, parse_registered_msix_package_full_name, registered_msix_aumid,
-        registered_msix_launch_alias, remote_debugging_arguments,
+        registered_msix_launch_alias, remote_debugging_arguments, BLOCKED_LAUNCH_ENV_NAMES,
+        CODEX_SELF_UPDATE_ENV_KEY, MANAGER_MANAGED_ENV_NAMES, MAX_LAUNCH_ENVIRONMENT_BYTES,
     };
 
     #[test]
-    fn launch_environment_preserves_values_and_reports_invalid_lines() {
-        let values = parse_launch_environment(" \r\nEMPTY=\r\n Example = a=b 中文 \n").unwrap();
-        assert_eq!(values["EMPTY"], "");
-        assert_eq!(values["EXAMPLE"], " a=b 中文 ");
+    fn launch_environment_preserves_original_case_and_values() {
+        let input = " \r\nhttp_proxy=http://127.0.0.1:7890\r\nHTTPS_PROXY=http://127.0.0.1:7890\nALL_PROXY=socks5://127.0.0.1:7890\nNO_PROXY=localhost,127.0.0.1,::1\nNODE_EXTRA_CA_CERTS=C:\\certs\\corp ca.pem\nSSL_CERT_FILE=C:\\certs\\ca.pem\nExample=a=b 中文 \n";
+        let values = parse_launch_environment(input).unwrap();
+        assert_eq!(values.get("http_proxy").map(String::as_str), Some("http://127.0.0.1:7890"));
+        assert!(!values.contains_key("HTTP_PROXY"));
+        assert_eq!(values.get("HTTPS_PROXY").map(String::as_str), Some("http://127.0.0.1:7890"));
+        assert_eq!(values.get("ALL_PROXY").map(String::as_str), Some("socks5://127.0.0.1:7890"));
+        assert_eq!(values.get("NO_PROXY").map(String::as_str), Some("localhost,127.0.0.1,::1"));
+        assert_eq!(
+            values.get("NODE_EXTRA_CA_CERTS").map(String::as_str),
+            Some("C:\\certs\\corp ca.pem")
+        );
+        assert_eq!(values.get("SSL_CERT_FILE").map(String::as_str), Some("C:\\certs\\ca.pem"));
+        assert_eq!(values.get("Example").map(String::as_str), Some("a=b 中文 "));
+        assert!(!values.contains_key("EXAMPLE"));
         assert!(parse_launch_environment("\n  \n").unwrap().is_empty());
+    }
+
+    #[test]
+    fn launch_environment_rejects_invalid_syntax_control_chars_and_empty_values() {
         for invalid in [
-            "http_proxy=secret",
             "INVALID",
+            "=secret",
+            " NAME=secret",
+            "NAME =secret",
             "1NAME=secret",
+            "HTTP-PROXY=secret",
             "\u{feff}NAME=secret",
             "NAME=secret\0",
+            "NAME\0X=secret",
             "NAME=secret\rvalue",
-            "codex_cli_path=secret",
-            "CODEX_HOME=secret",
-            "CODEX_SPARKLE_ENABLED=secret",
-            "CODEX_WINDOWS_REGISTERED_CORE=secret",
+            "NAME=secret\tvalue",
+            "NAME=secret\x1b[31m",
+            "NAME=secret\u{0085}next",
+            "NAME=secret\u{2028}next",
+            "NAME=secret\u{2029}next",
+            "EMPTY=",
+            "EMPTY=   ",
         ] {
             let error = parse_launch_environment(&format!("HTTP_PROXY=one\n{invalid}"))
                 .unwrap_err()
                 .to_string();
-            assert!(error.contains('2'), "{error}");
-            assert!(!error.contains("secret"));
+            assert!(error.contains('2'), "{invalid:?} -> {error}");
+            assert!(!error.contains("secret"), "{invalid:?} leaked value: {error}");
         }
+        let empty_err = parse_launch_environment("HTTP_PROXY=").unwrap_err().to_string();
+        assert!(empty_err.contains("不能为空"), "{empty_err}");
+    }
+
+    #[test]
+    fn launch_environment_rejects_case_insensitive_duplicates_managed_and_blocked_vars() {
+        assert!(MANAGER_MANAGED_ENV_NAMES.contains(&CODEX_SELF_UPDATE_ENV_KEY));
+
+        let dup_err = parse_launch_environment("HTTP_PROXY=one\nhttp_proxy=secret")
+            .unwrap_err()
+            .to_string();
+        assert!(dup_err.contains('2') && dup_err.contains("重复"), "{dup_err}");
+        assert!(!dup_err.contains("secret"));
+
+        for managed in MANAGER_MANAGED_ENV_NAMES {
+            for candidate in [managed.to_string(), managed.to_ascii_lowercase()] {
+                let error = parse_launch_environment(&format!("HTTP_PROXY=one\n{candidate}=secret"))
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.contains('2') && error.contains("管理器管理"), "{candidate}: {error}");
+                assert!(!error.contains("secret"));
+            }
+        }
+
+        for blocked in BLOCKED_LAUNCH_ENV_NAMES {
+            let mixed = format!(
+                "{}{}",
+                blocked[..1].to_ascii_uppercase(),
+                blocked[1..].to_ascii_lowercase()
+            );
+            for candidate in [blocked.to_string(), blocked.to_ascii_lowercase(), mixed] {
+                let error = parse_launch_environment(&format!("HTTP_PROXY=one\n{candidate}=secret"))
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    error.contains('2') && error.contains("不允许覆盖"),
+                    "{candidate}: {error}"
+                );
+                assert!(!error.contains("secret"));
+            }
+        }
+    }
+
+    #[test]
+    fn launch_environment_enforces_byte_length_limit() {
+        let prefix = "A=";
+        let exact = format!("{prefix}{}", "x".repeat(MAX_LAUNCH_ENVIRONMENT_BYTES - prefix.len()));
+        assert_eq!(exact.len(), MAX_LAUNCH_ENVIRONMENT_BYTES);
+        assert!(parse_launch_environment(&exact).is_ok());
+
+        let too_long_ascii = format!("{exact}y");
+        let err = parse_launch_environment(&too_long_ascii).unwrap_err().to_string();
+        assert!(err.contains(&MAX_LAUNCH_ENVIRONMENT_BYTES.to_string()), "{err}");
+        assert!(!err.contains("xxxx"));
+
+        let too_long_utf8 = format!(
+            "{prefix}{}",
+            "中".repeat((MAX_LAUNCH_ENVIRONMENT_BYTES / 3) + 1)
+        );
+        assert!(too_long_utf8.len() > MAX_LAUNCH_ENVIRONMENT_BYTES);
+        assert!(parse_launch_environment(&too_long_utf8).is_err());
     }
 
     #[test]
@@ -2786,8 +2962,11 @@ mod tests {
     }
 
     #[test]
-    fn launch_environment_uses_saved_updater_policy_instead_of_the_parent_value() {
-        let environment = parse_launch_environment("HTTP_PROXY=http://127.0.0.1:7890").unwrap();
+    fn launch_environment_uses_saved_updater_policy_and_preserves_original_case() {
+        let environment = parse_launch_environment(
+            "http_proxy=http://127.0.0.1:7890\nCustomCase=value",
+        )
+        .unwrap();
         let mut command = std::process::Command::new("codex.exe");
         for disabled in [true, false] {
             super::apply_configured_launch_environment(&mut command, &environment, disabled);
@@ -2797,9 +2976,14 @@ mod tests {
                 disabled.then_some(std::ffi::OsStr::new("false")),
             );
             assert_eq!(
-                vars[std::ffi::OsStr::new("HTTP_PROXY")],
+                vars[std::ffi::OsStr::new("http_proxy")],
                 Some(std::ffi::OsStr::new("http://127.0.0.1:7890")),
             );
+            assert_eq!(
+                vars[std::ffi::OsStr::new("CustomCase")],
+                Some(std::ffi::OsStr::new("value")),
+            );
+            assert!(!vars.contains_key(std::ffi::OsStr::new("HTTP_PROXY")));
         }
     }
 
