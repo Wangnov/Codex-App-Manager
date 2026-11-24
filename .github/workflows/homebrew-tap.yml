@@ -1,0 +1,67 @@
+name: Publish to Homebrew tap
+
+# Triggers Wangnov/homebrew-tap's bump-codex-app-manager.yml immediately after
+# a stable immutable release is published, so `brew install --cask` and
+# `brew upgrade --cask` pick up the new version without waiting for the tap's
+# 6-hour scheduled fallback.
+#
+# Uses HOMEBREW_TAP_TOKEN when configured, falling back to WINGET_TOKEN
+# (which already carries `public_repo` + `workflow` scopes on Wangnov's public
+# repositories). If neither token is set, warns and exits cleanly while the
+# tap's 6-hour schedule remains active.
+
+on:
+  release:
+    types: [released]
+  workflow_dispatch:
+    inputs:
+      release-tag:
+        description: "Stable release tag to sync to Wangnov/homebrew-tap (e.g. v0.5.18)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  homebrew-tap:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for dispatch token
+        id: gate
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || secrets.WINGET_TOKEN }}
+        run: |
+          if [ -n "$TAP_TOKEN" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::HOMEBREW_TAP_TOKEN / WINGET_TOKEN not set; skipping instant Homebrew tap dispatch (6-hour tap schedule remains active)"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Dispatch Wangnov/homebrew-tap cask bump
+        if: steps.gate.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || secrets.WINGET_TOKEN }}
+          TAP_REPOSITORY: "Wangnov/homebrew-tap"
+          RELEASE_TAG: ${{ inputs.release-tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Homebrew tap dispatch requires a stable vX.Y.Z tag, got: $RELEASE_TAG"
+            exit 1
+          fi
+
+          release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")"
+          if [ "$(jq -r '.draft' <<< "$release_json")" != "false" ] || [ "$(jq -r '.prerelease' <<< "$release_json")" != "false" ]; then
+            echo "::error::release $RELEASE_TAG must be a published stable release"
+            exit 1
+          fi
+          if [ "$(jq -r '.immutable' <<< "$release_json")" != "true" ]; then
+            echo "::error::release $RELEASE_TAG must be immutable before updating Homebrew tap"
+            exit 1
+          fi
+
+          GH_TOKEN="$TAP_TOKEN" gh workflow run bump-codex-app-manager.yml \
+            --repo "$TAP_REPOSITORY" \
+            -f release-tag="$RELEASE_TAG"

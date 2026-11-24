@@ -41,6 +41,10 @@ const wingetWorkflow = await readFile(
   join(repoRoot, ".github/workflows/winget.yml"),
   "utf8",
 );
+const homebrewTapWorkflow = await readFile(
+  join(repoRoot, ".github/workflows/homebrew-tap.yml"),
+  "utf8",
+);
 const mirrorRelease = await readFile(
   join(repoRoot, "scripts/mirror-release.mjs"),
   "utf8",
@@ -756,6 +760,7 @@ describe("release workflow recovery invariants", () => {
     );
     const promote = releaseJob.indexOf("- name: Promote CDN mirror latest");
     const winget = releaseJob.indexOf("- name: Trigger winget submission");
+    const homebrewTap = releaseJob.indexOf("- name: Trigger Homebrew tap update");
     const summary = releaseJob.indexOf("- name: Write release summary");
     expect(localVerify).toBeGreaterThan(-1);
     expect(attest).toBeGreaterThan(localVerify);
@@ -768,6 +773,8 @@ describe("release workflow recovery invariants", () => {
     expect(publish).toBeGreaterThan(upload);
     expect(publishedVerify).toBeGreaterThan(publish);
     expect(promote).toBeGreaterThan(publishedVerify);
+    expect(homebrewTap).toBeGreaterThan(winget);
+    expect(summary).toBeGreaterThan(homebrewTap);
 
     const uploadStep = releaseJob.slice(upload, publish);
     const publishStep = releaseJob.slice(publish, publishedVerify);
@@ -776,7 +783,8 @@ describe("release workflow recovery invariants", () => {
     const existingStep = releaseJob.slice(verifyExisting, provenance);
     const provenanceStep = releaseJob.slice(provenance, stage);
     const promoteStep = releaseJob.slice(promote, winget);
-    const wingetStep = releaseJob.slice(winget, summary);
+    const wingetStep = releaseJob.slice(winget, homebrewTap);
+    const homebrewTapStep = releaseJob.slice(homebrewTap, summary);
     const localVerifyStep = releaseJob.slice(localVerify, stage);
     const mirrorVerifyStep = releaseJob.slice(mirrorVerify, upload);
     expect(localVerifyStep).toContain(
@@ -836,6 +844,10 @@ describe("release workflow recovery invariants", () => {
     expect(promoteStep).not.toContain("steps.attest_fresh.outcome");
     expect(wingetStep).toContain("steps.provenance.outputs.ready == 'true'");
     expect(wingetStep).not.toContain("steps.attest_fresh.outcome");
+    expect(homebrewTapStep).toContain("steps.provenance.outputs.ready == 'true'");
+    expect(homebrewTapStep).toContain("!contains(env.RELEASE_TAG, '-')");
+    expect(homebrewTapStep).toContain("gh workflow run homebrew-tap.yml");
+    expect(homebrewTapStep).not.toContain("steps.attest_fresh.outcome");
     expect(releaseJob.slice(0, upload)).toContain(
       "rm -f dist/latest.mirror.json dist/latest.json",
     );
@@ -908,5 +920,20 @@ describe("winget workflow supply-chain invariants", () => {
     );
     expect(wingetWorkflow).toContain("KOMAC_FORK_OWNER");
     expect(wingetWorkflow).toContain("komac cleanup --only-merged --all");
+  });
+});
+
+describe("homebrew tap workflow supply-chain invariants", () => {
+  it("dispatches Wangnov/homebrew-tap without third-party actions and gates on immutable stable releases", () => {
+    expect(homebrewTapWorkflow).not.toMatch(/^\s*(?:-\s*)?uses:/m);
+    expect(homebrewTapWorkflow).toContain(
+      "secrets.HOMEBREW_TAP_TOKEN || secrets.WINGET_TOKEN",
+    );
+    expect(homebrewTapWorkflow).toContain(
+      'gh workflow run bump-codex-app-manager.yml',
+    );
+    expect(homebrewTapWorkflow).toContain('TAP_REPOSITORY: "Wangnov/homebrew-tap"');
+    expect(homebrewTapWorkflow).toContain('.immutable');
+    expect(homebrewTapWorkflow).toContain('.prerelease');
   });
 });

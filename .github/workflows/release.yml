@@ -1664,6 +1664,19 @@ jobs:
             echo "status=dispatch_failed" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Trigger Homebrew tap update
+        id: homebrew_tap
+        if: ${{ success() && steps.provenance.outputs.ready == 'true' && !contains(env.RELEASE_TAG, '-') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh workflow run homebrew-tap.yml -f release-tag="$RELEASE_TAG" --repo "${{ github.repository }}"; then
+            echo "status=dispatched" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Homebrew tap dispatch failed"
+            echo "status=dispatch_failed" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Write release summary
         if: always()
         env:
@@ -1672,6 +1685,7 @@ jobs:
           MIRROR_VERIFY_OUTCOME: ${{ steps.mirror_verify.outcome }}
           MIRROR_PROMOTE_OUTCOME: ${{ steps.mirror_promote.outcome }}
           WINGET_OUTCOME: ${{ steps.winget.outputs.status || steps.winget.outcome }}
+          HOMEBREW_TAP_OUTCOME: ${{ steps.homebrew_tap.outputs.status || steps.homebrew_tap.outcome }}
           SBOM_OUTCOME: ${{ steps.sbom.outcome }}
           ATTESTATION_OUTCOME: ${{ steps.attest_fresh.outcome }}
           BINDING_ATTESTATION_OUTCOME: ${{ steps.attest_binding.outcome }}
