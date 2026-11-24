@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import zh from "./locales/zh.mjs";
 import en from "./locales/en.mjs";
+import { TERMS_META, renderTermsMain } from "./terms.mjs";
 import {
   ORIGIN,
   SKINS_ORIGIN,
@@ -147,10 +148,12 @@ export function displayStrings(t) {
 /* ------------------------------------------------------------------- head */
 
 function head(t, data, page) {
-  const url = `${ORIGIN}${t.path}`;
-  const title = page === "404" ? t.notFound.title : t.meta.title;
+  const isTerms = page === "terms";
+  const url = `${ORIGIN}${isTerms ? TERMS_META.path : t.path}`;
+  const title = page === "404" ? t.notFound.title : isTerms ? TERMS_META.title : t.meta.title;
+  const description = isTerms ? TERMS_META.description : t.meta.description;
   const redirect =
-    t.lang === "zh" && page !== "404"
+    t.lang === "zh" && page !== "404" && !isTerms
       ? `<script>(function(){try{if(location.pathname!=="/")return;var s=localStorage.getItem("cam-site-lang");if(s==="zh")return;if(s==="en"||(!/^zh\\b/i.test(navigator.language||"")&&!/bot|crawl|spider|slurp|preview|lighthouse/i.test(navigator.userAgent))){location.replace("/en/"+location.hash)}}catch(e){}})();</script>`
       : "";
   const ld = {
@@ -166,15 +169,15 @@ function head(t, data, page) {
   };
   return `${redirect}
     <title>${esc(title)}</title>
-    <meta name="description" content="${esc(t.meta.description)}">
+    <meta name="description" content="${esc(description)}">
     ${page === "404" ? `<meta name="robots" content="noindex">` : `<link rel="canonical" href="${url}">`}
-    <link rel="alternate" hreflang="zh-CN" href="${ORIGIN}/">
+    ${isTerms ? "" : `<link rel="alternate" hreflang="zh-CN" href="${ORIGIN}/">
     <link rel="alternate" hreflang="en" href="${ORIGIN}/en/">
-    <link rel="alternate" hreflang="x-default" href="${ORIGIN}/">
+    <link rel="alternate" hreflang="x-default" href="${ORIGIN}/">`}
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="${esc(t.brand)}">
-    <meta property="og:title" content="${esc(t.meta.ogTitle)}">
-    <meta property="og:description" content="${esc(t.meta.ogDescription)}">
+    <meta property="og:title" content="${esc(isTerms ? TERMS_META.title : t.meta.ogTitle)}">
+    <meta property="og:description" content="${esc(description)}">
     <meta property="og:url" content="${url}">
     <meta property="og:image" content="${ORIGIN}/img/${t.meta.ogImage}">
     <meta property="og:image:width" content="1200">
@@ -186,8 +189,8 @@ function head(t, data, page) {
     <link rel="icon" type="image/png" href="/img/logo-manager-192.png">
     <link rel="apple-touch-icon" href="/img/logo-manager-192.png">
     <link rel="preload" href="/fonts/mona-sans.woff2" as="font" type="font/woff2" crossorigin>
-    ${t.lang === "zh" ? `<link rel="preload" href="/fonts/shs-heavy.woff2" as="font" type="font/woff2" crossorigin>` : ""}
-    ${page === "404" ? "" : `<link rel="preload" as="image" type="image/avif" media="(prefers-color-scheme: dark)" imagesrcset="/img/hero-dark-960.avif 960w, /img/hero-dark-1672.avif 1672w" imagesizes="100vw">
+    ${t.lang === "zh" && !isTerms ? `<link rel="preload" href="/fonts/shs-heavy.woff2" as="font" type="font/woff2" crossorigin>` : ""}
+    ${page === "404" || isTerms ? "" : `<link rel="preload" as="image" type="image/avif" media="(prefers-color-scheme: dark)" imagesrcset="/img/hero-dark-960.avif 960w, /img/hero-dark-1672.avif 1672w" imagesizes="100vw">
     <link rel="preload" as="image" type="image/avif" media="(prefers-color-scheme: light)" imagesrcset="/img/hero-light-960.avif 960w, /img/hero-light-1672.avif 1672w" imagesizes="100vw">`}
     <script type="application/ld+json">${JSON.stringify(ld)}</script>`;
 }
@@ -711,6 +714,7 @@ function footer(t) {
             [REPO.skins, "awesome-codex-skins"],
           ])}
           ${col(f.cols.docs, [
+            [LINKS.terms, f.links.terms],
             [LINKS.signing, f.links.signing],
             [LINKS.privacy, f.links.privacy],
             [LINKS.spec, f.links.spec],
@@ -753,7 +757,7 @@ function notFound(t) {
 
 /**
  * @param {string} shell  HTML shell with <!--app-head--> and <!--app-body-->
- * @param {"zh"|"en"|"404"} page
+ * @param {"zh"|"en"|"404"|"terms"} page
  */
 export function renderPage(shell, page) {
   const data = readData();
@@ -761,7 +765,9 @@ export function renderPage(shell, page) {
   const body =
     page === "404"
       ? notFound(t)
-      : `${nav(t)}
+      : page === "terms"
+        ? `${renderTermsMain()}\n  ${footer(t)}`
+        : `${nav(t)}
   <main id="main">
     ${hero(t, data)}
     ${proof(t, data)}

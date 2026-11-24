@@ -245,4 +245,81 @@ describe("manager download router", () => {
     }
     expect(calls).toEqual([]);
   });
+
+  it("blocks unauthorized client UAs (including UTF-8 CJK ByteStrings) and redirects hotlinks BEFORE R2 latest.json reads", async () => {
+    const calls = [];
+    const abuse = { points: [], writeDataPoint(p) { this.points.push(p); } };
+    const downloads = { points: [], writeDataPoint(p) { this.points.push(p); } };
+    const env = {
+      BUCKET: bucket(
+        { "latest.json": r2Object(latestManifest, { contentType: "application/json" }) },
+        calls,
+      ),
+      BLOCK_MODE: "enforce",
+      BLOCKED_REFERER_HOSTS: ["dqtx.cc", "ccwu.cc"],
+      BLOCKED_UA_SUBSTRINGS: ["越途ai智枢", "winipptchannelchecker"],
+      ABUSE_ANALYTICS: abuse,
+      DOWNLOAD_ANALYTICS: downloads,
+      ABUSE_SAMPLE_RATE: "1",
+    };
+
+    const hotlinkRes = await worker.fetch(
+      request("/manager/latest/CodexAppManager_x64-setup.exe", {
+        headers: { Referer: "https://gpt.dqtx.cc/index.html" },
+      }),
+      env,
+    );
+    expect(hotlinkRes.status).toBe(302);
+    expect(hotlinkRes.headers.get("Location")).toBe("https://codexapp.agentsmirror.com/");
+    expect(calls).toEqual([]);
+    expect(abuse.points.length).toBe(1);
+    expect(abuse.points[0].blobs[0]).toBe("manager-hotlink-redirect");
+
+    const cjkByteString = String.fromCharCode(
+      ...new TextEncoder().encode("Mozilla/5.0 越途AI智枢/1.9.0"),
+    );
+    const blockedRes = await worker.fetch(
+      request("/manager/latest/CodexAppManager_x64-setup.exe", {
+        headers: { "User-Agent": cjkByteString },
+      }),
+      env,
+    );
+    expect(blockedRes.status).toBe(403);
+    expect(blockedRes.headers.get("X-Mirror-Policy")).toBe("client-not-authorized");
+    const payload = await blockedRes.json();
+    expect(payload.error).toBe("client_not_authorized");
+    expect(payload.compliance_warning_cn).toContain("中国科学院高能物理研究所");
+    expect(calls).toEqual([]);
+    expect(abuse.points.length).toBe(2);
+    expect(downloads.points).toEqual([]);
+  });
+
+  it("supports split metadata vs installer S3 TTL and counts only non-probe installer downloads", async () => {
+    const downloads = { points: [], writeDataPoint(p) { this.points.push(p); } };
+    const env = {
+      BUCKET: bucket({
+        "latest.json": r2Object(latestManifest, { contentType: "application/json" }),
+        "0.1.18/CodexAppManager_0.1.18_x64-setup.exe": r2Object("installer"),
+      }),
+      DOWNLOAD_ANALYTICS: downloads,
+      ...secondaryEnv({
+        SECONDARY_S3_SIGNED_URL_TTL_SECONDS: "600",
+        SECONDARY_S3_METADATA_TTL_SECONDS: "120",
+      }),
+    };
+
+    const metaCn = await worker.fetch(request("/manager/latest.json", {}, { country: "CN" }), env);
+    expect(metaCn.status).toBe(302);
+    expect(new URL(metaCn.headers.get("Location")).searchParams.get("X-Amz-Expires")).toBe("120");
+    expect(downloads.points).toEqual([]);
+
+    const instCn = await worker.fetch(
+      request("/manager/0.1.18/CodexAppManager_0.1.18_x64-setup.exe", {}, { country: "CN" }),
+      env,
+    );
+    expect(instCn.status).toBe(302);
+    expect(new URL(instCn.headers.get("Location")).searchParams.get("X-Amz-Expires")).toBe("600");
+    expect(downloads.points.length).toBe(1);
+    expect(downloads.points[0].blobs.slice(0, 3)).toEqual(["secondary", "CN", "manager-installer"]);
+  });
 });

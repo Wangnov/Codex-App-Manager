@@ -56,6 +56,7 @@ export const LINKS = {
   store: "https://apps.microsoft.com/detail/9plm9xgg6vks",
   signing: `${REPO.manager}/blob/main/docs/code-signing-policy.md`,
   privacy: `${REPO.manager}/blob/main/docs/privacy.md`,
+  terms: `${ORIGIN}/terms/`,
   spec: `${REPO.skins}/blob/main/SPEC.md`,
   registry: `${REPO.skins}/blob/main/REGISTRY.md`,
   contributing: `${REPO.skins}#readme-cn`,

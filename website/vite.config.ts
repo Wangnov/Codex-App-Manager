@@ -4,10 +4,11 @@ import { pathToFileURL } from "node:url";
 
 // Each HTML shell is filled from site/render.mjs at dev and build time, so
 // every language ships as complete static markup (no runtime text swapping).
-const PAGES: Record<string, "zh" | "en" | "404"> = {
+const PAGES: Record<string, "zh" | "en" | "404" | "terms"> = {
   "/index.html": "zh",
   "/en/index.html": "en",
   "/404.html": "404",
+  "/terms/index.html": "terms",
 };
 
 function sitePages(): Plugin {
@@ -45,6 +46,7 @@ export default defineConfig({
         main: resolve(import.meta.dirname, "index.html"),
         en: resolve(import.meta.dirname, "en/index.html"),
         notFound: resolve(import.meta.dirname, "404.html"),
+        terms: resolve(import.meta.dirname, "terms/index.html"),
       },
     },
   },

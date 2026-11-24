@@ -1,6 +1,6 @@
 # Privacy policy · 隐私政策
 
-Effective date / 生效日期：2026-09-02
+Effective date / 生效日期：2026-11-24
 
 This policy applies to Codex App Manager, its public website, and the download
 router maintained by this repository. Third-party services selected or contacted
@@ -78,7 +78,23 @@ Default network paths may include:
 - A custom HTTPS source or proxy explicitly configured by the user.
 
 这些服务与普通 HTTPS 服务一样，可能处理来源 IP、请求时间与路径、User-Agent、响应状态
-以及防滥用/安全日志。项目维护者无法代表第三方承诺其保留期限。相关第三方政策包括：
+以及防滥用/安全日志。项目维护者无法代表第三方承诺其保留期限。
+
+为统计下载计数与防范未获授权的商业盗链/高频滥用，由本项目运营的下载路由 Worker 会向
+Cloudflare Analytics Engine 记录聚合下载与滥用审计指标，字段仅限：路由分支、国家/地区
+代码、下载类别、请求路径、Referer 来源域名（不含查询参数）、截断后的 User-Agent、网络
+自治系统号（ASN）及 HTTP/TLS 协议版本标识。该数据集**不写入客户端 IP 地址**，平台保留
+期限不超过 90 天。
+
+To maintain download counters and protect public-interest mirror bandwidth against
+unauthorized commercial hotlinking or abusive polling, the project-operated download
+router Workers record aggregate metrics in Cloudflare Analytics Engine limited to:
+route branch, country code, asset category, request path, Referer hostname (without
+query parameters), truncated User-Agent, Autonomous System Number (ASN), and HTTP/TLS
+protocol version markers. **Client IP addresses are never written** to these datasets,
+and retention does not exceed 90 days.
+
+相关第三方政策包括：
 
 - [GitHub General Privacy Statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement)
 - [Cloudflare Privacy Policy](https://www.cloudflare.com/privacypolicy/)
@@ -140,4 +156,4 @@ secrets publicly.
 隐私或安全问题请通过 [GitHub Issues](https://github.com/Wangnov/Codex-App-Manager/issues)
 报告；请勿公开粘贴 token、密码、私钥、完整预签名 URL 或其他秘密。
 
-See also the [code signing policy](./code-signing-policy.md).
+See also the [code signing policy](./code-signing-policy.md) and the [mirror & distribution service terms](https://codexapp.agentsmirror.com/terms/) ([summary](./terms-of-service.md)).

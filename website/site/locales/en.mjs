@@ -275,6 +275,7 @@ export default {
     navLabel: "Footer",
     cols: { projects: "Projects", docs: "Docs", community: "Community" },
     links: {
+      terms: "Terms of Service",
       signing: "Code signing policy",
       privacy: "Privacy policy",
       spec: ".codexskin spec",

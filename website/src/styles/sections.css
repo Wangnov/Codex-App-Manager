@@ -2739,3 +2739,137 @@ html:not(.js) .term-tabs {
   flex-wrap: wrap;
   gap: 12px;
 }
+
+/* ================================================================== terms */
+
+.terms-page {
+  padding-top: calc(var(--nav-h) + 48px);
+  padding-bottom: 88px;
+}
+
+.terms-page h1,
+.terms-page h2,
+.terms-page h3 {
+  font-family: var(--font-body);
+  letter-spacing: -0.015em;
+}
+
+.terms-inner {
+  max-width: 880px;
+  display: grid;
+  gap: 28px;
+}
+
+.terms-eyebrow {
+  font-size: 0.82rem;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+}
+
+.terms-page h1 {
+  font-size: clamp(1.75rem, 1.3rem + 1.8vw, 2.5rem);
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.terms-sub {
+  display: block;
+  margin-top: 6px;
+  font-size: clamp(1.05rem, 0.95rem + 0.5vw, 1.3rem);
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.terms-lead {
+  color: var(--text-2);
+  font-size: 1rem;
+  line-height: 1.75;
+}
+
+.terms-section,
+.terms-callout {
+  display: grid;
+  gap: 14px;
+  padding: 24px 28px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+
+.terms-callout {
+  border-color: var(--accent-line);
+  background: linear-gradient(180deg, var(--accent-soft), var(--card));
+}
+
+.terms-callout-warn {
+  border-color: color-mix(in srgb, var(--danger) 48%, var(--line));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--danger) 10%, transparent), var(--card));
+}
+
+.terms-page h2 {
+  font-size: 1.2rem;
+  font-weight: 750;
+  line-height: 1.4;
+}
+
+.terms-page p,
+.terms-page li {
+  color: var(--text-2);
+  font-size: 0.96rem;
+  line-height: 1.78;
+}
+
+.terms-page strong {
+  color: var(--text);
+}
+
+.terms-page a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.terms-page ul,
+.terms-page ol {
+  display: grid;
+  gap: 12px;
+  padding-left: 20px;
+}
+
+.terms-page ul {
+  list-style: disc;
+}
+
+.terms-page ol {
+  list-style: decimal;
+}
+
+.terms-page code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  color: var(--text);
+  word-break: break-word;
+}
+
+.terms-code-block {
+  display: block;
+  margin-block: 8px;
+  padding: 10px 12px !important;
+}
+
+.terms-en-note {
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  font-size: 0.9rem !important;
+}
+
+@media (max-width: 640px) {
+  .terms-section,
+  .terms-callout {
+    padding: 18px 18px;
+  }
+}

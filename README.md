@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <a href="https://codexapp.agentsmirror.com"><b>官网 · Official Website</b></a> · <a href="docs/code-signing-policy.md">代码签名政策 · Code signing policy</a> · <a href="docs/privacy.md">隐私政策 · Privacy policy</a> · <a href="#readme-cn">中文</a> · <a href="#readme-en">English</a>
+  <a href="https://codexapp.agentsmirror.com"><b>官网 · Official Website</b></a> · <a href="https://codexapp.agentsmirror.com/terms/">服务条款 · Terms of Service</a> · <a href="docs/code-signing-policy.md">代码签名政策 · Code signing policy</a> · <a href="docs/privacy.md">隐私政策 · Privacy policy</a> · <a href="#readme-cn">中文</a> · <a href="#readme-en">English</a>
 </p>
 
 ---
@@ -179,6 +179,7 @@ npm run tauri:build    # 本地构建(未签名)
 
 ## 政策与隐私
 
+- [镜像与分发服务使用条款](https://codexapp.agentsmirror.com/terms/)（[摘要](docs/terms-of-service.md)）：`*.agentsmirror.com` 在线带宽及中科院高能所（IHEP）科研公益存储节点的非商业使用边界、二次分发 Fork 替换默认端点要求，以及纯免费开源工具免审批接入规范。
 - [代码签名政策](docs/code-signing-policy.md):签名供应商方案(SignPath Foundation 已不再推进)、项目角色、逐次人工审批、可签工件边界与生产签名启用前的验证要求。
 - [隐私政策](docs/privacy.md):Manager 更新检查、下载源/代理网络行为、官网本地存储、本地诊断与第三方连接元数据。
 
@@ -198,9 +199,10 @@ npm run tauri:build    # 本地构建(未签名)
   </a>
 </p>
 
-## 许可
+## 许可与服务条款
 
-[MIT](./LICENSE)。本项目与 OpenAI、Microsoft 无隶属或背书关系。
+- **仓库源代码**：[MIT](./LICENSE)（若 Fork 后进行非纯公益二次分发，须按[《服务使用条款》](https://codexapp.agentsmirror.com/terms/)移除或替换默认 `*.agentsmirror.com` 镜像端点）。
+- **在线镜像服务**：受[《镜像与分发服务使用条款》](https://codexapp.agentsmirror.com/terms/)约束。本项目与 OpenAI、Microsoft 无隶属或背书关系。
 
 ---
 
@@ -351,6 +353,7 @@ npm run tauri:build    # local (unsigned) build
   </a>
 </p>
 
-## License
+## License & Terms of Service
 
-[MIT](./LICENSE). Not affiliated with or endorsed by OpenAI or Microsoft.
+- **Repository source code**: [MIT](./LICENSE) (forks redistributed outside purely non-commercial open-source use must replace default `*.agentsmirror.com` endpoints per the [Terms of Service](https://codexapp.agentsmirror.com/terms/)).
+- **Hosted mirror service**: governed by the [Mirror & Distribution Service Terms](https://codexapp.agentsmirror.com/terms/). Not affiliated with or endorsed by OpenAI or Microsoft.
