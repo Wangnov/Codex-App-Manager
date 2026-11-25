@@ -443,18 +443,29 @@ fn close_existing_codex_before_portable_fallback(
     previous_installed: Option<&InstalledWindowsCodex>,
 ) -> Result<(), AppError> {
     log::info!("Windows portable fallback close existing source=portable-fallback");
-    if let Some(installed) = detect_installed_codex(PathBuf::from(&settings.install_root).as_path())
-    {
+    let configured_root = PathBuf::from(&settings.install_root);
+    if let Some(installed) = detect_installed_codex(configured_root.as_path()) {
         if installed.source == "msix" {
             close_codex_gracefully_for_root(30, PathBuf::from(&installed.path).as_path())
                 .map_err(engine_err)?;
         }
+    }
+    if let Err(err) = close_msix_codex_processes(20) {
+        log::warn!("close MSIX Codex before portable fallback (package sweep) error={err}");
     }
     if let Some(previous) = previous_installed {
         if previous.source == "portable" {
             close_codex_gracefully_for_root(30, PathBuf::from(&previous.path).as_path())
                 .map_err(engine_err)?;
         }
+    }
+    if configured_root.exists()
+        && !codex_win_engine::sys::is_msix_package_path(configured_root.as_path())
+        && previous_installed
+            .map(|previous| Path::new(&previous.path) != configured_root.as_path())
+            .unwrap_or(true)
+    {
+        close_codex_gracefully_for_root(30, configured_root.as_path()).map_err(engine_err)?;
     }
     Ok(())
 }

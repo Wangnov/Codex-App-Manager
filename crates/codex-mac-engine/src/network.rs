@@ -202,7 +202,28 @@ impl Default for NetworkConfig {
 pub(crate) fn is_connectivity_exit(exit_code: Option<i32>) -> bool {
     matches!(
         exit_code,
-        Some(5 | 6 | 7 | 28 | 35 | 52 | 53 | 54 | 55 | 56 | 58 | 59 | 60 | 67 | 77 | 80 | 82 | 83 | 91 | 97)
+        Some(
+            5 | 6
+                | 7
+                | 18
+                | 28
+                | 35
+                | 52
+                | 53
+                | 54
+                | 55
+                | 56
+                | 58
+                | 59
+                | 60
+                | 67
+                | 77
+                | 80
+                | 82
+                | 83
+                | 91
+                | 97
+        )
     )
 }
 

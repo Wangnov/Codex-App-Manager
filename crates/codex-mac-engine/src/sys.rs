@@ -15,6 +15,11 @@ use crate::network::{is_connectivity_exit, NetworkConfig};
 use crate::EngineError;
 
 const CURL: &str = "/usr/bin/curl";
+const TEXT_FETCH_RETRY_DELAYS_MS: [u64; 2] = [250, 750];
+
+fn is_transient_curl_exit(exit_code: Option<i32>) -> bool {
+    matches!(exit_code, Some(6 | 7 | 18 | 28 | 35 | 52 | 55 | 56))
+}
 
 fn text_from_curl(
     url: &str,
@@ -53,27 +58,56 @@ pub fn fetch_text(url: &str) -> Result<String, EngineError> {
 
 pub fn fetch_text_with_network(url: &str, network: &NetworkConfig) -> Result<String, EngineError> {
     let max_text = MAX_TEXT_BYTES.to_string();
-    let mut command = Command::new(CURL);
-    network.apply_to_command(&mut command);
-    let output = command
-        .args([
-            "-fsSL",
-            "--proto",
-            "=https",
-            "--proto-redir",
-            "=https",
-            "--connect-timeout",
-            "20",
-            "--max-time",
-            "60",
-            "--max-filesize",
-            &max_text,
-            url,
-        ])
-        .output()
-        .map_err(|e| EngineError::Io(format!("spawn curl: {e}")))?;
+    fetch_text_with_retry(
+        url,
+        network,
+        || {
+            let mut command = Command::new(CURL);
+            network.apply_to_command(&mut command);
+            command
+                .args([
+                    "-fsSL",
+                    "--proto",
+                    "=https",
+                    "--proto-redir",
+                    "=https",
+                    "--connect-timeout",
+                    "20",
+                    "--max-time",
+                    "60",
+                    "--max-filesize",
+                    &max_text,
+                    url,
+                ])
+                .output()
+                .map_err(|e| EngineError::Io(format!("spawn curl: {e}")))
+        },
+        std::thread::sleep,
+    )
+}
 
-    text_from_curl(url, output, network)
+fn fetch_text_with_retry(
+    url: &str,
+    network: &NetworkConfig,
+    mut run_once: impl FnMut() -> Result<std::process::Output, EngineError>,
+    mut sleep: impl FnMut(std::time::Duration),
+) -> Result<String, EngineError> {
+    let mut attempt = 1usize;
+    loop {
+        let output = run_once()?;
+        if !output.status.success() {
+            let exit_code = output.status.code();
+            if let Some(delay_ms) = is_transient_curl_exit(exit_code)
+                .then(|| TEXT_FETCH_RETRY_DELAYS_MS.get(attempt - 1).copied())
+                .flatten()
+            {
+                sleep(std::time::Duration::from_millis(delay_ms));
+                attempt += 1;
+                continue;
+            }
+        }
+        return text_from_curl(url, output, network);
+    }
 }
 
 /// Fetch a trusted HTTPS metadata endpoint without following redirects. This is
@@ -622,5 +656,65 @@ mod macho_tests {
         let mut truncated = 0xcafebabe_u32.to_be_bytes().to_vec();
         truncated.extend(2u32.to_be_bytes());
         assert!(macho_architectures(&mut truncated.as_slice()).is_none());
+    }
+}
+
+#[cfg(test)]
+mod text_retry_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::process::Output;
+
+    fn output_with_code(exit_code: i32, stdout: &[u8], stderr: &[u8]) -> Output {
+        #[cfg(unix)]
+        let status = std::os::unix::process::ExitStatusExt::from_raw(exit_code << 8);
+        #[cfg(windows)]
+        let status = std::os::windows::process::ExitStatusExt::from_raw(exit_code as u32);
+        Output {
+            status,
+            stdout: stdout.to_vec(),
+            stderr: stderr.to_vec(),
+        }
+    }
+
+    #[test]
+    fn transient_exit_18_retries_while_http_404_does_not() {
+        let network = NetworkConfig::direct();
+        let calls = Cell::new(0usize);
+        let ok = fetch_text_with_retry(
+            "https://codexapp.agentsmirror.com/latest/appcast.xml",
+            &network,
+            || {
+                let c = calls.get() + 1;
+                calls.set(c);
+                if c < 3 {
+                    Ok(output_with_code(
+                        18,
+                        b"",
+                        b"curl: (18) transfer closed with 4096 bytes remaining to read",
+                    ))
+                } else {
+                    Ok(output_with_code(0, b"<rss/>", b""))
+                }
+            },
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(ok, "<rss/>");
+        assert_eq!(calls.get(), 3);
+
+        let http_calls = Cell::new(0usize);
+        let err = fetch_text_with_retry(
+            "https://codexapp.agentsmirror.com/latest/appcast.xml",
+            &network,
+            || {
+                http_calls.set(http_calls.get() + 1);
+                Ok(output_with_code(22, b"", b"curl: (22) The requested URL returned error: 404"))
+            },
+            |_| {},
+        )
+        .unwrap_err();
+        assert_eq!(http_calls.get(), 1);
+        assert!(err.to_string().contains("exit=22"));
     }
 }

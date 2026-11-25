@@ -141,12 +141,19 @@ fn curl_failure_message(
     }
 }
 
+const DOWNLOAD_TRANSIENT_RETRY_DELAYS_MS: [u64; 2] = [300, 800];
+
+fn is_transient_curl_exit(exit_code: Option<i32>) -> bool {
+    matches!(exit_code, Some(6 | 7 | 18 | 28 | 35 | 52 | 55 | 56))
+}
+
 fn is_connectivity_exit(exit_code: Option<i32>) -> bool {
     matches!(
         exit_code,
         Some(
             5 | 6
                 | 7
+                | 18
                 | 28
                 | 35
                 | 52
@@ -333,22 +340,20 @@ fn retry_with_schannel_no_revoke(
     run_curl_with_mode(run, progress_mode, SchannelRevocationCheck::Disabled)
 }
 
-fn run_curl(
+fn run_curl_single_attempt(
     url: &str,
-    dest: &Path,
+    dest: &str,
     resume: bool,
-    max_bytes: u64,
+    max_bytes: &str,
     on_progress: &dyn Fn(u64),
     network: &NetworkConfig,
-) -> Result<(), String> {
+) -> Result<(), CurlAttemptError> {
     let source = url_host(url);
-    let dest = dest.to_string_lossy().into_owned();
-    let max_bytes = max_bytes.to_string();
     let run = CurlRun {
         url,
-        dest: &dest,
+        dest,
         resume,
-        max_bytes: &max_bytes,
+        max_bytes,
         network,
         on_progress,
     };
@@ -368,17 +373,91 @@ fn run_curl(
                     ProgressMode::SilentWithErrors,
                     SchannelRevocationCheck::Strict,
                 );
-                return compat_result
-                    .or_else(|err| {
-                        retry_with_schannel_no_revoke(err, &run, ProgressMode::SilentWithErrors)
-                    })
-                    .map_err(|err| err.into_message(url, network));
+                return compat_result.or_else(|err| {
+                    retry_with_schannel_no_revoke(err, &run, ProgressMode::SilentWithErrors)
+                });
             }
         }
-        return retry_with_schannel_no_revoke(first_err, &run, ProgressMode::NoProgressMeter)
-            .map_err(|err| err.into_message(url, network));
+        return retry_with_schannel_no_revoke(first_err, &run, ProgressMode::NoProgressMeter);
     }
     Ok(())
+}
+
+fn run_curl_attempts_with(
+    source: &str,
+    initial_resume: bool,
+    mut has_partial_bytes: impl FnMut() -> bool,
+    mut is_cancelled: impl FnMut() -> bool,
+    mut attempt_fn: impl FnMut(bool) -> Result<(), CurlAttemptError>,
+    mut sleep: impl FnMut(std::time::Duration),
+) -> Result<(), CurlAttemptError> {
+    let total_attempts = DOWNLOAD_TRANSIENT_RETRY_DELAYS_MS.len() + 1;
+    let mut attempt = 1usize;
+    loop {
+        let use_resume = if attempt == 1 {
+            initial_resume
+        } else {
+            initial_resume || has_partial_bytes()
+        };
+        match attempt_fn(use_resume) {
+            Ok(()) => return Ok(()),
+            Err(CurlAttemptError::Cancelled) => return Err(CurlAttemptError::Cancelled),
+            Err(err) => {
+                let exit_code = match &err {
+                    CurlAttemptError::Curl { exit_code, .. } => *exit_code,
+                    _ => None,
+                };
+                if !is_cancelled() {
+                    if let Some(delay_ms) = is_transient_curl_exit(exit_code)
+                        .then(|| DOWNLOAD_TRANSIENT_RETRY_DELAYS_MS.get(attempt - 1).copied())
+                        .flatten()
+                    {
+                        log::warn!(
+                            "transient Windows curl download failure attempt={attempt}/{total_attempts} source={source} exit={exit_code:?}; retrying_in_ms={delay_ms}"
+                        );
+                        sleep(std::time::Duration::from_millis(delay_ms));
+                        if is_cancelled() {
+                            return Err(CurlAttemptError::Cancelled);
+                        }
+                        attempt += 1;
+                        continue;
+                    }
+                }
+                return Err(err);
+            }
+        }
+    }
+}
+
+fn run_curl(
+    url: &str,
+    dest: &Path,
+    resume: bool,
+    max_bytes: u64,
+    on_progress: &dyn Fn(u64),
+    network: &NetworkConfig,
+) -> Result<(), String> {
+    let source = url_host(url);
+    let dest_str = dest.to_string_lossy().into_owned();
+    let max_bytes = max_bytes.to_string();
+    run_curl_attempts_with(
+        source,
+        resume,
+        || dest.metadata().is_ok_and(|m| m.len() > 0),
+        || DOWNLOAD_CANCELLED.load(Ordering::SeqCst),
+        |attempt_resume| {
+            run_curl_single_attempt(
+                url,
+                &dest_str,
+                attempt_resume,
+                &max_bytes,
+                on_progress,
+                network,
+            )
+        },
+        std::thread::sleep,
+    )
+    .map_err(|err| err.into_message(url, network))
 }
 
 pub fn download_to(url: &str, dest: &Path) -> Result<(), EngineError> {
@@ -597,6 +676,32 @@ mod tests {
         assert!(args.contains(&"-sS".to_string()));
         assert!(!args.contains(&"--no-progress-meter".to_string()));
         assert!(args.windows(2).any(|pair| pair == ["-C", "-"]));
+    }
+
+    #[test]
+    fn transient_exit_18_resumes_when_partial_bytes_exist() {
+        let mut resume_flags = Vec::new();
+        let res = run_curl_attempts_with(
+            "fgws3-ocloud.ihep.ac.cn",
+            false,
+            || true,
+            || false,
+            |resume| {
+                resume_flags.push(resume);
+                if resume_flags.len() == 1 {
+                    Err(CurlAttemptError::Curl {
+                        exit_code: Some(18),
+                        stderr: "curl: (18) transfer closed with 1048576 bytes remaining to read"
+                            .to_string(),
+                    })
+                } else {
+                    Ok(())
+                }
+            },
+            |_| {},
+        );
+        assert_eq!(res, Ok(()));
+        assert_eq!(resume_flags, vec![false, true]);
     }
 
     #[test]

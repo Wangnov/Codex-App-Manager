@@ -240,6 +240,22 @@ fn rename_portable_dir(operation: &str, from: &Path, to: &Path) -> Result<(), En
         .map_err(|err| portable_rename_error(operation, from, to, &err))
 }
 
+fn remove_portable_dir(operation: &str, path: &Path) -> Result<(), EngineError> {
+    remove_directory_all_with_retry(operation, path)
+        .map_err(|err| portable_remove_error(operation, path, &err))
+}
+
+fn portable_remove_error(operation: &str, path: &Path, err: &io::Error) -> EngineError {
+    if is_transient_windows_fs_error(err) {
+        io_err(
+            "portable install directory unavailable",
+            format!("{operation}; source=\"{}\"; {err}", path.display()),
+        )
+    } else {
+        io_err(operation, err)
+    }
+}
+
 fn portable_rename_error(operation: &str, from: &Path, to: &Path, err: &io::Error) -> EngineError {
     if is_transient_windows_fs_error(err) {
         // Error 5 can mean either a handle held by another process or directory
@@ -2392,8 +2408,13 @@ fn restore_previous_install(
         )));
     }
     if install_root.exists() {
-        fs::remove_dir_all(install_root)
-            .map_err(|e| io_err("remove failed portable install", e))?;
+        if let Err(close_err) = close_codex_gracefully_for_root(15, install_root) {
+            log::warn!(
+                "close processes in failed portable install before rollback root={} error={close_err}",
+                install_root.display()
+            );
+        }
+        remove_portable_dir("remove failed portable install", install_root)?;
     }
     if had_previous {
         rename_portable_dir("restore portable rollback backup", backup, install_root)?;
@@ -2463,15 +2484,49 @@ fn health_check_portable_install(
     // Spawn alone is not enough: a broken payload can exit immediately after
     // CreateProcess succeeds. Require a short liveness window, then leave the
     // process running (this path is the post-install relaunch).
-    let mut command = portable_launch_command(&exe)?;
-    crate::sys::apply_launch_arguments(&mut command, arguments)?;
-    match crate::process::spawn_and_check_startup(
-        command,
-        PORTABLE_LIVENESS_WINDOW,
-        PORTABLE_STARTUP_WINDOW,
-        crate::app_version::requires_portable_cli(install_root),
-    ) {
-        Ok(LivenessResult::Survived { child }) => {
+    let requires_cli = crate::app_version::requires_portable_cli(install_root);
+    let spawn_once = || -> Result<_, EngineError> {
+        let mut command = portable_launch_command(&exe)?;
+        crate::sys::apply_launch_arguments(&mut command, arguments)?;
+        crate::process::spawn_and_check_startup(
+            command,
+            PORTABLE_LIVENESS_WINDOW,
+            PORTABLE_STARTUP_WINDOW,
+            requires_cli,
+        )
+        .map_err(|err| {
+            EngineError::Install(format!(
+                "portable health check launch failed: {}",
+                err.message()
+            ))
+        })
+    };
+
+    let mut startup = spawn_once()?;
+    if matches!(startup, LivenessResult::ExitedEarly { code: Some(0) }) {
+        // Electron exits 0 immediately when another Codex instance (e.g. a
+        // lingering MSIX/tray build) still holds the user-session single-instance
+        // lock and receives the activation handoff. Sweep both MSIX and target
+        // portable roots once, then retry the health-check launch.
+        log::warn!(
+            "portable health check exited immediately with code 0 (possible single-instance handoff); closing lingering Codex processes and retrying once root={}",
+            install_root.display()
+        );
+        #[cfg(not(test))]
+        if let Err(err) = crate::sys::close_msix_codex_processes(15) {
+            log::warn!("close lingering MSIX Codex during portable health check retry error={err}");
+        }
+        if let Err(err) = close_codex_gracefully_for_root(15, install_root) {
+            log::warn!(
+                "close lingering portable Codex during health check retry root={} error={err}",
+                install_root.display()
+            );
+        }
+        startup = spawn_once()?;
+    }
+
+    match startup {
+        LivenessResult::Survived { child } => {
             if keep_running {
                 // Intentionally leak the Child handle so the relaunched app
                 // keeps running after the manager drops the wait loop.
@@ -2502,14 +2557,10 @@ fn health_check_portable_install(
                 Ok(false)
             }
         }
-        Ok(LivenessResult::ExitedEarly { code }) => Err(EngineError::Install(format!(
+        LivenessResult::ExitedEarly { code } => Err(EngineError::Install(format!(
             "portable health check failed: entry executable exited immediately after launch (exit={})",
             code.map(|c| c.to_string())
                 .unwrap_or_else(|| "signal".to_string())
-        ))),
-        Err(err) => Err(EngineError::Install(format!(
-            "portable health check launch failed: {}",
-            err.message()
         ))),
     }
 }
