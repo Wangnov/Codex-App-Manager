@@ -3250,6 +3250,7 @@ pub async fn win_perform_update(
                 }
             }
         };
+        crate::app::install_tx::recover_pending_transactions(None);
         perform_windows_update_with_install_mode_network_and_phase(
             &endpoints,
             &settings,
@@ -3443,6 +3444,7 @@ pub async fn win_install_historical_release(
             policy_attempted_worker.store(true, Ordering::SeqCst);
             persist_historical_self_update_policy(block_updates)
         };
+        crate::app::install_tx::recover_pending_transactions(None);
         install_windows_historical_release(
             resolved,
             local_path,

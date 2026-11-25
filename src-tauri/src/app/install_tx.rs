@@ -617,8 +617,18 @@ fn recover_one(path: &Path) -> Result<Recovered, AppError> {
             Ok(Recovered::Cleared)
         }
         RecoveryAction::ContinueInstall => {
-            fs::rename(&tx.new_path, &tx.install_path)
+            if tx.kind == InstallTxKind::WindowsPortable {
+                codex_win_engine::rename_directory_with_retry(
+                    "recovery continue portable install",
+                    Path::new(&tx.new_path),
+                    Path::new(&tx.install_path),
+                )
                 .map_err(|e| AppError::Internal(format!("recovery continue rename failed: {e}")))?;
+            } else {
+                fs::rename(&tx.new_path, &tx.install_path).map_err(|e| {
+                    AppError::Internal(format!("recovery continue rename failed: {e}"))
+                })?;
+            }
             tx.advance(InstallTxStep::NewInstalled)?;
             cleanup_backup_best_effort(&tx);
             tx.complete()?;
@@ -634,13 +644,42 @@ fn recover_one(path: &Path) -> Result<Recovered, AppError> {
             }
             tx.finalize_self_update_policy(false)?;
             if path_exists(&tx.install_path) {
-                let _ = fs::remove_dir_all(&tx.install_path);
-                let _ = fs::remove_file(&tx.install_path);
+                if tx.kind == InstallTxKind::WindowsPortable {
+                    let install_dir = Path::new(&tx.install_path);
+                    let _ = codex_win_engine::close_codex_gracefully_for_root(15, install_dir);
+                    if install_dir.is_dir() {
+                        codex_win_engine::remove_directory_all_with_retry(
+                            "recovery remove failed portable install",
+                            install_dir,
+                        )
+                        .map_err(|e| {
+                            AppError::Internal(format!("recovery rollback remove failed: {e}"))
+                        })?;
+                    } else {
+                        fs::remove_file(install_dir).map_err(|e| {
+                            AppError::Internal(format!("recovery rollback remove failed: {e}"))
+                        })?;
+                    }
+                } else {
+                    let _ = fs::remove_dir_all(&tx.install_path);
+                    let _ = fs::remove_file(&tx.install_path);
+                }
             }
             if tx.had_previous {
-                fs::rename(&tx.backup_path, &tx.install_path).map_err(|e| {
-                    AppError::Internal(format!("recovery rollback rename failed: {e}"))
-                })?;
+                if tx.kind == InstallTxKind::WindowsPortable {
+                    codex_win_engine::rename_directory_with_retry(
+                        "recovery rollback portable install",
+                        Path::new(&tx.backup_path),
+                        Path::new(&tx.install_path),
+                    )
+                    .map_err(|e| {
+                        AppError::Internal(format!("recovery rollback rename failed: {e}"))
+                    })?;
+                } else {
+                    fs::rename(&tx.backup_path, &tx.install_path).map_err(|e| {
+                        AppError::Internal(format!("recovery rollback rename failed: {e}"))
+                    })?;
+                }
             }
             tx.advance(InstallTxStep::RolledBack)?;
             tx.remove_file_checked()?;
@@ -1233,6 +1272,48 @@ mod tests {
         assert_eq!(
             fs::read(preserved_dir.join("app/my-app-repo/index.ts")).unwrap(),
             b"app code"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn windows_portable_rolling_back_with_leftover_install_dir_recovers_backup() {
+        let root = test_root("portable-rolling-back-recover");
+        let install = root.join("Codex");
+        let backup = root.join("Codex.rollback-513");
+        let tx_id = format!("tx-513-{}", uuid::Uuid::new_v4());
+
+        fs::create_dir_all(install.join("app")).unwrap();
+        fs::write(install.join("app/Codex.exe"), b"failed new exe").unwrap();
+        fs::create_dir_all(backup.join("app")).unwrap();
+        fs::write(backup.join("app/Codex.exe"), b"working old exe").unwrap();
+
+        let tx = InstallTransaction {
+            schema_version: SCHEMA_VERSION,
+            id: tx_id.clone(),
+            kind: InstallTxKind::WindowsPortable,
+            step: InstallTxStep::RollingBack,
+            install_path: install.to_string_lossy().into_owned(),
+            new_path: root.join("gone-payload").to_string_lossy().into_owned(),
+            backup_path: backup.to_string_lossy().into_owned(),
+            had_previous: true,
+            was_running: None,
+            self_update_policy: None,
+            started_unix: 1,
+            updated_unix: 1,
+            notes: Vec::new(),
+        };
+        tx.persist().unwrap();
+        let tx_file = tx_path_for(&tx_id).unwrap();
+
+        let outcome = recover_one(&tx_file).unwrap();
+        assert!(matches!(outcome, Recovered::RolledBack));
+        assert!(!tx_file.exists(), "recovered transaction file should be removed");
+        assert!(!backup.exists(), "backup directory should move back to install_root");
+        assert_eq!(
+            fs::read(install.join("app/Codex.exe")).unwrap(),
+            b"working old exe"
         );
 
         let _ = fs::remove_dir_all(root);

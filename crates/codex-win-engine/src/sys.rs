@@ -447,6 +447,8 @@ fn fetch_text_output(
     .map_err(|e| EngineError::Io(format!("curl: {}", e.message())))
 }
 
+const TEXT_FETCH_RETRY_DELAYS_MS: [u64; 2] = [250, 750];
+
 pub fn fetch_text_with_network(url: &str, network: &NetworkConfig) -> Result<String, EngineError> {
     fetch_text_with_output(url, network, fetch_text_output)
 }
@@ -454,7 +456,16 @@ pub fn fetch_text_with_network(url: &str, network: &NetworkConfig) -> Result<Str
 fn fetch_text_with_output(
     url: &str,
     network: &NetworkConfig,
+    fetch_output: impl FnMut(&str, &NetworkConfig, SchannelRevocationCheck) -> Result<std::process::Output, EngineError>,
+) -> Result<String, EngineError> {
+    fetch_text_with_output_and_sleep(url, network, fetch_output, std::thread::sleep)
+}
+
+fn fetch_text_with_output_and_sleep(
+    url: &str,
+    network: &NetworkConfig,
     mut fetch_output: impl FnMut(&str, &NetworkConfig, SchannelRevocationCheck) -> Result<std::process::Output, EngineError>,
+    mut sleep: impl FnMut(std::time::Duration),
 ) -> Result<String, EngineError> {
     let github_api = crate::github_rate_limit::is_github_api(url);
     let route = github_api.then(|| network.curl_proxy_args());
@@ -463,41 +474,64 @@ fn fetch_text_with_output(
     }
     let source = url_host(url);
     log::debug!("fetch Windows text source={source}");
-    let mut output = fetch_output(url, network, SchannelRevocationCheck::Strict)?;
-    let should_retry_without_revocation = {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        !output.status.success()
-            && is_schannel_revocation_check_failure(output.status.code(), stderr.as_ref())
-    };
-    if should_retry_without_revocation {
-        log::warn!(
-            "Windows curl Schannel revocation check failed; retrying with --ssl-no-revoke source={source}"
-        );
-        output = fetch_output(url, network, SchannelRevocationCheck::Disabled)?;
-    }
 
-    if github_api {
-        if let Some(response) = crate::github_rate_limit::response(&output.stdout) {
-            if let Some(deadline) = response.retry_at(crate::github_rate_limit::unix_now()) {
-                crate::github_rate_limit::remember(route.unwrap_or_default(), deadline);
-                return Err(EngineError::Io(crate::github_rate_limit::message(deadline)));
-            }
-            output.stdout = response.body.to_vec();
-        } else if output.status.success() {
-            return Err(EngineError::Io("invalid GitHub API response headers".to_string()));
+    let mut revocation = SchannelRevocationCheck::Strict;
+    let total_attempts = TEXT_FETCH_RETRY_DELAYS_MS.len() + 1;
+    let mut attempt = 1usize;
+    let output = loop {
+        let mut current = fetch_output(url, network, revocation)?;
+        let should_retry_without_revocation = {
+            let stderr = String::from_utf8_lossy(&current.stderr);
+            revocation == SchannelRevocationCheck::Strict
+                && !current.status.success()
+                && is_schannel_revocation_check_failure(current.status.code(), stderr.as_ref())
+        };
+        if should_retry_without_revocation {
+            log::warn!(
+                "Windows curl Schannel revocation check failed; retrying with --ssl-no-revoke source={source}"
+            );
+            revocation = SchannelRevocationCheck::Disabled;
+            current = fetch_output(url, network, revocation)?;
         }
-    }
 
-    if !output.status.success() {
+        if github_api {
+            if let Some(response) = crate::github_rate_limit::response(&current.stdout) {
+                if let Some(deadline) = response.retry_at(crate::github_rate_limit::unix_now()) {
+                    crate::github_rate_limit::remember(route.unwrap_or_default(), deadline);
+                    return Err(EngineError::Io(crate::github_rate_limit::message(deadline)));
+                }
+                current.stdout = response.body.to_vec();
+            } else if current.status.success() {
+                return Err(EngineError::Io("invalid GitHub API response headers".to_string()));
+            }
+        }
+
+        if current.status.success() {
+            break current;
+        }
+
+        let exit_code = current.status.code();
+        if let Some(delay_ms) = is_transient_curl_exit(exit_code)
+            .then(|| TEXT_FETCH_RETRY_DELAYS_MS.get(attempt - 1).copied())
+            .flatten()
+        {
+            log::warn!(
+                "transient Windows text fetch failure attempt={attempt}/{total_attempts} source={source} exit={exit_code:?}; retrying_in_ms={delay_ms}"
+            );
+            sleep(std::time::Duration::from_millis(delay_ms));
+            attempt += 1;
+            continue;
+        }
+
         let err = EngineError::Io(curl_failure_message(
             url,
-            output.status.code(),
-            &String::from_utf8_lossy(&output.stderr),
+            exit_code,
+            &String::from_utf8_lossy(&current.stderr),
             network,
         ));
         log::warn!("fetch Windows text failed source={source} error={err}");
         return Err(err);
-    }
+    };
 
     if output.stdout.len() > MAX_TEXT_BYTES as usize {
         let err = EngineError::Io(format!("text response exceeded {MAX_TEXT_BYTES} bytes"));
@@ -534,12 +568,17 @@ fn curl_failure_message(
     }
 }
 
+fn is_transient_curl_exit(exit_code: Option<i32>) -> bool {
+    matches!(exit_code, Some(6 | 7 | 18 | 28 | 35 | 52 | 55 | 56))
+}
+
 fn is_connectivity_exit(exit_code: Option<i32>) -> bool {
     matches!(
         exit_code,
         Some(
             5 | 6
                 | 7
+                | 18
                 | 28
                 | 35
                 | 52
@@ -3908,5 +3947,72 @@ mod github_rate_limit_tests {
             assert!(!error.to_string().contains("rate limit exceeded"));
         }
         assert_eq!(calls.get(), 2);
+    }
+
+    fn output_with_code(exit_code: i32, stdout: &[u8], stderr: &[u8]) -> Output {
+        #[cfg(unix)]
+        let status = ExitStatus::from_raw(exit_code << 8);
+        #[cfg(windows)]
+        let status = ExitStatus::from_raw(exit_code as u32);
+        Output {
+            status,
+            stdout: stdout.to_vec(),
+            stderr: stderr.to_vec(),
+        }
+    }
+
+    #[test]
+    fn transient_partial_transfer_exit_18_retries_and_succeeds() {
+        let network = route();
+        let calls = Cell::new(0usize);
+        let sleeps = Cell::new(0usize);
+        let text = fetch_text_with_output_and_sleep(
+            "https://codexapp.agentsmirror.com/latest/manifest",
+            &network,
+            |_, _, _| {
+                let current = calls.get() + 1;
+                calls.set(current);
+                if current < 3 {
+                    Ok(output_with_code(
+                        18,
+                        b"{\"partial\":",
+                        b"curl: (18) transfer closed with 19936 bytes remaining to read",
+                    ))
+                } else {
+                    Ok(output_with_code(0, br#"{"version":"26.1120.50957"}"#, b""))
+                }
+            },
+            |_| sleeps.set(sleeps.get() + 1),
+        )
+        .unwrap();
+
+        assert_eq!(text, r#"{"version":"26.1120.50957"}"#);
+        assert_eq!(calls.get(), 3);
+        assert_eq!(sleeps.get(), 2);
+    }
+
+    #[test]
+    fn exhausted_partial_transfer_exit_18_reports_connectivity_diagnostic() {
+        let network = route();
+        let calls = Cell::new(0usize);
+        let err = fetch_text_with_output_and_sleep(
+            "https://codexapp.agentsmirror.com/latest/manifest",
+            &network,
+            |_, _, _| {
+                calls.set(calls.get() + 1);
+                Ok(output_with_code(
+                    18,
+                    b"",
+                    b"curl: (18) transfer closed with 19936 bytes remaining to read",
+                ))
+            },
+            |_| {},
+        )
+        .unwrap_err();
+
+        assert_eq!(calls.get(), 3);
+        let msg = err.to_string();
+        assert!(msg.contains("exit=18"));
+        assert!(msg.contains("proxy mode:"));
     }
 }

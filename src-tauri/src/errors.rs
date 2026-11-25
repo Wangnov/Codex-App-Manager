@@ -136,8 +136,8 @@ pub fn classify(message: &str) -> ErrorKind {
 
     if let Some(code) = curl_exit_code(&m) {
         match code {
-            // resolve / connect / send / recv / empty-reply / proxy resolution
-            5 | 6 | 7 | 52 | 55 | 56 | 67 => return ErrorKind::Network,
+            // resolve / connect / partial-file / send / recv / empty-reply / proxy resolution
+            5 | 6 | 7 | 18 | 52 | 55 | 56 | 67 => return ErrorKind::Network,
             28 => return ErrorKind::Timeout,
             // TLS / certificate handshake failures → connectivity bucket
             35 | 53 | 54 | 58 | 59 | 60 | 77 | 80 | 82 | 83 | 91 => return ErrorKind::Network,
@@ -155,6 +155,7 @@ pub fn classify(message: &str) -> ErrorKind {
         || m.contains("connection reset")
         || m.contains("network is unreachable")
         || m.contains("empty reply")
+        || m.contains("transfer closed with")
         || m.contains("schannel")
         || m.contains("ssl/tls")
     {
@@ -273,6 +274,13 @@ mod tests {
     fn curl_connect_and_timeout_codes() {
         assert_eq!(classify("curl failed exit=7: stderr='Failed to connect'"), ErrorKind::Network);
         assert_eq!(classify("curl failed exit=6: stderr='Could not resolve host'"), ErrorKind::Network);
+        assert_eq!(
+            classify(
+                "io error: curl failed for host=codexapp.agentsmirror.com exit=18: \
+                 stderr='curl: (18) transfer closed with 19936 bytes remaining to read'"
+            ),
+            ErrorKind::Network
+        );
         assert_eq!(classify("curl failed exit=28: stderr='Operation timed out'"), ErrorKind::Timeout);
         assert_eq!(classify("curl failed exit=35: stderr='SSL connect error'"), ErrorKind::Network);
         assert_eq!(classify("curl failed exit=55: stderr='Failed sending network data'"), ErrorKind::Network);
