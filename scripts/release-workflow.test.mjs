@@ -908,7 +908,7 @@ describe("winget workflow supply-chain invariants", () => {
 
   it("keeps submission bounded and documents the fork-sync token scopes", () => {
     expect(wingetWorkflow).toContain('`public_repo` and `workflow` scopes');
-    expect(wingetWorkflow).toContain("komac sync-fork");
+    expect(wingetWorkflow).toContain("if ! komac sync-fork; then");
     expect(wingetWorkflow).toContain(
       'repos/microsoft/winget-pkgs/contents/$manifest_path',
     );

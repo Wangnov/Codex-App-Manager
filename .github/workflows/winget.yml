@@ -103,7 +103,14 @@ jobs:
             exit 1
           fi
 
-          komac sync-fork
+          # Komac's `add_version` creates the PR branch directly from
+          # `microsoft/winget-pkgs` default_branch_oid via GitHub's shared fork
+          # object store, so a least-privilege `public_repo` token (without
+          # `workflow` scope) can still submit updates even when `sync-fork` is
+          # blocked by upstream `.github/workflows/*` commits.
+          if ! komac sync-fork; then
+            echo "::warning::komac sync-fork failed (likely upstream workflow changes without workflow scope); continuing because komac update branches directly from upstream HEAD"
+          fi
           komac update Wangnov.CodexAppManager \
             --version "$version" \
             --release-notes-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$published_tag" \
