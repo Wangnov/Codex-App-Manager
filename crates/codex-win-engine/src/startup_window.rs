@@ -205,6 +205,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     #[ignore = "child process fixture; exercised by native_startup_windows_are_scoped_and_reject_errors"]
+    #[allow(clippy::zombie_processes)] // Relaunch fixture deliberately exits right after spawning its replacement child.
     fn native_window_fixture() {
         use windows_sys::Win32::UI::WindowsAndMessaging::*;
         let Ok(mode) = std::env::var("CODEX_STARTUP_WINDOW_FIXTURE") else {
