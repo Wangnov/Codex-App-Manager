@@ -205,11 +205,26 @@ mod tests {
     #[cfg(windows)]
     #[test]
     #[ignore = "child process fixture; exercised by native_startup_windows_are_scoped_and_reject_errors"]
+    #[allow(clippy::zombie_processes)] // Relaunch fixture deliberately exits right after spawning its replacement child.
     fn native_window_fixture() {
         use windows_sys::Win32::UI::WindowsAndMessaging::*;
         let Ok(mode) = std::env::var("CODEX_STARTUP_WINDOW_FIXTURE") else {
             return;
         };
+        if mode == "relaunch-ready" {
+            let _child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "startup_window::tests::native_window_fixture",
+                ])
+                .env("CODEX_STARTUP_WINDOW_FIXTURE", "ready")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            return;
+        }
         let wide = |text: &str| text.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
         // Own off-screen test windows; never interact with an installed Codex.
         let main_class = wide("Chrome_WidgetWin_1");
