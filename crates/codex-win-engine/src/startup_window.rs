@@ -210,6 +210,20 @@ mod tests {
         let Ok(mode) = std::env::var("CODEX_STARTUP_WINDOW_FIXTURE") else {
             return;
         };
+        if mode == "relaunch-ready" {
+            let _child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "startup_window::tests::native_window_fixture",
+                ])
+                .env("CODEX_STARTUP_WINDOW_FIXTURE", "ready")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            return;
+        }
         let wide = |text: &str| text.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
         // Own off-screen test windows; never interact with an installed Codex.
         let main_class = wide("Chrome_WidgetWin_1");

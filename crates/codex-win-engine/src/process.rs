@@ -417,12 +417,20 @@ fn capture(
 /// Outcome of a liveness probe on a freshly spawned process.
 #[derive(Debug)]
 pub enum LivenessResult {
-    /// Still running after the survival window. Caller owns the child handle
-    /// (keep it for relaunch, or drop/kill when only verifying).
+    /// Initial spawned process stayed running through the survival window.
+    /// Caller owns the child handle (keep it for relaunch, or drop/kill when
+    /// only verifying).
     Survived { child: Child },
-    /// Exited before the window elapsed.
+    /// Initial spawned process exited with code 0 after handing off to an
+    /// in-root replacement GUI process tree whose main window opened and
+    /// settled cleanly.
+    SurvivedReplacement,
+    /// Exited before the window elapsed without a surviving replacement.
     ExitedEarly { code: Option<i32> },
 }
+
+const REPLACEMENT_HANDOFF_GRACE: Duration = Duration::from_millis(500);
+const MAX_REPLACEMENT_GAPS: u32 = 3;
 
 /// Spawn `command` and require it to stay alive for `window`.
 ///
@@ -443,27 +451,86 @@ fn startup_timeout_message(startup_window: Duration) -> String {
     )
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn spawn_and_check_startup(
     command: Command,
     liveness_window: Duration,
     startup_window: Duration,
     require_window: bool,
 ) -> Result<LivenessResult, RunError> {
-    spawn_and_check_startup_with(
+    spawn_and_check_startup_for_root(
+        command,
+        None,
+        liveness_window,
+        startup_window,
+        require_window,
+    )
+}
+
+type RootWindowProbe<'a> =
+    &'a mut dyn FnMut() -> Result<(bool, crate::startup_window::StartupWindow), String>;
+type RootCleanup<'a> = &'a mut dyn FnMut();
+
+pub(crate) fn spawn_and_check_startup_for_root(
+    command: Command,
+    root: Option<&std::path::Path>,
+    liveness_window: Duration,
+    startup_window: Duration,
+    require_window: bool,
+) -> Result<LivenessResult, RunError> {
+    let mut root_probe;
+    let mut root_cleanup;
+    let (inspect_root, cleanup_root): (Option<RootWindowProbe<'_>>, Option<RootCleanup<'_>>) =
+        if let Some(root_path) = root {
+            root_probe = move || {
+                crate::windows_process::gui_startup_window_for_root(root_path)
+                    .map_err(|err| err.to_string())
+            };
+            root_cleanup = move || {
+                let _ = crate::windows_process::close_startup_gui_for_root(root_path);
+            };
+            (Some(&mut root_probe), Some(&mut root_cleanup))
+        } else {
+            (None, None)
+        };
+    spawn_and_check_startup_with_root(
         command,
         liveness_window,
         startup_window,
         require_window,
         crate::startup_window::inspect,
+        inspect_root,
+        cleanup_root,
     )
 }
 
+#[cfg(test)]
 fn spawn_and_check_startup_with(
+    command: Command,
+    liveness_window: Duration,
+    startup_window: Duration,
+    require_window: bool,
+    inspect: impl FnMut(u32) -> crate::startup_window::StartupWindow,
+) -> Result<LivenessResult, RunError> {
+    spawn_and_check_startup_with_root(
+        command,
+        liveness_window,
+        startup_window,
+        require_window,
+        inspect,
+        None,
+        None,
+    )
+}
+
+fn spawn_and_check_startup_with_root(
     mut command: Command,
     liveness_window: Duration,
     startup_window: Duration,
     require_window: bool,
     mut inspect: impl FnMut(u32) -> crate::startup_window::StartupWindow,
+    mut inspect_root: Option<RootWindowProbe<'_>>,
+    mut cleanup_root: Option<RootCleanup<'_>>,
 ) -> Result<LivenessResult, RunError> {
     // Detach stdio so a chatty broken payload cannot fill pipes and block, and
     // so unit tests that use console tools (e.g. whoami) do not pollute output.
@@ -476,36 +543,133 @@ fn spawn_and_check_startup_with(
     let deadline = started + liveness_window;
     let startup_deadline = started + startup_window;
     let mut progress = crate::startup_window::StartupProgress::default();
+    let mut exited_code: Option<Option<i32>> = None;
+    let mut saw_replacement = false;
+    let mut saw_replacement_window = false;
+    let mut missing_since: Option<Instant> = None;
+    let mut replacement_gaps = 0u32;
+
     loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                return Ok(LivenessResult::ExitedEarly {
-                    code: status.code(),
-                });
-            }
-            Ok(None) => {
-                let state = inspect(child.id());
-                let ready = match progress.observe(started.elapsed(), &state, liveness_window) {
-                    Ok(ready) => ready,
-                    Err(failure) => {
-                        terminate_tree(&mut child);
-                        return Err(RunError::Wait(failure));
+        if exited_code.is_none() {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let code = status.code();
+                    // Only a clean exit=0 can be a legitimate Electron self-relaunch
+                    // handoff; crashes or unscoped callers fail fast immediately.
+                    if code != Some(0) || inspect_root.is_none() {
+                        return Ok(LivenessResult::ExitedEarly { code });
                     }
-                };
-                if (require_window && ready) || (!require_window && Instant::now() >= deadline) {
-                    return Ok(LivenessResult::Survived { child });
+                    exited_code = Some(code);
                 }
-                if require_window && Instant::now() >= startup_deadline {
+                Ok(None) => {}
+                Err(err) => {
                     terminate_tree(&mut child);
-                    return Err(RunError::Wait(startup_timeout_message(startup_window)));
+                    if let Some(clean) = cleanup_root.as_deref_mut() {
+                        clean();
+                    }
+                    return Err(RunError::Wait(err.to_string()));
                 }
-                thread::sleep(POLL_INTERVAL);
-            }
-            Err(err) => {
-                terminate_tree(&mut child);
-                return Err(RunError::Wait(err.to_string()));
             }
         }
+
+        if let Some(code) = exited_code {
+            let root_probe = inspect_root
+                .as_deref_mut()
+                .expect("exited_code only set when inspect_root is Some");
+            let (gui_running, root_state) = match root_probe() {
+                Ok(state) => state,
+                Err(probe_err) => {
+                    if let Some(clean) = cleanup_root.as_deref_mut() {
+                        clean();
+                    }
+                    return Err(RunError::Wait(probe_err));
+                }
+            };
+            let ready = match progress.observe(started.elapsed(), &root_state, liveness_window) {
+                Ok(ready) => ready,
+                Err(failure) => {
+                    if let Some(clean) = cleanup_root.as_deref_mut() {
+                        clean();
+                    }
+                    return Err(RunError::Wait(failure));
+                }
+            };
+            if gui_running {
+                if !saw_replacement {
+                    saw_replacement = true;
+                    log::info!(
+                        "initial portable Codex process exited with code 0 while in-root replacement GUI process is active; continuing startup check"
+                    );
+                }
+                saw_replacement_window |= root_state.ready;
+                missing_since = None;
+                // Once the initial child exited 0, require a real visible main
+                // window to settle even when `require_window` was false so a
+                // lingering headless helper can never pass as a healthy GUI.
+                if ready {
+                    return Ok(LivenessResult::SurvivedReplacement);
+                }
+                if Instant::now() >= startup_deadline {
+                    if let Some(clean) = cleanup_root.as_deref_mut() {
+                        clean();
+                    }
+                    return Err(RunError::Wait(startup_timeout_message(startup_window)));
+                }
+            } else {
+                progress = crate::startup_window::StartupProgress::default();
+                let since = *missing_since.get_or_insert_with(|| {
+                    replacement_gaps += 1;
+                    Instant::now()
+                });
+                if replacement_gaps > MAX_REPLACEMENT_GAPS
+                    || since.elapsed() >= REPLACEMENT_HANDOFF_GRACE
+                    || Instant::now() >= startup_deadline
+                {
+                    if saw_replacement_window {
+                        if let Some(clean) = cleanup_root.as_deref_mut() {
+                            clean();
+                        }
+                        return Err(RunError::Wait(
+                            "Codex closed its main window and exited during startup".to_string(),
+                        ));
+                    }
+                    return Ok(LivenessResult::ExitedEarly { code });
+                }
+            }
+            thread::sleep(POLL_INTERVAL);
+            continue;
+        }
+
+        let mut state = inspect(child.id());
+        if let Some(root_probe) = inspect_root.as_deref_mut() {
+            if let Ok((_, root_state)) = root_probe() {
+                state.ready |= root_state.ready;
+                if state.failure.is_none() {
+                    state.failure = root_state.failure;
+                }
+            }
+        }
+        let ready = match progress.observe(started.elapsed(), &state, liveness_window) {
+            Ok(ready) => ready,
+            Err(failure) => {
+                terminate_tree(&mut child);
+                if let Some(clean) = cleanup_root.as_deref_mut() {
+                    clean();
+                }
+                return Err(RunError::Wait(failure));
+            }
+        };
+        if (require_window && ready) || (!require_window && Instant::now() >= deadline) {
+            return Ok(LivenessResult::Survived { child });
+        }
+        if require_window && Instant::now() >= startup_deadline {
+            terminate_tree(&mut child);
+            if let Some(clean) = cleanup_root.as_deref_mut() {
+                clean();
+            }
+            return Err(RunError::Wait(startup_timeout_message(startup_window)));
+        }
+        thread::sleep(POLL_INTERVAL);
     }
 }
 
@@ -782,6 +946,9 @@ mod tests {
                 let _ = child.kill();
                 panic!("immediate-exit binary must not be reported as survived");
             }
+            LivenessResult::SurvivedReplacement => {
+                panic!("immediate-exit binary must not be reported as survived replacement");
+            }
         }
     }
 
@@ -792,6 +959,9 @@ mod tests {
         match result {
             LivenessResult::Survived { mut child } => {
                 terminate_tree(&mut child);
+            }
+            LivenessResult::SurvivedReplacement => {
+                panic!("sleep should survive on initial child without replacement");
             }
             LivenessResult::ExitedEarly { code } => {
                 panic!("sleep should still be running, exit={code:?}");
@@ -833,6 +1003,9 @@ mod tests {
             LivenessResult::Survived { mut child } => {
                 terminate_tree(&mut child);
                 panic!("immediate-exit binary must not be reported as survived");
+            }
+            LivenessResult::SurvivedReplacement => {
+                panic!("immediate-exit binary must not be reported as replacement survived");
             }
         }
     }
@@ -882,9 +1055,188 @@ mod tests {
                     "must settle for full liveness window after ready"
                 );
             }
+            LivenessResult::SurvivedReplacement => {
+                panic!("direct sleeping child should survive as child, not replacement");
+            }
             LivenessResult::ExitedEarly { code } => {
                 panic!("sleep should still be running, exit={code:?}");
             }
         }
+    }
+
+    #[test]
+    fn exit_zero_follows_in_root_replacement_until_window_settles() {
+        let mut root_polls = 0u32;
+        let mut cleaned = false;
+        let started = Instant::now();
+        let mut probe = || {
+            root_polls += 1;
+            Ok((
+                true,
+                crate::startup_window::StartupWindow {
+                    ready: root_polls >= 2,
+                    failure: None,
+                },
+            ))
+        };
+        let mut clean = || cleaned = true;
+        let result = spawn_and_check_startup_with_root(
+            immediate_exit_command(0),
+            Duration::from_millis(200),
+            Duration::from_secs(5),
+            true,
+            |_| crate::startup_window::StartupWindow::default(),
+            Some(&mut probe),
+            Some(&mut clean),
+        )
+        .expect("in-root replacement process opening a ready window must survive");
+        assert!(matches!(result, LivenessResult::SurvivedReplacement));
+        assert!(started.elapsed() >= Duration::from_millis(200));
+        assert!(
+            !cleaned,
+            "healthy replacement must not trigger failure cleanup"
+        );
+    }
+
+    #[test]
+    fn exit_zero_without_replacement_fails_fast_after_handoff_grace() {
+        let started = Instant::now();
+        let mut probe = || Ok((false, crate::startup_window::StartupWindow::default()));
+        let result = spawn_and_check_startup_with_root(
+            immediate_exit_command(0),
+            PORTABLE_LIVENESS_WINDOW,
+            PORTABLE_STARTUP_WINDOW,
+            true,
+            |_| crate::startup_window::StartupWindow::default(),
+            Some(&mut probe),
+            None,
+        )
+        .expect("spawn");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "exit=0 without replacement must fail fast after short handoff grace"
+        );
+        assert!(matches!(
+            result,
+            LivenessResult::ExitedEarly { code: Some(0) }
+        ));
+    }
+
+    #[test]
+    fn exit_zero_replacement_startup_dialog_cleans_up_root_and_errors() {
+        let mut cleaned = false;
+        let mut probe = || {
+            Ok((
+                true,
+                crate::startup_window::StartupWindow {
+                    ready: false,
+                    failure: Some("ChatGPT failed to start".into()),
+                },
+            ))
+        };
+        let mut clean = || cleaned = true;
+        let err = spawn_and_check_startup_with_root(
+            immediate_exit_command(0),
+            Duration::from_millis(200),
+            Duration::from_secs(5),
+            true,
+            |_| crate::startup_window::StartupWindow::default(),
+            Some(&mut probe),
+            Some(&mut clean),
+        )
+        .expect_err("replacement startup dialog must fail");
+        assert!(
+            cleaned,
+            "replacement error dialog must clean up root processes"
+        );
+        assert!(err
+            .message()
+            .contains("Codex startup dialog: ChatGPT failed to start"));
+    }
+
+    #[test]
+    fn exit_zero_replacement_requires_real_window_even_when_require_window_is_false() {
+        let mut cleaned = false;
+        let mut probe = || Ok((true, crate::startup_window::StartupWindow::default()));
+        let mut clean = || cleaned = true;
+        let err = spawn_and_check_startup_with_root(
+            immediate_exit_command(0),
+            Duration::from_millis(100),
+            Duration::from_millis(400),
+            false,
+            |_| crate::startup_window::StartupWindow::default(),
+            Some(&mut probe),
+            Some(&mut clean),
+        )
+        .expect_err("headless replacement without window must time out");
+        assert!(cleaned);
+        assert!(err.message().contains("did not open its main window"));
+    }
+
+    #[test]
+    fn nonzero_exit_never_waits_for_replacement() {
+        let started = Instant::now();
+        let mut probe = || {
+            Ok((
+                true,
+                crate::startup_window::StartupWindow {
+                    ready: true,
+                    failure: None,
+                },
+            ))
+        };
+        let result = spawn_and_check_startup_with_root(
+            immediate_exit_command(5),
+            Duration::from_secs(2),
+            Duration::from_secs(5),
+            true,
+            |_| crate::startup_window::StartupWindow::default(),
+            Some(&mut probe),
+            None,
+        )
+        .expect("spawn");
+        assert!(matches!(
+            result,
+            LivenessResult::ExitedEarly { code: Some(5) }
+        ));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "non-zero crash exit must fail fast without waiting for replacement"
+        );
+    }
+
+    #[test]
+    fn replacement_crash_after_showing_window_errors_instead_of_exited_early_zero() {
+        let mut polls = 0u32;
+        let mut cleaned = false;
+        let mut probe = || {
+            polls += 1;
+            if polls <= 2 {
+                Ok((
+                    true,
+                    crate::startup_window::StartupWindow {
+                        ready: true,
+                        failure: None,
+                    },
+                ))
+            } else {
+                Ok((false, crate::startup_window::StartupWindow::default()))
+            }
+        };
+        let mut clean = || cleaned = true;
+        let err = spawn_and_check_startup_with_root(
+            immediate_exit_command(0),
+            Duration::from_secs(2),
+            Duration::from_secs(5),
+            true,
+            |_| crate::startup_window::StartupWindow::default(),
+            Some(&mut probe),
+            Some(&mut clean),
+        )
+        .expect_err("replacement closing its window before settling must report startup error");
+        assert!(cleaned);
+        assert!(err
+            .message()
+            .contains("closed its main window and exited during startup"));
     }
 }

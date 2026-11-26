@@ -11,13 +11,17 @@ use crate::capability::WinCapabilityReport;
 use crate::capability::{CapabilityCheck, CapabilityState};
 use crate::limits::MAX_TEXT_BYTES;
 use crate::msix::parse_appx_manifest_xml;
-use crate::network::{is_schannel_revocation_check_failure, NetworkConfig, SchannelRevocationCheck};
+use crate::network::{
+    is_schannel_revocation_check_failure, NetworkConfig, SchannelRevocationCheck,
+};
 use crate::process::{
     curl_exe, hidden_command, run_capturing, LivenessResult, RunLimits, PORTABLE_LIVENESS_WINDOW,
     PORTABLE_STARTUP_WINDOW,
 };
 #[cfg(windows)]
-use crate::process::{RunError, TimeoutKind, MSIX_ACTIVATION_WINDOW_SECS, MSIX_LIVENESS_WINDOW_SECS};
+use crate::process::{
+    RunError, TimeoutKind, MSIX_ACTIVATION_WINDOW_SECS, MSIX_LIVENESS_WINDOW_SECS,
+};
 use crate::EngineError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -262,7 +266,9 @@ fn registered_msix_aumid(json: &str, expected_family: &str) -> Result<String, En
 #[cfg(any(windows, test))]
 fn registered_msix_launch_alias(value: &serde_json::Value) -> Result<&'static str, EngineError> {
     const ALIAS: &str = "chatgpt-desktop.exe";
-    if value.get("launchAlias").and_then(serde_json::Value::as_str)
+    if value
+        .get("launchAlias")
+        .and_then(serde_json::Value::as_str)
         .is_some_and(|alias| alias.eq_ignore_ascii_case(ALIAS))
     {
         return Ok(ALIAS);
@@ -456,7 +462,11 @@ pub fn fetch_text_with_network(url: &str, network: &NetworkConfig) -> Result<Str
 fn fetch_text_with_output(
     url: &str,
     network: &NetworkConfig,
-    fetch_output: impl FnMut(&str, &NetworkConfig, SchannelRevocationCheck) -> Result<std::process::Output, EngineError>,
+    fetch_output: impl FnMut(
+        &str,
+        &NetworkConfig,
+        SchannelRevocationCheck,
+    ) -> Result<std::process::Output, EngineError>,
 ) -> Result<String, EngineError> {
     fetch_text_with_output_and_sleep(url, network, fetch_output, std::thread::sleep)
 }
@@ -464,12 +474,19 @@ fn fetch_text_with_output(
 fn fetch_text_with_output_and_sleep(
     url: &str,
     network: &NetworkConfig,
-    mut fetch_output: impl FnMut(&str, &NetworkConfig, SchannelRevocationCheck) -> Result<std::process::Output, EngineError>,
+    mut fetch_output: impl FnMut(
+        &str,
+        &NetworkConfig,
+        SchannelRevocationCheck,
+    ) -> Result<std::process::Output, EngineError>,
     mut sleep: impl FnMut(std::time::Duration),
 ) -> Result<String, EngineError> {
     let github_api = crate::github_rate_limit::is_github_api(url);
     let route = github_api.then(|| network.curl_proxy_args());
-    if let Some(deadline) = route.as_ref().and_then(|args| crate::github_rate_limit::blocked_until(args)) {
+    if let Some(deadline) = route
+        .as_ref()
+        .and_then(|args| crate::github_rate_limit::blocked_until(args))
+    {
         return Err(EngineError::Io(crate::github_rate_limit::message(deadline)));
     }
     let source = url_host(url);
@@ -502,7 +519,9 @@ fn fetch_text_with_output_and_sleep(
                 }
                 current.stdout = response.body.to_vec();
             } else if current.status.success() {
-                return Err(EngineError::Io("invalid GitHub API response headers".to_string()));
+                return Err(EngineError::Io(
+                    "invalid GitHub API response headers".to_string(),
+                ));
             }
         }
 
@@ -2401,7 +2420,11 @@ pub fn launch_codex_with_options(
         }
         apply_launch_arguments(&mut command, options.additional_arguments)?;
         let was_running = if environment.is_empty() {
-            crate::windows_process::codex_processes_running_for_root(root).unwrap_or(false)
+            // Only an active GUI entry makes this a warm activation; background
+            // sandbox services or CLI helpers must still follow cold self-relaunch
+            // startup. Default to `true` on snapshot failure so cleanup never
+            // closes an unknown existing user session.
+            crate::windows_process::codex_gui_running_for_root(root).unwrap_or(true)
         } else {
             ensure_fresh_codex_launch(root)?;
             apply_configured_launch_environment(
@@ -2411,8 +2434,9 @@ pub fn launch_codex_with_options(
             );
             false
         };
-        match crate::process::spawn_and_check_startup(
+        match crate::process::spawn_and_check_startup_for_root(
             command,
+            (!was_running).then_some(root),
             PORTABLE_LIVENESS_WINDOW,
             PORTABLE_STARTUP_WINDOW,
             crate::app_version::requires_portable_cli(root),
@@ -2421,8 +2445,12 @@ pub fn launch_codex_with_options(
                 std::mem::forget(child);
                 Ok(())
             }
+            Ok(LivenessResult::SurvivedReplacement) => Ok(()),
             Ok(LivenessResult::ExitedEarly { code })
-                if portable_activation_succeeded(root, was_running, code) => Ok(()),
+                if portable_activation_succeeded(root, was_running, code) =>
+            {
+                Ok(())
+            }
             Ok(LivenessResult::ExitedEarly { code }) => Err(EngineError::Io(format!(
                 "Codex exited immediately after launch (exit={})",
                 code.map(|c| c.to_string())
@@ -2520,7 +2548,11 @@ if ({resolve_alias}) {{
 "#,
         name = ps_quote(crate::OPENAI_PACKAGE_IDENTITY),
         family = ps_quote(family),
-        resolve_alias = if environment.is_empty() { "$false" } else { "$true" },
+        resolve_alias = if environment.is_empty() {
+            "$false"
+        } else {
+            "$true"
+        },
     );
     let registered = run_powershell_json_with_limits(&script, RunLimits::probe())
         .map_err(|e| e.into_install())?;
@@ -2546,14 +2578,18 @@ if ({resolve_alias}) {{
             .ok_or_else(|| EngineError::Io("LOCALAPPDATA is unavailable".into()))?;
         // The per-package App Execution Alias preserves the MSIX identity.
         // Starting the EXE directly from WindowsApps does not.
-        let launcher = PathBuf::from(local).join("Microsoft").join("WindowsApps").join(family).join(alias);
+        let launcher = PathBuf::from(local)
+            .join("Microsoft")
+            .join("WindowsApps")
+            .join(family)
+            .join(alias);
         let mut command = hidden_command(&launcher);
         command.current_dir(&root);
         apply_configured_launch_environment(&mut command, environment, disable_self_updates);
         apply_launch_arguments(&mut command, arguments)?;
-        let mut child = command.spawn().map_err(|e| {
-            EngineError::Io(format!("使用 MSIX 启动别名打开 Codex 失败: {e}"))
-        })?;
+        let mut child = command
+            .spawn()
+            .map_err(|e| EngineError::Io(format!("使用 MSIX 启动别名打开 Codex 失败: {e}")))?;
         return finish_configured_msix_launch(&mut child, wait_for_msix_startup(&root));
     }
     let arguments = HSTRING::from(arguments);
@@ -2607,8 +2643,13 @@ fn finish_configured_msix_launch(
             failure.kind, failure.detail,
         ))
     })?;
-    if let Some(status) = child.try_wait().map_err(|e| EngineError::Io(e.to_string()))? {
-        return Err(EngineError::Io(format!("带启动环境变量的 Codex 进程已退出 ({status})")));
+    if let Some(status) = child
+        .try_wait()
+        .map_err(|e| EngineError::Io(e.to_string()))?
+    {
+        return Err(EngineError::Io(format!(
+            "带启动环境变量的 Codex 进程已退出 ({status})"
+        )));
     }
     Ok(())
 }
@@ -2882,16 +2923,31 @@ mod tests {
     fn launch_environment_preserves_original_case_and_values() {
         let input = " \r\nhttp_proxy=http://127.0.0.1:7890\r\nHTTPS_PROXY=http://127.0.0.1:7890\nALL_PROXY=socks5://127.0.0.1:7890\nNO_PROXY=localhost,127.0.0.1,::1\nNODE_EXTRA_CA_CERTS=C:\\certs\\corp ca.pem\nSSL_CERT_FILE=C:\\certs\\ca.pem\nExample=a=b 中文 \n";
         let values = parse_launch_environment(input).unwrap();
-        assert_eq!(values.get("http_proxy").map(String::as_str), Some("http://127.0.0.1:7890"));
+        assert_eq!(
+            values.get("http_proxy").map(String::as_str),
+            Some("http://127.0.0.1:7890")
+        );
         assert!(!values.contains_key("HTTP_PROXY"));
-        assert_eq!(values.get("HTTPS_PROXY").map(String::as_str), Some("http://127.0.0.1:7890"));
-        assert_eq!(values.get("ALL_PROXY").map(String::as_str), Some("socks5://127.0.0.1:7890"));
-        assert_eq!(values.get("NO_PROXY").map(String::as_str), Some("localhost,127.0.0.1,::1"));
+        assert_eq!(
+            values.get("HTTPS_PROXY").map(String::as_str),
+            Some("http://127.0.0.1:7890")
+        );
+        assert_eq!(
+            values.get("ALL_PROXY").map(String::as_str),
+            Some("socks5://127.0.0.1:7890")
+        );
+        assert_eq!(
+            values.get("NO_PROXY").map(String::as_str),
+            Some("localhost,127.0.0.1,::1")
+        );
         assert_eq!(
             values.get("NODE_EXTRA_CA_CERTS").map(String::as_str),
             Some("C:\\certs\\corp ca.pem")
         );
-        assert_eq!(values.get("SSL_CERT_FILE").map(String::as_str), Some("C:\\certs\\ca.pem"));
+        assert_eq!(
+            values.get("SSL_CERT_FILE").map(String::as_str),
+            Some("C:\\certs\\ca.pem")
+        );
         assert_eq!(values.get("Example").map(String::as_str), Some("a=b 中文 "));
         assert!(!values.contains_key("EXAMPLE"));
         assert!(parse_launch_environment("\n  \n").unwrap().is_empty());
@@ -2922,9 +2978,14 @@ mod tests {
                 .unwrap_err()
                 .to_string();
             assert!(error.contains('2'), "{invalid:?} -> {error}");
-            assert!(!error.contains("secret"), "{invalid:?} leaked value: {error}");
+            assert!(
+                !error.contains("secret"),
+                "{invalid:?} leaked value: {error}"
+            );
         }
-        let empty_err = parse_launch_environment("HTTP_PROXY=").unwrap_err().to_string();
+        let empty_err = parse_launch_environment("HTTP_PROXY=")
+            .unwrap_err()
+            .to_string();
         assert!(empty_err.contains("不能为空"), "{empty_err}");
     }
 
@@ -2935,15 +2996,22 @@ mod tests {
         let dup_err = parse_launch_environment("HTTP_PROXY=one\nhttp_proxy=secret")
             .unwrap_err()
             .to_string();
-        assert!(dup_err.contains('2') && dup_err.contains("重复"), "{dup_err}");
+        assert!(
+            dup_err.contains('2') && dup_err.contains("重复"),
+            "{dup_err}"
+        );
         assert!(!dup_err.contains("secret"));
 
         for managed in MANAGER_MANAGED_ENV_NAMES {
             for candidate in [managed.to_string(), managed.to_ascii_lowercase()] {
-                let error = parse_launch_environment(&format!("HTTP_PROXY=one\n{candidate}=secret"))
-                    .unwrap_err()
-                    .to_string();
-                assert!(error.contains('2') && error.contains("管理器管理"), "{candidate}: {error}");
+                let error =
+                    parse_launch_environment(&format!("HTTP_PROXY=one\n{candidate}=secret"))
+                        .unwrap_err()
+                        .to_string();
+                assert!(
+                    error.contains('2') && error.contains("管理器管理"),
+                    "{candidate}: {error}"
+                );
                 assert!(!error.contains("secret"));
             }
         }
@@ -2955,9 +3023,10 @@ mod tests {
                 blocked[1..].to_ascii_lowercase()
             );
             for candidate in [blocked.to_string(), blocked.to_ascii_lowercase(), mixed] {
-                let error = parse_launch_environment(&format!("HTTP_PROXY=one\n{candidate}=secret"))
-                    .unwrap_err()
-                    .to_string();
+                let error =
+                    parse_launch_environment(&format!("HTTP_PROXY=one\n{candidate}=secret"))
+                        .unwrap_err()
+                        .to_string();
                 assert!(
                     error.contains('2') && error.contains("不允许覆盖"),
                     "{candidate}: {error}"
@@ -2970,13 +3039,21 @@ mod tests {
     #[test]
     fn launch_environment_enforces_byte_length_limit() {
         let prefix = "A=";
-        let exact = format!("{prefix}{}", "x".repeat(MAX_LAUNCH_ENVIRONMENT_BYTES - prefix.len()));
+        let exact = format!(
+            "{prefix}{}",
+            "x".repeat(MAX_LAUNCH_ENVIRONMENT_BYTES - prefix.len())
+        );
         assert_eq!(exact.len(), MAX_LAUNCH_ENVIRONMENT_BYTES);
         assert!(parse_launch_environment(&exact).is_ok());
 
         let too_long_ascii = format!("{exact}y");
-        let err = parse_launch_environment(&too_long_ascii).unwrap_err().to_string();
-        assert!(err.contains(&MAX_LAUNCH_ENVIRONMENT_BYTES.to_string()), "{err}");
+        let err = parse_launch_environment(&too_long_ascii)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains(&MAX_LAUNCH_ENVIRONMENT_BYTES.to_string()),
+            "{err}"
+        );
         assert!(!err.contains("xxxx"));
 
         let too_long_utf8 = format!(
@@ -2990,7 +3067,10 @@ mod tests {
     #[test]
     fn launch_environment_accepts_only_the_registered_desktop_alias() {
         let valid = serde_json::json!({ "launchAlias": "CHATGPT-DESKTOP.EXE" });
-        assert_eq!(registered_msix_launch_alias(&valid).unwrap(), "chatgpt-desktop.exe");
+        assert_eq!(
+            registered_msix_launch_alias(&valid).unwrap(),
+            "chatgpt-desktop.exe"
+        );
         for invalid in [
             serde_json::json!({}),
             serde_json::json!({ "launchAlias": "../chatgpt-desktop.exe" }),
@@ -3002,10 +3082,8 @@ mod tests {
 
     #[test]
     fn launch_environment_uses_saved_updater_policy_and_preserves_original_case() {
-        let environment = parse_launch_environment(
-            "http_proxy=http://127.0.0.1:7890\nCustomCase=value",
-        )
-        .unwrap();
+        let environment =
+            parse_launch_environment("http_proxy=http://127.0.0.1:7890\nCustomCase=value").unwrap();
         let mut command = std::process::Command::new("codex.exe");
         for disabled in [true, false] {
             super::apply_configured_launch_environment(&mut command, &environment, disabled);
@@ -3030,13 +3108,20 @@ mod tests {
     #[test]
     fn launch_environment_reaps_the_child_after_failed_msix_startup() {
         let mut child = hidden_command(std::env::current_exe().unwrap())
-            .args(["--ignored", "--exact", "startup_window::tests::native_window_fixture"])
+            .args([
+                "--ignored",
+                "--exact",
+                "startup_window::tests::native_window_fixture",
+            ])
             .env("CODEX_STARTUP_WINDOW_FIXTURE", "ready")
             .spawn()
             .unwrap();
         let result = finish_configured_msix_launch(
             &mut child,
-            Err(MsixStartupFailure { kind: msix_failure::TIMEOUT, detail: "fixture timeout".into() }),
+            Err(MsixStartupFailure {
+                kind: msix_failure::TIMEOUT,
+                detail: "fixture timeout".into(),
+            }),
         );
         let status = child.try_wait().unwrap();
         if status.is_none() {
@@ -3714,15 +3799,19 @@ mod portable_identity_tests {
         let mut child = std::process::Command::new(&exe)
             .args(["--ignored", "--exact", fixture])
             .env("CODEX_STARTUP_WINDOW_FIXTURE", "ready")
-            .spawn().unwrap();
+            .spawn()
+            .unwrap();
         let ready = {
             let deadline = Instant::now() + Duration::from_secs(8);
             loop {
                 if crate::windows_process::startup_window_for_root(&root)
-                    .is_ok_and(|(_, window)| window.ready && window.failure.is_none()) {
+                    .is_ok_and(|(_, window)| window.ready && window.failure.is_none())
+                {
                     break true;
                 }
-                if Instant::now() >= deadline { break false; }
+                if Instant::now() >= deadline {
+                    break false;
+                }
                 std::thread::sleep(Duration::from_millis(25));
             }
         };
@@ -3732,8 +3821,13 @@ mod portable_identity_tests {
             additional_arguments: &arguments,
             ..Default::default()
         };
-        let result = if ready { super::launch_codex_with_options(&installed, options) }
-            else { Err(crate::EngineError::Io("fixture window did not become ready".into())) };
+        let result = if ready {
+            super::launch_codex_with_options(&installed, options)
+        } else {
+            Err(crate::EngineError::Io(
+                "fixture window did not become ready".into(),
+            ))
+        };
         let configured = super::LaunchOptions {
             additional_environment: "CODEX_STARTUP_WINDOW_FIXTURE=ready",
             ..options
@@ -3746,9 +3840,33 @@ mod portable_identity_tests {
         let _ = crate::windows_process::close_startup_gui_for_root(&root);
         cleanup(&root);
         result.unwrap();
-        assert!(blocked.unwrap_err().to_string().contains("请完全退出 Codex"));
-        assert!(first_launch.unwrap_err().to_string().contains("exited immediately"));
+        assert!(blocked
+            .unwrap_err()
+            .to_string()
+            .contains("请完全退出 Codex"));
+        assert!(first_launch
+            .unwrap_err()
+            .to_string()
+            .contains("exited immediately"));
         configured_launch.unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn first_launch_follows_in_root_self_relaunch_to_ready_window() {
+        let root = write_root("self-relaunch", "ChatGPT.exe", Some("OpenAI.Codex"));
+        let exe = root.join("ChatGPT.exe");
+        std::fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
+        let installed = detect_portable_install(&root).unwrap();
+        let options = super::LaunchOptions {
+            additional_arguments: "--ignored --exact startup_window::tests::native_window_fixture",
+            additional_environment: "CODEX_STARTUP_WINDOW_FIXTURE=relaunch-ready",
+            ..Default::default()
+        };
+        let result = super::launch_codex_with_options(&installed, options);
+        let _ = crate::windows_process::close_codex_processes_for_root(10, &root);
+        cleanup(&root);
+        result.expect("cold launch must follow in-root Electron self-relaunch");
     }
 
     #[test]
@@ -3771,7 +3889,11 @@ mod portable_identity_tests {
         let exe = root.join(service);
         std::fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
         let mut child = std::process::Command::new(&exe)
-            .args(["--ignored", "--exact", "startup_window::tests::native_window_fixture"])
+            .args([
+                "--ignored",
+                "--exact",
+                "startup_window::tests::native_window_fixture",
+            ])
             .env("CODEX_STARTUP_WINDOW_FIXTURE", "ready")
             .spawn()
             .unwrap();
@@ -3883,22 +4005,28 @@ mod portable_identity_tests {
     }
 }
 
-
 #[cfg(test)]
 mod github_rate_limit_tests {
     use super::*;
-    use std::{cell::Cell, process::{ExitStatus, Output}};
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
     #[cfg(windows)]
     use std::os::windows::process::ExitStatusExt;
+    use std::{
+        cell::Cell,
+        process::{ExitStatus, Output},
+    };
 
     fn output(success: bool, headers: &[u8]) -> Output {
         #[cfg(unix)]
         let status = ExitStatus::from_raw(if success { 0 } else { 22 << 8 });
         #[cfg(windows)]
         let status = ExitStatus::from_raw(if success { 0 } else { 22 });
-        Output { status, stdout: headers.to_vec(), stderr: b"curl HTTP failure".to_vec() }
+        Output {
+            status,
+            stdout: headers.to_vec(),
+            stderr: b"curl HTTP failure".to_vec(),
+        }
     }
 
     fn route() -> NetworkConfig {
@@ -3910,28 +4038,52 @@ mod github_rate_limit_tests {
         let network = route();
         let calls = Cell::new(0);
         let reset = crate::github_rate_limit::unix_now() + 300;
-        let headers = format!("HTTP/2 403\r\nx-ratelimit-remaining: 0\r\nx-ratelimit-reset: {reset}\r\n\r\n");
-        let first = fetch_text_with_output("https://api.github.com/repos/test/repo/releases", &network, |_,_,_| {
-            calls.set(calls.get()+1);
-            Ok(output(false, headers.as_bytes()))
-        }).unwrap_err();
-        assert!(first.to_string().contains(&format!("retry_after_unix={reset}")));
-        let second = fetch_text_with_output("https://api.github.com/repos/test/repo/releases?page=2", &network, |_,_,_| {
-            panic!("cooldown must stop the transport request")
-        }).unwrap_err();
-        assert!(second.to_string().contains("GitHub API rate limit exceeded"));
+        let headers =
+            format!("HTTP/2 403\r\nx-ratelimit-remaining: 0\r\nx-ratelimit-reset: {reset}\r\n\r\n");
+        let first = fetch_text_with_output(
+            "https://api.github.com/repos/test/repo/releases",
+            &network,
+            |_, _, _| {
+                calls.set(calls.get() + 1);
+                Ok(output(false, headers.as_bytes()))
+            },
+        )
+        .unwrap_err();
+        assert!(first
+            .to_string()
+            .contains(&format!("retry_after_unix={reset}")));
+        let second = fetch_text_with_output(
+            "https://api.github.com/repos/test/repo/releases?page=2",
+            &network,
+            |_, _, _| panic!("cooldown must stop the transport request"),
+        )
+        .unwrap_err();
+        assert!(second
+            .to_string()
+            .contains("GitHub API rate limit exceeded"));
         assert_eq!(calls.get(), 1);
-        let mirror = fetch_text_with_output("https://codexapp.agentsmirror.com/latest/manifest", &network, |_,_,_| {
-            Ok(output(true, b"{}"))
-        }).unwrap();
+        let mirror = fetch_text_with_output(
+            "https://codexapp.agentsmirror.com/latest/manifest",
+            &network,
+            |_, _, _| Ok(output(true, b"{}")),
+        )
+        .unwrap();
         assert_eq!(mirror, "{}");
     }
 
     #[test]
     fn successful_api_json_has_no_header_prefix() {
-        let text = fetch_text_with_output("https://api.github.com/repos/test/repo/releases", &route(), |_,_,_| {
-            Ok(output(true, b"HTTP/2 200\r\nx-ratelimit-remaining: 12\r\n\r\n[]"))
-        }).unwrap();
+        let text = fetch_text_with_output(
+            "https://api.github.com/repos/test/repo/releases",
+            &route(),
+            |_, _, _| {
+                Ok(output(
+                    true,
+                    b"HTTP/2 200\r\nx-ratelimit-remaining: 12\r\n\r\n[]",
+                ))
+            },
+        )
+        .unwrap();
         assert_eq!(text, "[]");
     }
 
@@ -3940,10 +4092,18 @@ mod github_rate_limit_tests {
         let network = route();
         let calls = Cell::new(0);
         for _ in 0..2 {
-            let error = fetch_text_with_output("https://api.github.com/repos/test/repo/releases", &network, |_,_,_| {
-                calls.set(calls.get()+1);
-                Ok(output(false, b"HTTP/2 403\r\nx-ratelimit-remaining: 20\r\n\r\n"))
-            }).unwrap_err();
+            let error = fetch_text_with_output(
+                "https://api.github.com/repos/test/repo/releases",
+                &network,
+                |_, _, _| {
+                    calls.set(calls.get() + 1);
+                    Ok(output(
+                        false,
+                        b"HTTP/2 403\r\nx-ratelimit-remaining: 20\r\n\r\n",
+                    ))
+                },
+            )
+            .unwrap_err();
             assert!(!error.to_string().contains("rate limit exceeded"));
         }
         assert_eq!(calls.get(), 2);

@@ -1263,7 +1263,8 @@ fn scan_portable_root(
             } else {
                 scan.unknown_entries.push(rel);
             }
-        } else if meta.is_file() && (is_manager_root_file_name(&lower) || app_files.contains(&lower))
+        } else if meta.is_file()
+            && (is_manager_root_file_name(&lower) || app_files.contains(&lower))
         {
             scan.official_files.push(rel);
         } else {
@@ -1309,7 +1310,8 @@ fn create_unique_preserved_files_dir(install_parent: &Path) -> io::Result<PathBu
     }
     for _ in 0..16 {
         let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
-        let candidate = install_parent.join(format!("{PRESERVED_FILES_DIR_PREFIX}{stamp}-{suffix}"));
+        let candidate =
+            install_parent.join(format!("{PRESERVED_FILES_DIR_PREFIX}{stamp}-{suffix}"));
         match fs::create_dir(&candidate) {
             Ok(()) => return Ok(candidate),
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -1363,11 +1365,23 @@ fn is_dir_not_empty_error(dir: &Path, err: &io::Error) -> bool {
 }
 
 fn remove_file_with_retry(operation: &str, path: &Path) -> io::Result<()> {
-    filesystem_operation_with_retry(operation, path, None, || fs::remove_file(path), thread::sleep)
+    filesystem_operation_with_retry(
+        operation,
+        path,
+        None,
+        || fs::remove_file(path),
+        thread::sleep,
+    )
 }
 
 fn remove_empty_dir_with_retry(operation: &str, path: &Path) -> io::Result<()> {
-    filesystem_operation_with_retry(operation, path, None, || fs::remove_dir(path), thread::sleep)
+    filesystem_operation_with_retry(
+        operation,
+        path,
+        None,
+        || fs::remove_dir(path),
+        thread::sleep,
+    )
 }
 
 /// Delete only verified official regular files and empty official directories
@@ -1446,11 +1460,9 @@ pub fn cleanup_portable_backup_preserving_user_files(
     backup: &Path,
     install_root: &Path,
 ) -> PortableBackupCleanupOutcome {
-    cleanup_portable_backup_preserving_user_files_with_mover(
-        backup,
-        install_root,
-        |src, dst| rename_directory_with_retry("preserve user entry from portable backup", src, dst),
-    )
+    cleanup_portable_backup_preserving_user_files_with_mover(backup, install_root, |src, dst| {
+        rename_directory_with_retry("preserve user entry from portable backup", src, dst)
+    })
 }
 
 fn cleanup_portable_backup_preserving_user_files_with_mover<M>(
@@ -1591,9 +1603,7 @@ where
             if dst
                 .parent()
                 .zip(dst.file_name())
-                .is_some_and(|(parent, name)| {
-                    target_collides_in_dir(parent, name).unwrap_or(true)
-                })
+                .is_some_and(|(parent, name)| target_collides_in_dir(parent, name).unwrap_or(true))
             {
                 migration_failed = true;
                 outcome.notes.push(format!(
@@ -1758,9 +1768,7 @@ fn cleanup_portable_work_dir(work_dir: &Path) {
     // Remove `.codex-app-manager-staging` ONLY via non-recursive `remove_dir`
     // when it is empty, never touching sibling runs or unrelated entries.
     if let Some(staging_parent) = work_dir.parent() {
-        if staging_parent
-            .file_name()
-            .and_then(|name| name.to_str())
+        if staging_parent.file_name().and_then(|name| name.to_str())
             == Some(PORTABLE_STAGING_DIR_NAME)
         {
             match fs::remove_dir(staging_parent) {
@@ -1872,19 +1880,22 @@ pub(crate) fn repair_portable_launch_entry(root: &Path) -> Result<(), EngineErro
     }
     // Legacy uninstall commands must learn protocol cleanup before its handler
     // is added. Refreshing them is also required when repairing a flat install.
-    let version = read_codex_app_version_from_install_root(root).or_else(|| {
-        fs::read_to_string(root.join("AppxManifest.xml")).ok()
-            .and_then(|xml| parse_appx_manifest_xml(&xml).ok())
-            .map(|identity| identity.version)
-    }).unwrap_or_default();
+    let version = read_codex_app_version_from_install_root(root)
+        .or_else(|| {
+            fs::read_to_string(root.join("AppxManifest.xml"))
+                .ok()
+                .and_then(|xml| parse_appx_manifest_xml(&xml).ok())
+                .map(|identity| identity.version)
+        })
+        .unwrap_or_default();
     match register_uninstall_entry(root, &version, None) {
-        Ok(true) => {
-            match register_portable_protocol(root) {
-                Ok(true) => {},
-                Ok(false) => log::warn!("portable protocol repair skipped: existing registration was preserved"),
-                Err(error) => log::warn!("portable protocol repair failed: {error}"),
+        Ok(true) => match register_portable_protocol(root) {
+            Ok(true) => {}
+            Ok(false) => {
+                log::warn!("portable protocol repair skipped: existing registration was preserved")
             }
-        }
+            Err(error) => log::warn!("portable protocol repair failed: {error}"),
+        },
         Err(error) => log::warn!("portable uninstall metadata repair failed: {error}"),
         Ok(false) => {}
     }
@@ -1894,13 +1905,17 @@ pub(crate) fn repair_portable_launch_entry(root: &Path) -> Result<(), EngineErro
 #[cfg(windows)]
 fn register_portable_protocol(root: &Path) -> Result<bool, EngineError> {
     let launcher = ensure_portable_launcher(root)?;
-    let Some(icon) = installed_app_exe(root) else { return Ok(false); };
+    let Some(icon) = installed_app_exe(root) else {
+        return Ok(false);
+    };
     crate::portable_protocol::register(&launcher, &icon)
         .map_err(|error| io_err("register portable protocol", error))
 }
 
 #[cfg(not(windows))]
-fn register_portable_protocol(_root: &Path) -> Result<bool, EngineError> { Ok(false) }
+fn register_portable_protocol(_root: &Path) -> Result<bool, EngineError> {
+    Ok(false)
+}
 
 #[cfg(windows)]
 fn ps_quote(value: &str) -> String {
@@ -2024,14 +2039,11 @@ pub fn create_manager_launch_shortcut(
         fs::create_dir_all(parent).map_err(|error| io_err("create shortcut directory", error))?;
     }
     let icon = shortcut_icon(installed);
-    let workdir = manager_exe.parent()
+    let workdir = manager_exe
+        .parent()
         .ok_or_else(|| EngineError::Io("Manager executable has no parent directory".into()))?;
-    let spec = crate::portable_shortcut::ShortcutSpec::new(
-        manager_exe,
-        workdir,
-        &icon,
-        "--launch-codex",
-    );
+    let spec =
+        crate::portable_shortcut::ShortcutSpec::new(manager_exe, workdir, &icon, "--launch-codex");
     // Read-compare-write: an unchanged shortcut is not rewritten on every launch.
     crate::portable_shortcut::ensure(&shortcut, &spec)
         .map(|_| ())
@@ -2048,7 +2060,10 @@ pub fn create_manager_launch_shortcut(
 
 #[cfg(any(windows, test))]
 fn is_default_official_icon_name(icon: &Path) -> bool {
-    let normalized = icon.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+    let normalized = icon
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase();
     let trimmed = normalized.trim().trim_matches('"').trim_end_matches('\\');
     let Some(file_name) = trimmed.rsplit('\\').next() else {
         return false;
@@ -2077,12 +2092,14 @@ fn is_install_launcher_alias(install_root: &Path, app_exe: &Path, candidate: &Pa
     }
     // Root-level ChatGPT.exe / Codex.exe are launcher/alias executables whenever
     // the active payload lives elsewhere (e.g. app\ChatGPT.exe in nested layout).
-    [install_root.join("Codex.exe"), install_root.join("ChatGPT.exe")]
-        .iter()
-        .any(|alias| {
-            !crate::same_windows_path(alias, app_exe)
-                && crate::same_windows_path(candidate, alias)
-        })
+    [
+        install_root.join("Codex.exe"),
+        install_root.join("ChatGPT.exe"),
+    ]
+    .iter()
+    .any(|alias| {
+        !crate::same_windows_path(alias, app_exe) && crate::same_windows_path(candidate, alias)
+    })
 }
 
 #[cfg(any(windows, test))]
@@ -2240,10 +2257,20 @@ fn create_start_menu_shortcut(_install_root: &Path) -> Result<bool, EngineError>
 }
 
 #[cfg(all(windows, not(test)))]
-fn register_uninstall_entry(install_root: &Path, version: &str, estimated_size_kb: Option<u64>) -> Result<bool, EngineError> {
-    let exe=installed_app_exe(install_root).unwrap_or_else(|| install_root.join("Codex.exe"));
-    let launcher=ensure_portable_launcher(install_root)?;
-    run_powershell(&uninstall_metadata_script(install_root,&launcher,&exe,version,estimated_size_kb))?;
+fn register_uninstall_entry(
+    install_root: &Path,
+    version: &str,
+    estimated_size_kb: Option<u64>,
+) -> Result<bool, EngineError> {
+    let exe = installed_app_exe(install_root).unwrap_or_else(|| install_root.join("Codex.exe"));
+    let launcher = ensure_portable_launcher(install_root)?;
+    run_powershell(&uninstall_metadata_script(
+        install_root,
+        &launcher,
+        &exe,
+        version,
+        estimated_size_kb,
+    ))?;
     Ok(true)
 }
 
@@ -2277,7 +2304,13 @@ fn portable_files_uninstall_ps_snippet(install_root: &Path) -> String {
 }
 
 #[cfg(windows)]
-fn uninstall_metadata_script(install_root: &Path, launcher: &Path, exe: &Path, version: &str, estimated_size_kb: Option<u64>) -> String {
+fn uninstall_metadata_script(
+    install_root: &Path,
+    launcher: &Path,
+    exe: &Path,
+    version: &str,
+    estimated_size_kb: Option<u64>,
+) -> String {
     let uninstall_script = format!(
         "{protocol}; if ($env:APPDATA) {{ $Shortcut = Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs\\Codex.lnk'; Remove-Item -LiteralPath $Shortcut -Force -ErrorAction SilentlyContinue }}; {files}; Remove-Item -LiteralPath 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Codex' -Recurse -Force -ErrorAction SilentlyContinue",
         protocol = crate::portable_protocol::uninstall_script(launcher),
@@ -2488,8 +2521,9 @@ fn health_check_portable_install(
     let spawn_once = || -> Result<_, EngineError> {
         let mut command = portable_launch_command(&exe)?;
         crate::sys::apply_launch_arguments(&mut command, arguments)?;
-        crate::process::spawn_and_check_startup(
+        crate::process::spawn_and_check_startup_for_root(
             command,
+            Some(install_root),
             PORTABLE_LIVENESS_WINDOW,
             PORTABLE_STARTUP_WINDOW,
             requires_cli,
@@ -2504,12 +2538,12 @@ fn health_check_portable_install(
 
     let mut startup = spawn_once()?;
     if matches!(startup, LivenessResult::ExitedEarly { code: Some(0) }) {
-        // Electron exits 0 immediately when another Codex instance (e.g. a
-        // lingering MSIX/tray build) still holds the user-session single-instance
-        // lock and receives the activation handoff. Sweep both MSIX and target
-        // portable roots once, then retry the health-check launch.
+        // Electron exits 0 immediately without an in-root replacement when an
+        // external Codex instance (e.g. a lingering MSIX/tray build) still holds
+        // the user-session single-instance lock and receives the activation
+        // handoff. Sweep both MSIX and target portable roots once, then retry.
         log::warn!(
-            "portable health check exited immediately with code 0 (possible single-instance handoff); closing lingering Codex processes and retrying once root={}",
+            "portable health check exited immediately with code 0 (possible external single-instance handoff); closing lingering Codex processes and retrying once root={}",
             install_root.display()
         );
         #[cfg(not(test))]
@@ -2525,6 +2559,29 @@ fn health_check_portable_install(
         startup = spawn_once()?;
     }
 
+    let close_health_check_tree = || -> Result<(), EngineError> {
+        // The launch was only a health check. Close the whole Electron
+        // process tree so an update cannot open an app that was closed
+        // beforehand.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(EngineError::Install(format!(
+                    "portable health check cleanup failed: Codex is still running from {}",
+                    install_root.display()
+                )));
+            }
+            // A closing Electron parent may replace itself with another
+            // process. Use bounded close slices and rescan the exact root
+            // between them instead of trusting one PID snapshot.
+            close_codex_gracefully_for_root(remaining.as_secs().clamp(1, 5), install_root)?;
+            if !codex_running_for_root(install_root)? {
+                return Ok(());
+            }
+        }
+    };
+
     match startup {
         LivenessResult::Survived { child } => {
             if keep_running {
@@ -2533,27 +2590,16 @@ fn health_check_portable_install(
                 std::mem::forget(child);
                 Ok(true)
             } else {
-                // The launch was only a health check. Close the whole Electron
-                // process tree so an update cannot open an app that was closed
-                // beforehand.
-                let deadline = Instant::now() + Duration::from_secs(30);
-                loop {
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    if remaining.is_zero() {
-                        return Err(EngineError::Install(format!(
-                            "portable health check cleanup failed: Codex is still running from {}",
-                            install_root.display()
-                        )));
-                    }
-                    // A closing Electron parent may replace itself with another
-                    // process. Use bounded close slices and rescan the exact root
-                    // between them instead of trusting one PID snapshot.
-                    close_codex_gracefully_for_root(remaining.as_secs().clamp(1, 5), install_root)?;
-                    if !codex_running_for_root(install_root)? {
-                        break;
-                    }
-                }
+                close_health_check_tree()?;
                 drop(child);
+                Ok(false)
+            }
+        }
+        LivenessResult::SurvivedReplacement => {
+            if keep_running {
+                Ok(true)
+            } else {
+                close_health_check_tree()?;
                 Ok(false)
             }
         }
@@ -2760,13 +2806,8 @@ pub fn install_portable_from_msix_with_launch_arguments(
         backup: backup.clone(),
         had_previous,
     }) {
-        let rollback_err = rollback_install_error(
-            install_root,
-            &backup,
-            had_previous,
-            observer,
-            obs_err,
-        );
+        let rollback_err =
+            rollback_install_error(install_root, &backup, had_previous, observer, obs_err);
         if had_previous && !install_root.exists() && payload.exists() {
             work_dir_guard.keep();
         }
@@ -2813,13 +2854,8 @@ pub fn install_portable_from_msix_with_launch_arguments(
             }
         }
         Err(err) => {
-            let rollback_err = rollback_install_error(
-                install_root,
-                &backup,
-                had_previous,
-                observer,
-                err,
-            );
+            let rollback_err =
+                rollback_install_error(install_root, &backup, had_previous, observer, err);
             if had_previous && !install_root.exists() && payload.exists() {
                 work_dir_guard.keep();
             }
@@ -2880,8 +2916,11 @@ pub fn install_portable_from_msix_with_launch_arguments(
     };
     if uninstall_entry_created {
         match register_portable_protocol(install_root) {
-            Ok(true) => {},
-            Ok(false) => notes.push("Codex protocol registration was skipped: existing registration was preserved.".to_string()),
+            Ok(true) => {}
+            Ok(false) => notes.push(
+                "Codex protocol registration was skipped: existing registration was preserved."
+                    .to_string(),
+            ),
             Err(err) => notes.push(format!("Codex protocol registration failed: {err}")),
         }
     }
@@ -3236,13 +3275,8 @@ mod tests {
             fs::write(&target, b"unrelated fixture").unwrap();
             // Use a repairable icon so this checks target ownership rather
             // than passing because the custom-icon policy skips the link.
-            crate::portable_shortcut::create(
-                &shortcut,
-                &target,
-                &app,
-                &root.join("ChatGPT.exe"),
-            )
-            .unwrap();
+            crate::portable_shortcut::create(&shortcut, &target, &app, &root.join("ChatGPT.exe"))
+                .unwrap();
             let saved = fs::read(&shortcut).unwrap();
             assert!(!repair_legacy_shortcut_icon(&root, &shortcut).unwrap());
             assert_eq!(fs::read(&shortcut).unwrap(), saved);
@@ -3488,7 +3522,10 @@ mod tests {
         let shortcut = root.join("Codex.lnk");
         crate::portable_shortcut::create(&shortcut, &exe, &root, &exe).unwrap();
         let (target, id) = crate::portable_shortcut::inspect(&shortcut).unwrap();
-        assert_eq!(fs::canonicalize(target).unwrap(), fs::canonicalize(exe).unwrap());
+        assert_eq!(
+            fs::canonicalize(target).unwrap(),
+            fs::canonicalize(exe).unwrap()
+        );
         assert_eq!(id, crate::portable_shortcut::APP_ID);
         fs::remove_dir_all(parent).unwrap();
     }
@@ -3499,10 +3536,15 @@ mod tests {
         let root = temp_test_dir("unicode-metadata");
         let path = root.join("中文 O'Neil & file.txt");
         let value = "中文 O'Neil & metadata";
-        let output = run_powershell_with_limits(&format!(
-            "$value = {}; [System.IO.File]::WriteAllText({}, $value); $value",
-            ps_quote(value), ps_quote(&path.to_string_lossy())
-        ), RunLimits::probe()).unwrap();
+        let output = run_powershell_with_limits(
+            &format!(
+                "$value = {}; [System.IO.File]::WriteAllText({}, $value); $value",
+                ps_quote(value),
+                ps_quote(&path.to_string_lossy())
+            ),
+            RunLimits::probe(),
+        )
+        .unwrap();
         assert_eq!(output, value);
         assert_eq!(fs::read_to_string(path).unwrap(), value);
         fs::remove_dir_all(root).unwrap();
@@ -3512,12 +3554,21 @@ mod tests {
     #[test]
     fn encoded_uninstall_metadata_fits_the_windows_command_line() {
         let root = PathBuf::from(format!(r"C:\便携 O'Neil & long path\{}", "x".repeat(220)));
-        let script = uninstall_metadata_script(&root, &root.join("Codex.exe"),
-            &root.join("app/ChatGPT.exe"), "26.930.31730", Some(900_000));
+        let script = uninstall_metadata_script(
+            &root,
+            &root.join("Codex.exe"),
+            &root.join("app/ChatGPT.exe"),
+            "26.930.31730",
+            Some(900_000),
+        );
         // Include the real transport prefix and leave room for its exe/flags.
         let wrapped = format!("try {{ [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) }} catch {{ }}\n{script}");
         let encoded = crate::sys::encode_powershell_command(&wrapped);
-        assert!(encoded.len() < 30_000, "metadata command is too long: {}", encoded.len());
+        assert!(
+            encoded.len() < 30_000,
+            "metadata command is too long: {}",
+            encoded.len()
+        );
     }
 
     #[test]
@@ -3631,8 +3682,9 @@ mod tests {
                 "--user-data-dir={}",
                 profile.join("profile").display()
             ));
-        let result = crate::process::spawn_and_check_startup(
+        let result = crate::process::spawn_and_check_startup_for_root(
             command,
+            Some(&root),
             PORTABLE_LIVENESS_WINDOW,
             PORTABLE_STARTUP_WINDOW,
             true,
@@ -3640,7 +3692,10 @@ mod tests {
         let cleanup = close_codex_gracefully_for_root(30, &root);
         cleanup.unwrap();
         assert!(
-            matches!(result, Ok(LivenessResult::Survived { .. })),
+            matches!(
+                result,
+                Ok(LivenessResult::Survived { .. } | LivenessResult::SurvivedReplacement)
+            ),
             "{result:?}"
         );
         let _ = fs::remove_dir_all(profile);
@@ -3673,8 +3728,9 @@ mod tests {
                 "--user-data-dir={}",
                 root.join("profile").display()
             ));
-        let result = crate::process::spawn_and_check_startup(
+        let result = crate::process::spawn_and_check_startup_for_root(
             command,
+            Some(&payload),
             PORTABLE_LIVENESS_WINDOW,
             PORTABLE_STARTUP_WINDOW,
             true,
@@ -3682,7 +3738,10 @@ mod tests {
         let cleanup = close_codex_gracefully_for_root(10, &payload);
         cleanup.unwrap();
         assert!(
-            matches!(result, Ok(LivenessResult::Survived { .. })),
+            matches!(
+                result,
+                Ok(LivenessResult::Survived { .. } | LivenessResult::SurvivedReplacement)
+            ),
             "{result:?}"
         );
         // Keep the marked lab and app logs for investigation. No MSIX install
@@ -4028,9 +4087,7 @@ mod tests {
             .expect("launcher must have a .rsrc section");
         let dir = u32_at(rsrc + 20);
         let entries = u16_at(dir + 12) + u16_at(dir + 14);
-        let ids: Vec<usize> = (0..entries)
-            .map(|i| u32_at(dir + 16 + i * 8))
-            .collect();
+        let ids: Vec<usize> = (0..entries).map(|i| u32_at(dir + 16 + i * 8)).collect();
         assert!(ids.contains(&3), "RT_ICON missing: {ids:?}");
         assert!(ids.contains(&14), "RT_GROUP_ICON missing: {ids:?}");
     }
@@ -4414,7 +4471,11 @@ mod tests {
 
         let raw = b"app/safe.bin";
         for unsafe_name in [
-            "../escape.bin", r"..\escape.bin", "/absolute", r"C:\escape", "nul\0path",
+            "../escape.bin",
+            r"..\escape.bin",
+            "/absolute",
+            r"C:\escape",
+            "nul\0path",
         ] {
             let root = temp_test_dir("unsafe-unicode-msix");
             let msix = root.join("codex.msix");
@@ -5249,7 +5310,8 @@ mod tests {
         assert!(install_root.join(PORTABLE_FILES_MANIFEST_NAME).is_file());
         assert!(install_root.join("app/old-helper.dll").is_file());
 
-        let report = install_portable_from_msix_inner(&msix_v2, &install_root, false, false).unwrap();
+        let report =
+            install_portable_from_msix_inner(&msix_v2, &install_root, false, false).unwrap();
         assert!(report.success);
         assert!(report.backup_path.is_none());
         assert!(
@@ -5292,7 +5354,11 @@ mod tests {
         fs::create_dir_all(install_root.join("my-repo/src")).unwrap();
         fs::write(install_root.join("my-repo/src/main.rs"), b"fn main() {}").unwrap();
         fs::create_dir_all(install_root.join("app")).unwrap();
-        fs::write(install_root.join("app/user-webapp.ts"), b"export const x = 1;").unwrap();
+        fs::write(
+            install_root.join("app/user-webapp.ts"),
+            b"export const x = 1;",
+        )
+        .unwrap();
 
         let report = install_portable_from_msix_inner(&msix, &install_root, false, false).unwrap();
         assert!(report.success);
@@ -5310,7 +5376,11 @@ mod tests {
         assert!(!install_root.join("app/user-webapp.ts").exists());
         // Colliding `app/` user folder was safely moved to sibling preserved dir.
         let preserved = find_preserved_dirs(&parent);
-        assert_eq!(preserved.len(), 1, "expected one preserved dir: {preserved:?}");
+        assert_eq!(
+            preserved.len(),
+            1,
+            "expected one preserved dir: {preserved:?}"
+        );
         assert_eq!(
             fs::read(preserved[0].join("app/user-webapp.ts")).unwrap(),
             b"export const x = 1;"
@@ -5347,7 +5417,8 @@ mod tests {
         )
         .unwrap();
 
-        let report = install_portable_from_msix_inner(&msix_v2, &install_root, false, false).unwrap();
+        let report =
+            install_portable_from_msix_inner(&msix_v2, &install_root, false, false).unwrap();
         assert!(report.success);
         assert!(report.backup_path.is_none());
 
@@ -5358,7 +5429,9 @@ mod tests {
         );
         // `app/`-level and deeper user files moved out of `app/` into sibling preserved dir.
         assert!(!install_root.join("app/cwd-project").exists());
-        assert!(!install_root.join("app/resources/personal-notes.txt").exists());
+        assert!(!install_root
+            .join("app/resources/personal-notes.txt")
+            .exists());
         let preserved = find_preserved_dirs(&parent);
         assert_eq!(preserved.len(), 1);
         assert_eq!(
@@ -5438,10 +5511,16 @@ mod tests {
         );
         assert!(preserved
             .iter()
-            .any(|d| fs::read(d.join("app/first-project/one.txt")).ok().as_deref() == Some(b"one")));
+            .any(|d| fs::read(d.join("app/first-project/one.txt"))
+                .ok()
+                .as_deref()
+                == Some(b"one")));
         assert!(preserved
             .iter()
-            .any(|d| fs::read(d.join("app/second-project/two.txt")).ok().as_deref() == Some(b"two")));
+            .any(|d| fs::read(d.join("app/second-project/two.txt"))
+                .ok()
+                .as_deref()
+                == Some(b"two")));
 
         let _ = fs::remove_dir_all(&parent);
     }
@@ -5462,7 +5541,12 @@ mod tests {
         let outcome = cleanup_portable_backup_preserving_user_files_with_mover(
             &backup,
             &install_root,
-            |_src, _dst| Err(io::Error::new(io::ErrorKind::PermissionDenied, "simulated lock")),
+            |_src, _dst| {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "simulated lock",
+                ))
+            },
         );
 
         assert_eq!(outcome.retained_backup.as_deref(), Some(backup.as_path()));
@@ -5579,10 +5663,12 @@ mod tests {
         );
         let preserved = find_preserved_dirs(&parent);
         assert_eq!(preserved.len(), 1);
-        assert!(fs::symlink_metadata(preserved[0].join("app/linked-project"))
-            .unwrap()
-            .file_type()
-            .is_symlink());
+        assert!(
+            fs::symlink_metadata(preserved[0].join("app/linked-project"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
 
         // Uninstall also leaves a symlink and its external target intact.
         symlink(&external, install_root.join("linked-root")).unwrap();
@@ -5609,7 +5695,9 @@ mod tests {
         // 1. Failure inside prepare_portable_payload (corrupt MSIX) cleans work_dir + empty parent.
         let corrupt_msix = parent.join("corrupt.msix");
         fs::write(&corrupt_msix, b"not a zip").unwrap();
-        assert!(install_portable_from_msix_inner(&corrupt_msix, &install_root, false, false).is_err());
+        assert!(
+            install_portable_from_msix_inner(&corrupt_msix, &install_root, false, false).is_err()
+        );
         assert!(
             !staging_parent.exists(),
             "corrupt MSIX failure must remove work_dir and empty .codex-app-manager-staging"
@@ -5638,7 +5726,9 @@ mod tests {
         let sibling = staging_parent.join("keep-sibling");
         fs::create_dir_all(&sibling).unwrap();
         fs::write(sibling.join("marker.txt"), b"keep").unwrap();
-        assert!(install_portable_from_msix_inner(&corrupt_msix, &install_root, false, false).is_err());
+        assert!(
+            install_portable_from_msix_inner(&corrupt_msix, &install_root, false, false).is_err()
+        );
         assert!(sibling.join("marker.txt").is_file());
         assert_eq!(
             fs::read_dir(&staging_parent).unwrap().count(),

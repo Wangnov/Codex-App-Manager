@@ -69,6 +69,22 @@ fn path_is_within_root(candidate: &Path, root: &Path) -> bool {
             .is_some_and(|suffix| suffix.starts_with('\\'))
 }
 
+#[cfg(any(windows, test))]
+fn is_app_entry_within_root(image_path: &Path, root: &Path) -> bool {
+    let candidate = normalized_windows_path(image_path);
+    let root = normalized_windows_path(root);
+    if candidate.is_empty() || root.is_empty() {
+        return false;
+    }
+    let Some(suffix) = candidate.strip_prefix(&root) else {
+        return false;
+    };
+    matches!(
+        suffix,
+        r"\chatgpt.exe" | r"\codex.exe" | r"\app\chatgpt.exe" | r"\app\codex.exe"
+    )
+}
+
 #[cfg(windows)]
 mod imp {
     use std::ffi::OsString;
@@ -94,7 +110,7 @@ mod imp {
         EnumWindows, GetWindowThreadProcessId, PostMessageW, WM_CLOSE,
     };
 
-    use super::{path_is_within_root, EngineError};
+    use super::{is_app_entry_within_root, path_is_within_root, EngineError};
 
     const PROCESS_SYNCHRONIZE: u32 = 0x0010_0000;
     const FORCE_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -128,6 +144,7 @@ mod imp {
         handle: OwnedHandle,
         can_terminate: bool,
         is_gui_app: bool,
+        is_app_entry: bool,
     }
 
     impl TargetProcess {
@@ -198,14 +215,18 @@ mod imp {
         let can_terminate = terminate_handle.is_some();
         let handle = terminate_handle.unwrap_or(query_handle);
 
+        let is_gui_app = image_path.file_name().is_some_and(|name| {
+            let name = name.to_string_lossy();
+            name.eq_ignore_ascii_case("Codex.exe") || name.eq_ignore_ascii_case("ChatGPT.exe")
+        });
+        let is_app_entry = is_gui_app && is_app_entry_within_root(&image_path, root);
+
         Some(TargetProcess {
             pid,
             handle,
             can_terminate,
-            is_gui_app: image_path.file_name().is_some_and(|name| {
-                let name = name.to_string_lossy();
-                name.eq_ignore_ascii_case("Codex.exe") || name.eq_ignore_ascii_case("ChatGPT.exe")
-            }),
+            is_gui_app,
+            is_app_entry,
         })
     }
 
@@ -274,6 +295,15 @@ mod imp {
             .any(|process| process.is_gui_app && process.is_running()))
     }
 
+    pub(crate) fn codex_gui_running_for_root(root: &Path) -> Result<bool, EngineError> {
+        // Strictly matches only the desktop GUI entry (`<root>\ChatGPT.exe`,
+        // `<root>\app\ChatGPT.exe`, or legacy `Codex.exe`), excluding bundled
+        // `resources\codex.exe` CLI and sandbox background services.
+        Ok(target_processes_under_root(root, false)?
+            .iter()
+            .any(|process| process.is_app_entry && process.is_running()))
+    }
+
     /// Hold image-verified process handles while inspecting their windows. This
     /// also follows Electron replacement processes without accepting another
     /// installed Codex (or an unrelated ChatGPT) elsewhere on disk.
@@ -287,6 +317,26 @@ mod imp {
             .map(|p| p.pid)
             .collect();
         Ok((!pids.is_empty(), crate::startup_window::inspect_pids(&pids)))
+    }
+
+    /// Like [`startup_window_for_root`], but the boolean reports specifically
+    /// whether a GUI entry process (`ChatGPT.exe` / `Codex.exe` at root or
+    /// `app/`, excluding `resources\codex.exe` CLI) is alive under `root`,
+    /// while still inspecting windows across every process under `root` so
+    /// helper-owned error dialogs are never missed.
+    pub(crate) fn gui_startup_window_for_root(
+        root: &Path,
+    ) -> Result<(bool, crate::startup_window::StartupWindow), EngineError> {
+        let targets = target_processes_under_root(root, false)?;
+        let mut gui_running = false;
+        let mut pids = Vec::with_capacity(targets.len());
+        for process in &targets {
+            if process.is_running() {
+                gui_running |= process.is_app_entry;
+                pids.push(process.pid);
+            }
+        }
+        Ok((gui_running, crate::startup_window::inspect_pids(&pids)))
     }
 
     unsafe extern "system" fn post_close_to_pid(hwnd: HWND, target_pid: LPARAM) -> i32 {
@@ -475,8 +525,9 @@ mod imp {
 
 #[cfg(windows)]
 pub(crate) use imp::{
-    close_codex_processes_for_root, close_startup_gui_for_root, codex_processes_running_for_root,
-    codex_session_running_for_root, startup_window_for_root,
+    close_codex_processes_for_root, close_startup_gui_for_root, codex_gui_running_for_root,
+    codex_processes_running_for_root, codex_session_running_for_root, gui_startup_window_for_root,
+    startup_window_for_root,
 };
 
 #[cfg(not(windows))]
@@ -488,6 +539,11 @@ pub(crate) fn close_codex_processes_for_root(
 }
 
 #[cfg(not(windows))]
+pub(crate) fn close_startup_gui_for_root(_root: &Path) -> Result<(), EngineError> {
+    Ok(())
+}
+
+#[cfg(not(windows))]
 pub(crate) fn codex_processes_running_for_root(_root: &Path) -> Result<bool, EngineError> {
     Ok(false)
 }
@@ -495,6 +551,18 @@ pub(crate) fn codex_processes_running_for_root(_root: &Path) -> Result<bool, Eng
 #[cfg(not(windows))]
 pub(crate) fn codex_session_running_for_root(_root: &Path) -> Result<bool, EngineError> {
     Ok(false)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn codex_gui_running_for_root(_root: &Path) -> Result<bool, EngineError> {
+    Ok(false)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn gui_startup_window_for_root(
+    _root: &Path,
+) -> Result<(bool, crate::startup_window::StartupWindow), EngineError> {
+    Ok((false, crate::startup_window::StartupWindow::default()))
 }
 
 #[cfg(test)]
@@ -541,10 +609,7 @@ mod tests {
 
     #[test]
     fn same_path_resolves_missing_leaf_via_existing_canonical_ancestor() {
-        let root = std::env::temp_dir().join(format!(
-            "codex-same-path-{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("codex-same-path-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let canonical = std::fs::canonicalize(&root).unwrap();
         assert!(same_windows_path(
@@ -552,5 +617,32 @@ mod tests {
             &canonical.join("missing/ChatGPT.exe"),
         ));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn distinguishes_app_entry_from_bundled_resources_cli_and_services() {
+        let root = Path::new(r"C:\Users\Alice\AppData\Local\Programs\Codex");
+        assert!(is_app_entry_within_root(
+            Path::new(r"C:\Users\Alice\AppData\Local\Programs\Codex\app\ChatGPT.exe"),
+            root
+        ));
+        assert!(is_app_entry_within_root(
+            Path::new(r"c:/users/alice/appdata/local/programs/codex/ChatGPT.exe"),
+            root
+        ));
+        assert!(is_app_entry_within_root(
+            Path::new(r"C:\Users\Alice\AppData\Local\Programs\Codex\app\Codex.exe"),
+            root
+        ));
+        assert!(!is_app_entry_within_root(
+            Path::new(r"C:\Users\Alice\AppData\Local\Programs\Codex\app\resources\codex.exe"),
+            root
+        ));
+        assert!(!is_app_entry_within_root(
+            Path::new(
+                r"C:\Users\Alice\AppData\Local\Programs\Codex\app\resources\codex-windows-sandbox-service.exe"
+            ),
+            root
+        ));
     }
 }
