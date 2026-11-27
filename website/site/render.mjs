@@ -156,24 +156,60 @@ function head(t, data, page) {
     t.lang === "zh" && page !== "404" && !isTerms
       ? `<script>(function(){try{if(location.pathname!=="/")return;var s=localStorage.getItem("cam-site-lang");if(s==="zh")return;if(s==="en"||(!/^zh\\b/i.test(navigator.language||"")&&!/bot|crawl|spider|slurp|preview|lighthouse/i.test(navigator.userAgent))){location.replace("/en/"+location.hash)}}catch(e){}})();</script>`
       : "";
-  const ld = {
-    "@context": "https://schema.org",
-    "@type": "SoftwareApplication",
-    name: "Codex App Manager",
-    operatingSystem: "macOS, Windows",
-    applicationCategory: "DeveloperApplication",
-    license: "https://opensource.org/licenses/MIT",
-    url: ORIGIN + "/",
-    sameAs: [REPO.manager, REPO.mirror, REPO.skins],
-    offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
-  };
+  const stripTags = (s) => String(s).replace(/<[^>]+>/g, "");
+  const authorId = "https://agentsmirror.com/#wangnov";
+  const graph = [
+    {
+      "@type": "Person",
+      "@id": authorId,
+      name: "Wangnov",
+      url: "https://agentsmirror.com/",
+      jobTitle: "AI Agent Engineer & FDE-Style Consultant",
+      sameAs: ["https://github.com/Wangnov"],
+    },
+    {
+      "@type": "WebSite",
+      "@id": `${ORIGIN}/#website`,
+      name: t.brand,
+      url: `${ORIGIN}/`,
+      inLanguage: ["zh-CN", "en"],
+      publisher: { "@id": authorId },
+    },
+    {
+      "@type": "SoftwareApplication",
+      name: "Codex App Manager",
+      alternateName: ["codex-app-mirror", "Codex App 全家桶", "Codex Desktop Windows & macOS Installer"],
+      operatingSystem: "macOS, Windows",
+      applicationCategory: "DeveloperApplication",
+      softwareVersion: data.manager?.version || undefined,
+      license: "https://opensource.org/licenses/MIT",
+      url: `${ORIGIN}/`,
+      author: { "@id": authorId },
+      sameAs: [REPO.manager, REPO.mirror, REPO.skins],
+      offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+    },
+  ];
+  if (page !== "404" && !isTerms && Array.isArray(t.faq?.items)) {
+    graph.push({
+      "@type": "FAQPage",
+      inLanguage: t.htmlLang,
+      mainEntity: t.faq.items.map((it) => ({
+        "@type": "Question",
+        name: it.q,
+        acceptedAnswer: { "@type": "Answer", text: stripTags(it.a) },
+      })),
+    });
+  }
+  const ld = { "@context": "https://schema.org", "@graph": graph };
   return `${redirect}
+    <meta name="color-scheme" content="light dark">
     <title>${esc(title)}</title>
     <meta name="description" content="${esc(description)}">
     ${page === "404" ? `<meta name="robots" content="noindex">` : `<link rel="canonical" href="${url}">`}
     ${isTerms ? "" : `<link rel="alternate" hreflang="zh-CN" href="${ORIGIN}/">
     <link rel="alternate" hreflang="en" href="${ORIGIN}/en/">
     <link rel="alternate" hreflang="x-default" href="${ORIGIN}/">`}
+    <link rel="author" href="https://agentsmirror.com/">
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="${esc(t.brand)}">
     <meta property="og:title" content="${esc(isTerms ? TERMS_META.title : t.meta.ogTitle)}">
@@ -239,7 +275,7 @@ function hero(t, data) {
     const attr = (a, v) => (i === 0 ? `${a}="${v}"` : `data-${a}="${v}"`);
     return `<picture class="stage-frame${i === 0 ? " is-active" : ""}" data-skin="${id}">
         <source type="image/avif" ${attr("srcset", `/img/skins/${id}-1280.avif`)}>
-        <img ${attr("src", `/img/skins/${id}-1280.webp`)} alt="${esc(alt)}" width="1280" height="800" decoding="async"${i === 0 ? ` fetchpriority="high"` : ""}>
+        <img ${attr("src", `/img/skins/${id}-1280.webp`)} alt="${esc(alt)}" width="1280" height="800" decoding="async"${i === 0 ? ` fetchpriority="high"` : ` fetchpriority="low"`}>
       </picture>`;
   }).join("");
   const dots = HERO_SKINS.map((id, i) => {
@@ -712,6 +748,8 @@ function footer(t) {
             [REPO.manager, "Codex App Manager"],
             [REPO.mirror, "codex-app-mirror"],
             [REPO.skins, "awesome-codex-skins"],
+            ["https://claudeapp.agentsmirror.com/", "claude-app-mirror"],
+            ["https://agentsmirror.com/", t.lang === "zh" ? "agentsmirror 镜像矩阵" : "agentsmirror Hub"],
           ])}
           ${col(f.cols.docs, [
             [LINKS.terms, f.links.terms],

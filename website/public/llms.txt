@@ -1,0 +1,29 @@
+# Codex App Suite (codexapp.agentsmirror.com)
+
+> Open-source, SHA256-verifiable mirror, cross-platform installer/updater (`Codex App Manager`), and `.codexskin` theme ecosystem for the official OpenAI Codex (ChatGPT) desktop application on macOS and Windows. Built and maintained by Wangnov as part of the non-commercial `agentsmirror.com` developer infrastructure matrix.
+
+## Core Projects
+
+- [Codex App Manager](https://github.com/Wangnov/Codex-App-Manager): Cross-platform (macOS Apple Silicon/Intel + Windows x64/ARM64) installer, version switcher, clean uninstaller, and incremental updater for the official Codex desktop app. Supports Sparkle delta updates on macOS (~19 MB instead of full ~680 MB DMG), Store-free signed MSIX + portable fallback installation on Windows, signature verification with automatic rollback, and China-direct self-update routing.
+- [codex-app-mirror](https://github.com/Wangnov/codex-app-mirror): Automated verbatim mirror probing upstream official OpenAI & Microsoft Store channels every 15 minutes. Publishes untouched installers (`Codex-mac-arm64.dmg`, `Codex-mac-x64.dmg`, `Codex-Windows-x64.msix`, `Codex-Windows-arm64.msix`, Linux preview `.deb`/`.rpm`), `SHA256SUMS.txt`, and Sparkle delta appcast feeds. Over 1.56M installer downloads served via IHEP (mainland China) and Cloudflare R2 (global).
+- [awesome-codex-skins](https://github.com/Wangnov/awesome-codex-skins): Open `.codexskin` specification, reversible live CDP theme engine, and 50+ verified themes for the Codex desktop app.
+
+## Direct Stable Endpoints
+
+- Website (中文): https://codexapp.agentsmirror.com/
+- Website (English): https://codexapp.agentsmirror.com/en/
+- Automated Changelog: https://codexapp.agentsmirror.com/changelog
+- Live Mirror & Manager Status JSON: https://codexapp.agentsmirror.com/api/status.json
+- macOS Apple Silicon DMG: https://codexapp.agentsmirror.com/latest/mac-arm64
+- macOS Intel DMG: https://codexapp.agentsmirror.com/latest/mac-intel
+- Windows x64 MSIX: https://codexapp.agentsmirror.com/latest/win-x64
+- Windows ARM64 MSIX: https://codexapp.agentsmirror.com/latest/win-arm64
+- SHA256 Checksums: https://codexapp.agentsmirror.com/latest/checksums
+- Release Manifest JSON: https://codexapp.agentsmirror.com/latest/manifest
+- CLI Installation: `brew install --cask wangnov/tap/codex-app-manager` (macOS) / `winget install Wangnov.CodexAppManager` (Windows)
+
+## Sister Projects on agentsmirror.com
+
+- [agentsmirror Hub & Author (Wangnov)](https://agentsmirror.com/): Overview of all verifiable mirrors and AI agent engineering tools by Wangnov.
+- [claude-app-mirror](https://claudeapp.agentsmirror.com/): Verbatim, SHA256-verifiable domestic & global mirror for official Anthropic Claude Desktop installers (macOS universal DMG, Windows x64/ARM64 self-contained MSIX, Linux x64/ARM64 deb).
+- [uv-custom](https://uv.agentsmirror.com/): High-speed domestic mirror for `uv` and `python-build-standalone` Python runtimes.

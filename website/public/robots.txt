@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://codexapp.agentsmirror.com/sitemap.xml
